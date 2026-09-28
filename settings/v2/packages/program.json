@@ -1,0 +1,11 @@
+{
+  "__version__": "1.0.4",
+  "android_sdk": "/Users/a1/Library/Android/sdk",
+  "android_ndk": "/Users/a1/Library/Android/sdk/ndk/28.2.13676358",
+  "androidSDK": {
+    "path": "/Users/a1/Library/Android/sdk"
+  },
+  "androidNDK": {
+    "path": "/Users/a1/Library/Android/sdk/ndk/28.2.13676358"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "platform": "android",
+  "outputName": "android",
+  "buildPath": "project://build",
+  "startScene": "7689a3bd-ed7b-4bab-9f1e-41d2db124ece",
+  "scenes": [
+    {
+      "url": "db://assets/scenes/main.scene",
+      "uuid": "7689a3bd-ed7b-4bab-9f1e-41d2db124ece",
+      "inBundle": false
+    }
+  ],
+  "debug": true,
+  "sourceMaps": true,
+  "packages": {
+    "android": {
+      "packageName": "com.dudu.badminton",
+      "orientation": {
+        "landscapeRight": true,
+        "landscapeLeft": true,
+        "portrait": false,
+        "upsideDown": false
+      },
+      "apiLevel": 34,
+      "appABIs": [
+        "arm64-v8a",
+        "armeabi-v7a"
+      ],
+      "useDebugKeystore": true,
+      "resizeableActivity": true,
+      "maxAspectRatio": "2.4",
+      "keystorePath": "",
+      "keystorePassword": "",
+      "keystoreAlias": "",
+      "keystoreAliasPassword": "",
+      "appBundle": false,
+      "androidInstant": false,
+      "inputSDK": false,
+      "isSoFileCompressed": true,
+      "remoteUrl": "",
+      "sdkPath": "/Users/a1/Library/Android/sdk",
+      "ndkPath": "/Users/a1/Library/Android/sdk/ndk/28.2.13676358",
+      "javaHome": "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home",
+      "javaPath": "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home/bin/java",
+      "renderBackEnd": {
+        "vulkan": false,
+        "gles3": true,
+        "gles2": true
+      },
+      "swappy": false
+    },
+    "native": {
+      "encrypted": false,
+      "JobSystem": "none"
+    }
+  }
+}

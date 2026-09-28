@@ -4,12 +4,13 @@
 // 与老 canvas 全帧重绘同构,元素量级(两人一球)毫无压力。
 // 渲染层只读游戏状态,不改任何逻辑字段。
 // ============================================================
-import { Color, Graphics, Label, Node, UIOpacity, UITransform } from "cc";
+import { Color, Graphics, Label, Layers, Node, UIOpacity, UITransform } from "cc";
 import { CFG } from "../core/config";
 import { lerp, clamp } from "../core/utils";
 import { Ball, GameEvent, Player, SkinDef } from "../core/types";
 import { drawPlayer, drawShuttle } from "./sprites";
-import { drawCourt } from "./court";
+import { courtRenderer, CourtThemeItem } from "./court";
+import { FXSystem } from "./fx";
 
 const C = CFG;
 
@@ -38,11 +39,13 @@ interface TrailDot { x: number; y: number; life: number; sweet: boolean }
 
 export class WorldView {
   readonly root: Node;          // 受震屏/镜头冲击影响的容器
+  private courtGfx: Graphics;
   private g: Graphics;
   private vp: Viewport;
   private floatLayer: Node;
   private floats: FloatText[] = [];
   private trail: TrailDot[] = [];
+  readonly fx = new FXSystem(); // 完整打击特效与粒子系统
   shakeX = 0;
   private shakeAmt = 0;
   frameT = 0;
@@ -50,25 +53,57 @@ export class WorldView {
   constructor(parent: Node) {
     this.vp = makeViewport();
     this.root = new Node("world");
+    this.root.layer = Layers.Enum.UI_2D;
     this.root.addComponent(UITransform);
+    this.root.setPosition(0, C.view.offsetY, 0);   // 整体抬高:地面线上移,底部让出虚拟按键带
     this.root.setParent(parent);
 
-    // 静态球场:独立 Graphics 一次绘制
+    // 球场多主题层(支持动态元素与晃网重绘)
     const bg = new Node("court-bg");
+    bg.layer = Layers.Enum.UI_2D;
     bg.addComponent(UITransform);
     bg.setParent(this.root);
-    drawCourt(bg.addComponent(Graphics), this.vp);
+    this.courtGfx = bg.addComponent(Graphics);
+    courtRenderer.draw(this.courtGfx, this.vp);
 
-    // 动态层:每帧重绘
+    // 动态层:每帧重绘(球员、羽毛球、特效粒子)
     const dyn = new Node("dyn");
+    dyn.layer = Layers.Enum.UI_2D;
     dyn.addComponent(UITransform);
     dyn.setParent(this.root);
     this.g = dyn.addComponent(Graphics);
 
     // 飘字层:位于最上,不参与 clear
     this.floatLayer = new Node("floats");
+    this.floatLayer.layer = Layers.Enum.UI_2D;
     this.floatLayer.addComponent(UITransform);
     this.floatLayer.setParent(this.root);
+  }
+
+  // ---------- 球场主题与触网物理 ----------
+  hitNet(hitY?: number, power = 1.0): void {
+    courtRenderer.hitNet(hitY, power);
+  }
+
+  cycleCourtTheme(): CourtThemeItem {
+    const t = courtRenderer.cycleTheme();
+    this.redrawCourt();
+    return t;
+  }
+
+  setCourtTheme(themeId: string): boolean {
+    const ok = courtRenderer.setTheme(themeId);
+    if (ok) this.redrawCourt();
+    return ok;
+  }
+
+  getCourtTheme(): CourtThemeItem {
+    return courtRenderer.getTheme();
+  }
+
+  private redrawCourt(rallyCount = 0): void {
+    this.courtGfx.clear();
+    courtRenderer.draw(this.courtGfx, this.vp, rallyCount);
   }
 
   // ---------- rules.setTrailHook 的落点 ----------
@@ -84,6 +119,7 @@ export class WorldView {
   /** 事件驱动的飘字(老 FX.float 的精简版:上浮 + 淡出) */
   float(wx: number, wy: number, text: string, color: string, size: number, life: number, vy = -1): void {
     const node = new Node("float");
+    node.layer = Layers.Enum.UI_2D;
     node.addComponent(UITransform);
     node.setPosition(this.vp.x(wx), this.vp.y(wy), 0);
     const label = node.addComponent(Label);
@@ -97,13 +133,17 @@ export class WorldView {
   }
 
   /** 每模拟步推进(寿命计数,帧率无关) */
-  stepFx(): void {
+  stepFx(dt = 1 / 60): void {
     this.shakeAmt *= 0.85;
     this.shakeX = this.shakeAmt > 0.3 ? (Math.random() * 2 - 1) * this.shakeAmt : 0;
     for (const f of this.floats) f.life--;
     this.floats = this.floats.filter((f) => f.life > 0);
     for (const t of this.trail) t.life--;
     this.trail = this.trail.filter((t) => t.life > 0);
+
+    // 推进球场动态(海浪、观众微动、落花、晃网)与 FX 特效粒子
+    courtRenderer.step(dt);
+    this.fx.step(dt);
   }
 
   /**
@@ -111,11 +151,14 @@ export class WorldView {
    * animT 由胶水层决定:比赛进行中用世界时钟(hitstop 时身体彻底不动),
    * 面板/暂停态用帧时钟兜底维持呼吸 —— 与老 game.js render() 同一约定。
    */
-  render(players: Player[], ball: Ball | null, alpha: number, animT: number, skin: SkinDef | null): void {
+  render(players: Player[], ball: Ball | null, alpha: number, animT: number, skin: SkinDef | null, rallyCount = 0): void {
     this.frameT++;
     const g = this.g;
     g.clear();
-    this.root.setPosition(this.shakeX, 0, 0);
+    this.root.setPosition(this.shakeX, C.view.offsetY, 0);
+
+    // 动态球场重绘(包含球网弹性晃动、看台荧光棒、海浪、霓虹粒子等)
+    this.redrawCourt(rallyCount);
 
     // 插值:120Hz 屏也不见阶梯;离网远的先画,近网压前(与老 render 同序)
     const order = players.slice().sort(
@@ -130,6 +173,8 @@ export class WorldView {
     if (ball && (ball.live || ball.held)) {
       const bx = ball.held ? ball.x : lerp(ball.px, ball.x, alpha);
       const by = ball.held ? ball.y : lerp(ball.py, ball.y, alpha);
+      // sqR:形变的帧间插值(drawShuttle 无 alpha 参数,渲染前补进副本)
+      const sqR = lerp(ball.sqPrev ?? ball.sq, ball.sq ?? 1, alpha);
       for (const t of this.trail) {
         const a = t.life / (t.sweet ? C.fx.trailSweetLen : C.fx.trailLen);
         g.fillColor = t.sweet
@@ -138,8 +183,11 @@ export class WorldView {
         g.circle(this.vp.x(t.x), this.vp.y(t.y), 3 + 3 * a);
         g.fill();
       }
-      drawShuttle(g, this.vp, { ...ball, x: bx, y: by } as Ball, skin);
+      drawShuttle(g, this.vp, { ...ball, x: bx, y: by, sqR } as Ball, skin);
     }
+
+    // 绘制粒子与打击特效(冲击波/火花/羽毛/彩带等)
+    this.fx.draw(g, this.vp);
 
     // 飘字:上浮 + 末段淡出
     for (const f of this.floats) {

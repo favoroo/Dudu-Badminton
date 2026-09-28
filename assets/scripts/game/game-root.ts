@@ -5,7 +5,7 @@
 // 事件只从 Rules.R.events 取,分发给音效/飘字/震屏 —— 表现层依旧不进逻辑。
 // 菜单/结算完整 UI 是阶段 3;本组件先直进一局「单人 · 普通」。
 // ============================================================
-import { _decorator, Color, Component, Label, Node, UITransform } from "cc";
+import { _decorator, Color, Component, Label, Layers, Node, UITransform } from "cc";
 import { CFG } from "../core/config";
 import { load, save } from "../core/utils";
 import { Rules } from "../core/rules";
@@ -18,6 +18,7 @@ import { newPad, clearEdges, buildIntent, emptyIntent, Pad } from "../input/pad"
 import { bindKeyboard } from "../input/keyboard";
 import { buildTouchPad } from "../input/touchpad";
 import { Sfx } from "./sfx";
+import { BgmManager } from "./bgm";
 
 const { ccclass } = _decorator;
 const C = CFG;
@@ -26,6 +27,7 @@ const C = CFG;
 export class GameRoot extends Component {
   private world!: WorldView;
   private sfx = new Sfx();
+  private bgm = new BgmManager();
   private pad = newPad();
   private scoreLabel!: Label;
   private stateLabel!: Label;
@@ -34,12 +36,17 @@ export class GameRoot extends Component {
   private worldT = 0;
   private frameT = 0;
   private stopFrames = 0;      // hitstop:世界定格的剩余步数(老 FX.stop 的精简版)
+  private prevBgmState = "";
 
   start(): void {
     // ---------- 场景搭建 ----------
     this.world = new WorldView(this.node);
     this.buildHud();
     this.sfx.load(this.node);
+    this.bgm.load(this.node, () => {
+      if (Rules.R.state === "MENU") this.bgm.playMenu();
+      else this.bgm.playGame();
+    });
 
     // ---------- 输入 ----------
     bindKeyboard(this.pad, (code) => this.onSystemKey(code));
@@ -61,17 +68,20 @@ export class GameRoot extends Component {
   private buildHud(): void {
     const mk = (y: number, size: number): Label => {
       const n = new Node(`hud-${y}`);
+      n.layer = Layers.Enum.UI_2D;
       n.addComponent(UITransform);
       n.setPosition(0, y, 0);
       const l = n.addComponent(Label);
       l.fontSize = size;
       l.lineHeight = Math.round(size * 1.2);
+      l.horizontalAlign = 1;
+      l.verticalAlign = 1;
       l.color = new Color(240, 244, 255, 255);
       n.setParent(this.node);
       return l;
     };
-    this.scoreLabel = mk(238, 30);
-    this.stateLabel = mk(200, 15);
+    this.scoreLabel = mk(236, 32);
+    this.stateLabel = mk(196, 16);
     this.stateLabel.color = new Color(200, 212, 240, 200);
   }
 
@@ -93,7 +103,13 @@ export class GameRoot extends Component {
   // ---------- 系统键(与老 onSystem 同名同义,先接最常用的三颗) ----------
   private onSystemKey(code: string): void {
     const R = Rules.R;
-    if (code === "KeyM") { this.sfx.setMuted(!this.sfx.isMuted); save("muted", this.sfx.isMuted); return; }
+    if (code === "KeyM") {
+      const m = !this.sfx.isMuted;
+      this.sfx.setMuted(m);
+      this.bgm.setMute(m);
+      save("muted", m);
+      return;
+    }
     if (R.state === "OVER" && code === "KeyR") { this.sfx.play("ui"); this.startMatch(R.mode as "1p", R.diff); return; }
     if (code === "KeyR") { this.sfx.play("ui"); this.startMatch(R.mode as "1p", R.diff); return; }
     if (code === "Escape" || code === "KeyP") {
@@ -107,6 +123,21 @@ export class GameRoot extends Component {
     const R = Rules.R;
     this.frameT++;
     this.acc += Math.min(dt, 0.25);          // 切后台回来不追帧
+
+    // BGM 状态跟踪
+    if (R.state !== this.prevBgmState) {
+      this.prevBgmState = R.state;
+      if (R.state === "MENU") {
+        this.bgm.setDuck(false);
+        this.bgm.playMenu();
+      } else if (R.state === "PAUSED") {
+        this.bgm.setDuck(true);
+      } else {
+        this.bgm.setDuck(false);
+        this.bgm.playGame();
+      }
+    }
+
     const step = C.sim.step;
     let n = 0;
     while (this.acc >= step && n < C.sim.maxSteps) {
@@ -114,11 +145,11 @@ export class GameRoot extends Component {
       if (!(C.frozen as string[]).includes(R.state)) {
         if (this.stopFrames > 0) {
           this.stopFrames--;                 // hitstop:反馈计时照走,世界时钟不递增
-          this.world.stepFx();
+          this.world.stepFx(step);
         } else {
           this.worldT++;                     // 只有世界真正推进的 step 累加世界时钟
           Rules.step(this.buildInputs());
-          this.world.stepFx();
+          this.world.stepFx(step);
         }
       }
       clearEdges(this.pad);
@@ -127,7 +158,7 @@ export class GameRoot extends Component {
 
     this.drain();
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
-    this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"));
+    this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"), R.rally);
     this.syncHud();
   }
 
@@ -147,7 +178,9 @@ export class GameRoot extends Component {
         this.world.shake(C.fx.shakeWhiff || 1.5);
         this.stopFrames = C.fx.hitstopWhiff || 1;
       },
-      onFootstep: () => { /* 落脚扬尘属粒子表现,阶段 3 接 */ },
+      onFootstep: (p) => {
+        this.world.fx.land(p.x, C.court.groundY, true);
+      },
       onLunge: () => this.sfx.play("lunge"),
     };
     return R.players.map((p) => {
@@ -183,6 +216,17 @@ export class GameRoot extends Component {
             : (C.fx.shakeNormal || 2) + (e.q as number) * 1.5);
           this.sfx.hit(e.q as number, e.kind as string, sweet, perfect);
           if (smash) this.sfx.play("smash");
+
+          // 打击粒子特效
+          if (smash) {
+            const ang = (e.side === "left") ? 0.6 : 2.5;
+            this.world.fx.smash(e.x as number, e.y as number, ang);
+            this.world.fx.feather(e.x as number, e.y as number, 4);
+          }
+          if (sweet || perfect) {
+            this.world.fx.sweet(e.x as number, e.y as number);
+          }
+
           // 夸奖只给真人:喂球那拍不飘字(判据可信度)
           const praise = !(R.mode === "drill" && e.side === "right");
           if (praise) {
@@ -210,15 +254,19 @@ export class GameRoot extends Component {
           this.sfx.play("net");
           this.world.shake(3);
           this.stopFrames = 4;
+          this.world.hitNet(e.y as number, 1.2);
+          this.world.fx.feather(C.court.netX, e.y as number, 3);
           this.world.float(C.court.netX, (e.y as number) - 30, "下网", "#ff8a8a", 20, 46);
           break;
         case "let":
           this.sfx.cheer(0.5);
+          this.world.hitNet(C.court.netTopY, 0.8);
           this.world.float(C.court.netX, C.court.netTopY - 40, "擦网!", C.colors.accent, 22, 52);
           break;
         case "land": {
           this.sfx.floor(e.isSmash ? 1.5 : 0.9);
           this.world.shake(e.isSmash ? (C.fx.shakeLandSmash || 7) : e.out ? 2 : 3);
+          this.world.fx.land(e.x as number, e.y as number, !e.out);
           this.world.float(e.x as number, (e.y as number) - 46, e.out ? "出界" : "落地", e.out ? "#ff6b6b" : "#d8ffb0", 16, 38);
           break;
         }
@@ -251,6 +299,9 @@ export class GameRoot extends Component {
           const youWon = R.mode === "1p" ? e.winner === "left" : true;
           this.sfx.play(youWon ? "win" : "lose");
           this.sfx.cheer(1);
+          if (youWon) {
+            this.world.fx.confetti(C.world.w / 2, C.court.groundY - 120);
+          }
           // 生涯结算(2p 友谊赛返回 null,不发奖)
           const res = Career.settle({
             mode: R.mode, diff: R.diff, won: e.winner === "left",
@@ -280,6 +331,9 @@ export class GameRoot extends Component {
     Rules.R.state = "DRILLDONE";
     this.sfx.play(res.stars >= 2 ? "win" : "score");
     this.sfx.cheer(0.7);
+    if (res.stars >= 1) {
+      this.world.fx.confetti(C.world.w / 2, C.court.groundY - 120);
+    }
     if (reward && reward.levelUps.length) this.sfx.play("levelup");
     else if (reward && reward.coin > 0) this.sfx.play("coin");
     this.world.float(C.world.w / 2, C.world.h / 2 - 8,

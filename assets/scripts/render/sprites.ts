@@ -17,12 +17,15 @@
 //
 // 第 4 个参数 alpha 是渲染插值系数(0..1,帧间补偿),不是透明度 —— 与老 game.js 同名同义。
 // ============================================================
-import { Graphics, LineCap, LineJoin } from "cc";
+import { Color, Graphics } from "cc";
 import { CFG } from "../core/config";
 import { Player, Ball, SkinDef, SwingStyle, Theme } from "../core/types";
 import { Physics } from "../core/physics";
 import { lerp, clamp, TAU, D2R } from "../core/utils";
 import { pal, withAlpha } from "./palette";
+
+const LineCap = Graphics.LineCap;
+const LineJoin = Graphics.LineJoin;
 
 const C = CFG;
 const CO = C.court, SW = C.swing;
@@ -157,7 +160,7 @@ function lineSeg(g: Graphics, f: Frame, x0: number, y0: number, x1: number, y1: 
 }
 
 /** 变换帧里的实心矩形:canvas fillRect 向 +x/+y 延伸,经镜像/翻转后归一成数学最小角 */
-function fillRectTr(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number, color: ReturnType<typeof pal>): void {
+function fillRectTr(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number, color: Color): void {
   const a = f.pt(lx, ly), b = f.pt(lx + w, ly + h);
   g.fillColor = color;
   g.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
@@ -284,7 +287,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const th = p.theme ?? DEFAULT_THEME;
   const H = C.player.h, W = C.player.w;
 
-  // 圆头笔画贯穿全身(老 canvas 里首个 arm() 设完就随状态泄漏到后续笔画,闭 合路径上无视觉差)
+  // 圆头笔画贯穿全身(老 canvas 里首个 arm() 设完就随状态泄漏到后续笔画,闭合路径上无视觉差)
   g.lineCap = LineCap.ROUND;
   g.lineJoin = LineJoin.ROUND;
 
@@ -324,8 +327,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const lungeU = lunging ? clamp(p.lungeT / (C.lunge.duration || 14), 0, 1) : 0;
   // 恢复期也保留一点前倾残影,渐出
   const lungeRecov = p.lungeRecovery > 0 ? clamp(p.lungeRecovery / (C.lunge.recoveryFrames || 18), 0, 1) : 0;
-  const lungeLean = (lunging ? Math.sin(lungeU * Math.PI) * 8 : lungeRecov * 3);  // 跨步中身体大幅前倾
-  const lungeLegExt = lunging ? Math.sin(lungeU * Math.PI) : 0;                   // 前腿伸出量
+  const lungeLean = (lunging ? Math.sin(lungeU * Math.PI) * 8 : lungeRecov * 3);  // 跨步中身体大幅倾斜
+  const lungeLegExt = lunging ? Math.sin(lungeU * Math.PI) : 0;                   // 引导腿伸出量
+  // 跨步方向相对于球员面朝方向(1=向前跨步, -1=向后跨步)
+  const lungeDirRel = ((p.lungeDir || p.facing) * p.facing) >= 0 ? 1 : -1;
 
   // ---------- CPU 人格化:庆祝/沮丧动作 ----------
   const ai = p.ai;
@@ -347,7 +352,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     + (p.vx * p.facing / C.player.vmax) * 2.5
     + (swinging ? lut(leanTbl, poseU) : p.recoverT > 0 ? lut(leanTbl, 1) * (1 - recK) : 0)
     + (p.hitRecoil || 0) * p.facing * 0.5   // 击球身体后仰:命中瞬间短暂后仰
-    + lungeLean                              // 跨步救球:身体大幅前倾
+    + lungeLean * lungeDirRel               // 跨步救球:身体沿跨步方向大幅倾斜
     + emotionLean;                            // CPU 情绪:庆祝后仰/沮丧前倾
 
   // ---------- 远臂:画在躯干后层的远侧手臂(景深),垂在体侧偏后 ----------
@@ -356,7 +361,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   fhx += -cycRaw * 5 * runAmt;                          // 跑动时与前腿反相摆(权重渐变)
   if (airborne) fhx -= 3;
   if (swinging && sp) fhx += -Math.cos(sp.ang * D2R) * 6;   // 挥拍时反向后拉,平衡臂
-  if (lunging) fhx -= lungeLegExt * 10;                  // 跨步时远臂后伸平衡
+  if (lunging) fhx -= lungeLegExt * 10 * lungeDirRel;   // 跨步时远臂伸出平衡
   if (celebrating) { fhx -= 8; fhy -= 18 * Math.sin(celebrateU * Math.PI); }  // 庆祝:远臂上举
   if (frustrated) { fhy += 5 * Math.sin(frustrateU * Math.PI); }              // 沮丧:远臂下垂
   arm(g, F, th.dark, [[-4, fsy], [-17, fsy + 13], [fhx, fhy]], 5, 0.7);
@@ -376,9 +381,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     const runLift = Math.max(0, L.s * cycRaw) * (3 + 4 * spN);
     const airDx = L.s * lerp(2, 4.5, airK);
     const airLift = L.s > 0 ? lerp(5, 1, airK) : lerp(2, 0.5, airK);
-    // 跨步救球:前腿大幅前伸,后腿拖后压低
-    const lungeDx = L.s > 0 ? lungeLegExt * 12 : -lungeLegExt * 6;
-    const lungeLift = L.s > 0 ? -lungeLegExt * 3 : lungeLegExt * 2;
+    // 跨步救球:沿跨步方向的大腿大幅伸出,另一条腿拖后压低
+    const isLeadLeg = L.s * lungeDirRel > 0;
+    const lungeDx = isLeadLeg ? lungeLegExt * 12 * lungeDirRel : -lungeLegExt * 6 * lungeDirRel;
+    const lungeLift = isLeadLeg ? -lungeLegExt * 3 : lungeLegExt * 2;
     const dx = runDx * runAmt + airDx * wAir + lungeDx;
     const lift = runLift * runAmt + airLift * wAir + lungeLift;
     px(g, F, L.bx + dx - W * 0.12, hipY, W * 0.24, thigh - lift, th.dark);                        // 短裤/大腿
@@ -755,12 +761,12 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
     skirt: skin?.skirt ?? SHUTTLE_DEFAULT.skirt,
     vein: skin?.vein ?? SHUTTLE_DEFAULT.vein,
   };
-  const bx = b.rx ?? b.x, by = b.ry ?? b.y;
+  const bx = bb.rx ?? b.x, by = bb.ry ?? b.y;
   const sp = Math.hypot(b.vx, b.vy);
   // 球头朝运动方向;静止时朝下
   const ang = sp > 0.35 ? Math.atan2(b.vy, b.vx) : Math.PI / 2;
   // 球体形变:击球瞬间沿飞行方向压扁,体积守恒(垂直方向膨胀)
-  const sq = b.sqR ?? b.sq ?? 1;
+  const sq = bb.sqR ?? b.sq ?? 1;
   const sqX = sq;                    // 沿飞行方向压缩
   const sqY = 1 / Math.sqrt(Math.max(0.4, sq));  // 垂直方向膨胀,保持视觉体积
   const S = shuttleFrame(vp, bx, by, ang, sqX, sqY);
@@ -775,7 +781,7 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
   g.fillColor = pal(sk.band);
   polyPath(g, arcPts(S, 3, 0, 5.2, -1.05, 1.05, false), true);
   g.fill();
-  g.fillColor = withAlpha(pal("#ffffff"), 0.55);
+  // 球托高光(canvas fillRect(1.5,-3.6,1.6,2) 在旋转缩放帧里 → 四角变换)
   fillRectTr(g, S, 1.5, -3.6, 1.6, 2, withAlpha(pal("#ffffff"), 0.55));
   // 羽毛裙(朝后展开)
   g.fillColor = pal(sk.skirt);

@@ -56,6 +56,10 @@ export const CFG = {
   stage: { w: 992, h: 728 },
   world: { w: 960, h: 540 },
 
+  // 视图布局:世界整体上移,地面线从屏幕 y=-200 抬到 -150,底部让出约 120px 给虚拟按键,
+  // 避免按键遮挡人物击球区域(偏移在 world.ts 应用,court.ts 据此补底边覆盖)
+  view: { offsetY: 50 },
+
   sim: {
     step: 1 / 60,      // 固定步长,与显示器刷新率无关
     maxSteps: 4,       // 单帧最多补几步(切后台回来不追帧)
@@ -377,13 +381,13 @@ export const CFG = {
   },
 
   // 键位表(桌面端按 e.code 绑定,跨布局稳定;每项可给多个候选)
-  // 击球键自带落点:swingFar = 远球压底线,swingNear = 短球放网前。方向键只管移动。
+  // 击球键自带落点:swingFar = 远球压底线,swingNear = 短球放网前。方向键移动,双击方向键触发跨步。
   // 触屏端的虚拟按键在输入适配层映射到同一套语义,不另立第二张表
   keys: {
-    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], swingFar: ["KeyJ"], swingNear: ["KeyK"], lunge: ["KeyS"] },
+    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], swingFar: ["KeyJ"], swingNear: ["KeyK"] },
     p2: {
       left: ["ArrowLeft"], right: ["ArrowRight"], jump: ["ArrowUp"],
-      swingFar: ["Slash"], swingNear: ["Period"], lunge: ["ArrowDown"],
+      swingFar: ["Slash"], swingNear: ["Period"],
     },
     sys: {
       pause: ["Escape", "KeyP"], restart: ["KeyR"], back: ["KeyQ"],
@@ -401,6 +405,7 @@ export const CFG = {
     reachMul: 1.45,         // 判定区半径倍率
     recoveryFrames: 18,     // 恢复期帧数
     recoverySpeedMul: 0.35, // 恢复期速度倍率
+    doubleTapWindowMs: 300, // 双击方向键触发跨步的时间窗口(毫秒)
   },
 
   // AI 拦截高度带:站立够球上限 / 跳起够球上限(px 离地)

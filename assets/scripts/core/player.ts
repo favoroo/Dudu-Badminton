@@ -91,10 +91,10 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   } else if (inRecovery) {
     p.lungeRecovery--;
   }
-  // 触发跨步:地面、未在挥拍、未在跨步中、按下跨步键
+  // 触发跨步:地面、未在挥拍、未在跨步中、按下跨步键(或双击方向键)
   if (inp.lungePressed && p.onGround && p.swingT < 0 && !lunging) {
     p.lungeT = 0;
-    p.lungeDir = p.facing;
+    p.lungeDir = inp.lungeDir ? inp.lungeDir : p.facing;
     p.lungeRecovery = 0;
     p.sq = 0.85;  // 跨步时身体压低
     inp.onLunge && inp.onLunge(p);
@@ -208,15 +208,18 @@ export interface ZoneProbe {
   swingRadius: number;
   zoneScale?: number;
   lungeT?: number;
+  lungeDir?: number;
 }
 
 function strikeZone(p: ZoneProbe, speed: number) {
   const rad = p.swingRadius;
   const fast = clamp(((speed || 0) - C.swing.zoneFullSpeed) / C.swing.zoneTightenSpan, 0, 1);
-  // 跨步救球:判定区扩大,身体前倾延伸
-  const lungeMul = (p.lungeT ?? -1) >= 0 ? C.lunge.reachMul : 1;
+  // 跨步救球:判定区扩大,延伸方向由跨步方向决定(缺省为面向方向)
+  const isLunging = (p.lungeT ?? -1) >= 0;
+  const lungeMul = isLunging ? C.lunge.reachMul : 1;
+  const reachDir = isLunging ? (p.lungeDir || p.facing) : p.facing;
   return {
-    x: p.x + p.facing * rad * 0.34 * lungeMul,
+    x: p.x + reachDir * rad * 0.34 * lungeMul,
     y: p.y + SW.pivotY - rad * 0.06,
     r: (rad * 0.92 + SW.headR) * (p.zoneScale ?? 1) * lerp(1, C.swing.zoneFastMul, fast) * lungeMul,
   };
@@ -225,7 +228,9 @@ function strikeZone(p: ZoneProbe, speed: number) {
 // 球在判定区内吗(返回 null = 不在;否则返回归一化的勉强程度 0=区心 1=边缘)
 function ballInZone(p: ZoneProbe, ball: Ball): number | null {
   const z = strikeZone(p, Math.hypot(ball.vx || 0, ball.vy || 0));
-  const dx = (ball.x - z.x) * p.facing, dy = ball.y - z.y;
+  const isLunging = (p.lungeT ?? -1) >= 0;
+  const effDir = isLunging ? (p.lungeDir || p.facing) : p.facing;
+  const dx = (ball.x - z.x) * effDir, dy = ball.y - z.y;
   if (dx < -z.r * 0.34) return null;                       // 太靠背后,够不着
   const d = Math.hypot(dx, dy);
   return d <= z.r ? clamp(d / z.r, 0, 1) : null;

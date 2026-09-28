@@ -50,7 +50,7 @@ node .tools-build/tools/sim-check.js     # 整机自洽(exit 0)
 
 ## 三项产品决策(已定并部分落地)
 
-1. **触屏方案 = 虚拟按键**:左下「左移/右移/跨步」,右下「跳/深球/短球」,
+1. **触屏方案 = 虚拟按键**:左下「左移/右移(双击跨步)」,右下「跳/深球/短球」,
    与键盘映射同一套 Pad 动作语义(`assets/scripts/input/`)。
 2. **手机版先砍双人**:`CFG.mobileOnly` + `menuForPlatform()` 只暴露单人入口,
    2p/2v2 逻辑保留不删(`core/config.ts`)。

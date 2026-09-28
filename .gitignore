@@ -4,12 +4,15 @@
 /local/
 /build/
 /profiles/
-/native/
 /extensions/**/node_modules/
 
 # 回归工具的编译产物与依赖
 .tools-build/
 node_modules/
+
+# 编辑器与代理工具缓存
+.trae/
+.zcode/
 
 # 系统文件
 .DS_Store

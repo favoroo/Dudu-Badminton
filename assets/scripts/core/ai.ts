@@ -225,7 +225,10 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     if (dist > reach && dist < lungeReach && h < C.aiReach.stand * 0.7) {
       // 面朝球的方向才跨步(反向说明已经跑过了)
       const ballDir = ball.x > p.x ? 1 : -1;
-      if (ballDir === p.facing) inp.lungePressed = true;
+      if (ballDir === p.facing) {
+        inp.lungePressed = true;
+        inp.lungeDir = p.facing;
+      }
     }
   }
 

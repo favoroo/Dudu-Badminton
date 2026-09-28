@@ -458,5 +458,5 @@ const statsOf = (s: TeamSide): TeamStats => {
 
 export const Rules = {
   R, newMatch, step, restart, pause, resume, isMatchPoint, matchPointInfo, beginPoint,
-  teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf,
+  teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf, setTrailHook,
 };

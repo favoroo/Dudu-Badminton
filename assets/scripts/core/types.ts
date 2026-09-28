@@ -29,6 +29,8 @@ export interface PlayerInput {
   jumpHeld: boolean;
   swingAim: string | number | null;
   lungePressed: boolean;
+  /** 跨步方向(-1=向左, 1=向右; 未指定时兜底面向方向 p.facing) */
+  lungeDir?: number;
   onJump?(p: Player): void;
   onLand?(p: Player, vy: number): void;
   onFootstep?(p: Player): void;
@@ -96,6 +98,7 @@ export interface Player {
   blinkSeed: number;
   swingT: number;
   swingStyle: SwingStyle;
+  lastSwingStyle?: SwingStyle;
   swingHit: boolean;
   swingQ: number;
   swingBuf: number;
