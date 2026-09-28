@@ -58,15 +58,18 @@ declare module "cc" {
 
   export class UITransform extends Component {
     setContentSize(w: number, h: number): void;
+    setAnchorPoint(x: number, y: number): void;
     readonly contentSize: { width: number; height: number };
     readonly width: number;
     readonly height: number;
+    anchorPoint: { x: number; y: number };
   }
   export class Widget extends Component {
     isAlignTop: boolean; top: number;
     isAlignBottom: boolean; bottom: number;
     isAlignLeft: boolean; left: number;
     isAlignRight: boolean; right: number;
+    updateAlignment(): void;
   }
   export class Label extends Component {
     string: string;
@@ -245,7 +248,29 @@ declare module "cc" {
       clear(): void;
     };
     export function openURL(url: string): void;
+    export function getSafeAreaRect(symmetric?: boolean): { x: number; y: number; width: number; height: number };
   }
+
+  export enum ResolutionPolicy {
+    EXACT_FIT = 0,
+    NO_BORDER = 1,
+    SHOW_ALL = 2,
+    FIXED_HEIGHT = 3,
+    FIXED_WIDTH = 4,
+    UNKNOWN = 5,
+  }
+
+  export const profiler: {
+    showStats(): void;
+    hideStats(): void;
+    isShowingStats(): boolean;
+  };
+
+  export const view: {
+    getVisibleSize(): { width: number; height: number };
+    getDesignResolutionSize(): { width: number; height: number };
+    setDesignResolutionSize(width: number, height: number, resolutionPolicy: ResolutionPolicy | number): void;
+  };
 
   export namespace native {
     export namespace reflection {

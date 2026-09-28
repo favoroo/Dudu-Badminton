@@ -5,7 +5,7 @@
 // 事件只从 Rules.R.events 取,分发给音效/飘字/震屏 —— 表现层依旧不进逻辑。
 // 菜单/结算完整 UI 是阶段 3;本组件先直进一局「单人 · 普通」。
 // ============================================================
-import { _decorator, Color, Component, Label, Layers, Node, UITransform } from "cc";
+import { _decorator, Color, Component, Label, Layers, Node, ResolutionPolicy, UITransform, profiler, view } from "cc";
 import { CFG } from "../core/config";
 import { load, save } from "../core/utils";
 import { Rules } from "../core/rules";
@@ -29,8 +29,6 @@ export class GameRoot extends Component {
   private sfx = new Sfx();
   private bgm = new BgmManager();
   private pad = newPad();
-  private scoreLabel!: Label;
-  private stateLabel!: Label;
 
   private acc = 0;
   private worldT = 0;
@@ -38,10 +36,16 @@ export class GameRoot extends Component {
   private stopFrames = 0;      // hitstop:世界定格的剩余步数(老 FX.stop 的精简版)
   private prevBgmState = "";
 
+  onLoad(): void {
+    // 强制固定高度 540，宽度自适应扩展，保证上下视野和按钮在任何长宽比屏幕上都不被裁剪
+    view.setDesignResolutionSize(C.world.w, C.world.h, ResolutionPolicy.FIXED_HEIGHT);
+    // 隐藏 Cocos 左下角性能监控/FPS面板
+    profiler.hideStats();
+  }
+
   start(): void {
     // ---------- 场景搭建 ----------
     this.world = new WorldView(this.node);
-    this.buildHud();
     this.sfx.load(this.node);
     this.bgm.load(this.node, () => {
       if (Rules.R.state === "MENU") this.bgm.playMenu();
@@ -62,42 +66,6 @@ export class GameRoot extends Component {
     Rules.newMatch(mode, diff);
     Career.applyToMatch();      // 换上的皮肤跟人走
     this.sfx.play("whistle");
-  }
-
-  // ---------- HUD ----------
-  private buildHud(): void {
-    const mk = (y: number, size: number): Label => {
-      const n = new Node(`hud-${y}`);
-      n.layer = Layers.Enum.UI_2D;
-      n.addComponent(UITransform);
-      n.setPosition(0, y, 0);
-      const l = n.addComponent(Label);
-      l.fontSize = size;
-      l.lineHeight = Math.round(size * 1.2);
-      l.horizontalAlign = 1;
-      l.verticalAlign = 1;
-      l.color = new Color(240, 244, 255, 255);
-      n.setParent(this.node);
-      return l;
-    };
-    this.scoreLabel = mk(236, 32);
-    this.stateLabel = mk(196, 16);
-    this.stateLabel.color = new Color(200, 212, 240, 200);
-  }
-
-  private syncHud(): void {
-    const R = Rules.R;
-    this.scoreLabel.string = `${R.scores[0]} : ${R.scores[1]}`;
-    const mp = Rules.isMatchPoint();
-    const info = Rules.matchPointInfo();
-    this.stateLabel.string = R.mode === "drill"
-      ? Drill.goalText()
-      : R.state === "OVER"
-      ? `${Rules.labelOf(R.winner ?? "left")} 获胜 · R 再来一局`
-      : info.active
-      ? info.label
-      : R.state === "PAUSED" ? "已暂停 · Esc 继续" : "";
-    this.scoreLabel.color = mp ? new Color(255, 225, 77, 255) : new Color(240, 244, 255, 255);
   }
 
   // ---------- 系统键(与老 onSystem 同名同义,先接最常用的三颗) ----------
@@ -159,7 +127,6 @@ export class GameRoot extends Component {
     this.drain();
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"), R.rally);
-    this.syncHud();
   }
 
   // ---------- 输入 → 意图(与老 buildInputs 同构) ----------
@@ -179,7 +146,7 @@ export class GameRoot extends Component {
         this.stopFrames = C.fx.hitstopWhiff || 1;
       },
       onFootstep: (p) => {
-        this.world.fx.land(p.x, C.court.groundY, true);
+        this.world.fx.stepDust(p.x, C.court.groundY);
       },
       onLunge: () => this.sfx.play("lunge"),
     };

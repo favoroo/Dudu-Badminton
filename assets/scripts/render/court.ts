@@ -27,8 +27,8 @@ const LAMPS = [180, 480, 780];
 // 核心场景抬高延伸几何常量
 const EXT_H = 180;             // 场景向下延伸厚度 (540 -> 720)
 const BOTTOM_WY = H + EXT_H;   // 延伸后的世界底部 Y (720)
-const EXT_W = 120;             // 左右各外延 120px，防超宽屏漏边
-const TOTAL_W = W + EXT_W * 2; // 1200px 覆盖全宽
+const EXT_W = 260;             // 左右各外延 260px，超长带鱼屏/折叠屏(24:9)也绝不漏边
+const TOTAL_W = W + EXT_W * 2; // 1480px 覆盖全宽
 
 export type CourtThemeId = "arena" | "beach" | "cyber" | "dojo";
 
@@ -415,9 +415,10 @@ export class CourtRenderer {
     ];
 
     this.boards = [];
-    for (let i = 0; i < 48; i++) {
+    const numBoards = Math.ceil(TOTAL_W / 24);
+    for (let i = 0; i < numBoards; i++) {
       this.boards.push({
-        x: -EXT_W + i * 25 + (i % 3) * 4,
+        x: -EXT_W + i * 24 + (i % 3) * 4,
         w: 16 + (i % 4) * 3,
         t: (i * 37) % 100,
       });
@@ -492,11 +493,12 @@ export class CourtRenderer {
 
     // 3. 赛博夜市
     this.cyberBuildings = [];
-    for (let i = 0; i < 28; i++) {
+    const numBuildings = Math.ceil(TOTAL_W / 34);
+    for (let i = 0; i < numBuildings; i++) {
       const bw = 28 + rnd() * 45;
       const hasAntenna = rnd() > 0.4;
       this.cyberBuildings.push({
-        x: i * 36 - 20 + rnd() * 12,
+        x: -EXT_W + i * 34 - 10 + rnd() * 12,
         w: bw,
         h: 140 + rnd() * 180,
         hue: rnd() > 0.5 ? 280 + rnd() * 40 : 180 + rnd() * 40,

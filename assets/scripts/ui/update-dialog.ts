@@ -1,7 +1,7 @@
 // ============================================================
 // 应用内更新提示弹窗:版本号、更新说明、大小、进度条、下载与安装
 // ============================================================
-import { Button, Graphics, Label, Node, sys, UITransform } from "cc";
+import { Button, Color, Graphics, Label, Node, sys, UITransform, Vec2 } from "cc";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import { formatBytes } from "../core/version";
@@ -45,6 +45,9 @@ export class UpdateDialog {
 
     // 标题
     const title = kit.label(this.card.node, "发现新版本", 24, P.accent, { outline: P.ink, outlineW: 2 });
+    title.enableShadow = true;
+    title.shadowColor = new Color(0, 0, 0, 130);
+    title.shadowOffset = new Vec2(0, -4);
     title.node.setPosition(0, 140, 0);
 
     // 版本标签

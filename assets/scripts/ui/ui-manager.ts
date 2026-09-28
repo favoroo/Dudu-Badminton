@@ -31,6 +31,8 @@ import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
 import { courtRenderer } from "../render/court";
+import { drawArcadeButton, drawArcadePanel, drawHardShadow, drawScanlines, drawVignette } from "./ui-arcade";
+import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
 import { Hud } from "./hud";
 import { PausePanel } from "./pause-panel";
@@ -42,20 +44,21 @@ import type { UpdateInfo } from "../core/update-service";
 
 const { ccclass } = _decorator;
 
-// ---------- 调色板(老 ui.css 的暗色霓虹语言) ----------
+// ---------- 调色板(老 base.css :root 的「黄昏体育馆」令牌,暖纸白正文) ----------
 export const PAL = {
-  ink: "#0a0d18",         // 最深底
-  panel: "#141a2e",       // 面板底
-  panelLight: "#1e2745",  // 按钮底
-  line: "#dfe6ff",        // 描边基色(配 alpha 用)
-  accent: "#ffe14d",      // 荧光黄 —— 与 CFG.colors.accent 同源
+  ink: "#05070f",         // 最深底(--ink)
+  panel: "#0e1428",       // 面板底(--navy)
+  panelLight: "#182142",  // 按钮底(--navy-2)
+  line: "#f5efe1",        // 描边基色(暖纸白,配 alpha 用)
+  accent: "#ffe14d",      // 荧光黄(--acid)—— 与 CFG.colors.accent 同源
   cyan: "#00f0ff",
-  red: "#ff4d4d",
-  blue: "#3ea8ff",
-  text: "#f0f4ff",
+  red: "#ff4d4d",         // --red
+  blue: "#3ea8ff",        // --blue
+  wood: "#c8703a",        // --wood 暖木(球场氛围色)
+  text: "#f5efe1",        // --paper 暖纸白正文
   dim: "#8f9cbe",
-  danger: "#ff6b6b",
-  good: "#6fe08a",
+  danger: "#ff6b6b",      // --bad
+  good: "#7dff9e",        // --good
 };
 
 /** hex(+alpha) → cc.Color;Graphics/Label 逐帧赋值时引擎内部会拷贝,放心用临时实例 */
@@ -103,21 +106,25 @@ export interface BtnOpts {
   size?: number;
   stroke?: string;
   strokeAlpha?: number;
+  /** 街机按钮分层:acid 面自动判为 primary(厚底 3D),其余 ghost */
+  style?: BtnStyle;
 }
 
-/** 圆角按钮:Graphics 底 + Label + Button(SCALE 按压反馈);点击事件由调用方注册 */
+/**
+ * 街机按钮:硬偏移阴影 + 厚底 3D(primary)/浮起(ghost)+ Label;
+ * 按压反馈用 Button(SCALE),与老 .btn:active 的「按下去」等价。
+ */
 export function uiButton(parent: Node, text: string, w: number, h: number, opts: BtnOpts = {}): Node {
+  const style: BtnStyle = opts.style
+    ?? (opts.bg === PAL.accent || opts.bg?.toLowerCase() === "#ffe14d" ? "primary" : "ghost");
   const n = new Node(`btn:${text}`);
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(w, h);
   const g = n.addComponent(Graphics);
-  g.fillColor = col(opts.bg ?? PAL.panelLight, opts.bgAlpha ?? 1);
-  g.strokeColor = col(opts.stroke ?? PAL.line, opts.strokeAlpha ?? 0.3);
-  g.lineWidth = 2;
-  g.roundRect(-w / 2, -h / 2, w, h, Math.min(h * 0.3, 14));
-  g.fill();
-  g.stroke();
-  uiLabel(n, text, opts.size ?? 18, opts.fg ?? PAL.text, opts.stroke ? { outline: opts.stroke } : {});
+  drawHardShadow(g, w, h, 9, 4, 4, 0.5);
+  drawArcadeButton(g, w, h, style);
+  const fg = opts.fg ?? (style === "primary" ? "#14100a" : PAL.text);
+  uiLabel(n, text, opts.size ?? 18, fg);
   const b = n.addComponent(Button);
   b.transition = Button.Transition.SCALE;
   b.zoomScale = 0.94;
@@ -132,20 +139,21 @@ export interface PanelOpts {
   bgAlpha?: number;
   stroke?: string;
   strokeAlpha?: number;
+  /** 关掉硬偏移阴影(嵌在小卡片里时用) */
+  noShadow?: boolean;
+  /** 面板上叠扫描线氛围 */
+  scan?: boolean;
 }
 
-/** 圆角面板,返回 Graphics 便于调用方取 .node 定位/挂子节点 */
+/** 街机面板:硬偏移阴影 + 渐变底 + 描边 + 内高光(老 .panel 的贴纸感) */
 export function uiPanel(parent: Node, w: number, h: number, opts: PanelOpts = {}): Graphics {
   const n = new Node("panel");
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(w, h);
   const g = n.addComponent(Graphics);
-  g.fillColor = col(opts.bg ?? PAL.panel, opts.bgAlpha ?? 0.97);
-  g.strokeColor = col(opts.stroke ?? PAL.line, opts.strokeAlpha ?? 0.18);
-  g.lineWidth = 2;
-  g.roundRect(-w / 2, -h / 2, w, h, opts.r ?? 14);
-  g.fill();
-  g.stroke();
+  if (!opts.noShadow) drawHardShadow(g, w, h, opts.r ?? 14, 6, 6, 0.55);
+  drawArcadePanel(g, w, h, opts.r ?? 14);
+  if (opts.scan) drawScanlines(g, w, h, 0.07);
   n.setParent(parent);
   return g;
 }
@@ -162,9 +170,27 @@ export function uiDim(parent: Node, alpha: number): Node {
   w.isAlignRight = true; w.right = 0;
   const g = n.addComponent(Graphics);
   g.fillColor = col(PAL.ink, alpha);
-  g.rect(-CFG.world.w / 2, -CFG.world.h / 2, CFG.world.w, CFG.world.h);
+  // 覆盖足够广阔区域(4000x2000)，确保在超长宽屏/带鱼屏下遮罩毫无死角
+  g.rect(-2000, -1000, 4000, 2000);
   g.fill();
   n.addComponent(BlockInputEvents);
+  n.setParent(parent);
+  return n;
+}
+
+/** 全屏氛围层:扫描线 + 暗角(菜单/结算等整屏场景用,压在遮罩上、内容下) */
+export function uiAtmosphere(parent: Node): Node {
+  const n = new Node("atmosphere");
+  n.layer = Layers.Enum.UI_2D;
+  n.addComponent(UITransform).setContentSize(CFG.world.w, CFG.world.h);
+  const w = n.addComponent(Widget);
+  w.isAlignTop = true; w.top = 0;
+  w.isAlignBottom = true; w.bottom = 0;
+  w.isAlignLeft = true; w.left = 0;
+  w.isAlignRight = true; w.right = 0;
+  const g = n.addComponent(Graphics);
+  drawScanlines(g, CFG.world.w, CFG.world.h, 0.12);
+  drawVignette(g, CFG.world.w, CFG.world.h, 10, 0.28);
   n.setParent(parent);
   return n;
 }
@@ -193,6 +219,8 @@ export interface UiKit {
   panel: typeof uiPanel;
   dim: typeof uiDim;
   root: typeof uiRoot;
+  /** 扫描线 + 暗角氛围层(整屏弹窗用) */
+  atmosphere: typeof uiAtmosphere;
   toast(msg: string): void;
   toggleMute(): boolean;
   readonly muted: boolean;
@@ -445,12 +473,18 @@ export class UIManager extends Component {
       n.addComponent(UITransform).setContentSize(340, 42);
       n.setPosition(0, 150, 0);
       const g = n.addComponent(Graphics);
-      g.fillColor = col(PAL.panel, 0.95);
-      g.strokeColor = col(PAL.accent, 0.5);
-      g.lineWidth = 2;
-      g.roundRect(-170, -21, 340, 42, 21);
+      drawHardShadow(g, 340, 42, 8, 3, 3, 0.5);
+      g.fillColor = col(PAL.panel, 0.96);
+      g.roundRect(-170, -21, 340, 42, 8);
       g.fill();
+      g.strokeColor = col(PAL.line, 0.2);
+      g.lineWidth = 2;
+      g.roundRect(-170, -21, 340, 42, 8);
       g.stroke();
+      // 左侧荧光黄竖条:老项目 reward-line / tag 的点题小色块
+      g.fillColor = col(PAL.accent, 0.9);
+      g.roundRect(-170, -21, 6, 42, 3);
+      g.fill();
       this.toastLabel = uiLabel(n, "", 15, PAL.text);
       n.addComponent(UIOpacity);
       n.setParent(this.node);
@@ -515,6 +549,7 @@ export class UIManager extends Component {
       panel: uiPanel,
       dim: uiDim,
       root: uiRoot,
+      atmosphere: uiAtmosphere,
       toast: (m) => this.toast(m),
       toggleMute: () => this.toggleMute(),
       get muted() { return !!load("muted", false); },

@@ -3,7 +3,9 @@
   "general": {
     "designResolution": {
       "width": 960,
-      "height": 540
+      "height": 540,
+      "fitWidth": false,
+      "fitHeight": true
     }
   },
   "fbx": {

@@ -2,30 +2,25 @@
 // 触屏虚拟按键:左下「左移/右移(双击跨步)」,右下「跳/深球/短球」。
 // 和键盘映射同一套 Pad 动作语义;按钮节点由本模块程序化生成,
 // 编辑器里不用摆任何东西。多指同时按不同键靠 Cocos 的节点级触摸分发。
+//
+// 屏幕自适应与安全区防遮挡设计:
+// 1. 左侧移动簇(左/右)通过 Widget 吸附屏幕左下角,避让刘海/打孔。
+// 2. 右侧击球簇(跳/短球/深球)通过 Widget 吸附屏幕右下角。
+// 3. 底部留出安全边距,避免沉底或触发全面屏系统手势。
 // ============================================================
-import { Color, Graphics, Label, Layers, Node, UITransform, Widget } from "cc";
+import { Color, Graphics, Label, Layers, Node, UITransform, Widget, sys, view } from "cc";
 import { Pad, press, release } from "./pad";
 
 interface BtnSpec {
   action: "left" | "right" | "jump" | "swingFar" | "swingNear";
   text: string;
-  x: number; y: number;      // 屏幕坐标(设计分辨率 960×540,原点居中)
+  x: number; y: number;      // 相对于各自控制簇的局部坐标
   r: number;
 }
 
-// 布局:左下移动簇(左右双击触发跨步),右下击球簇。跳键最大(使用频率最高),击球两键左右并排
-// 世界画面整体抬高 view.offsetY 后,地面线在 y=-150:按键全部收进下方按键带,不压任何角色
-const SPECS: BtnSpec[] = [
-  { action: "left",      text: "左",   x: -345, y: -205, r: 44 },
-  { action: "right",     text: "右",   x: -235, y: -205, r: 44 },
-  { action: "jump",      text: "跳",   x: 400,  y: -140, r: 48 },  // 略高于地面线,但横向不与任何角色重叠
-  { action: "swingNear", text: "短球", x: 295,  y: -230, r: 38 },
-  { action: "swingFar",  text: "深球", x: 400,  y: -230, r: 38 },
-];
-
 const RELEASE_ACTIONS: Array<BtnSpec["action"]> = ["left", "right", "jump"];
 
-function makeButton(spec: BtnSpec, root: Node, pad: Pad): void {
+function makeButton(spec: BtnSpec, root: Node, pad: Pad): Node {
   const node = new Node(`btn-${spec.action}`);
   node.layer = Layers.Enum.UI_2D;
   node.addComponent(UITransform).setContentSize(spec.r * 2, spec.r * 2);
@@ -73,19 +68,81 @@ function makeButton(spec: BtnSpec, root: Node, pad: Pad): void {
     setActive(false);
     if ((RELEASE_ACTIONS as string[]).includes(spec.action)) release(pad, spec.action as "left");
   });
+
+  return node;
 }
 
 export function buildTouchPad(root: Node, pad: Pad): Node {
   const layer = new Node("touchpad");
   layer.layer = Layers.Enum.UI_2D;
   layer.addComponent(UITransform);
-  // 吸到屏幕底部:不随镜头震动,真机上横竖屏适配也稳
-  const widget = layer.addComponent(Widget);
-  widget.isAlignTop = true; widget.top = 0;
-  widget.isAlignBottom = true; widget.bottom = 0;
-  widget.isAlignLeft = true; widget.left = 0;
-  widget.isAlignRight = true; widget.right = 0;
+
+  // 全屏自适应容器
+  const layerWidget = layer.addComponent(Widget);
+  layerWidget.isAlignTop = true; layerWidget.top = 0;
+  layerWidget.isAlignBottom = true; layerWidget.bottom = 0;
+  layerWidget.isAlignLeft = true; layerWidget.left = 0;
+  layerWidget.isAlignRight = true; layerWidget.right = 0;
   layer.setParent(root);
-  for (const spec of SPECS) makeButton(spec, layer, pad);
+
+  // 获取设备安全边距(防打孔屏/刘海屏及底部全面屏横条)
+  let safeLeft = 28;
+  let safeRight = 28;
+  let safeBottom = 20;
+  try {
+    const safeRect = sys.getSafeAreaRect();
+    const visSize = view.getVisibleSize();
+    if (safeRect && visSize.width > 0) {
+      if (safeRect.x > 0) safeLeft = Math.max(safeLeft, safeRect.x + 8);
+      const rightMargin = visSize.width - (safeRect.x + safeRect.width);
+      if (rightMargin > 0) safeRight = Math.max(safeRight, rightMargin + 8);
+      if (safeRect.y > 0) safeBottom = Math.max(safeBottom, safeRect.y + 4);
+    }
+  } catch {
+    // 兜底使用默认安全留白
+  }
+
+  // 1. 左侧移动簇(「左」「右」)
+  const leftCluster = new Node("cluster-left");
+  leftCluster.layer = Layers.Enum.UI_2D;
+  const leftTrans = leftCluster.addComponent(UITransform);
+  leftTrans.setAnchorPoint(0, 0); // 以左下角为锚点
+  leftTrans.setContentSize(220, 100);
+  leftCluster.setParent(layer);
+
+  const leftWidget = leftCluster.addComponent(Widget);
+  leftWidget.isAlignLeft = true;
+  leftWidget.left = safeLeft;
+  leftWidget.isAlignBottom = true;
+  leftWidget.bottom = safeBottom;
+  leftWidget.updateAlignment();
+
+  // 左按钮(r=44)中心在(50, 50)，右按钮(r=44)中心在(155, 50)
+  makeButton({ action: "left",  text: "左", x: 50,  y: 50, r: 44 }, leftCluster, pad);
+  makeButton({ action: "right", text: "右", x: 155, y: 50, r: 44 }, leftCluster, pad);
+
+  // 2. 右侧击球簇(「短球」「深球」「跳」)
+  const rightCluster = new Node("cluster-right");
+  rightCluster.layer = Layers.Enum.UI_2D;
+  const rightTrans = rightCluster.addComponent(UITransform);
+  rightTrans.setAnchorPoint(1, 0); // 以右下角为锚点
+  rightTrans.setContentSize(230, 200);
+  rightCluster.setParent(layer);
+
+  const rightWidget = rightCluster.addComponent(Widget);
+  rightWidget.isAlignRight = true;
+  rightWidget.right = safeRight;
+  rightWidget.isAlignBottom = true;
+  rightWidget.bottom = safeBottom;
+  rightWidget.updateAlignment();
+
+  // 在右簇中(锚点是(1, 0)，原点在右下角，局部坐标 x 向左为负，y 向上为正):
+  // 深球(r=38): x = -48, y = 48
+  // 短球(r=38): x = -146, y = 48
+  // 跳(r=48): x = -60, y = 142 (略偏上方，大拇指最顺手)
+  makeButton({ action: "swingFar",  text: "深球", x: -48,  y: 48,  r: 38 }, rightCluster, pad);
+  makeButton({ action: "swingNear", text: "短球", x: -146, y: 48,  r: 38 }, rightCluster, pad);
+  makeButton({ action: "jump",      text: "跳",   x: -60,  y: 142, r: 48 }, rightCluster, pad);
+
   return layer;
 }

@@ -5,7 +5,7 @@
 // 经验条:从结算前快照滚到结算后档位,跨级时分段填充并逐级闪「Lv.X」;
 // 满级静态显示 MAX(经济曲线只有一份,动画只负责演)。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, Vec3 } from "cc";
+import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, Vec2, Vec3 } from "cc";
 import { CFG } from "../core/config";
 import { Career } from "../core/career";
 import type { SettleResult } from "../core/career";
@@ -61,18 +61,26 @@ export class SettlePanel {
     this.cMax.fromHEX(P.dim);
 
     kit.dim(this.root, 0.78);
+    kit.atmosphere(this.root);
 
-    const card = kit.panel(this.root, 540, 436, { r: 18, bg: P.panel, bgAlpha: 0.97, stroke: P.accent, strokeAlpha: 0.5 });
+    const card = kit.panel(this.root, 540, 436, { r: 18 });
     this.card = card.node;
     this.card.setPosition(0, 2, 0);
     this.cardOp = this.card.addComponent(UIOpacity);
 
-    this.verdict = kit.label(this.card, "", 48, P.accent, { outline: P.ink, outlineW: 4 });
+    this.verdict = kit.label(this.card, "", 48, P.accent, { outline: P.ink, outlineW: 3 });
     this.verdict.node.setPosition(0, 158, 0);
+    this.verdict.enableShadow = true;
+    this.verdict.shadowColor = new Color(0, 0, 0, 140);
+    this.verdict.shadowOffset = new Vec2(0, -6);
     this.sub = kit.label(this.card, "", 17, P.text);
     this.sub.node.setPosition(0, 118, 0);
-    this.score = kit.label(this.card, "", 36, P.text, { outline: P.ink, outlineW: 2 });
+    this.score = kit.label(this.card, "", 36, P.text);
     this.score.node.setPosition(0, 74, 0);
+    this.score.node.angle = 7;   // 老 .final 的斜切数字
+    this.score.enableShadow = true;
+    this.score.shadowColor = new Color(0, 0, 0, 128);
+    this.score.shadowOffset = new Vec2(0, -4);
 
     // ---------- 奖励结算卡 ----------
     this.coinLine = kit.label(this.card, "", 19, P.accent);
@@ -131,9 +139,9 @@ export class SettlePanel {
     const match = p.kind === "match";
     const won = p.won;
 
-    // 大标语:胜金败灰蓝;训练用中文,语气也不同
+    // 大标语:胜金败灰;训练用中文,语气也不同(老 .verdict / .verdict.lose)
     this.verdict.string = match ? (won ? "VICTORY!" : "DEFEAT") : (won ? "训练完成!" : "再接再厉");
-    this.verdict.color = col(won ? P.accent : "#9fb0d8");
+    this.verdict.color = col(won ? P.accent : P.dim);
     this.sub.string = match
       ? (won ? "你赢了" : "CPU 获胜")
       : (p.drill ? `${p.drill.def ? p.drill.def.label : ""} ${stars(p.drill.stars)}` : "");
@@ -286,7 +294,7 @@ export class SettlePanel {
     this.drawBar(Math.min(1, prof.exp / Career.expNeed(prof.level)));
   }
 
-  /** 填充条逐帧重绘((Graphics)为保留型画布,先 clear 再画) */
+  /** 填充条逐帧重绘((Graphics)为保留型画布,先 clear 再画);顶缘加一道高光 */
   private drawBar(ratio: number): void {
     const g = this.barFill;
     g.clear();
@@ -296,6 +304,10 @@ export class SettlePanel {
     const w = Math.max(14, BAR_W * r);
     g.fillColor = col(this.kit.pal.accent);
     g.roundRect(-BAR_W / 2, -7, w, 14, 7);
+    g.fill();
+    // 亮头(老 .exp-bar i 的 linear-gradient 提亮)
+    g.fillColor = col("#fff0a0", 0.9);
+    g.roundRect(-BAR_W / 2, 3, w, 4, 2);
     g.fill();
   }
 

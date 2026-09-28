@@ -4,12 +4,13 @@
 // 2p / 2v2 的 MENU 条目不渲染不引用,面板上不存在这两个入口。
 // 专项训练的关卡选择内嵌为菜单第二页,不另开文件。
 // ============================================================
-import { BlockInputEvents, Button, Graphics, Label, Node } from "cc";
+import { BlockInputEvents, Button, Color, Graphics, Label, Node, tween, UITransform, Vec2 } from "cc";
 import { DRILLS, menuForPlatform } from "../core/config";
 import { Career } from "../core/career";
 import type { DiffKey, DrillDef } from "../core/types";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
+import { ARCADE, drawArcadeButton, drawHardShadow, floatLoop, makeChip, riseIn, stopLoops } from "./ui-arcade";
 import { APP_VERSION_NAME } from "../core/version";
 import { UpdateService } from "../core/update-service";
 
@@ -26,6 +27,9 @@ export class MainMenu {
   private coinLabel: Label;
   private drillStarLabels: Array<{ label: Label; id: string }> = [];
   private checkedStartup = false;
+  /** rise 入场的节点队列(节点,延迟):show 时逐级展开 */
+  private riseNodes: Array<{ node: Node; delay: number }> = [];
+  private titleNode: Node | null = null;
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -35,44 +39,81 @@ export class MainMenu {
 
     // 暗底:球场隐约可见(0.9,保留一点"场馆在身后"的氛围);BlockInputEvents 挡穿透
     kit.dim(this.root, 0.9);
+    // 扫描线 + 暗角:老 #scan / .grain 的街机厅氛围
+    kit.atmosphere(this.root);
 
     // ---------- 顶部常驻:等级 / 金币(练完关卡、买完东西立刻跟手) ----------
-    this.pill(-392, 246, 118);
-    this.lvLabel = kit.label(this.root, "Lv.1", 16, P.text);
-    this.lvLabel.node.setPosition(-392, 246, 0);
-    this.pill(386, 246, 148);
-    this.coinLabel = kit.label(this.root, "🪙 0", 16, P.accent);
-    this.coinLabel.node.setPosition(386, 246, 0);
+    const lvBadge = this.badge(-392, 246, 118, "primary");
+    this.lvLabel = kit.label(lvBadge, "Lv.1", 16, "#14100a");
+    this.lvLabel.node.setPosition(0, -3, 0);
+    const coinBadge = this.badge(386, 246, 148, "ghost");
+    this.coinLabel = kit.label(coinBadge, "🪙 0", 16, P.accent);
+    this.coinLabel.node.setPosition(0, -2, 0);
+    this.riseNodes.push({ node: lvBadge, delay: 0.0 }, { node: coinBadge, delay: 0.04 });
 
-    // ---------- 像素风标题 ----------
-    const title = kit.label(this.root, "嘟嘟羽毛球", 54, P.accent, { outline: P.ink, outlineW: 5 });
-    title.node.setPosition(0, 192, 0);
-    // cc Label 无字距,手插空格做英文字距(系统字体下等效)
-    const sub = kit.label(this.root, "D U D U   B A D M I N T O N", 15, P.cyan, { outline: P.ink, outlineW: 1 });
-    sub.node.setPosition(0, 148, 0);
-    // 标题下的像素装饰条:主条 + 两端小方块,呼应像素题字
-    const barG = new Node("title-bar");
-    barG.layer = this.root.layer;
-    const bar = barG.addComponent(Graphics);
-    bar.fillColor = col(P.accent, 0.9);
-    bar.fillRect(-110, -3, 220, 6);
-    bar.fillRect(-130, -2, 12, 4);
-    bar.fillRect(118, -2, 12, 4);
-    barG.setParent(this.root);
-    barG.setPosition(0, 128, 0);
+    // ---------- 街机海报标题区(老 .hero:kicker → 标题 → 副题 → 横线) ----------
+    const kicker = makeChip(this.root, "ARCADE BADMINTON", 10);
+    kicker.setPosition(0, 226, 0);
+    this.riseNodes.push({ node: kicker, delay: 0.05 });
 
-    // ---------- 单人三难度(menuForPlatform 已按 mobileOnly 裁剪) ----------
+    // 主标题:「嘟嘟」荧光黄 +「羽毛球」暖纸白,双层 text-shadow 硬阴影
+    const t1 = kit.label(this.root, "嘟嘟", 54, P.accent);
+    t1.node.setPosition(-84, 188, 0);
+    const t2 = kit.label(this.root, "羽毛球", 54, P.text);
+    t2.node.setPosition(66, 188, 0);
+    for (const t of [t1, t2]) {
+      t.enableShadow = true;
+      t.shadowColor = new Color(0, 0, 0, 140);
+      t.shadowOffset = new Vec2(0, -6);
+      this.riseNodes.push({ node: t.node, delay: 0.1 });
+    }
+    this.titleNode = t1.node;
+    stopLoops(t2.node); // 浮动只挂在一个节点上,两个都停过再启
+
+    const sub = kit.label(this.root, "D U D U   B A D M I N T O N", 13, P.dim, { outline: P.ink, outlineW: 1 });
+    sub.node.setPosition(0, 150, 0);
+    this.riseNodes.push({ node: sub.node, delay: 0.16 });
+
+    // hero-rule:左右渐隐横线 + 中央点题(老 .hero-rule)
+    const rule = new Node("hero-rule");
+    rule.layer = this.root.layer;
+    const rg = rule.addComponent(Graphics);
+    for (let i = 0; i < 4; i++) {
+      rg.fillColor = col(ARCADE.line, 0.12 + i * 0.1);
+      rg.rect(-160 + i * 26, -1, 30, 2);
+      rg.rect(130 - i * 26, -1, 30, 2);
+    }
+    rg.fill();
+    rule.setParent(this.root);
+    rule.setPosition(0, 128, 0);
+    const ruleText = kit.label(rule, "黄昏体育馆 · 街机赛事", 11, P.accent);
+    ruleText.node.setPosition(0, 0, 0);
+    this.riseNodes.push({ node: rule, delay: 0.2 });
+
+    // ---------- 单人三难度(menuForPlatform 已按 mobileOnly 裁剪,卡片化排版) ----------
     const entries = menuForPlatform();
     entries.forEach((m, i) => {
       const y = 74 - i * 72;
-      const b = kit.button(this.root, "", 410, 62, { bg: P.panelLight, stroke: P.line, strokeAlpha: 0.25 });
+      const b = kit.button(this.root, "", 440, 62, { bg: P.panelLight });
       b.setPosition(0, y, 0);
-      kit.label(b, `${CN_DIFF[m.diff ?? "normal"]}  ${m.tag}`, 21, P.accent).node.setPosition(0, 11, 0);
-      kit.label(b, m.desc, 12, P.dim).node.setPosition(0, -14, 0);
+      // 左对齐排版:固定宽 + CLAMP,文字贴卡片左缘(老 .mode 的左齐卡片)
+      const name = kit.label(b, CN_DIFF[m.diff ?? "normal"], 21, P.accent);
+      name.horizontalAlign = Label.HorizontalAlign.LEFT;
+      name.overflow = Label.Overflow.CLAMP;
+      name.node.getComponent(UITransform)!.setContentSize(280, 26);
+      name.node.setPosition(-80, 11, 0);
+      const desc = kit.label(b, m.desc, 12, P.dim);
+      desc.horizontalAlign = Label.HorizontalAlign.LEFT;
+      desc.overflow = Label.Overflow.CLAMP;
+      desc.node.getComponent(UITransform)!.setContentSize(280, 16);
+      desc.node.setPosition(-80, -14, 0);
+      const chip = makeChip(b, m.tag, 9);
+      chip.setPosition(178, 14, 0);
       b.on(Button.EventType.CLICK, () => {
         kit.sfx.play("ui");
         kit.startMatch(m.diff as DiffKey);
       });
+      this.riseNodes.push({ node: b, delay: 0.26 + i * 0.07 });
     });
 
     // ---------- 功能入口 ----------
@@ -94,14 +135,11 @@ export class MainMenu {
         kit.sfx.play("ui");
         f.onClick();
       });
+      this.riseNodes.push({ node: b, delay: 0.48 + i * 0.06 });
     });
 
     // ---------- 底部版本号与更新检查入口 ----------
     const verBtn = kit.button(this.root, `${APP_VERSION_NAME} 检查更新`, 168, 32, {
-      bg: P.panelLight,
-      bgAlpha: 0.65,
-      stroke: P.line,
-      strokeAlpha: 0.2,
       size: 13,
       fg: P.dim,
     });
@@ -122,25 +160,23 @@ export class MainMenu {
         kit.toast("网络连接失败，请稍后重试");
       }
     });
+    this.riseNodes.push({ node: verBtn, delay: 0.62 });
 
     // ---------- 第二页:专项训练选关 ----------
     this.drillPage = this.buildDrillPage();
     this.drillPage.active = false;
   }
 
-  /** 小胶囊底(等级/金币的字底) */
-  private pill(x: number, y: number, w: number): void {
-    const n = new Node("pill");
+  /** 顶部徽章:primary = 荧光黄厚底(Lv),ghost = 浮起(金币) */
+  private badge(x: number, y: number, w: number, style: "primary" | "ghost"): Node {
+    const n = new Node(`badge-${style}`);
     n.layer = this.root.layer;
     const g = n.addComponent(Graphics);
-    g.fillColor = col(this.kit.pal.panelLight, 0.85);
-    g.strokeColor = col(this.kit.pal.line, 0.22);
-    g.lineWidth = 2;
-    g.roundRect(-w / 2, -17, w, 34, 17);
-    g.fill();
-    g.stroke();
+    drawHardShadow(g, w, 34, 8, 3, 3, 0.5);
+    drawArcadeButton(g, w, 34, style, 8);
     n.setParent(this.root);
     n.setPosition(x, y, 0);
+    return n;
   }
 
   /** 训练选关页:半透明衬底盖住第一页 + 2×3 关卡格 + 返回键 */
@@ -193,6 +229,14 @@ export class MainMenu {
     this.root.active = true;
     this.drillPage.active = false;   // 每次回菜单都落在第一页
     this.refresh();
+
+    // 街机海报式入场:kicker → 标题 → 副题 → 横线 → 卡片逐级 rise
+    for (const r of this.riseNodes) riseIn(r.node, r.delay);
+    // 标题浮动等 rise 落位后再起(floatLoop 会停掉同一节点的位移动画)
+    if (this.titleNode) {
+      const tn = this.titleNode;
+      tween(tn).delay(0.8).call(() => { if (tn.isValid && this.root.active) floatLoop(tn, 3, 1.6); }).start();
+    }
 
     // 冷启动静默检测(节流 24 小时)
     if (!this.checkedStartup && UpdateService.instance.shouldRunStartupCheck()) {

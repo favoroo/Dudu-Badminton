@@ -10,8 +10,8 @@
       "inBundle": false
     }
   ],
-  "debug": true,
-  "sourceMaps": true,
+  "debug": false,
+  "sourceMaps": false,
   "packages": {
     "android": {
       "packageName": "com.dudu.badminton",

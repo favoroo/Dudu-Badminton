@@ -3,14 +3,16 @@
 // 遮罩带 BlockInputEvents 且 ui-root 整体在虚拟按键之上(决策②):
 // 暂停期间右下的「跳/深球/短球」触摸不会透进世界。
 // ============================================================
-import { Button, Label, Node } from "cc";
+import { Button, Color, Label, Node, Vec2 } from "cc";
 import { Rules } from "../core/rules";
 import type { UiKit } from "./ui-manager";
+import { slamIn } from "./ui-arcade";
 
 export class PausePanel {
   readonly root: Node;
   private kit: UiKit;
   private soundLabel: Label;
+  private card: Node;
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -19,10 +21,16 @@ export class PausePanel {
     this.root.active = false;
 
     kit.dim(this.root, 0.62);
+    kit.atmosphere(this.root);
 
-    const card = kit.panel(this.root, 380, 340, { r: 16, bg: P.panel, bgAlpha: 0.97, stroke: P.accent, strokeAlpha: 0.45 });
+    const card = kit.panel(this.root, 380, 340, { r: 16 });
+    this.card = card.node;
     card.node.setPosition(0, 6, 0);
-    kit.label(card.node, "已暂停", 26, P.accent).node.setPosition(0, 118, 0);
+    const title = kit.label(card.node, "已暂停", 26, P.accent);
+    title.node.setPosition(0, 118, 0);
+    title.enableShadow = true;
+    title.shadowColor = new Color(0, 0, 0, 130);
+    title.shadowOffset = new Vec2(0, -4);
     kit.label(card.node, "P A U S E D", 12, P.dim).node.setPosition(0, 92, 0);
 
     const mk = (text: string, y: number, accent: boolean): Node => {
@@ -51,5 +59,6 @@ export class PausePanel {
   show(): void {
     this.soundLabel.string = `音效:${this.kit.muted ? "关" : "开"}`;
     this.root.active = true;
+    slamIn(this.card);   // 老 .panel 的 slam 砸落
   }
 }

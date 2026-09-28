@@ -5,6 +5,9 @@
   "creator": {
     "version": "3.8.8"
   },
+  "scripts": {
+    "preview": "python3 -m http.server 8899 --bind 127.0.0.1 --directory build/web-mobile"
+  },
   "devDependencies": {
     "@types/node": "^22.20.4",
     "typescript": "^5.5.4"

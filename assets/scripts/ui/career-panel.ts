@@ -13,6 +13,7 @@ import { Ball, Player, SkinDef, SkinKind, Theme } from "../core/types";
 import { drawPlayer, drawShuttle, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
+import { drawHardShadow, slamIn } from "./ui-arcade";
 
 const { ccclass } = _decorator;
 
@@ -40,26 +41,27 @@ const PW = 880, PH = 470;
 const CARD_W = 96, CARD_H = 130, GAP = 8;
 const GRID_W = 520, PREVIEW_W = 320, CONTENT_H = 330;
 
-// 配色
+// 配色(对齐老 base.css 的街机令牌:acid 荧光黄 + 暖纸白 + navy)
 const COL = {
-  panelBg: new Color(18, 22, 35, 242),
-  cardBg: new Color(30, 36, 52, 230),
-  cardSel: new Color(0, 113, 227, 255),
-  cardEquip: new Color(25, 60, 45, 230),
-  cardLock: new Color(25, 28, 38, 180),
-  tabBg: new Color(35, 40, 55, 200),
-  tabSel: new Color(0, 113, 227, 230),
-  accent: new Color(0, 113, 227, 255),
-  gold: new Color(255, 210, 60, 255),
-  hot: new Color(255, 90, 80, 255),
-  cyan: new Color(80, 220, 230, 255),
-  green: new Color(60, 210, 130, 255),
-  white: new Color(240, 244, 255, 255),
-  dimWhite: new Color(200, 210, 230, 180),
-  dimGray: new Color(120, 130, 150, 160),
-  overlay: new Color(0, 0, 0, 155),
-  expBg: new Color(40, 45, 60, 200),
-  expFill: new Color(0, 180, 120, 255),
+  panelBg: new Color(14, 20, 40, 246),        // --navy
+  cardBg: new Color(24, 33, 66, 235),         // --navy-2
+  cardSel: new Color(255, 225, 77, 255),      // --acid 选中描边
+  cardSelBg: new Color(255, 225, 77, 26),     // 选中卡内的 acid 薄染
+  cardEquip: new Color(21, 56, 42, 235),
+  cardLock: new Color(16, 19, 30, 190),
+  tabBg: new Color(255, 255, 255, 13),        // 白 5%
+  tabSel: new Color(255, 225, 77, 255),       // acid 芯片
+  accent: new Color(255, 225, 77, 255),
+  gold: new Color(255, 225, 77, 255),
+  hot: new Color(255, 106, 31, 255),
+  cyan: new Color(0, 240, 255, 255),
+  green: new Color(125, 255, 158, 255),       // --good
+  white: new Color(245, 239, 225, 255),       // --paper 暖纸白
+  dimWhite: new Color(159, 176, 216, 200),
+  dimGray: new Color(111, 124, 166, 190),
+  overlay: new Color(5, 7, 15, 175),          // --ink
+  expBg: new Color(255, 255, 255, 23),
+  expFill: new Color(184, 255, 94, 255),      // 老 .exp-bar 的青柠→acid 渐变主色
 };
 
 // ---------- UI 辅助 ----------
@@ -166,12 +168,14 @@ export class CareerPanel extends Component {
     this._sel = 0;
     this._buildAll(parent);
     this._refresh();
+    if (this._panelNode) slamIn(this._panelNode);   // 老 .panel slam 砸落
     input.on(Input.EventType.KEY_DOWN, this._onKey, this);
   }
 
   /** 销毁面板 */
   hide() {
     this._onCloseCb = null;
+    this._panelNode = null;
     // 简单隐藏:将 root 节点从父节点移除
     if (this.root) {
       this.root.removeFromParent();
@@ -202,6 +206,7 @@ export class CareerPanel extends Component {
   // ---------- 内部状态 ----------
 
   private root: Node | null = null;
+  private _panelNode: Node | null = null;
   private _onCloseCb: (() => void) | null = null;
   private _kind: SkinKind | "stats" = "player";
   private _sel = 0;
@@ -243,11 +248,13 @@ export class CareerPanel extends Component {
     og.rect(-480, -270, 960, 540);
     og.fill();
 
-    // 面板背景
+    // 面板背景(硬偏移阴影 + navy 底:老 .panel 的贴纸感)
     const panel = mkNode("panel", this.root, PW, PH);
     panel.setPosition(0, -10, 0);
+    this._panelNode = panel;
     const pg = panel.addComponent(Graphics);
-    drawRR(pg, PW, PH, 16, COL.panelBg, new Color(60, 70, 90, 120), 1.5);
+    drawHardShadow(pg, PW, PH, 16, 6, 6, 0.55);
+    drawRR(pg, PW, PH, 16, COL.panelBg, new Color(245, 239, 225, 36), 1.5);
 
     this._buildTopBar(panel);
     this._buildTabBar(panel);
@@ -409,12 +416,14 @@ export class CareerPanel extends Component {
       card.setPosition(x, y, 0);
 
       const g = card.addComponent(Graphics);
+      const sel = i === this._sel;
       const borderCol = equipped ? COL.green
-        : i === this._sel ? COL.cardSel
+        : sel ? COL.cardSel
           : locked ? new Color(40, 44, 55, 100)
             : new Color(50, 58, 78, 140);
       const bgCol = equipped ? COL.cardEquip : COL.cardBg;
-      drawRR(g, CARD_W, CARD_H, 8, bgCol, borderCol, i === this._sel ? 2.5 : 1.5);
+      if (sel) drawHardShadow(g, CARD_W, CARD_H, 8, 4, 4, 0.5);   // 选中卡浮起(老 .skin-card.sel)
+      drawRR(g, CARD_W, CARD_H, 8, bgCol, borderCol, sel ? 2.5 : 1.5);
 
       // 缩略图区域
       const thumbW = 64, thumbH = 76;
@@ -725,12 +734,12 @@ export class CareerPanel extends Component {
     // 金币
     this._coinsLabel.string = `🪙 ${p.coins}`;
 
-    // Tab 高亮
+    // Tab 高亮(acid 芯片 + 深字:老 .shop-tab.sel)
     this._tabGraphics.forEach((tab, i) => {
       const active = KIND_ALL[i] === this._kind;
       tab.g.clear();
       drawRR(tab.g, tab.ut.contentSize.width, tab.ut.contentSize.height, 8, active ? COL.tabSel : COL.tabBg);
-      tab.l.color = active ? COL.white : COL.dimWhite;
+      tab.l.color = active ? new Color(20, 16, 10, 255) : COL.dimWhite;
     });
 
     // 内容区

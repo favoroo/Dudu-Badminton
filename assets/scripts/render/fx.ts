@@ -231,35 +231,27 @@ export class FXSystem {
     }
   }
 
-  /** 落地扬尘 + 光环 + 冲击波 + 落点标记 */
+  /** 落地扬尘 + 落点标记(去除花哨的扩散光圈与冲击波波纹) */
   land(lx: number, ly: number, inCourt: boolean): void {
     const col = inCourt ? COL_GREEN_L : COL_RED;
     const groundY = CO.groundY;
 
     if (inCourt) {
-      // --- 场内:完整效果(含冲击波) ---
-      // 扬尘:主色 + 橙色
-      this._dust(lx, groundY, 22, COL_GOLD,  4.2);
-      this._dust(lx, groundY, 14, COL_ORANGE, 3.2);
-
-      // 2 道扁平环
-      this._ring(lx, groundY, 4, 64, 22, 3.5, col, true);
-      this._ring(lx, groundY, 8, 96, 28, 2.2, COL_ORANGE, true);
-
-      // 2 道冲击波(主波 + 延迟副波)
-      const maxR = C.fx.shockwaveMaxR  || 80;
-      const spd  = C.fx.shockwaveSpeed || 5.5;
-      const life = C.fx.shockwaveLife  || 18;
-      this._shockwave(lx, groundY, 6, maxR, spd,        life,      3.5, COL_GOLD,   0);
-      this._shockwave(lx, groundY, 6, maxR * 1.4, spd * 0.72, life + 4, 2.2, COL_ORANGE, 4);
+      // 场内自然落地扬尘
+      this._dust(lx, groundY, 14, COL_GOLD, 3.0);
+      this._dust(lx, groundY, 8, COL_WHITE, 2.0);
     } else {
-      // --- 场外:精简效果 ---
-      this._dust(lx, groundY, 8, col, 1.8);
-      this._ring(lx, groundY, 3, 26, 18, 2, col, true);
+      // 场外微弱扬尘
+      this._dust(lx, groundY, 6, col, 1.6);
     }
 
     // 落点标记
     this._mark(lx, inCourt);
+  }
+
+  /** 人物跑动落脚轻微扬尘(自然微粒，无任何光圈波纹) */
+  stepDust(x: number, y: number): void {
+    this._dust(x, y, 3, COL_WHITE, 1.2);
   }
 
   /** 羽毛飘落:count 片白羽从 (x,y) 散落,重力+风阻+湍流 */

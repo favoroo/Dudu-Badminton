@@ -12,6 +12,7 @@ import { CFG, DRILLS } from "../core/config";
 import { DrillDef } from "../core/types";
 import { DrillResult } from "../core/drill";
 import * as DrillAnim from "../render/drill-anim";
+import { drawHardShadow, slamIn } from "./ui-arcade";
 
 // ---------- 布局(设计分辨率 960×540) ----------
 
@@ -25,27 +26,30 @@ const GRID_COLS = 2;
 const ANIM_W = 470, ANIM_H = 300;
 const INFO_W = PW - ANIM_W - 40;
 
-// 配色(与 career-panel 同源)
+// 配色(与 career-panel 同源:对齐老 base.css 街机令牌)
 const COL = {
-  panelBg: new Color(18, 22, 35, 242),
-  cardBg: new Color(30, 36, 52, 230),
-  cardSel: new Color(0, 113, 227, 255),
-  cardDone: new Color(25, 60, 45, 230),
-  accent: new Color(0, 113, 227, 255),
-  gold: new Color(255, 210, 60, 255),
-  hot: new Color(255, 90, 80, 255),
-  cyan: new Color(80, 220, 230, 255),
-  green: new Color(60, 210, 130, 255),
-  white: new Color(240, 244, 255, 255),
-  dimWhite: new Color(200, 210, 230, 180),
-  dimGray: new Color(120, 130, 150, 160),
-  overlay: new Color(0, 0, 0, 155),
-  starOn: new Color(255, 210, 60, 255),
-  starOff: new Color(60, 65, 80, 160),
-  btnPrimary: new Color(0, 113, 227, 255),
-  btnGhost: new Color(50, 56, 72, 200),
-  btnDanger: new Color(180, 50, 50, 200),
+  panelBg: new Color(14, 20, 40, 246),        // --navy
+  cardBg: new Color(24, 33, 66, 235),         // --navy-2
+  cardSel: new Color(255, 225, 77, 255),      // --acid
+  cardDone: new Color(21, 56, 42, 235),
+  accent: new Color(255, 225, 77, 255),
+  gold: new Color(255, 225, 77, 255),
+  hot: new Color(255, 106, 31, 255),
+  cyan: new Color(0, 240, 255, 255),
+  green: new Color(125, 255, 158, 255),       // --good
+  white: new Color(245, 239, 225, 255),       // --paper
+  dimWhite: new Color(159, 176, 216, 200),
+  dimGray: new Color(111, 124, 166, 190),
+  overlay: new Color(5, 7, 15, 175),          // --ink
+  starOn: new Color(255, 225, 77, 255),
+  starOff: new Color(255, 255, 255, 46),
+  btnPrimary: new Color(255, 225, 77, 255),   // acid 厚底主按钮
+  btnGhost: new Color(255, 255, 255, 18),
+  btnDanger: new Color(110, 32, 41, 230),
 };
+
+/** acid 底按钮上的深色前景字(老 .btn.primary 的 #1a1a2a) */
+const DARK_FG = new Color(20, 16, 10, 255);
 
 // ---------- UI 辅助(与 career-panel 同构) ----------
 
@@ -148,6 +152,7 @@ export class DrillPanel extends Component {
       this.root.setParent(parent);
     }
     this._showList();
+    if (this._panelNode) slamIn(this._panelNode);   // 老 .panel slam 砸落
   }
 
   /** 切换到结算页 */
@@ -172,6 +177,7 @@ export class DrillPanel extends Component {
     this._onQuitResult = null;
     if (this.root && this.root.isValid) this.root.destroy();
     this.root = null!;
+    this._panelNode = null;
   }
 
   /** 每帧:驱动引导页动画 */
@@ -184,6 +190,7 @@ export class DrillPanel extends Component {
   // ---------- 内部状态 ----------
 
   private root!: Node;
+  private _panelNode: Node | null = null;
   private _onSelectDrill: ((drill: DrillDef) => void) | null = null;
   private _onBack: (() => void) | null = null;
   private _onRetry: (() => void) | null = null;
@@ -231,11 +238,13 @@ export class DrillPanel extends Component {
     og.rect(-480, -270, 960, 540);
     og.fill();
 
-    // 面板背景
+    // 面板背景(硬偏移阴影 + navy 底)
     const panel = mkNode("panel", this.root, PW, PH);
     panel.setPosition(0, -10, 0);
+    this._panelNode = panel;
     const pg = panel.addComponent(Graphics);
-    drawRR(pg, PW, PH, 16, COL.panelBg, new Color(60, 70, 90, 120), 1.5);
+    drawHardShadow(pg, PW, PH, 16, 6, 6, 0.55);
+    drawRR(pg, PW, PH, 16, COL.panelBg, new Color(245, 239, 225, 36), 1.5);
 
     // 顶部标题栏
     this._buildTopBar(panel);
@@ -323,11 +332,13 @@ export class DrillPanel extends Component {
       card.setPosition(x, y, 0);
 
       const g = card.addComponent(Graphics);
-      const borderCol = i === this._sel ? COL.cardSel
+      const sel = i === this._sel;
+      const borderCol = sel ? COL.cardSel
         : cleared ? COL.green
           : new Color(50, 58, 78, 140);
       const bgCol = cleared ? COL.cardDone : COL.cardBg;
-      drawRR(g, CARD_W, CARD_H, 10, bgCol, borderCol, i === this._sel ? 2.5 : 1.5);
+      if (sel) drawHardShadow(g, CARD_W, CARD_H, 10, 4, 4, 0.5);   // 选中卡浮起
+      drawRR(g, CARD_W, CARD_H, 10, bgCol, borderCol, sel ? 2.5 : 1.5);
 
       // tag 标签
       mkLabel(card, "tag", d.tag, 11, COL.cyan, { x: -CARD_W / 2 + 32, y: CARD_H / 2 - 16, w: 50 });
@@ -433,7 +444,7 @@ export class DrillPanel extends Component {
     drawRR(goG, 140, 36, 8, COL.btnPrimary);
     const goL = btnGo.addComponent(Label);
     goL.string = "开始训练"; goL.fontSize = 15; goL.lineHeight = 20;
-    goL.horizontalAlign = 1; goL.verticalAlign = 1; goL.color = COL.white;
+    goL.horizontalAlign = 1; goL.verticalAlign = 1; goL.color = DARK_FG;   // acid 底配深字(老 .btn.primary)
     btnGo.on(Node.EventType.TOUCH_END, () => {
       this._onSelectDrill?.(def);
     });
@@ -547,7 +558,7 @@ export class DrillPanel extends Component {
     drawRR(rG, 130, 36, 8, COL.btnPrimary);
     const rL = btnRetry.addComponent(Label);
     rL.string = "再来一次"; rL.fontSize = 15; rL.lineHeight = 20;
-    rL.horizontalAlign = 1; rL.verticalAlign = 1; rL.color = COL.white;
+    rL.horizontalAlign = 1; rL.verticalAlign = 1; rL.color = DARK_FG;   // acid 底配深字
     btnRetry.on(Node.EventType.TOUCH_END, () => {
       this._onRetry?.();
     });
