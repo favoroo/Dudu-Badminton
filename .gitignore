@@ -1,0 +1,15 @@
+# Cocos Creator 生成/缓存目录 —— 只提交源文件
+/library/
+/temp/
+/local/
+/build/
+/profiles/
+/native/
+/extensions/**/node_modules/
+
+# 回归工具的编译产物与依赖
+.tools-build/
+node_modules/
+
+# 系统文件
+.DS_Store

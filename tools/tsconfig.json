@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "noImplicitOverride": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "../.tools-build",
+    "rootDir": "..",
+    "lib": ["ES2020"],
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts", "../assets/scripts/core/**/*.ts"]
+}
