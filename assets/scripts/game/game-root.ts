@@ -69,6 +69,7 @@ export class GameRoot extends Component {
   private startMatch(mode: string, diff: "easy" | "normal" | "hard"): void {
     Rules.newMatch(mode, diff);
     Career.applyToMatch();      // 换上的皮肤跟人走
+    this.world.clearFloats();
     this.sfx.play("whistle");
   }
 
@@ -314,6 +315,7 @@ export class GameRoot extends Component {
           break;
         }
         case "point-start":
+          this.world.clearFloats();
           if (Rules.isMatchPoint()) this.sfx.play("whistle");
           break;
       }

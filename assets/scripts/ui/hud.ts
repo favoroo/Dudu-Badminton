@@ -12,7 +12,7 @@ import { Drill } from "../core/drill";
 import type { RulesState } from "../core/rules";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { ARCADE, bannerOnce, drawArcadePanel, drawChip, drawHardShadow, popScore } from "./ui-arcade";
+import { ARCADE, bannerOnce, drawArcadePanel, drawChip, drawHardShadow, drawMenuCard, popScore, textW } from "./ui-arcade";
 
 export class Hud {
   readonly root: Node;
@@ -27,6 +27,10 @@ export class Hud {
   private badgeNode: Node;
   private statusLine: Label;
   private statusOp: UIOpacity;
+  /** 状态行/局别标签的底块:两者都浮在球场上,没底就只是一串糊字(见 paintPlate) */
+  private statusBg: Node;
+  private statusBgG: Graphics;
+  private modeTagBg: Graphics;
   private drillInfo: Label;
   private modeTag: Label;
   private modeTagNode: Node;
@@ -132,6 +136,15 @@ export class Hud {
     this.centerBadge = kit.label(bd, `TO ${CFG.scoring.winScore}`, 12, "#0a0e1c");
 
     // ---------- 状态行(发球 / 平分提示) ----------
+    // 底块必须先建、文字后建:兄弟序即绘制序,文字要压在底块上。
+    this.statusBg = new Node("status-bg");
+    this.statusBg.layer = this.root.layer;
+    this.statusBg.addComponent(UITransform).setContentSize(240, 28);
+    this.statusBgG = this.statusBg.addComponent(Graphics);
+    this.statusBg.setPosition(0, 190, 0);
+    this.statusBg.setParent(top);
+    this.statusBg.active = false;
+
     this.statusLine = kit.label(top, "", 15, P.text);
     this.statusLine.node.setPosition(0, 190, 0);
     this.statusOp = this.statusLine.node.addComponent(UIOpacity);
@@ -145,8 +158,16 @@ export class Hud {
     const tagNode = new Node("mode-tag");
     tagNode.layer = this.root.layer;
     tagNode.addComponent(UITransform).setContentSize(190, 24);
+    const tagBg = new Node("tag-bg");
+    tagBg.layer = this.root.layer;
+    tagBg.addComponent(UITransform).setContentSize(150, 24);
+    this.modeTagBg = tagBg.addComponent(Graphics);
+    tagBg.setParent(tagNode);
     this.modeTag = kit.label(tagNode, "", 12, P.dim, { align: 0 });
-    this.modeTag.node.setPosition(0, 0, 0);
+    // 文字锚到左缘:Label 会自动把 contentSize 撑到文案宽,锚在中心时
+    // 「TRAINING · 后场重杀」这种长档名会往两边长,底块就追不上了
+    this.modeTag.node.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
+    this.modeTag.node.setPosition(-95 + 13, 0, 0);
     const tagWd = tagNode.addComponent(Widget);
     tagWd.isAlignLeft = true; tagWd.left = safeLeft;
     tagWd.isAlignTop = true; tagWd.top = 20 + safeTop;
@@ -175,7 +196,7 @@ export class Hud {
     sg.lineTo(8, -6);
     sg.close();
     sg.fill();
-    kit.label(this.serveFlag, "发球", 11, P.good).node.setPosition(0, -20, 0);
+    kit.label(this.serveFlag, "发球", 11, P.good, { outline: P.ink, outlineW: 2 }).node.setPosition(0, -20, 0);
     this.serveFlag.setParent(top);
     this.serveFlag.active = false;
 
@@ -201,6 +222,32 @@ export class Hud {
     this.root.active = on;
   }
 
+  /**
+   * 状态行底块:宽度跟文案走。
+   * 这行字浮在实时球场上,亮球馆(海滩场)地面一冲就糊,所以给一块药丸底;
+   * 提示清空时由 sync 里的 active 一起收走,场上不会浮着个空药丸。
+   */
+  private paintStatusPlate(txt: string): void {
+    const g = this.statusBgG;
+    if (!g) return;
+    const w = Math.max(120, textW(txt, 15) + 32);
+    g.node.getComponent(UITransform)!.setContentSize(w, 28);
+    g.clear();
+    drawHardShadow(g, w, 28, 9, 3, 3, 0.4);
+    drawMenuCard(g, w, 28, 9, { edge: 0, bar: 0, alpha: 0.74 });
+  }
+
+  /** 局别标签底块:左缘贴在 Widget 的 left 上,只往右长(文字已锚到左缘) */
+  private paintModeTagPlate(txt: string): void {
+    const g = this.modeTagBg;
+    if (!g) return;
+    const w = Math.max(72, textW(txt, 12) + 26);
+    g.node.getComponent(UITransform)!.setContentSize(w, 24);
+    g.node.setPosition(-95 + w / 2, 0, 0);
+    g.clear();
+    drawMenuCard(g, w, 24, 7, { edge: 0, bar: 0, alpha: 0.74 });
+  }
+
   /** 每帧由 UIManager 调用;只读 R,不推进任何游戏状态 */
   sync(R: RulesState): void {
     if (!this.root.active) return;
@@ -211,6 +258,8 @@ export class Hud {
     this.pills.active = !drill;
     this.badgeNode.active = !drill;
     this.statusLine.node.active = playing;
+    // 底块跟着文字一起走:非对局态(暂停/结算浮在上面)不单独留一块药丸
+    this.statusBg.active = playing && this.lastStatus.length > 0;
     this.drillInfo.node.active = drill;
     if (!R.players.length) return;
 
@@ -221,6 +270,7 @@ export class Hud {
     if (tag !== this.lastModeTag) {
       this.modeTag.string = tag;
       this.lastModeTag = tag;
+      this.paintModeTagPlate(tag);
     }
 
     // ---- 比分 / 训练进度 ----
@@ -259,6 +309,7 @@ export class Hud {
     if (txt !== this.lastStatus) {
       this.statusLine.string = txt;
       this.lastStatus = txt;
+      this.paintStatusPlate(txt);
     }
     this.statusLine.color = hot ? this.cHot : this.cPlain;
     // 发球/平分提示轻微呼吸,不抢比分牌的注意力

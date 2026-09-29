@@ -12,6 +12,11 @@
 // 面板根挂在 Canvas 上、晚于 ui-root,所以整块天然压在真按键之上:
 // 不需要把真按键 re-parent 上来,也不存在两份按键同屏。
 //
+// EDIT 的背景必须是**真实球场**:进编辑器时把 LIST 整块(暗底 + 卡片)active=false
+// 收掉,只留编辑器自己那层很淡的 dim。曾经踩过的坑是 LIST 的内容直接挂在面板根上,
+// 收起用的空容器里其实什么都没有 → 调位置时满屏还是设置页,按钮压根看不出落在场上
+// 是什么位子。所以「暗底 + 卡片」从建的时候就得挂进 listView 这个容器里。
+//
 // 版面按设计分辨率 960×540 排;内容收在 ±380 内(可见宽最窄就是 16:9 的 960),
 // 卡片顶边 198 低于 HUD 记分牌底边 203,从暂停页打开时不会挡住身后的比分。
 // ============================================================
@@ -77,14 +82,17 @@ export class SettingsPanel extends Component {
   private buildList(parent: Node): void {
     const P = this.kit.pal;
     this.root = this.kit.root(parent, "settings-panel");
-    // 中心压得比主菜单暗:这一屏是读字调参数的,不是看球场的
-    this.kit.dim(this.root, 0.5, 0.78);
 
-    const card = this.kit.panel(this.root, PW, PH, { r: 16, alpha: 0.94 });
-    this.card = card.node;
+    // LIST 的一切内容都挂在这个容器下 —— openEditor 靠它一整块收起,背景才露出球场
     this.listView = new Node("list-view");
     this.listView.layer = this.root.layer;
     this.listView.setParent(this.root);
+
+    // 中心压得比主菜单暗:这一屏是读字调参数的,不是看球场的
+    this.kit.dim(this.listView, 0.5, 0.78);
+
+    const card = this.kit.panel(this.listView, PW, PH, { r: 16, alpha: 0.94 });
+    this.card = card.node;
 
     const title = this.kit.label(this.card, "设置", 26, P.accent);
     title.node.setPosition(0, 166, 0);
@@ -201,7 +209,8 @@ export class SettingsPanel extends Component {
     }
     const P = this.kit.pal;
     this.editView = this.kit.root(this.root!, "pad-editor");
-    // 比 LIST 的暗底透得多:调位置要看清按钮落在球场上是什么样子
+    // 编辑器这一层几乎不压暗:LIST 的暗底已经整块收走了,球场地面的明暗就是
+    // 玩家真正手感里的明暗 —— 这一屏要判断的正是「按钮压不压到场上东西」。
     this.kit.dim(this.editView, 0.16, 0.46);
 
     // 顶部操作条:让开刘海/状态栏(hud.ts 同款算法,安全区内缩像素 == 世界单位)
@@ -251,8 +260,9 @@ export class SettingsPanel extends Component {
     eDone.setPosition(PW / 2 - 100, 0, 0);
     eDone.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.closeEditor(); });
 
-    this.kit.label(this.editView, "拖动屏幕上的按钮可移动 · 点一下选中后用上方滑杆改大小",
-      13, "#dfe6ff", { outline: "#05070f", outlineW: 2 }).node.setPosition(0, stripY - 58, 0);
+    const hint = this.kit.label(this.editView, "拖动屏幕上的按钮可移动 · 点一下选中后用上方滑杆改大小",
+      13, "#dfe6ff", { outline: "#05070f", outlineW: 2 });
+    hint.node.setPosition(0, stripY - 58, 0);
 
     // 第二个按键实例:挂在一个临时 Pad 上,edit 模式又跳过 press/release,
     // 双保险保证这里怎么拖都不会打出一个球、也不会污染玩家 pad 的跨步计时。
@@ -271,7 +281,10 @@ export class SettingsPanel extends Component {
     this.pick(this.selected ?? "left");
 
     this.listView!.active = false;
-    riseIn(this.editView, 0);
+    // 入场动画只动顶部操作条和说明,不动整层:editView 是 Widget 全屏容器,
+    // 位置归 Widget 管;而这一层里装着按钮本体 —— 调位子时最不该自己先飘起来。
+    riseIn(strip, 0);
+    riseIn(hint.node, 0.06);
   }
 
   private pick(a: PadAction): void {

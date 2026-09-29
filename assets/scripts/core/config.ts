@@ -212,8 +212,10 @@ export const CFG = {
   },
 
   // 甜蜜点:命中时刻在 active 窗口中的位置
+  // coreRatio 换算成手感 = ±(active/2 × coreRatio) 帧的起手容错(见 Player.qualityAt):
+  // 0.34 → ±2.4 帧(咬中间 5 帧,偏紧);0.50 → ±3.5 帧(咬中间 7 帧,约 117ms)
   sweet: {
-    coreRatio: 0.34,   // 窗口中心 34% 算甜蜜
+    coreRatio: 0.50,   // 窗口中心 50% 算甜蜜
     powerBonus: 1.16,
     errBonus: 0.55,    // 非甜蜜点的落点误差倍率
     powerDeg: 5,       // 在 q 压平之外再压的弧度(度):逼 solver 用更快初速补同一落点

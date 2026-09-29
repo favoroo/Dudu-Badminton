@@ -1598,18 +1598,27 @@ export class CourtRenderer {
     }
   }
 
+  /**
+   * 椭圆暗角:由外向内一圈圈椭圆「描边环」淡出。
+   * 不能整片椭圆叠加:半透明黑填充从大到小叠,中心只会越叠越黑,
+   * 反而画出巨型黑圆盘 + 一圈圈可见边界(老 bug)。
+   * 描边环只画环带不叠中心,外圈暗、中心干净、无接缝。
+   */
   private drawVignette(g: Graphics, vp: Viewport, maxAlpha: number): void {
-    fillConcentricGlow(
-      g,
-      vp,
-      W / 2,
-      H * 0.5,
-      640,
-      380,
-      colRgba(0, 0, 0, 0),
-      colRgba(0, 0, 0, maxAlpha),
-      4
-    );
+    const rings = 24;
+    const w = 17;                 // 每环宽度(路径间距 = 环宽 → 环带精确首尾相接)
+    const rxO = 700, ryO = 436;   // 外缘罩住四角(角点归一化半径 ≈ 0.92)
+    const k = ryO / rxO;          // 保持纵横比,归一化半径 = rx / rxO
+    const smooth = (t: number): number => t * t * (3 - 2 * t);
+    for (let i = 0; i < rings; i++) {
+      const a = maxAlpha * smooth(1 - i / rings);
+      if (a <= 0.004) continue;
+      g.strokeColor = colRgba(0, 0, 0, a);
+      g.lineWidth = w;
+      const rx = rxO - i * w;
+      g.ellipse(vp.x(W / 2), vp.y(H * 0.5), rx, rx * k);
+      g.stroke();
+    }
   }
 
   // ============================================================

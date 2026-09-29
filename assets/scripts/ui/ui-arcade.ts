@@ -38,6 +38,28 @@ export function ac(hex: string, alpha = 1): Color {
   return c;
 }
 
+/** 同色系压暗:k<1 越暗。厚底边/描边要跟着 accent 走,不能每个色再手写一遍深色 */
+export function acShade(hex: string, k: number, alpha = 1): Color {
+  const c = new Color();
+  c.fromHEX(hex);
+  c.r = Math.round(c.r * k);
+  c.g = Math.round(c.g * k);
+  c.b = Math.round(c.b * k);
+  c.a = Math.round(alpha * 255);
+  return c;
+}
+
+/**
+ * 文案宽度估算:全角按 1.05、半角按 0.62 个字宽。
+ * Graphics 没有 measureText,而 Label 的 contentSize 要等布局才准(当帧读是旧值),
+ * 所以「底块要跟着字长走」的地方(chip / 轻提示 / HUD 状态条)统一用这把尺子。
+ */
+export function textW(text: string, size: number): number {
+  let w = 0;
+  for (let i = 0; i < text.length; i++) w += text.charCodeAt(i) > 255 ? 1.05 : 0.62;
+  return Math.round(w * size);
+}
+
 // ---------- 硬偏移阴影(sticker 感的魂) ----------
 
 /** 阴影矩形:偏移 (dx,dy) 的纯色块,画在主体之前 */
@@ -106,6 +128,101 @@ export function drawGlassCard(g: Graphics, w: number, h: number, r = 10, darkA =
   g.stroke();
 }
 
+// ---------- 主菜单卡片:要「站在」球场上,而不是透出去 ----------
+
+export interface MenuCardOpts {
+  /** 强调色:左缘色带 + 描边 + 厚底边 + 卡面染色 */
+  accent?: string;
+  /** 卡面 accent 染色强度,默认 0.12 */
+  tint?: number;
+  /** 底色不透明度,默认 0.88(留一点透光,身后那座场子不至于完全消失) */
+  alpha?: number;
+  /** 左缘竖条宽度,默认 5;0 = 不画 */
+  bar?: number;
+  /** 厚底边厚度,默认 4;0 = 不画 */
+  edge?: number;
+  /** 选中态:accent 描边提亮 */
+  active?: boolean;
+}
+
+/**
+ * 菜单主视觉卡底:不透明 navy 渐变 + accent 色调/描边/厚底边 + 左缘色带。
+ *
+ * 与 drawGlassCard 的分工:玻璃卡用在「身后是深色面板」的列表项和开关上;
+ * 而难度卡 / 入口条 / 球馆 tab 是直接贴在球场地面上的 —— 海滩场、竹林道场
+ * 这类亮地面下,0.4 的近黑根本读不出形状(实测就是"和背景融成一片")。
+ * 所以这里底色给到 navy 的实色渐变,再靠 accent 把三档难度区分开。
+ */
+export function drawMenuCard(g: Graphics, w: number, h: number, r = 12, o: MenuCardOpts = {}): void {
+  const a = o.alpha ?? 0.88;
+  const accent = o.accent;
+  const hw = w / 2, hh = h / 2;
+  const edge = o.edge ?? 4;
+  const bar = o.bar ?? 5;
+
+  // 厚底边:同色系压暗向下垫一层 → 街机贴纸的立体感(按下时整卡缩放,底边跟着走)
+  if (edge > 0 && accent) {
+    g.fillColor = acShade(accent, 0.36, a);
+    g.roundRect(-hw, -hh - edge, w, h + edge, r);
+    g.fill();
+  }
+
+  // navy 竖向渐变(上亮下暗),与 drawArcadePanel 同源
+  g.fillColor = ac(ARCADE.panelTop, a);
+  g.roundRect(-hw, -hh, w, h, r);
+  g.fill();
+  g.fillColor = ac(ARCADE.navy, 0.62 * a);
+  g.roundRect(-hw, -hh, w, h * 0.62, r);
+  g.fill();
+  g.fillColor = ac(ARCADE.ink, 0.55 * a);
+  g.roundRect(-hw, -hh, w, h * 0.34, r);
+  g.fill();
+
+  // accent 整面染色:让每张卡带自己的色调,而不是只有一条边
+  if (accent) {
+    g.fillColor = ac(accent, (o.tint ?? 0.12) * a);
+    g.roundRect(-hw, -hh, w, h, r);
+    g.fill();
+  }
+
+  // 左缘色带:内缩一点,免得戳出圆角
+  if (bar > 0 && accent) {
+    g.fillColor = ac(accent, 0.95);
+    g.roundRect(-hw + 5, -hh + 6, bar, h - 12, bar / 2);
+    g.fill();
+  }
+
+  // 描边 + 顶缘高光线
+  g.strokeColor = ac(accent ?? ARCADE.paper, accent ? (o.active ? 0.92 : 0.6) : 0.24);
+  g.lineWidth = accent ? 2 : 1.5;
+  g.roundRect(-hw, -hh, w, h, r);
+  g.stroke();
+  g.strokeColor = ac(accent ?? "#ffffff", 0.18);
+  g.lineWidth = 1;
+  g.roundRect(-hw + 3, -hh + 3, w - 6, h - 6, Math.max(2, r - 3));
+  g.stroke();
+  // 顶缘高光线:窄条上留不住就干脆不画,免得负宽矩形翻到左边去
+  const glossW = w - (r + 8) * 2;
+  if (glossW > 10) {
+    g.fillColor = ac("#ffffff", 0.2);
+    g.roundRect(-hw + r + 8, hh - 2.5, glossW, 1.5, 0.75);
+    g.fill();
+  }
+}
+
+/** 右向箭标:入口条右侧的「点我进去」提示(节点原点即箭标中心) */
+export function drawChevron(g: Graphics, size = 10, hex = ARCADE.paper, alpha = 0.75, count = 2): void {
+  g.strokeColor = ac(hex, alpha);
+  g.lineWidth = 2.4;
+  for (let i = 0; i < count; i++) {
+    const ox = (i - (count - 1) / 2) * (size * 0.72);
+    g.moveTo(ox - size * 0.34, size * 0.5);
+    g.lineTo(ox + size * 0.34, 0);
+    g.lineTo(ox - size * 0.34, -size * 0.5);
+    g.stroke();
+  }
+}
+
 /** 街机面板底:上亮下暗的竖向渐变(用半透明叠层模拟)+ 2px 描边 + 顶边高光线 */
 export function drawArcadePanel(g: Graphics, w: number, h: number, r = 14, alpha = 1): void {
   // 渐变模拟:底部整块 navy,再叠 3 段向上变亮的横带(半透明,肉眼平滑)
@@ -172,17 +289,28 @@ export function drawArcadeButton(g: Graphics, w: number, h: number, style: BtnSt
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.stroke();
   } else {
-    // 烟玻璃底:深色垫一层保证字对比,再叠白 7% 提亮(球场仍透得过)
-    g.fillColor = ac(ARCADE.ink, 0.4);
+    // ghost = 面板里的次级按钮。老写法(ink 40% + 白 7%)在 navy 面板上只有
+    // 约 1.1:1,读起来根本不像个按钮 —— 和主菜单那次「和背景融成一片」同一个病。
+    // 现在与 primary/danger 同构:暗底边 + 实色 navy-2 面 + 提亮描边。
+    g.fillColor = acShade(ARCADE.navy2, 0.42);            // 厚底边
+    g.roundRect(-w / 2, -h / 2 - bottom, w, h + bottom, r);
+    g.fill();
+    g.fillColor = ac(ARCADE.navy2, 0.98);                 // 主面
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.fill();
-    g.fillColor = ac("#ffffff", 0.07);
-    g.roundRect(-w / 2, -h / 2, w, h, r);
+    g.fillColor = ac(ARCADE.ink, 0.28);                   // 下半压暗,做出竖向层次
+    g.roundRect(-w / 2, -h / 2, w, h * 0.42, r);
     g.fill();
-    g.strokeColor = ac(ARCADE.paper, 0.18);
+    g.strokeColor = ac(ARCADE.paper, 0.32);
     g.lineWidth = 2;
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.stroke();
+    g.fillColor = ac("#ffffff", 0.16);                    // 顶缘高光线(与 primary 同款)
+    const gw = w - (r + 8) * 2;
+    if (gw > 10) {
+      g.roundRect(-gw / 2, h / 2 - 2.5, gw, 1.5, 0.75);
+      g.fill();
+    }
   }
 }
 
@@ -228,11 +356,7 @@ export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid,
   const g = n.addComponent(Graphics);
 
   // 计算字符显示宽度(全角汉字按 1.05, 半角按 0.62)
-  let charW = 0;
-  for (let i = 0; i < text.length; i++) {
-    charW += text.charCodeAt(i) > 255 ? 1.05 : 0.62;
-  }
-  const w = Math.max(size * 2 + 16, Math.round(charW * size + 16));
+  const w = Math.max(size * 2 + 16, textW(text, size) + 16);
   const h = Math.round(size + 10);
   drawChip(g, w, h, bg);
 

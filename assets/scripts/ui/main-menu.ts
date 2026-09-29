@@ -12,11 +12,15 @@ import type { DiffKey } from "../core/types";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import {
-  ARCADE, drawArcadeButton, drawGlassCard, drawHardShadow, floatLoop,
-  makeChip, makeCoinIcon, riseIn, stopLoops,
+  ARCADE, drawArcadeButton, drawChevron, drawHardShadow, drawMenuCard,
+  floatLoop, makeChip, makeCoinIcon, riseIn, stopLoops,
 } from "./ui-arcade";
+import type { MenuCardOpts } from "./ui-arcade";
 import { APP_VERSION_NAME } from "../core/version";
 import { UpdateService } from "../core/update-service";
+
+/** 建卡参数:绘图选项 + 本文件才关心的圆角/阴影强度 */
+type CardOpts = MenuCardOpts & { r?: number; shadow?: number };
 
 // 产品命名:老 MENU 的「简单/困难」在手机版叫「入门/普通/大师」,档位与 CFG.diffs 一一对应
 const CN_DIFF: Record<string, string> = { easy: "入门", normal: "普通", hard: "大师" };
@@ -131,7 +135,7 @@ export class MainMenu {
 
     // ---------- 球馆选择(老 .court-picker:名称 + 描述,选中描边该馆主题色) ----------
     kit.courtThemes().forEach((c, i) => {
-      const { node, g } = this.card(`court:${c.id}`, 200, 48, 10, 0.3);
+      const { node, g } = this.card(`court:${c.id}`, 200, 48, { r: 10, edge: 0, bar: 0, alpha: 0.82 });
       node.setPosition((i - 1.5) * 212, 80, 0);
       const name = this.txt(node, c.name, 14, P.text, -88, 13, 96);
       this.txt(node, c.tag, 10, DIM_FAINT, -88, -13, 100);
@@ -158,19 +162,18 @@ export class MainMenu {
       this.riseNodes.push({ node, delay: 0.26 + i * 0.03 });
     });
 
-    // ---------- 单人三难度:横排三张玻璃卡,整卡即按钮 ----------
+    // ---------- 单人三难度:横排三张实底卡,整卡即按钮 ----------
+    // 染色强度随档位递增:入门冷静 → 大师发烫,颜色本身就在报难度
     menuForPlatform().forEach((m, i) => {
       const diff = (m.diff ?? "normal") as DiffKey;
       const accent = DIFF_ACCENT[diff];
-      const { node, g } = this.card(`mode:${diff}`, 268, 104, 12, 0.44);
+      const { node } = this.card(`mode:${diff}`, 268, 104, {
+        r: 12, accent, tint: 0.09 + i * 0.045, bar: 5, edge: 5, alpha: 0.9,
+      });
       node.setPosition((i - 1) * 280, -34, 0);
-      // 左缘难度色竖条(老 .mode:hover 的 acid 描边简化成一条色带)
-      g.fillColor = col(accent, 0.9);
-      g.roundRect(-132, -40, 4, 80, 2);
-      g.fill();
-      makeChip(node, m.tag ?? diff.toUpperCase(), 9, accent, "#0a0e1c").setPosition(98, 32, 0);
-      this.txt(node, CN_DIFF[diff], 22, accent, -110, 14, 150);
-      this.txt(node, m.desc, 11, DIM_SUB, -110, -26, 214);
+      makeChip(node, m.tag ?? diff.toUpperCase(), 9, accent, "#0a0e1c").setPosition(98, 34, 0);
+      this.txt(node, CN_DIFF[diff], 22, accent, -108, 14, 150);
+      this.txt(node, m.desc, 11, DIM_SUB, -108, -26, 212);
       node.on(Button.EventType.CLICK, () => {
         kit.sfx.play("ui");
         kit.startMatch(diff);
@@ -178,18 +181,24 @@ export class MainMenu {
       this.riseNodes.push({ node, delay: 0.4 + i * 0.06 });
     });
 
-    // ---------- 功能入口(老 .career-entry:色块标签 + 现状一行) ----------
-    const career = this.card("entry:career", 408, 60, 12, 0.4);
-    career.node.setPosition(-212, -132, 0);
-    makeChip(career.node, "TRAINING", 9, ARCADE.acid, "#0a0e1c").setPosition(-156, 8, 0);
-    this.txt(career.node, "专项训练", 19, ARCADE.paper, -128, 8, 120);
-    this.drillSub = this.txt(career.node, "", 11, DIM_FAINT, -128, -16, 240);
+    // ---------- 功能入口(老 .career-entry:色块标签 + 现状一行 + 右侧箭标) ----------
+    const career = this.card("entry:career", 408, 62, {
+      r: 12, accent: ARCADE.cyan, tint: 0.1, bar: 5, edge: 4, alpha: 0.9,
+    });
+    career.node.setPosition(-212, -134, 0);
+    makeChip(career.node, "TRAINING", 9, ARCADE.cyan, "#04121a").setPosition(-156, 8, 0);
+    this.txt(career.node, "专项训练", 19, ARCADE.paper, -116, 8, 120);
+    this.drillSub = this.txt(career.node, "", 11, DIM_FAINT, -116, -16, 258);
+    this.arrow(career.node, ARCADE.cyan);
 
-    const shop = this.card("entry:shop", 408, 60, 12, 0.4);
-    shop.node.setPosition(212, -132, 0);
+    const shop = this.card("entry:shop", 408, 62, {
+      r: 12, accent: ARCADE.acid, tint: 0.1, bar: 5, edge: 4, alpha: 0.9,
+    });
+    shop.node.setPosition(212, -134, 0);
     makeChip(shop.node, "CAREER", 9, ARCADE.acid, "#0a0e1c").setPosition(-156, 8, 0);
-    this.txt(shop.node, "生涯与商店", 19, ARCADE.paper, -128, 8, 130);
-    this.careerSub = this.txt(shop.node, "", 11, DIM_FAINT, -128, -16, 240);
+    this.txt(shop.node, "生涯与商店", 19, ARCADE.paper, -116, 8, 130);
+    this.careerSub = this.txt(shop.node, "", 11, DIM_FAINT, -116, -16, 258);
+    this.arrow(shop.node, ARCADE.acid);
 
     career.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openDrills(); });
     shop.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openCareer(); });
@@ -240,20 +249,32 @@ export class MainMenu {
     return l;
   }
 
-  /** 玻璃卡节点:自带 Button(SCALE) 与硬阴影;返回 Graphics 供状态变化时重画 */
-  private card(name: string, w: number, h: number, r: number, darkA: number): { node: Node; g: Graphics } {
+  /** 实底菜单卡节点:自带 Button(SCALE) 与硬阴影;返回 Graphics 供状态变化时重画 */
+  private card(name: string, w: number, h: number, o: CardOpts): { node: Node; g: Graphics } {
+    const r = o.r ?? 12;
     const n = new Node(name);
     n.layer = this.root.layer;
     n.addComponent(UITransform).setContentSize(w, h);
     const g = n.addComponent(Graphics);
-    drawHardShadow(g, w, h, r, 4, 4, 0.42);
-    drawGlassCard(g, w, h, r, darkA);
+    // 阴影要探出厚底边之下才读得出「浮起」,故 dy 跟着 edge 走
+    drawHardShadow(g, w, h, r, 5, (o.edge ?? 4) + 3, o.shadow ?? 0.5);
+    drawMenuCard(g, w, h, r, o);
     const b = n.addComponent(Button);
     b.transition = Button.Transition.SCALE;
     b.zoomScale = 0.96;
     b.target = n;
     n.setParent(this.root);
     return { node: n, g };
+  }
+
+  /** 入口条右侧箭标:一眼看出「这格点进去还有下一页」,而不是一个信息块 */
+  private arrow(parent: Node, hex: string): void {
+    const n = new Node("arrow");
+    n.layer = this.root.layer;
+    n.addComponent(UITransform).setContentSize(24, 20);
+    drawChevron(n.addComponent(Graphics), 11, hex, 0.8, 2);
+    n.setParent(parent);
+    n.setPosition(182, 0, 0);
   }
 
   /** 顶部徽章:primary = 荧光黄厚底(Lv),ghost = 玻璃(金币 / 音效) */
@@ -264,7 +285,7 @@ export class MainMenu {
     const g = n.addComponent(Graphics);
     drawHardShadow(g, w, 34, 8, 3, 3, 0.42);
     if (style === "primary") drawArcadeButton(g, w, 34, "primary", 8);
-    else drawGlassCard(g, w, 34, 8, 0.45);
+    else drawMenuCard(g, w, 34, 8, { edge: 0, bar: 0, alpha: 0.85 });
     n.setParent(this.root);
     n.setPosition(x, y, 0);
     return n;
@@ -272,15 +293,19 @@ export class MainMenu {
 
   // ---------- 状态描绘 ----------
 
-  /** 球馆 tab:选中 = 该馆主题色描边 + 名称点亮 + 亮「使用中」角标 */
+  /** 球馆 tab:选中 = 该馆主题色实底 + 描边点亮 + 亮「使用中」角标 */
   private paintCourts(): void {
     const curId = this.kit.getCourtTheme().id;
     for (const t of this.courtTabs) {
       const active = t.id === curId;
       t.g.clear();
-      drawHardShadow(t.g, 200, 48, 10, 4, 4, active ? 0.45 : 0.3);
-      drawGlassCard(t.g, 200, 48, 10, active ? 0.56 : 0.42, active ? t.accent : undefined);
-      t.name.color = col(active ? ARCADE.paper : "#9fb0d8");
+      drawHardShadow(t.g, 200, 48, 10, 5, 7, active ? 0.52 : 0.34);
+      drawMenuCard(t.g, 200, 48, 10, {
+        accent: active ? t.accent : undefined,
+        tint: 0.14, bar: 0, edge: active ? 4 : 0,
+        alpha: active ? 0.92 : 0.82, active,
+      });
+      t.name.color = col(active ? ARCADE.paper : "#a7b6dd");
       t.flag.active = active;
     }
   }

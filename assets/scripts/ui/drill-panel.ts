@@ -40,12 +40,17 @@ const COL = {
   green: new Color(125, 255, 158, 255),       // --good
   white: new Color(245, 239, 225, 255),       // --paper
   dimWhite: new Color(159, 176, 216, 200),
-  dimGray: new Color(111, 124, 166, 190),
+  dimGray: new Color(140, 153, 190, 235),
   overlay: new Color(5, 7, 15, 102),          // --ink 遮罩基准(渐变由 drawVeil 补)
   starOn: new Color(255, 225, 77, 255),
-  starOff: new Color(255, 255, 255, 46),
+  // 未得星:白 18% 的细空心圈在 navy 面板上基本看不见,0 星的卡像缺了块东西
+  starOff: new Color(159, 176, 216, 130),
   btnPrimary: new Color(255, 225, 77, 255),   // acid 厚底主按钮
-  btnGhost: new Color(255, 255, 255, 18),
+  btnPrimaryEdge: new Color(183, 155, 18, 255),
+  // 次级按钮:白 7% 压在 panelBg 上只有约 1.1:1,读不出「这是个按钮」。
+  // 与 career 的未选中 tab 同一个病,一起换成抬一档的 navy-2 + 冷灰描边。
+  btnGhost: new Color(24, 33, 66, 235),
+  btnGhostEdge: new Color(159, 176, 216, 90),
   btnDanger: new Color(110, 32, 41, 230),
 };
 
@@ -112,7 +117,7 @@ function drawStars(g: Graphics, cx: number, cy: number, n: number, size: number)
       g.fill();
     } else {
       g.strokeColor = COL.starOff;
-      g.lineWidth = 1.5;
+      g.lineWidth = 2;
       g.circle(x, cy, size * 0.38);
       g.stroke();
     }
@@ -313,7 +318,7 @@ export class DrillPanel extends Component {
       const sel = i === this._sel;
       const borderCol = sel ? COL.cardSel
         : cleared ? COL.green
-          : new Color(50, 58, 78, 140);
+          : new Color(107, 124, 166, 170);
       const bgCol = cleared ? COL.cardDone : COL.cardBg;
       if (sel) drawHardShadow(g, CARD_W, CARD_H, 10, 4, 4, 0.45);   // 选中卡浮起
       drawRR(g, CARD_W, CARD_H, 10, bgCol, borderCol, sel ? 2.5 : 1.5);
@@ -374,7 +379,7 @@ export class DrillPanel extends Component {
 
     // 动画背景框
     const animBg = animArea.addComponent(Graphics);
-    drawRR(animBg, ANIM_W, ANIM_H, 10, new Color(12, 16, 28, 240), new Color(50, 60, 80, 100), 1);
+    drawRR(animBg, ANIM_W, ANIM_H, 10, new Color(12, 16, 28, 240), new Color(159, 176, 216, 80), 1.5);
 
     // 动画 Graphics 节点
     const gfxNode = mkNode("animGfx", animArea, ANIM_W, ANIM_H);
@@ -417,7 +422,8 @@ export class DrillPanel extends Component {
     const btnGo = mkNode("btnGo", infoArea, 140, 36);
     btnGo.setPosition(0, btnY, 0);
     const goG = btnGo.addComponent(Graphics);
-    drawRR(goG, 140, 36, 8, COL.btnPrimary);
+    drawHardShadow(goG, 140, 36, 8, 3, 3, 0.45);
+    drawRR(goG, 140, 36, 8, COL.btnPrimary, COL.btnPrimaryEdge, 2);
     mkLabel(btnGo, "text", "开始训练", 15, DARK_FG, { align: 1, w: 140 });
     btnGo.on(Node.EventType.TOUCH_END, () => {
       this._onSelectDrill?.(def);
@@ -427,7 +433,7 @@ export class DrillPanel extends Component {
     const btnBack = mkNode("btnBack", infoArea, 120, 32);
     btnBack.setPosition(0, btnY - 42, 0);
     const bkG = btnBack.addComponent(Graphics);
-    drawRR(bkG, 120, 32, 8, COL.btnGhost);
+    drawRR(bkG, 120, 32, 8, COL.btnGhost, COL.btnGhostEdge, 1.5);
     mkLabel(btnBack, "text", "换个项目", 13, COL.dimWhite, { align: 1, w: 120 });
     btnBack.on(Node.EventType.TOUCH_END, () => {
       this._showList();

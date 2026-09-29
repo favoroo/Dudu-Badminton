@@ -12,7 +12,7 @@ import type { SettleResult } from "../core/career";
 import type { DrillResult } from "../core/drill";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { drawGlassCard } from "./ui-arcade";
+import { drawMenuCard } from "./ui-arcade";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -181,7 +181,7 @@ export class SettlePanel {
         cell.layer = this.card.layer;
         cell.addComponent(UITransform).setContentSize(CELL_W, CELL_H);
         const g = cell.addComponent(Graphics);
-        drawGlassCard(g, CELL_W, CELL_H, 9, 0.34);
+        drawMenuCard(g, CELL_W, CELL_H, 9, { edge: 0, bar: 0, alpha: 0.6 });
         this.kit.label(cell, "", 20, P.text).node.setPosition(0, 8, 0);   // 大数
         this.kit.label(cell, "", 11, P.dim).node.setPosition(0, -13, 0);  // 标签
         cell.setParent(this.statLayer);
@@ -208,10 +208,10 @@ export class SettlePanel {
     const w = Math.min(CW - 60, Math.round(cw * 13 + 34));
     const g = this.badgeBg;
     g.clear();
-    g.fillColor = col("#ffffff", 0.06);
+    g.fillColor = col("#ffffff", 0.1);
     g.roundRect(-w / 2, -13, w, 26, 13);
     g.fill();
-    g.strokeColor = col(b.color, 0.4);
+    g.strokeColor = col(b.color, 0.75);
     g.lineWidth = 1.5;
     g.roundRect(-w / 2, -13, w, 26, 13);
     g.stroke();

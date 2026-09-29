@@ -1,11 +1,38 @@
 // ============================================================
 // 应用内更新提示弹窗:版本号、更新说明、大小、进度条、下载与安装
+//
+// 进度显示为什么要分两态:
+// Cocos 3.8 原生端的 XMLHttpRequest 是 jsb.XMLHttpRequest,底层一次性收完
+// 整个响应才回调 JS,从不派发 progress 事件 —— 所以 Android 上的字节进度
+// 来自 update-service 里的原生流式下载器(Java 线程 + 150ms 轮询)。
+// 万一设备上的旧包没有这套原生下载器(反射失败回退 XHR),那时拿不到字节,
+// 界面就诚实进入"不确定态":呼吸条 + 已用时长,绝不编一个百分比糊人。
 // ============================================================
 import { Button, Color, Graphics, Label, Node, sys, UITransform, Vec2 } from "cc";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { formatBytes } from "../core/version";
-import { UpdateInfo, UpdateService } from "../core/update-service";
+import { DownloadProgress, UpdateInfo, UpdateService } from "../core/update-service";
+
+/** 进度条轨道几何(与 ui-arcade 面板宽度配套) */
+const TRACK_X = -190;
+const TRACK_W = 380;
+const TRACK_H = 14;
+
+/** 字节数 → 人话;小于 1 MB 用 KB,免得显示 0.0 MB */
+function fmtSize(bytes: number): string {
+  const b = Math.max(0, bytes || 0);
+  if (b < 1024) return `${Math.round(b)} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** 剩余时间 → 人话 */
+function fmtEta(seconds: number): string {
+  if (!isFinite(seconds) || seconds <= 0) return "计算中";
+  if (seconds < 60) return `约 ${Math.ceil(seconds)} 秒`;
+  if (seconds < 3600) return `约 ${Math.ceil(seconds / 60)} 分钟`;
+  return "较久";
+}
 
 export class UpdateDialog {
   readonly root: Node;
@@ -17,12 +44,16 @@ export class UpdateDialog {
   private progressNode: Node;
   private progressFill: Graphics;
   private progressLabel: Label;
+  private progressSub: Label;
   private updateBtn: Node;
   private updateBtnLabel: Label;
   private cancelBtn: Node;
+  private cancelBtnLabel: Label;
   private currentInfo: UpdateInfo | null = null;
   private isDownloading = false;
   private downloadedPath = "";
+  /** 每轮下载/关窗都自增:在途的进度回调靠它判断自己是否已经过期 */
+  private session = 0;
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -88,7 +119,7 @@ export class UpdateDialog {
     bgG.fillColor = col(P.panelLight, 0.9);
     bgG.strokeColor = col(P.line, 0.3);
     bgG.lineWidth = 1;
-    bgG.roundRect(-190, -7, 380, 14, 7);
+    bgG.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
     bgG.fill();
     bgG.stroke();
     progBg.setParent(this.progressNode);
@@ -99,9 +130,13 @@ export class UpdateDialog {
     this.progressFill = progFillNode.addComponent(Graphics);
     progFillNode.setParent(this.progressNode);
 
-    // 进度文字
-    this.progressLabel = kit.label(this.progressNode, "准备下载...", 12, P.cyan);
-    this.progressLabel.node.setPosition(0, -22, 0);
+    // 进度主文字(百分比 / 已下载量)
+    this.progressLabel = kit.label(this.progressNode, "准备下载...", 13, P.cyan);
+    this.progressLabel.node.setPosition(0, -20, 0);
+
+    // 进度副文字(速度 / 剩余时间 / 下载源)
+    this.progressSub = kit.label(this.progressNode, "", 11, P.dim);
+    this.progressSub.node.setPosition(0, -38, 0);
 
     // 按钮组
     this.updateBtn = kit.button(this.card.node, "立即更新", 180, 46, {
@@ -114,6 +149,7 @@ export class UpdateDialog {
 
     this.cancelBtn = kit.button(this.card.node, "稍后再说", 180, 46, { size: 16 });
     this.cancelBtn.setPosition(104, -132, 0);
+    this.cancelBtnLabel = this.cancelBtn.children[0].getComponent(Label)!;
 
     this.updateBtn.on(Button.EventType.CLICK, () => {
       kit.sfx.play("ui");
@@ -126,24 +162,66 @@ export class UpdateDialog {
     });
   }
 
-  private setProgress(percent: number, loadedText = "", totalText = ""): void {
+  /**
+   * 唯一进度入口:原生下载器每 150ms 回一次真实字节,XHR 心跳每 250ms 回一次。
+   */
+  private renderProgress(p: DownloadProgress): void {
     const P = this.kit.pal;
-    const pct = Math.max(0, Math.min(100, percent));
-    this.progressFill.clear();
-    if (pct > 0) {
-      const fillW = Math.max(14, (380 * pct) / 100);
-      this.progressFill.fillColor = col(P.cyan, 0.95);
-      this.progressFill.roundRect(-190, -7, fillW, 14, 7);
-      this.progressFill.fill();
+    const g = this.progressFill;
+    const sourceTag = p.sourceCount > 1 && p.sourceIndex > 0
+      ? `源 ${p.sourceIndex + 1}/${p.sourceCount} · `
+      : "";
+    // 已经切过源就别再报首个源的失败感,提示当前走的域名
+    const hostTag = p.sourceCount > 1 && p.sourceIndex > 0 ? `${p.host} · ` : "";
+
+    g.clear();
+
+    if (p.determinate) {
+      const pct = Math.max(0, Math.min(100, p.percent));
+      const fillW = Math.max(TRACK_H, (TRACK_W * pct) / 100);
+      g.fillColor = col(P.cyan, 0.95);
+      g.roundRect(TRACK_X, -TRACK_H / 2, fillW, TRACK_H, TRACK_H / 2);
+      g.fill();
+
+      const done = p.state === "done";
+      this.progressLabel.string = done
+        ? `下载完成 100% · ${fmtSize(p.total || p.loaded)}`
+        : `${sourceTag}${pct}%  ${fmtSize(p.loaded)} / ${fmtSize(p.total)}`;
+
+      if (done) {
+        this.progressSub.string = "正在调起系统安装器…";
+      } else if (p.state === "connecting") {
+        this.progressSub.string = `${hostTag}正在连接 ${p.host}…`;
+      } else {
+        const remain = p.speed > 0 ? (p.total - p.loaded) / p.speed : 0;
+        this.progressSub.string = `${hostTag}${fmtSize(p.speed)}/s · 剩余 ${fmtEta(remain)}`;
+      }
+      return;
     }
-    if (loadedText && totalText) {
-      this.progressLabel.string = `下载中: ${pct}% (${loadedText} / ${totalText})`;
-    } else {
-      this.progressLabel.string = `下载中: ${pct}%`;
-    }
+
+    // —— 不确定态:拿不到字节,只证明"还在下" ——
+    // 呼吸条:1.2s 一个来回,靠 alpha 变化表示活着,不假装百分比
+    const pulse = 0.45 + 0.35 * Math.abs(Math.sin((p.elapsedMs / 1200) * Math.PI));
+    g.fillColor = col(P.cyan, pulse);
+    g.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
+    g.fill();
+
+    const secs = Math.max(0, Math.round(p.elapsedMs / 1000));
+    const totalText = p.total > 0 ? ` / ${fmtSize(p.total)}` : "";
+    this.progressLabel.string = `${sourceTag}正在下载${totalText}`;
+    this.progressSub.string = `${hostTag}已用 ${secs} 秒 · 完成后会自动弹出安装`;
+  }
+
+  /** 复位成"可以点立即更新"的样子 */
+  private resetActions(primaryLabel: string): void {
+    this.updateBtn.active = true;
+    this.cancelBtn.active = true;
+    this.updateBtnLabel.string = primaryLabel;
+    this.cancelBtnLabel.string = "稍后再说";
   }
 
   show(info: UpdateInfo): void {
+    this.session++;
     this.currentInfo = info;
     this.isDownloading = false;
     this.downloadedPath = "";
@@ -152,24 +230,35 @@ export class UpdateDialog {
     this.sizeLabel.string = info.fileSizeText ? `安装包大小: ${info.fileSizeText}` : "安装包大小: 未知";
     this.notesLabel.string = info.releaseNotes || "修复已知问题，优化游戏体验。";
 
+    this.progressFill.clear();
     this.progressNode.active = false;
-    this.updateBtn.active = true;
-    this.cancelBtn.active = true;
-    this.updateBtnLabel.string = "立即更新";
+    this.resetActions("立即更新");
 
     this.root.active = true;
   }
 
   hide(): void {
     if (this.isDownloading) {
+      this.session++;
       UpdateService.instance.cancelDownload();
       this.isDownloading = false;
     }
     this.root.active = false;
   }
 
+  /** 停止下载并把界面交回用户,不报错误 */
+  private abortDownload(): void {
+    this.session++;
+    this.isDownloading = false;
+    UpdateService.instance.cancelDownload();
+    this.progressNode.active = false;
+    this.progressFill.clear();
+    this.resetActions("重新下载");
+  }
+
   private async onUpdateClicked(): Promise<void> {
-    if (!this.currentInfo) return;
+    const info = this.currentInfo;
+    if (!info) return;
 
     if (this.downloadedPath) {
       // 已经下载完成，重新触发系统安装器
@@ -184,34 +273,53 @@ export class UpdateDialog {
 
     // Web 浏览器环境直接打开下载链接
     if (!sys.isNative) {
-      sys.openURL(this.currentInfo.downloadUrl);
+      sys.openURL(info.downloadUrl);
       this.kit.toast("已打开下载链接");
       this.hide();
       return;
     }
 
+    // 没有 APK 附件(只有 Release 页面)时别把网页当安装包下下来
+    if (!info.hasApk) {
+      sys.openURL(info.releaseUrl);
+      this.kit.toast("已打开下载页面");
+      return;
+    }
+
     // Android 原生环境执行应用内下载
+    const session = ++this.session;
     this.isDownloading = true;
     this.progressNode.active = true;
-    this.setProgress(0);
+    this.progressFill.clear();
+    this.progressLabel.string = "准备下载...";
+    this.progressSub.string = "";
     this.updateBtnLabel.string = "正在下载...";
+    this.cancelBtnLabel.string = "取消下载";
+
+    const urls = info.candidateDownloadUrls.length
+      ? info.candidateDownloadUrls
+      : [info.downloadUrl];
 
     try {
-      const info = this.currentInfo;
       const filePath = await UpdateService.instance.downloadApk(
-        info.downloadUrl,
+        urls,
         info.fileSize,
-        (loaded, total, pct) => {
-          const lText = formatBytes(loaded);
-          const tText = formatBytes(total);
-          this.setProgress(pct, lText, tText);
+        (p) => {
+          if (session !== this.session) return;
+          this.renderProgress(p);
         }
       );
 
+      if (session !== this.session) return;
       this.isDownloading = false;
       this.downloadedPath = filePath;
       this.progressLabel.string = "下载完成，正在调起安装...";
-      this.updateBtnLabel.string = "重新安装";
+      this.progressSub.string = `安装包已存到: ${filePath.split("/").pop() || filePath}`;
+      this.progressFill.clear();
+      this.progressFill.fillColor = col(this.kit.pal.cyan, 0.95);
+      this.progressFill.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
+      this.progressFill.fill();
+      this.resetActions("重新安装");
       this.kit.toast("下载完成，正在安装...");
 
       const installOk = UpdateService.instance.installApk(filePath);
@@ -219,15 +327,24 @@ export class UpdateDialog {
         this.kit.toast("请点击「重新安装」授权并安装应用");
       }
     } catch (err: any) {
+      if (session !== this.session) return;
       this.isDownloading = false;
       this.progressNode.active = false;
-      this.updateBtnLabel.string = "重试下载";
+      this.progressFill.clear();
+      this.resetActions("重试下载");
       const msg = err?.message || String(err);
-      this.kit.toast(`更新下载失败: ${msg}`);
+      if (err?.name !== "DownloadCancelledError" && msg !== "已取消下载") {
+        this.kit.toast(`更新下载失败: ${msg}`);
+      }
     }
   }
 
   private onCancelClicked(): void {
+    if (this.isDownloading) {
+      this.abortDownload();
+      this.kit.toast("已取消下载");
+      return;
+    }
     this.hide();
   }
 }

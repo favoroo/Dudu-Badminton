@@ -32,7 +32,7 @@ import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
 import { courtRenderer, CourtThemeItem } from "../render/court";
-import { drawArcadeButton, drawArcadePanel, drawHardShadow, drawScanlines, drawVeil, drawVignette } from "./ui-arcade";
+import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawVeil, drawVignette, textW } from "./ui-arcade";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
 import { Hud } from "./hud";
@@ -222,6 +222,14 @@ export function uiRoot(parent: Node, name: string): Node {
   w.isAlignRight = true; w.right = 0;
   n.setParent(parent);
   return n;
+}
+
+/**
+ * 轻提示底块的宽度:按文案估出来(见 ui-arcade.textW)。
+ * 固定 340 时长句会溢出框外,变成飘在场上的一串字。
+ */
+function toastPlateWidth(s: string, size: number): number {
+  return Math.min(700, Math.max(210, textW(s, size) + 52));
 }
 
 // ---------- 面板契约:四个面板只依赖这张表,不反向 import ui-manager ----------
@@ -556,6 +564,9 @@ export class UIManager extends Component {
   }
 
   // ---------- 顶部轻提示(商店/球场等未移植入口的占位反馈) ----------
+  //
+  // 它挂在 Canvas 上、浮在所有面板之上,身后可能是亮球馆也可能是实时球场,
+  // 所以底块必须自己站得住。
 
   private toast(msg: string): void {
     if (!this.toastNode) {
@@ -563,27 +574,21 @@ export class UIManager extends Component {
       n.layer = Layers.Enum.UI_2D;
       n.addComponent(UITransform).setContentSize(340, 42);
       n.setPosition(0, 150, 0);
-      const g = n.addComponent(Graphics);
-      drawHardShadow(g, 340, 42, 8, 3, 3, 0.5);
-      g.fillColor = col(PAL.panel, 0.96);
-      g.roundRect(-170, -21, 340, 42, 8);
-      g.fill();
-      g.strokeColor = col(PAL.line, 0.2);
-      g.lineWidth = 2;
-      g.roundRect(-170, -21, 340, 42, 8);
-      g.stroke();
-      // 左侧荧光黄竖条:老项目 reward-line / tag 的点题小色块
-      g.fillColor = col(PAL.accent, 0.9);
-      g.roundRect(-170, -21, 6, 42, 3);
-      g.fill();
+      n.addComponent(Graphics);
       this.toastLabel = uiLabel(n, "", 15, PAL.text);
       n.addComponent(UIOpacity);
       n.setParent(this.node);
       this.toastNode = n;
       this.toastOp = n.getComponent(UIOpacity);
     }
+    const w = toastPlateWidth(msg, 15);
+    const g = this.toastNode.getComponent(Graphics)!;
+    this.toastNode.getComponent(UITransform)!.setContentSize(w, 42);
+    g.clear();
+    drawHardShadow(g, w, 42, 9, 4, 4, 0.5);
+    drawMenuCard(g, w, 42, 9, { accent: ARCADE.acid, tint: 0.05, bar: 5, edge: 4, alpha: 0.95 });
     this.toastLabel!.string = msg;
-    this.toastNode!.active = true;
+    this.toastNode.active = true;
     const op = this.toastOp!;
     Tween.stopAllByTarget(op);
     op.opacity = 0;

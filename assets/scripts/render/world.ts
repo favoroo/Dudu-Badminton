@@ -31,6 +31,7 @@ function makeViewport(): Viewport {
 
 interface FloatText {
   node: Node;
+  label: Label;
   opacity: UIOpacity;
   life: number;
   maxLife: number;
@@ -50,6 +51,7 @@ export class WorldView {
   private floatLayer: Node;
   private tagLayer: Node;
   private floats: FloatText[] = [];
+  private floatPool: FloatText[] = [];
   private tags: TagText[] = [];
   private trail: TrailDot[] = [];
   readonly fx = new FXSystem(); // 完整打击特效与粒子系统
@@ -193,28 +195,65 @@ export class WorldView {
    * 「飘字提示」开关掐在这个唯一入口 —— 关掉时「下网/出界/擦网/平分/训练有效+1」
    * 这些文字提示也一并没了(要的就是干净画面;想只关击球飘字得给本函数加分类参数)。
    */
+  /**
+   * 事件驱动的飘字(老 FX.float 的精简版:上浮 + 淡出)
+   * 采用节点对象池(floatPool),寿命耗尽时隐藏并回收入池,杜绝节点泄露与幽灵残留
+   */
   float(wx: number, wy: number, text: string, color: string, size: number, life: number, vy = -1): void {
     if (!Settings.hintFloat) return;
-    const node = new Node("float");
-    node.layer = Layers.Enum.UI_2D;
-    node.addComponent(UITransform);
-    node.setPosition(this.vp.x(wx), this.vp.y(wy), 0);
-    const label = node.addComponent(Label);
-    label.string = text;
-    label.fontSize = size;
-    label.lineHeight = Math.round(size * 1.15);
-    label.color = color.startsWith("#") ? new Color().fromHEX(color) : new Color(255, 255, 255, 255);
-    const opacity = node.addComponent(UIOpacity);
-    node.setParent(this.floatLayer);
-    this.floats.push({ node, opacity, life, maxLife: life, vy: vy || -1 });
+    let item = this.floatPool.pop();
+    if (!item) {
+      const node = new Node("float");
+      node.layer = Layers.Enum.UI_2D;
+      node.addComponent(UITransform);
+      const label = node.addComponent(Label);
+      const opacity = node.addComponent(UIOpacity);
+      node.setParent(this.floatLayer);
+      item = { node, label, opacity, life: 0, maxLife: 0, vy: -1 };
+    }
+    item.life = life;
+    item.maxLife = life;
+    item.vy = vy || -1;
+    item.node.setPosition(this.vp.x(wx), this.vp.y(wy), 0);
+    item.label.string = text;
+    item.label.fontSize = size;
+    item.label.lineHeight = Math.round(size * 1.15);
+    item.label.color = color.startsWith("#") ? new Color().fromHEX(color) : new Color(255, 255, 255, 255);
+    item.opacity.opacity = 255;
+    item.node.active = true;
+    this.floats.push(item);
+  }
+
+  /** 清空当前所有飘字(换局/重新发球/重置时调用) */
+  clearFloats(): void {
+    for (let i = 0; i < this.floats.length; i++) {
+      const f = this.floats[i];
+      f.node.active = false;
+      f.opacity.opacity = 0;
+      this.floatPool.push(f);
+    }
+    this.floats.length = 0;
   }
 
   /** 每模拟步推进(寿命计数,帧率无关) */
   stepFx(dt = 1 / 60): void {
     this.shakeAmt *= 0.85;
     this.shakeX = this.shakeAmt > 0.3 ? (Math.random() * 2 - 1) * this.shakeAmt : 0;
-    for (const f of this.floats) f.life--;
-    this.floats = this.floats.filter((f) => f.life > 0);
+    
+    let alive = 0;
+    for (let i = 0; i < this.floats.length; i++) {
+      const f = this.floats[i];
+      f.life--;
+      if (f.life > 0) {
+        this.floats[alive++] = f;
+      } else {
+        f.node.active = false;
+        f.opacity.opacity = 0;
+        this.floatPool.push(f);
+      }
+    }
+    this.floats.length = alive;
+
     for (const t of this.trail) t.life--;
     this.trail = this.trail.filter((t) => t.life > 0);
 
@@ -270,11 +309,17 @@ export class WorldView {
     // 绘制粒子与打击特效(冲击波/火花/羽毛/彩带等)
     this.fx.draw(g, this.vp);
 
+    // 若设置中关闭了飘字提示，立即清空现有活跃飘字
+    if (!Settings.hintFloat && this.floats.length > 0) {
+      this.clearFloats();
+    }
+
     // 飘字:上浮 + 末段淡出
-    for (const f of this.floats) {
+    for (let i = 0; i < this.floats.length; i++) {
+      const f = this.floats[i];
       const pos = f.node.position;
       f.node.setPosition(pos.x, pos.y + f.vy, 0);
-      const remain = f.life / f.maxLife;
+      const remain = Math.max(0, f.life / f.maxLife);
       f.opacity.opacity = remain < 0.35 ? Math.round(255 * (remain / 0.35)) : 255;
     }
   }

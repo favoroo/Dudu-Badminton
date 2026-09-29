@@ -13,7 +13,7 @@ import { Ball, Player, SkinDef, SkinKind, Theme } from "../core/types";
 import { drawPlayer, drawRacketStill, drawShuttle, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
-import { drawHardShadow, drawVeil, makeCoinIcon, slamIn } from "./ui-arcade";
+import { drawHardShadow, drawMenuCard, drawVeil, makeCoinIcon, slamIn, textW } from "./ui-arcade";
 
 const { ccclass } = _decorator;
 
@@ -52,7 +52,10 @@ const COL = {
   cardSelBg: new Color(255, 225, 77, 26),     // 选中卡内的 acid 薄染
   cardEquip: new Color(21, 56, 42, 208),
   cardLock: new Color(16, 19, 30, 170),
-  tabBg: new Color(255, 255, 255, 13),        // 白 5%
+  // 未选中 tab:白 5% 压在 panelBg 上只有 1.1:1,读不出一格一格的形状。
+  // 改成抬一档的 navy-2 + 冷灰描边 —— 未选中也要「能点」的样子。
+  tabBg: new Color(24, 33, 66, 235),
+  tabEdge: new Color(159, 176, 216, 90),
   tabSel: new Color(255, 225, 77, 255),       // acid 芯片
   accent: new Color(255, 225, 77, 255),
   gold: new Color(255, 225, 77, 255),
@@ -61,8 +64,10 @@ const COL = {
   green: new Color(125, 255, 158, 255),       // --good
   white: new Color(245, 239, 225, 255),       // --paper 暖纸白
   dimWhite: new Color(159, 176, 216, 200),
-  dimGray: new Color(111, 124, 166, 190),
-  expBg: new Color(255, 255, 255, 23),
+  dimGray: new Color(140, 153, 190, 235),
+  // 经验槽:白 9% 在 navy 面板上等于没有 —— 改成往下压的暗槽,空/满一眼分得清
+  expBg: new Color(5, 7, 15, 150),
+  expEdge: new Color(159, 176, 216, 70),
   expFill: new Color(184, 255, 94, 255),      // 老 .exp-bar 的青柠→acid 渐变主色
 };
 
@@ -259,6 +264,7 @@ export class CareerPanel extends Component {
   private _previewArea: Node | null = null;
   private _tabGraphics: Array<{ g: Graphics; l: Label; ut: UITransform }> = [];
   private _toastNode: Node | null = null;
+  private _toastG: Graphics | null = null;
   private _toastLabel: Label | null = null;
   private _toastOpacity: UIOpacity | null = null;
 
@@ -298,10 +304,11 @@ export class CareerPanel extends Component {
     this._buildContent(panel);
     this._buildHint(panel);
 
-    // Toast
+    // Toast:底块和文字各占一个子节点 —— 一个节点只能挂一个 renderable
     this._toastNode = mkNode("toast", this.root, 400, 36);
     this._toastNode.setPosition(0, -PH / 2 + 20, 0);
-    this._toastLabel = this._toastNode.addComponent(Label);
+    this._toastG = mkNode("toast-plate", this._toastNode, 400, 36).addComponent(Graphics);
+    this._toastLabel = mkNode("toast-label", this._toastNode, 400, 36).addComponent(Label);
     this._toastLabel.string = "";
     this._toastLabel.fontSize = 16;
     this._toastLabel.lineHeight = 22;
@@ -329,7 +336,7 @@ export class CareerPanel extends Component {
     const expBg = mkNode("expBg", bar, 200, 14);
     expBg.setPosition(-PW / 2 + 310, 8, 0);
     const expBgG = expBg.addComponent(Graphics);
-    drawRR(expBgG, 200, 14, 7, COL.expBg);
+    drawRR(expBgG, 200, 14, 7, COL.expBg, COL.expEdge, 1);
 
     const expFillNode = mkNode("expFill", bar, 196, 10);
     expFillNode.setPosition(-PW / 2 + 310, 8, 0);
@@ -374,7 +381,7 @@ export class CareerPanel extends Component {
       const g = tab.addComponent(Graphics);
       const ut = tab.getComponent(UITransform)!;
 
-      drawRR(g, tw - 4, 32, 8, COL.tabBg);
+      drawRR(g, tw - 4, 32, 8, COL.tabBg, COL.tabEdge, 1.5);
       const l = mkLabel(tab, `tabLabel-${k}`, KIND_LABEL[k], 15, COL.dimWhite, {
         x: 0, y: 0, w: tw - 8, align: 1,
       });
@@ -404,7 +411,7 @@ export class CareerPanel extends Component {
 
     const prevBg = right.addComponent(Graphics);
     drawRR(prevBg, PREVIEW_W, CONTENT_H, 12, new Color(15, 18, 28, 220),
-      new Color(50, 60, 80, 100), 1);
+      new Color(159, 176, 216, 80), 1.5);
 
     // 预览 Graphics
     const gfxNode = mkNode("gfx", right, PREVIEW_W, CONTENT_H - 30);
@@ -453,11 +460,11 @@ export class CareerPanel extends Component {
 
       const g = card.addComponent(Graphics);
       const sel = i === this._sel;
+      // 未选中卡只有描边一道,cardBg 与 panelBg 差不到哪儿去 → 描边提到冷灰
       const borderCol = equipped ? COL.green
         : sel ? COL.cardSel
-          : locked ? new Color(40, 44, 55, 100)
-            : new Color(50, 58, 78, 140);
-      const bgCol = equipped ? COL.cardEquip : COL.cardBg;
+          : new Color(107, 124, 166, 170);
+      const bgCol = equipped ? COL.cardEquip : locked ? COL.cardLock : COL.cardBg;
       if (sel) drawHardShadow(g, CARD_W, CARD_H, 8, 4, 4, 0.5);   // 选中卡浮起(老 .skin-card.sel)
       drawRR(g, CARD_W, CARD_H, 8, bgCol, borderCol, sel ? 2.5 : 1.5);
 
@@ -488,14 +495,14 @@ export class CareerPanel extends Component {
       if (locked) {
         const ovNode = mkNode("lock-mask", card, CARD_W, CARD_H);
         const ov = ovNode.addComponent(Graphics);
-        ov.fillColor = new Color(0, 0, 0, 80);
+        ov.fillColor = new Color(0, 0, 0, 120);
         ov.roundRect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H, 8);
         ov.fill();
       }
       if (broke && !owned) {
         const ovNode = mkNode("broke-mask", card, CARD_W, CARD_H);
         const ov = ovNode.addComponent(Graphics);
-        ov.fillColor = new Color(0, 0, 0, 50);
+        ov.fillColor = new Color(0, 0, 0, 110);
         ov.roundRect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H, 8);
         ov.fill();
       }
@@ -691,6 +698,15 @@ export class CareerPanel extends Component {
   private _showToast(text: string) {
     if (!this._toastLabel || !this._toastOpacity) return;
     this._toastLabel.string = text;
+    // 「金币不足,还差 xx」这类长短句都从这一条道走,底块跟着文案收放
+    if (this._toastG) {
+      const w = Math.min(PW - 40, Math.max(200, textW(text, 16) + 48));
+      const g = this._toastG;
+      g.node.getComponent(UITransform)!.setContentSize(w, 36);
+      g.clear();
+      drawHardShadow(g, w, 36, 8, 3, 3, 0.45);
+      drawMenuCard(g, w, 36, 8, { accent: "#ffe14d", tint: 0.05, bar: 4, edge: 0, alpha: 0.96 });
+    }
     this._toastOpacity.opacity = 255;
     this._toastTimer = 1.7; // 1.7秒后淡出
   }
@@ -723,7 +739,8 @@ export class CareerPanel extends Component {
     this._tabGraphics.forEach((tab, i) => {
       const active = KIND_ALL[i] === this._kind;
       tab.g.clear();
-      drawRR(tab.g, tab.ut.contentSize.width, tab.ut.contentSize.height, 8, active ? COL.tabSel : COL.tabBg);
+      drawRR(tab.g, tab.ut.contentSize.width, tab.ut.contentSize.height, 8,
+        active ? COL.tabSel : COL.tabBg, active ? undefined : COL.tabEdge, 1.5);
       tab.l.color = active ? new Color(20, 16, 10, 255) : COL.dimWhite;
     });
 
