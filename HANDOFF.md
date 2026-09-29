@@ -56,8 +56,8 @@
 4. python http.server 可能只绑 IPv6;用 `--bind 127.0.0.1` 起本地服务。
 5. **键盘输入待验证**:keyboard.ts 假设 Cocos 的 `EventKeyboard.keyCode` 值就是浏览器
    e.code 字符串('KeyA')。若真机按键无反应,先查这个(可能要换成 KeyCode 枚举对照)。
-6. 头顶名牌/球衣号码没有文字(Graphics 画不了字):sprites.ts 里留了【移植限制】注释
-   和坐标,需要表现层挂 Label。辉光/径向渐变有近似处理(同文件注释)。
+6. 头顶名牌文字已由表现层 Label 实现(world.ts syncTags,sprites.ts 预留的【移植限制】已闭环);
+   **球衣号已按设计决策去掉**(人物身上不再有数字)。辉光/径向渐变用描边环近似(同文件注释)。
 7. 老仓库有意为之的行为差异(不是 bug):
    - rules 画球拖尾改为 `setTrailHook()` 注入(原版表现层依赖泄漏)
    - config 的 `serve` 段在原版定义了两次(前段是死值),已合并保留全部字段
@@ -65,38 +65,37 @@
    重新构建即清除。
 9. 编辑器当前**未运行**;重开会自动加载工程并自动打开 main 场景(scene-opener)。
    扩展日志在启动 stdout;构建日志示例 `--build "platform=web-mobile;debug=true;startScene=<场景uuid>"`。
-10. 老仓库 `src/replay.js`(回放系统)未移植——低优先级,微信版可后置。
+10. 回放期间(完美重扣)主循环冻结逻辑与一切 FX 走时,快照逐帧驱动渲染——
+    触发时残余的慢动作会让回放自然半速播放,是老版同款电影感,不是 bug。
 
 ## 当前游戏形态
 
-`GameRoot` 直进一局「单人 · 普通」(菜单 UI 未做),键盘 WASD+JK+S 与屏幕虚拟按键
-均可用(键盘待验证),AI 对手会跑位/扣杀,计分/发球权/赛后金币经验结算都在跑,
-音效已接(hit 八变体/floor 三档/cheer 三档/胜负 jingle 等),有 hitstop/震屏/飘字。
+完整产品形态:主菜单/暂停/结算/生涯商店/训练场/设置/更新弹窗全套 UI;4 套球场主题
+(arena/beach/cyber/dojo)+ 看台/灯光/晃网;六档打击阶梯(hitstop/震屏/镜头 punch/白闪)、
+赛点重锤慢动作 + 长回合金晕 + 赛点红晕氛围暗角;完美重扣即时回放(任意键/点按跳过);
+球残影四风格 + 挥拍弧光残影;自适应分层 BGM;AI 情绪/赛后称号/多拍里程碑/发球博弈;
+Android 应用内更新(APK 原生流式下载器 + 多源回退)。
 
 ## 下一步(建议顺序)
 
-1. **视觉验收**:用户看 Edge(127.0.0.1:8899,服务若停:`python3 -m http.server 8899
-   --bind 127.0.0.1 --directory <build>/web-mobile`)或编辑器预览,报告画面偏差 → 修渲染。
+1. **表现层验收**:真实浏览器打开 127.0.0.1:8899,验证镜头 punch/慢动作/白闪/氛围暗角/
+   完美重扣回放/弧光残影/球残影四风格的手感与观感。
 2. **输入实测**:键盘/鼠标点虚拟按键各验一次(重点:KeyCode 值假设)。
-3. **菜单/暂停/结算/生涯/训练面板 UI**(阶段 3,对齐老 ui*.js 的功能,按 mobileOnly 裁剪)。
-4. **表现层打磨**:老 court.js 的 1272 行装饰(看台/灯光/主题)、镜头 punch/慢动作、
-   粒子/彩带、名牌与球衣号 Label。
-5. **BGM 烘焙**:老 bgm.js 分层编曲 → 离线烘焙 2~3 个强度档交叉淡入。
-6. **微信小游戏构建**(构建面板/CLI 出 wechatgame 包;注册 AppID;个人主体发布需 ICP 备案;
+3. **微信小游戏构建**(构建面板/CLI 出 wechatgame 包;注册 AppID;个人主体发布需 ICP 备案;
    包体:代码+音效 ~1MB,主包 4MB 限制无压力)。
-7. **安卓 APK**(JDK 17 + Android Studio + NDK r23~r25,路径不得含中文/空格;签名 keystore)。
+4. **安卓 APK 发版**(dudu-release 流程;版本号必须 +1)。
 
 ## 老仓库 ↔ 新工程 模块对照
 
 | 老仓库 | 新工程 | 状态 |
 | --- | --- | --- |
 | src/config-utils-physics-player-ai-rules-drill-career.js | assets/scripts/core/*.ts | ✅ 回归全绿 |
-| src/render/sprites.js | render/sprites.ts + palette.ts | ✅(名牌文字待挂 Label) |
-| src/render/court.js(装饰) | render/court.ts(简化版) | ⏳ 装饰未移植 |
-| src/render/hud.js / drill-anim.js | game-root HUD 简版 | ⏳ |
-| src/fx.js | game-root 内联精简版(hitstop/震屏/飘字) | ⏳ 完整特效 |
+| src/render/sprites.js | render/sprites.ts + palette.ts | ✅(名牌 Label 已挂,球衣号去除) |
+| src/render/court.js | render/court.ts(4 主题/看台/灯光/晃网) | ✅ |
+| src/render/hud.js / drill-anim.js | render/hud-overlay.ts / drill-anim | ✅ |
+| src/fx.js | render/fx.ts + world.ts 镜头四件套/白闪/氛围暗角 | ✅ |
+| src/replay.js | core/replay.ts + game-root 集成 + 转播水印 | ✅ |
 | src/input.js + 触屏 | input/ 三件套 | ✅ 待实测 |
-| src/audio.js + bgm.js | game/sfx.ts + 已烘焙 WAV | ✅ 音效 / ⏳ BGM |
-| src/ui*.js | — | ⏳ 阶段 3 |
-| src/game.js | game/game-root.ts | ✅ 阶段 2 形态 |
-| src/replay.js | — | ⏸ 后置 |
+| src/audio.js + bgm.js | game/sfx.ts + game/bgm.ts + 烘焙 WAV | ✅ |
+| src/ui*.js | ui/ 全套面板 + ui-arcade | ✅ |
+| src/game.js | game/game-root.ts | ✅ |

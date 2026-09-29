@@ -11,6 +11,7 @@
 import { Button, Color, Graphics, Label, Node, sys, UITransform, Vec2 } from "cc";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
+import { cancelFade, drawArcadePanel, drawHardShadow, fadeOutHide, slamIn, textW } from "./ui-arcade";
 import { DownloadProgress, UpdateInfo, UpdateService } from "../core/update-service";
 
 /** 进度条轨道几何(与 ui-arcade 面板宽度配套) */
@@ -18,12 +19,39 @@ const TRACK_X = -190;
 const TRACK_W = 380;
 const TRACK_H = 14;
 
+/** 更新日志框:长公告按行数撑高,上限内自适应,超限截断加省略号(不再无声裁切) */
+const NOTE_W = 390;
+const NOTE_LINE_H = 17;
+const NOTE_MAX_LINES = 7;
+const NOTE_BOX_MIN = 110;
+const NOTE_BOX_MAX = 150;
+
 /** 字节数 → 人话;小于 1 MB 用 KB,免得显示 0.0 MB */
 function fmtSize(bytes: number): string {
   const b = Math.max(0, bytes || 0);
   if (b < 1024) return `${Math.round(b)} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** 估算文案折行数:全角 1.05/半角 0.62 的 textW 折算(与 Graphics 底块同一把尺) */
+function noteLines(s: string): number {
+  let lines = 0;
+  for (const seg of s.split("\n")) lines += Math.max(1, Math.ceil(textW(seg, 13) / NOTE_W));
+  return lines;
+}
+
+/** 超长公告按宽度预算截断,尾部加省略号 —— 裁得明明白白,好过无声裁切 */
+function noteFit(s: string): string {
+  if (noteLines(s) <= NOTE_MAX_LINES) return s;
+  let budget = NOTE_W * NOTE_MAX_LINES;
+  let out = "";
+  for (const ch of s) {
+    budget -= textW(ch, 13);
+    if (budget <= textW("…", 13)) return `${out}…`;
+    out += ch;
+  }
+  return out;
 }
 
 /** 剩余时间 → 人话 */
@@ -38,6 +66,8 @@ export class UpdateDialog {
   readonly root: Node;
   private kit: UiKit;
   private card: Graphics;
+  private notesBoxG: Graphics;
+  private notesBoxNode: Node;
   private verLabel: Label;
   private sizeLabel: Label;
   private notesLabel: Label;
@@ -89,8 +119,8 @@ export class UpdateDialog {
     this.sizeLabel = kit.label(this.card.node, "大小: -- MB", 12, P.dim);
     this.sizeLabel.node.setPosition(0, 94, 0);
 
-    // 更新日志背景底框
-    const notesBox = kit.panel(this.card.node, 420, 110, {
+    // 更新日志背景底框(高度随公告行数自适应,show 时重绘)
+    const notesBox = kit.panel(this.card.node, 420, NOTE_BOX_MIN, {
       r: 8,
       bg: P.panelLight,
       bgAlpha: 0.6,
@@ -98,11 +128,13 @@ export class UpdateDialog {
       strokeAlpha: 0.15,
     });
     notesBox.node.setPosition(0, 24, 0);
+    this.notesBoxG = notesBox;
+    this.notesBoxNode = notesBox.node;
 
-    // 更新日志文本
+    // 更新日志文本:RESIZE_HEIGHT 让文字按内容自然换行撑开,不再被 CLAMP 裁掉下半截
     this.notesLabel = kit.label(notesBox.node, "更新内容", 13, P.text, { align: 0 });
-    this.notesLabel.overflow = Label.Overflow.CLAMP;
-    this.notesLabel.node.getComponent(UITransform)?.setContentSize(390, 96);
+    this.notesLabel.overflow = Label.Overflow.RESIZE_HEIGHT;
+    this.notesLabel.node.getComponent(UITransform)?.setContentSize(NOTE_W, NOTE_BOX_MIN - 14);
     this.notesLabel.node.setPosition(0, 0, 0);
 
     // 进度条容器
@@ -138,17 +170,17 @@ export class UpdateDialog {
     this.progressSub = kit.label(this.progressNode, "", 11, P.dim);
     this.progressSub.node.setPosition(0, -38, 0);
 
-    // 按钮组
-    this.updateBtn = kit.button(this.card.node, "立即更新", 180, 46, {
+    // 按钮组(50 高:弹窗主行动键也过触控线)
+    this.updateBtn = kit.button(this.card.node, "立即更新", 190, 50, {
       bg: P.accent,
       fg: P.ink,
       size: 16,
     });
-    this.updateBtn.setPosition(-104, -132, 0);
+    this.updateBtn.setPosition(-106, -132, 0);
     this.updateBtnLabel = this.updateBtn.children[0].getComponent(Label)!;
 
-    this.cancelBtn = kit.button(this.card.node, "稍后再说", 180, 46, { size: 16 });
-    this.cancelBtn.setPosition(104, -132, 0);
+    this.cancelBtn = kit.button(this.card.node, "稍后再说", 190, 50, { size: 16 });
+    this.cancelBtn.setPosition(106, -132, 0);
     this.cancelBtnLabel = this.cancelBtn.children[0].getComponent(Label)!;
 
     this.updateBtn.on(Button.EventType.CLICK, () => {
@@ -220,7 +252,27 @@ export class UpdateDialog {
     this.cancelBtnLabel.string = "稍后再说";
   }
 
+  /** 更新日志底框重绘:高度跟行数走,底缘固定在 -31(进度条 -56 之上留 18) */
+  private paintNotesBox(lines: number): void {
+    const P = this.kit.pal;
+    const h = Math.min(NOTE_BOX_MAX, Math.max(NOTE_BOX_MIN, lines * NOTE_LINE_H + 18));
+    const g = this.notesBoxG;
+    this.notesBoxNode.getComponent(UITransform)!.setContentSize(420, h);
+    this.notesBoxNode.setPosition(0, -31 + h / 2, 0);
+    g.clear();
+    drawHardShadow(g, 420, h, 8, 6, 6, 0.45);
+    drawArcadePanel(g, 420, h, 8, 0.93);
+    g.fillColor = col(P.panelLight, 0.6);
+    g.roundRect(-210, -h / 2, 420, h, 8);
+    g.fill();
+    g.strokeColor = col(P.line, 0.15);
+    g.lineWidth = 1;
+    g.roundRect(-210, -h / 2, 420, h, 8);
+    g.stroke();
+  }
+
   show(info: UpdateInfo): void {
+    cancelFade(this.root);
     this.session++;
     this.currentInfo = info;
     this.isDownloading = false;
@@ -228,13 +280,16 @@ export class UpdateDialog {
 
     this.verLabel.string = `新版本: ${info.tagName}`;
     this.sizeLabel.string = info.fileSizeText ? `安装包大小: ${info.fileSizeText}` : "安装包大小: 未知";
-    this.notesLabel.string = info.releaseNotes || "修复已知问题，优化游戏体验。";
+    const notes = info.releaseNotes || "修复已知问题，优化游戏体验。";
+    this.notesLabel.string = noteFit(notes);
+    this.paintNotesBox(Math.min(NOTE_MAX_LINES, noteLines(notes)));
 
     this.progressFill.clear();
     this.progressNode.active = false;
     this.resetActions("立即更新");
 
     this.root.active = true;
+    slamIn(this.card.node);   // 入场与其它弹窗统一:slam 砸落(此前是干巴的瞬间出现)
   }
 
   hide(): void {
@@ -243,7 +298,7 @@ export class UpdateDialog {
       UpdateService.instance.cancelDownload();
       this.isDownloading = false;
     }
-    this.root.active = false;
+    fadeOutHide(this.root);
   }
 
   /** 停止下载并把界面交回用户,不报错误 */

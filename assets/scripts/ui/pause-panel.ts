@@ -7,7 +7,7 @@
 import { Button, Color, Label, Node, Vec2 } from "cc";
 import { Rules } from "../core/rules";
 import type { UiKit } from "./ui-manager";
-import { slamIn } from "./ui-arcade";
+import { cancelFade, fadeOutHide, slamIn } from "./ui-arcade";
 
 export class PausePanel {
   readonly root: Node;
@@ -24,16 +24,18 @@ export class PausePanel {
     kit.dim(this.root, 0.25, 0.5);
     kit.atmosphere(this.root);
 
-    const card = kit.panel(this.root, 380, 374, { r: 16, alpha: 0.9 });
+    // 卡片 400 高:5 个按钮排下来每档间隙能保住 16(触控目标之间不留误触缝)
+    const card = kit.panel(this.root, 380, 400, { r: 16, alpha: 0.9 });
     this.card = card.node;
-    card.node.setPosition(0, 4, 0);
+    card.node.setPosition(0, 0, 0);
     const title = kit.label(card.node, "已暂停", 28, P.accent);
-    title.node.setPosition(0, 140, 0);
+    title.node.setPosition(0, 156, 0);
     title.enableShadow = true;
     title.shadowColor = new Color(0, 0, 0, 130);
     title.shadowOffset = new Vec2(0, -4);
-    kit.label(card.node, "P A U S E D", 11, P.dim).node.setPosition(0, 114, 0);
+    kit.label(card.node, "P A U S E D", 12, P.dim).node.setPosition(0, 130, 0);
 
+    // 五档按钮间距 62(按钮高 46 → 缝 16),底缘留 16
     const mk = (text: string, y: number, accent: boolean): Node => {
       const b = kit.button(card.node, text, 300, 46, accent
         ? { bg: P.accent, fg: P.ink, size: 18 }
@@ -42,28 +44,33 @@ export class PausePanel {
       return b;
     };
 
-    mk("继续比赛", 70, true).on(Button.EventType.CLICK, () => {
+    mk("继续比赛", 88, true).on(Button.EventType.CLICK, () => {
       kit.sfx.play("ui");
       Rules.resume();
     });
-    mk("重新开始", 16, false).on(Button.EventType.CLICK, () => kit.restartCurrent());
-    mk("设置", -38, false).on(Button.EventType.CLICK, () => {
+    mk("重新开始", 26, false).on(Button.EventType.CLICK, () => kit.restartCurrent());
+    mk("设置", -36, false).on(Button.EventType.CLICK, () => {
       kit.sfx.play("ui");
       kit.openSettings();          // 关完回到这一页,不是主菜单(见 UIManager.openSettings)
     });
     // 声音开关:两条总线一起切(细分的音效/音乐与音量在设置页)
-    const snd = mk("", -92, false);
+    const snd = mk("", -98, false);
     this.soundLabel = snd.children[0].getComponent(Label)!;
     snd.on(Button.EventType.CLICK, () => {
       const muted = kit.toggleMute();
       this.soundLabel.string = `声音:${muted ? "关" : "开"}`;
     });
-    mk("返回主菜单", -146, false).on(Button.EventType.CLICK, () => kit.quitToMenu());
+    mk("返回主菜单", -160, false).on(Button.EventType.CLICK, () => kit.quitToMenu());
   }
 
   show(): void {
+    cancelFade(this.root);
     this.soundLabel.string = `声音:${this.kit.muted ? "关" : "开"}`;
     this.root.active = true;
     slamIn(this.card);   // 老 .panel 的 slam 砸落
+  }
+
+  hide(): void {
+    fadeOutHide(this.root);
   }
 }

@@ -1,7 +1,12 @@
 // ============================================================
 // 触屏虚拟按键:左下「左移/右移(双击跨步)」,右下「跳/深球/短球」。
 // 和键盘映射同一套 Pad 动作语义;按钮节点由本模块程序化生成,
-// 编辑器里不用摆任何东西。多指同时按不同键靠 Cocos 的节点级触摸分发。
+// 编辑器里不用摆任何东西。
+//
+// 对局态的触摸命中收在**层节点**统一裁决(编辑态仍是逐键拖动):
+// 每根手指 claim 一个 touch id,按住中滑动会重新命中 —— 「左」滑到「右」
+// 不抬手直接换向,对拉快攻不用先松手;划过击球键不触发(只认按住类动作),
+// 防止滑动误出球。多指各玩各的 claim,互不干扰。
 //
 // 屏幕自适应与安全区防遮挡设计:
 // 1. 左侧移动簇(左/右)通过 Widget 吸附屏幕左下角,避让刘海/打孔。
@@ -19,10 +24,12 @@
 // 顺序就是有语义的兄弟序)、会在 Widget 还没给全屏层定尺寸时就 updateAlignment
 // (错一帧),还会丢掉正在进行的触摸 claim。
 // ============================================================
-import { Color, EventTouch, Graphics, Layers, Node, UITransform, Vec3, Widget, sys, v3, view } from "cc";
+import { Color, EventTouch, Graphics, Layers, Node, Tween, tween, UITransform, Vec3, Widget, sys, v3, view } from "cc";
 import { Pad, press, release, resetPadHolds } from "./pad";
 import { PAD_BASE, PAD_LABEL, PAD_LIMIT, Settings, type PadAction } from "../core/settings";
+import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
+import { haptic } from "../game/haptics";
 
 /** 有按下/抬起两种状态的键;击球键是边沿语义,抬起不动它 */
 const RELEASE_ACTIONS: PadAction[] = ["left", "right", "jump"];
@@ -30,7 +37,7 @@ const RELEASE_ACTIONS: PadAction[] = ["left", "right", "jump"];
 /**
  * 每一簇的建键顺序(照改造前的书写序,别顺手改成 PAD_ACTIONS 的顺序):
  * 兄弟序即绘制/命中序,后建的压在前一个上面。用户把两个键拖到重叠时,
- * 谁的 TOUCH_START 先被派发必须由建层顺序决定,不能每次启动都变。
+ * 谁的命中优先必须由建层顺序决定(层级命中从最上层往回找),不能每次启动都变。
  */
 const CLUSTER_ORDER: Record<"left" | "right", PadAction[]> = {
   left: ["left", "right"],
@@ -39,10 +46,16 @@ const CLUSTER_ORDER: Record<"left" | "right", PadAction[]> = {
 
 /** 顶部让开记分牌带(HUD 比分牌占 y≈203..261),按键中心不许进这一带 */
 const TOP_KEEP = 150;
-/** 圆形按钮离屏幕边的最小间隙 */
-const EDGE_PAD = 6;
 
 // ---------- 视觉状态 ----------
+
+/** hex + alpha(0..1) → cc.Color(padSkin 的值都按这个格式住 config) */
+function skinColor(hex: string, a: number): Color {
+  const c = new Color();
+  c.fromHEX(hex);
+  c.a = Math.round(a * 255);
+  return c;
+}
 
 interface BtnRec {
   action: PadAction;
@@ -58,27 +71,29 @@ interface BtnRec {
 /**
  * 统一在这里画圆(按下反馈 / 选中环 / 布局重画共用一份),
  * 半径必须从 rec.r 现读 —— 老写法把 spec.r 闭包进了重画函数,r 可变后就是暗雷。
+ * 配色一律读 CFG.padSkin(铁律:数值只进 config),本文件不再私藏色值。
  */
 function paint(rec: BtnRec, edit: boolean): void {
   const g = rec.g;
+  const S = CFG.padSkin;
   g.clear();
   // 深蓝玻璃底:球场透得过,按钮在亮/暗场地上都看得清(纯白 15% 会直接融进背景)
-  g.fillColor = rec.pressed ? new Color(30, 40, 72, 200) : new Color(14, 20, 40, 170);
-  g.strokeColor = rec.pressed ? new Color(255, 231, 77, 230) : new Color(255, 255, 255, 120);
+  g.fillColor = rec.pressed ? skinColor(S.downFill, S.downFillA) : skinColor(S.idleFill, S.idleFillA);
+  g.strokeColor = rec.pressed ? skinColor(S.downEdge, S.downEdgeA) : skinColor(S.idleEdge, S.idleEdgeA);
   g.lineWidth = rec.pressed ? 4 : 3;
   g.circle(0, 0, rec.r);
   g.fill();
   g.stroke();
   if (edit && rec.selected) {
     // 外圈荧光黄环 = 「选中」,与按下的内亮区分开:编辑态两者可能同时成立
-    g.strokeColor = new Color(255, 231, 77, 255);
+    g.strokeColor = skinColor(S.downEdge, 1);
     g.lineWidth = 3;
     g.circle(0, 0, rec.r + 8);
     g.stroke();
   }
   // 图标跟随按下/选中态变色
   drawIcon(g, rec.action, rec.r,
-    rec.pressed ? new Color(255, 231, 77, 230) : new Color(255, 255, 255, 200));
+    rec.pressed ? skinColor(S.downIcon, S.downIconA) : skinColor(S.icon, S.iconA));
 }
 
 // ---------- 按钮图标(矢量,跟随按钮半径缩放) ----------
@@ -87,8 +102,8 @@ function paint(rec: BtnRec, edit: boolean): void {
  * 在 Graphics 原点周围画按钮图标。
  * - left / right: 箭头
  * - jump: 上箭头
- * - swingFar: 高弧(高远球轨迹)+ 大端点
- * - swingNear: 低弧(吊球轨迹)+ 小端点
+ * - swingFar: 粗笔高弧 + 实心球 + 力量爆发线(重击/高远球)
+ * - swingNear: 细笔低弧 + 空心球 + 落地反弹弧(轻击/吊球)
  */
 function drawIcon(g: Graphics, action: PadAction, r: number, color: Color): void {
   g.strokeColor = color;
@@ -127,40 +142,54 @@ function drawIcon(g: Graphics, action: PadAction, r: number, color: Color): void
     }
 
     case "swingFar": {
-      // 高弧: 高远球轨迹,弧高 ≈ 0.72r,端点大圆点
-      const w = r * 0.6;
-      const h = r * 0.72;
+      // 重击(高远球):粗笔高弧 + 顶端实心球 + 外侧力量短线(爆发感)
+      const w = r * 0.55;
+      const h = r * 0.7;
       const N = 20;
+      g.lineWidth = 6;
       for (let i = 0; i <= N; i++) {
         const t = i / N;
         const x = -w + 2 * w * t;
-        const y = -r * 0.12 + 4 * h * t * (1 - t);
+        const y = -r * 0.15 + 4 * h * t * (1 - t);
         if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
       }
       g.stroke();
-      g.circle(-w, -r * 0.12, 4.5);
+      // 顶端实心球(羽毛球)
+      g.circle(w, -r * 0.15, 5);
       g.fill();
-      g.circle(w, -r * 0.12, 4.5);
-      g.fill();
+      // 力量爆发线(从球向外辐射)
+      g.lineWidth = 3;
+      const bx = w, by = -r * 0.15;
+      const angles = [-0.9, -0.35, 0.2];
+      for (const a of angles) {
+        g.moveTo(bx + Math.cos(a) * 7, by + Math.sin(a) * 7);
+        g.lineTo(bx + Math.cos(a) * 14, by + Math.sin(a) * 14);
+        g.stroke();
+      }
       break;
     }
 
     case "swingNear": {
-      // 低弧: 吊球轨迹,弧高 ≈ 0.48r,端点小圆点(与深球形成对比)
+      // 轻击(吊球):细笔低弧 + 空心球(轻盈) + 落地反弹小弧(过网轻落)
       const w = r * 0.55;
-      const h = r * 0.48;
+      const h = r * 0.38;
       const N = 16;
+      g.lineWidth = 3;
       for (let i = 0; i <= N; i++) {
         const t = i / N;
         const x = -w + 2 * w * t;
-        const y = -r * 0.08 + 4 * h * t * (1 - t);
+        const y = r * 0.05 + h * Math.sin(Math.PI * t);
         if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
       }
       g.stroke();
-      g.circle(-w, -r * 0.08, 3);
-      g.fill();
-      g.circle(w, -r * 0.08, 3);
-      g.fill();
+      // 落点空心圈(球轻盈落地)
+      g.circle(w, r * 0.05, 4);
+      g.stroke();
+      // 过网轻落小弧(在落点下方)
+      g.lineWidth = 2;
+      g.moveTo(w + 6, r * 0.05 + 2);
+      g.quadraticCurveTo(w + 10, r * 0.05 + 8, w + 14, r * 0.05 + 2);
+      g.stroke();
       break;
     }
   }
@@ -206,6 +235,8 @@ export interface TouchPadHandle {
   clampDelta(action: PadAction, dx: number, dy: number): { dx: number; dy: number };
   /** 编辑态选中环;传 null 清空 */
   select(action: PadAction | null): void;
+  /** 清触摸 claim 与按下的视觉状态(层被隐藏时 TOUCH_END 送不到,必须主动清) */
+  clearPressed(): void;
   readonly safe: SafeMargins;
   destroy(): void;
 }
@@ -217,7 +248,7 @@ function toClusterLocal(cluster: Node, e: EventTouch): Vec3 {
   return cluster.getComponent(UITransform)!.convertToNodeSpaceAR(v3(u.x, u.y, 0), tmpVec);
 }
 
-function makeButton(action: PadAction, cluster: Node, pad: Pad, opts: TouchPadOpts, recs: BtnRec[]): BtnRec {
+function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: BtnRec[]): BtnRec {
   const base = PAD_BASE[action];
   const p = Settings.padOf(action);
   const r = p.r;
@@ -260,21 +291,9 @@ function makeButton(action: PadAction, cluster: Node, pad: Pad, opts: TouchPadOp
     };
     node.on(Node.EventType.TOUCH_END, fin);
     node.on(Node.EventType.TOUCH_CANCEL, fin);
-  } else {
-    // 按下/松开视觉反馈:底色提亮 + 描边换荧光黄
-    node.on(Node.EventType.TOUCH_START, () => {
-      rec.pressed = true;
-      paint(rec, false);
-      press(pad, action);
-    });
-    const up = () => {
-      rec.pressed = false;
-      paint(rec, false);
-      if (RELEASE_ACTIONS.includes(action)) release(pad, action as "left");
-    };
-    node.on(Node.EventType.TOUCH_END, up);
-    node.on(Node.EventType.TOUCH_CANCEL, up);
   }
+  // 非编辑态不在这里挂事件:对局态的按下/滑动/换向由层节点统一裁决(见 bindPlayLayer),
+  // 节点级分发做不到「手指按住左键滑到右键不抬手换向」。
 
   recs.push(rec);
   return rec;
@@ -316,7 +335,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   leftWidget.bottom = safe.b;
   leftWidget.updateAlignment();
 
-  for (const a of CLUSTER_ORDER.left) makeButton(a, leftCluster, pad, opts, recs);
+  for (const a of CLUSTER_ORDER.left) makeButton(a, leftCluster, opts, recs);
 
   // 2. 右侧击球簇(「短球」「深球」「跳」)
   const rightCluster = new Node("cluster-right");
@@ -333,7 +352,80 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   rightWidget.bottom = safe.b;
   rightWidget.updateAlignment();
 
-  for (const a of CLUSTER_ORDER.right) makeButton(a, rightCluster, pad, opts, recs);
+  for (const a of CLUSTER_ORDER.right) makeButton(a, rightCluster, opts, recs);
+
+  // ---------- 对局态触摸:层节点统一命中 + 滑动换向(编辑模式不挂,键只是摆给你拖) ----------
+  //
+  // 每根手指 claim 一个 touch id;按住中滑动会重新命中:
+  //   「左」滑到「右」= 不抬手直接换向(对拉快攻省一次抬手);
+  //   滑出所有键 = 松键(与旧的 TOUCH_CANCEL 自愈同语义);
+  //   划过击球键不触发 —— 换向只认「按住类」动作(left/right/jump),
+  //   防止手指路过深球键凭空打出一拍。
+  const claims = new Map<number, { rec: BtnRec | null }>();
+
+  const bindPlayLayer = (): void => {
+    const layerTrans = layerUt;
+
+    /** 触点 → 命中的键:兄弟序即层级,从最上层(数组尾部)往回找 */
+    const hitAny = (e: EventTouch): BtnRec | null => {
+      const u = e.getUILocation();
+      const p = layerTrans.convertToNodeSpaceAR(v3(u.x, u.y, 0), tmpVec);
+      for (let i = recs.length - 1; i >= 0; i--) {
+        const rec = recs[i];
+        const c = layerTrans.convertToNodeSpaceAR(rec.node.worldPosition, new Vec3());
+        const dx = p.x - c.x, dy = p.y - c.y;
+        if (dx * dx + dy * dy <= rec.r * rec.r) return rec;
+      }
+      return null;
+    };
+
+    const down = (rec: BtnRec): void => {
+      rec.pressed = true;
+      paint(rec, false);
+      Tween.stopAllByTarget(rec.node);
+      rec.node.setScale(CFG.padSkin.pressScale, CFG.padSkin.pressScale, 1);
+      press(pad, rec.action);
+      haptic("light");
+    };
+    const upOf = (rec: BtnRec): void => {
+      rec.pressed = false;
+      paint(rec, false);
+      Tween.stopAllByTarget(rec.node);
+      tween(rec.node).to(0.12, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+      if (RELEASE_ACTIONS.includes(rec.action)) release(pad, rec.action as "left");
+    };
+
+    layer.on(Node.EventType.TOUCH_START, (e: EventTouch) => {
+      if (claims.has(e.getID())) return;
+      const rec = hitAny(e);
+      if (!rec) return;
+      claims.set(e.getID(), { rec });
+      down(rec);
+    });
+    layer.on(Node.EventType.TOUCH_MOVE, (e: EventTouch) => {
+      const c = claims.get(e.getID());
+      if (!c) return;
+      const rec = hitAny(e);
+      if (rec === c.rec) return;
+      if (c.rec) upOf(c.rec);
+      if (rec && RELEASE_ACTIONS.includes(rec.action)) {
+        c.rec = rec;
+        down(rec);
+      } else {
+        c.rec = null;    // 滑进击球键区/滑出所有键:松开但不换向
+      }
+    });
+    const fin = (e: EventTouch): void => {
+      const c = claims.get(e.getID());
+      if (!c) return;
+      claims.delete(e.getID());
+      if (c.rec) upOf(c.rec);
+    };
+    layer.on(Node.EventType.TOUCH_END, fin);
+    layer.on(Node.EventType.TOUCH_CANCEL, fin);
+  };
+
+  if (!opts.edit) bindPlayLayer();
 
   /** 视口半宽高:实时读层尺寸,不许写死 960×540(Widget 还没跑时用默认兜底) */
   const viewportHalf = (): { hw: number; hh: number } => {
@@ -352,10 +444,11 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     const { hw, hh } = viewportHalf();
     const corner = clusterCorner(action, hw, hh);
     const r = Settings.padOf(action).r;
-    // 圆心可行域:整圆在屏内,且不进顶部记分牌带
-    const lo = -hw + r + EDGE_PAD, hi = hw - r - EDGE_PAD;
+    // 圆心可行域:整圆在屏内,且不进顶部记分牌带(edgePad 从 config 读)
+    const edge = CFG.padSkin.edgePad;
+    const lo = -hw + r + edge, hi = hw - r - edge;
     const cx = clamp(corner.x + base.x + dx, Math.min(lo, hi), Math.max(lo, hi));
-    const cy = clamp(corner.y + base.y + dy, -hh + r + EDGE_PAD, hh - TOP_KEEP);
+    const cy = clamp(corner.y + base.y + dy, -hh + r + edge, hh - TOP_KEEP);
     return {
       dx: clamp(cx - corner.x - base.x, -PAD_LIMIT.maxDx, PAD_LIMIT.maxDx),
       dy: clamp(cy - corner.y - base.y, -PAD_LIMIT.maxDy, PAD_LIMIT.maxDy),
@@ -394,6 +487,16 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     apply,
     clampDelta,
     select,
+    clearPressed(): void {
+      claims.clear();
+      for (const rec of recs) {
+        if (!rec.pressed && rec.node.scale.x === 1) continue;
+        rec.pressed = false;
+        Tween.stopAllByTarget(rec.node);
+        rec.node.setScale(1, 1, 1);
+        paint(rec, !!opts.edit);
+      }
+    },
     safe,
     destroy(): void {
       off();
@@ -436,8 +539,9 @@ class TouchPadController {
     } else {
       // ⚠ 关键:手指按着「左」时把层 active=false,那个 TOUCH_END 就永远送不到
       // 节点,pad.left 卡在 true → 下一局人自己往左跑,双击跨步的计时字段也被污染。
-      // 所以「藏起来」这个动作必须顺带把所有按下状态清干净。
+      // 所以「藏起来」这个动作必须顺带把所有按下状态清干净(pad 状态 + claim + 视觉)。
       this.releaseAll();
+      h.clearPressed();
     }
   }
 

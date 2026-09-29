@@ -2,49 +2,82 @@
 // 全部平衡数值 / 键位 / 配色集中在这里 —— 想调手感只改这个文件
 // 单位约定:1 step = 1/60 s;长度 px;速度 px/step;加速度 px/step²
 // ============================================================
-import { DiffKey, MenuEntry, SkinDef, SkinKind, DrillDef } from "./types";
+import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, DrillDef } from "./types";
+
+// ===== 稀有度元数据:商店卡片框色/角标用;配色只进 config =====
+export const RARITY_META: Record<Rarity, { name: string; color: string }> = {
+  common:    { name: "经典", color: "#8a93a8" },
+  rare:      { name: "稀有", color: "#3ea6ff" },
+  epic:      { name: "史诗", color: "#b06bff" },
+  legendary: { name: "传说", color: "#ffb020" },
+};
 
 // ===== 皮肤表(纯装饰):换颜色不改手感;每类第一项 price 0 = 默认拥有 =====
 // 人物皮肤即现有 theme(main/dark/glow):球衣、短裤、发带、手臂全跟队色走
-// unlockLevel = 等级门槛(到级才能买),升级即「商店上新」
-// 每类按 price 升序排,商店格子按此顺序展示;价位顶到 880(普通难度 11-16 局),
-// 是毕业级长线目标,等级 cap 20 还给后续上新留了空间
+// 设计款(rarity != common)带发型/头饰/纹样/专属特效字段;纯色款统一 88 金币无门槛
+// 排列约定:每类默认款在前,其余按 price 升序;商店 UI 会把设计款提到纯色款前面展示
+// 本表整体降价重构后,原高价纯色款下架,已购玩家按 SKIN_REFUNDS 自动退款(见 career.ts)
 export const SKINS: Record<SkinKind, SkinDef[]> = {
   player: [
-    { id: "p-red",   kind: "player", name: "经典红", price: 0,   main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a" },
-    { id: "p-orange",kind: "player", name: "活力橙", price: 120, main: "#ff8a3d", dark: "#b34710", glow: "#ffb37a" },
-    { id: "p-mint",  kind: "player", name: "薄荷绿", price: 150, unlockLevel: 2, main: "#3ddc97", dark: "#0f7a4d", glow: "#8affc9" },
-    { id: "p-navy",  kind: "player", name: "深海蓝", price: 180, unlockLevel: 2, main: "#3f6df0", dark: "#1c3480", glow: "#7ea2ff" },
-    { id: "p-sakura",kind: "player", name: "樱花粉", price: 200, unlockLevel: 3, main: "#ff7bac", dark: "#b23368", glow: "#ffb3d1" },
-    { id: "p-violet",kind: "player", name: "电光紫", price: 300, unlockLevel: 5, main: "#a86bff", dark: "#5b2fb8", glow: "#d0b0ff" },
-    { id: "p-onyx",  kind: "player", name: "曜石黑", price: 350, unlockLevel: 4, main: "#3a4050", dark: "#15181f", glow: "#8e9bb8" },
-    { id: "p-jade",  kind: "player", name: "孔雀青", price: 420, unlockLevel: 6, main: "#16b8a6", dark: "#0a5c52", glow: "#6ff0dd" },
-    { id: "p-gold",  kind: "player", name: "冠军金", price: 500, unlockLevel: 7, main: "#ffd24d", dark: "#b8860b", glow: "#ffe9a0" },
-    { id: "p-ice",   kind: "player", name: "冰川白", price: 680, unlockLevel: 9, main: "#e9f2ff", dark: "#8fa3c8", glow: "#ffffff" },
+    { id: "p-red",     kind: "player", name: "经典红",   price: 0, main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a" },
+    { id: "p-orange",  kind: "player", name: "活力橙",   price: 88, rarity: "common", main: "#ff8a3d", dark: "#b34710", glow: "#ffb37a" },
+    { id: "p-navy",    kind: "player", name: "深海蓝",   price: 88, rarity: "common", main: "#3f6df0", dark: "#1c3480", glow: "#7ea2ff" },
+    { id: "p-sakura",  kind: "player", name: "樱花粉",   price: 88, rarity: "common", main: "#ff7bac", dark: "#b23368", glow: "#ffb3d1" },
+    { id: "p-flame",   kind: "player", name: "烈焰少年", price: 158, rarity: "rare",
+      main: "#ff5a2e", dark: "#8c2417", glow: "#ffb36b",
+      hairStyle: "spiky", hairColor: "#ff6a1f", jersey: "sash" },
+    { id: "p-shinobi", kind: "player", name: "影忍",     price: 178, rarity: "rare",
+      main: "#2a3d66", dark: "#141c33", glow: "#7e9bd8",
+      hairStyle: "bun", hairColor: "#1a1a22", headwear: "bandana" },
+    { id: "p-blossom", kind: "player", name: "樱花少女", price: 288, unlockLevel: 3, rarity: "epic",
+      main: "#ff8fb8", dark: "#a34368", glow: "#ffc9dc",
+      hairStyle: "twin", hairColor: "#ff9fc0", headwear: "ribbon", jersey: "trim" },
+    { id: "p-cyber",   kind: "player", name: "赛博骇客", price: 328, unlockLevel: 4, rarity: "epic",
+      main: "#19d3a2", dark: "#0d3b3f", glow: "#7dffe0",
+      hairStyle: "mohawk", hairColor: "#3dffa8", headwear: "goggles", jersey: "stripes" },
+    { id: "p-king",    kind: "player", name: "球场之王", price: 888, unlockLevel: 8, rarity: "legendary",
+      main: "#f5f2e6", dark: "#8a6a1c", glow: "#ffd24d",
+      hairStyle: "bun", hairColor: "#3a2e20", headwear: "crown", jersey: "twoTone", aura: "gold" },
   ],
   // 拍框 frame 留空 = 跟随人物主题 glow 色(默认拍的现状)
   racket: [
-    { id: "r-std",    kind: "racket", name: "标准拍", price: 0,   grip: "#20242f", shaft: "#efe7d8", frame: null },
-    { id: "r-carbon", kind: "racket", name: "碳黑拍", price: 100, grip: "#0c0e14", shaft: "#4a5060", frame: "#cfd6e4" },
-    { id: "r-jade",   kind: "racket", name: "翡翠拍", price: 150, unlockLevel: 2, grip: "#123324", shaft: "#b8f5d2", frame: "#2fe08a" },
-    { id: "r-sunset", kind: "racket", name: "落日拍", price: 250, unlockLevel: 4, grip: "#7a2e18", shaft: "#ffb37a", frame: "#ff6a1f" },
-    { id: "r-rose",   kind: "racket", name: "玫瑰金拍", price: 320, unlockLevel: 5, grip: "#4a2530", shaft: "#ffd9de", frame: "#ff9fb4" },
-    { id: "r-aurora", kind: "racket", name: "极光拍", price: 450, unlockLevel: 6, grip: "#14274d", shaft: "#a5f3fc", frame: "#22d3ee" },
-    { id: "r-mono",   kind: "racket", name: "月白拍", price: 600, unlockLevel: 8, grip: "#262b3a", shaft: "#f2f6ff", frame: "#d9e2ff" },
-    { id: "r-inferno",kind: "racket", name: "熔岩拍", price: 880, unlockLevel: 11, grip: "#1c0c10", shaft: "#ff9a62", frame: "#ff3b30" },
+    { id: "r-std",     kind: "racket", name: "标准拍", price: 0, grip: "#20242f", shaft: "#efe7d8", frame: null },
+    { id: "r-carbon",  kind: "racket", name: "碳黑拍", price: 88, rarity: "common", grip: "#0c0e14", shaft: "#4a5060", frame: "#cfd6e4" },
+    { id: "r-jade",    kind: "racket", name: "翡翠拍", price: 88, rarity: "common", grip: "#123324", shaft: "#b8f5d2", frame: "#2fe08a" },
+    { id: "r-rose",    kind: "racket", name: "玫瑰金拍", price: 88, rarity: "common", grip: "#4a2530", shaft: "#ffd9de", frame: "#ff9fb4" },
+    { id: "r-star",    kind: "racket", name: "星辉拍", price: 148, rarity: "rare",
+      grip: "#1c2233", shaft: "#ffd76a", frame: "#ffe9a8", stringColor: "#fff3c4", decal: "star" },
+    { id: "r-ember",   kind: "racket", name: "炽焰拍", price: 288, unlockLevel: 4, rarity: "epic",
+      grip: "#1c0c10", shaft: "#ff9a62", frame: "#ff4d26", decal: "flame", swingFx: "fire" },
+    { id: "r-frost",   kind: "racket", name: "冰晶拍", price: 318, unlockLevel: 5, rarity: "epic",
+      grip: "#0e2740", shaft: "#bfe9ff", frame: "#7ecbff", decal: "crystal", swingFx: "ice" },
+    { id: "r-rainbow", kind: "racket", name: "虹光拍", price: 688, unlockLevel: 7, rarity: "legendary",
+      grip: "#141024", shaft: "#d9c9ff", frame: "#8f7bff", stringColor: "#ffd9f0", swingFx: "rainbow" },
   ],
   // 羽毛球是公共道具,全场生效;默认色带原本误读红方阵营色,这里顺手解耦成自己的值
   // 裙羽 skirt 一律浅色系:球是全场最小的道具,深色裙羽会在暗色球馆里丢辨识度
   shuttle: [
-    { id: "s-std",    kind: "shuttle", name: "标准球", price: 0,   cap: "#f6f1e6", band: "#ff4d4d", skirt: "#fbfaf5", vein: "rgba(120,130,150,0.65)" },
-    { id: "s-neon",   kind: "shuttle", name: "荧光球", price: 50,  cap: "#d8f34d", band: "#141a2e", skirt: "#f4ffd0", vein: "rgba(90,140,60,0.7)" },
-    { id: "s-ice",    kind: "shuttle", name: "冰晶球", price: 120, unlockLevel: 2, cap: "#cfe9ff", band: "#2f7fff", skirt: "#eef6ff", vein: "rgba(90,130,200,0.7)" },
-    { id: "s-sunset", kind: "shuttle", name: "彩霞球", price: 300, unlockLevel: 5, cap: "#ffd9a0", band: "#ff6a1f", skirt: "#ffe9ec", vein: "rgba(255,130,150,0.65)" },
-    { id: "s-rose",   kind: "shuttle", name: "樱羽球", price: 380, unlockLevel: 5, cap: "#ffd8e6", band: "#ff4d94", skirt: "#fff0f5", vein: "rgba(230,110,160,0.65)" },
-    { id: "s-jade",   kind: "shuttle", name: "翡翠羽", price: 550, unlockLevel: 7, cap: "#d4ffe9", band: "#0fae6e", skirt: "#ecfff5", vein: "rgba(60,180,120,0.7)" },
-    { id: "s-gold",   kind: "shuttle", name: "鎏金羽", price: 600, unlockLevel: 8, cap: "#f2c14d", band: "#b8860b", skirt: "#ffe9a0", vein: "rgba(180,130,30,0.75)" },
-    { id: "s-volt",   kind: "shuttle", name: "紫电球", price: 760, unlockLevel: 10, cap: "#e8d8ff", band: "#8b5cf6", skirt: "#f4eeff", vein: "rgba(160,120,240,0.7)" },
+    { id: "s-std",     kind: "shuttle", name: "标准球", price: 0, cap: "#f6f1e6", band: "#ff4d4d", skirt: "#fbfaf5", vein: "rgba(120,130,150,0.65)" },
+    { id: "s-neon",    kind: "shuttle", name: "荧光球", price: 88, rarity: "common", cap: "#d8f34d", band: "#141a2e", skirt: "#f4ffd0", vein: "rgba(90,140,60,0.7)" },
+    { id: "s-ice",     kind: "shuttle", name: "冰晶球", price: 88, rarity: "common", cap: "#cfe9ff", band: "#2f7fff", skirt: "#eef6ff", vein: "rgba(90,130,200,0.7)" },
+    { id: "s-rose",    kind: "shuttle", name: "樱羽球", price: 88, rarity: "common", cap: "#ffd8e6", band: "#ff4d94", skirt: "#fff0f5", vein: "rgba(230,110,160,0.65)" },
+    { id: "s-comet",   kind: "shuttle", name: "彗星羽", price: 148, rarity: "rare",
+      cap: "#e8f4ff", band: "#2f7fff", skirt: "#f4faff", vein: "rgba(90,130,200,0.7)", trailStyle: "star" },
+    { id: "s-phoenix", kind: "shuttle", name: "凤凰羽", price: 328, unlockLevel: 5, rarity: "epic",
+      cap: "#ffd9a0", band: "#ff4d26", skirt: "#ffe9d8", vein: "rgba(255,120,60,0.72)", trailStyle: "flame" },
+    { id: "s-petal",   kind: "shuttle", name: "花语羽", price: 358, unlockLevel: 5, rarity: "epic",
+      cap: "#ffd8e6", band: "#ff4d94", skirt: "#fff0f5", vein: "rgba(230,110,160,0.66)", trailStyle: "petal" },
+    { id: "s-galaxy",  kind: "shuttle", name: "星河羽", price: 788, unlockLevel: 9, rarity: "legendary",
+      cap: "#e0d4ff", band: "#8b5cf6", skirt: "#f4eeff", vein: "rgba(160,120,240,0.72)", trailStyle: "rainbow" },
   ],
+};
+
+// ===== 下架皮肤退款表:本轮商店重构中被设计款替代的纯色款(id → 当年售价) =====
+// career.profile() 归一化存档时,owned 里命中此表的 id 会被移除并按原价退币(幂等)
+export const SKIN_REFUNDS: Record<string, number> = {
+  "p-mint": 150, "p-violet": 300, "p-onyx": 350, "p-jade": 420, "p-gold": 500, "p-ice": 680,
+  "r-sunset": 250, "r-aurora": 450, "r-mono": 600, "r-inferno": 880,
+  "s-sunset": 300, "s-jade": 550, "s-gold": 600, "s-volt": 760,
 };
 
 export const CFG = {
@@ -184,6 +217,7 @@ export const CFG = {
     jumpStretch: 1.16,
     runPhaseK: 0.06,     // 步频相位随水平位移累积(rad/px):慢走小碎步、冲刺大步频
     footstepSpeed: 5.5,  // 落脚扬尘的速度门槛(低于此值的碎步不扬尘)
+    kneeBendMax: 8,      // 跑步膝盖弯曲最大水平偏移(px):小腿向后折的最大幅度
   },
 
   // 挥拍:windup → active(可命中) → recovery
@@ -226,6 +260,17 @@ export const CFG = {
   perfect: {
     coreRatio: 0.15,   // qRaw ≥ 0.85
     powerDeg: 9,       // 比甜蜜点更狠的压弧度
+  },
+
+  // ===== 连击热手:同一分内连续 sweet/perfect 累积热度 =====
+  // 热度只在挥拍命中时增减(player.tryHit),beginPoint 清零;出球初速上限随热度放宽
+  // ——「连续踩准 → 球越来越凶」,断一拍立刻冷回普通。加成与甜蜜/完美 boost 叠加,
+  // 但总余量封在 shuttle.maxSpeed - shot.speedMax(物理上限,与 perfectBoost 同一预算)。
+  heat: {
+    speedBonus: 0.35,    // 每点热度给出的初速上限余量(px/step)
+    speedBonusMax: 1.5,  // 热度加成封顶
+    maxStreak: 8,        // 热度计数上限(防无限增长)
+    fireAt: 3,           // 热度到此换「火热」球残影 + 飘字提示
   },
 
   // 双打:两人同侧,空当判定阈值要按整场纵深算;进攻倾向也更高,否则回合打不完
@@ -311,6 +356,14 @@ export const CFG = {
     punchSweet: 1.025,        // 甜蜜点轻推镜头
     punchPerfect: 1.04,       // 完美击球(非扣杀)中等推近
 
+    // 五、击球白闪(全屏白光一闪即逝,老 fx.js hit 六档 flash 值)
+    flashNormal: 0.35,        // 普通高质量击球(q ≥ 0.86)
+    flashSweet: 0.42,
+    flashSmash: 0.55,
+    flashSweetSmash: 0.65,    // 黄金重扣
+    flashPerfect: 0.8,        // 完美击球/完美重扣共用顶档
+    flashDecay: 0.82,         // 白闪每模拟步衰减系数(老 fx.js flash *= 0.82)
+
     // 四、Whiff 挥空相机反馈
     shakeWhiff: 1.5,          // 挥空微抖:扑空的轻微颤感
     hitstopWhiff: 1,          // 挥空 1 帧微顿
@@ -343,10 +396,22 @@ export const CFG = {
     recoilSmash: 6,           // 扣杀后仰角度(度)
     recoilNormal: 3,          // 普通击球后仰角度(度)
     recoilDecay: 0.12,        // 后仰恢复速率
+    landSquashSmash: 0.62,    // 扣杀落地压扁比(普通落地 0.72,扣杀更深蹲)
 
     // C、拍头命中闪光
     racketFlashRadius: 16,    // 闪光半径
     racketFlashAlpha: 0.8,    // 闪光基础透明度
+
+    // --- 击打爽感补强:补平普通档反馈 / 场景差异化 ---
+    punchNormal: 1.012,       // 普通击球(q≥0.5)的镜头微推:对拉不再干瘪
+    flashNormalAt: 0.86,      // 普通档白闪的质量阈值(原硬编码 0.86 参数化)
+    flashNormalLowAt: 0.6,    // 次档微闪的质量下限
+    flashNormalLow: 0.18,     // 次档微闪强度(高质量球不闪、踩得还行微闪)
+    punchServe: 1.02,         // 发球镜头微推
+    flashServeFlick: 0.2,     // 偷后场发球白闪
+    shakeLandSmashVert: 5,    // 扣杀落地纵向震动(落地冲击以垂直分量为主)
+    scoreSlowmoFrames: 10,    // 扣杀得分庆祝短慢放时长(模拟帧)
+    scoreSlowmo: 0.45,        // 扣杀得分庆祝短慢放时间缩放
 
     // D、球种标签(非高级标签时一闪即逝的类型提示)
     shotLabelDrive:  { text: "平抽", color: "#d4e8ff", size: 13, life: 28 },
@@ -381,6 +446,19 @@ export const CFG = {
     sky: "#141a2e",
     accent: "#ffe14d",   // 荧光黄 —— 羽毛球/高亮
     ink: "#0a0d18",
+  },
+
+  // ===== 触屏虚拟按键视觉与手感(绘制在 input/touchpad.ts,数值只住这里) =====
+  // 半透明玻璃底:亮场(海滩)上靠深底压得住,暗场靠白描边提得出形状
+  padSkin: {
+    idleFill: "#0e1428", idleFillA: 0.82,       // 静止底色(14,20,40/210)
+    idleEdge: "#ffffff", idleEdgeA: 0.71,       // 静止描边(白/180)
+    downFill: "#1e2848", downFillA: 0.86,       // 按下底色(提亮 30,40,72/220)
+    downEdge: "#ffe14d", downEdgeA: 0.96,       // 按下描边 = 荧光黄,与 UI 主按钮同语言
+    icon: "#ffffff", iconA: 0.9,                // 静止图标(230)
+    downIcon: "#ffe14d", downIconA: 0.96,       // 按下图标(245)
+    pressScale: 0.9,       // 按下缩放:比 UI 按钮 zoomScale 0.94 更狠一点(游戏键要「墩」)
+    edgePad: 12,           // 圆心到屏边最小间隙:6 太贴边,拇指容易蹭到系统手势区
   },
 
   // 键位表(桌面端按 e.code 绑定,跨布局稳定;每项可给多个候选)
@@ -455,6 +533,10 @@ export const CFG = {
 
   // 皮肤表(见文件顶部的 SKINS):挂在 CFG 树上,沿用「手感与经济之外的一切数据都在 CFG」的心智
   skins: SKINS,
+  // 稀有度元数据(名称/徽章色),商店卡片渲染用
+  rarity: RARITY_META,
+  // 下架皮肤退款表,career.profile() 归一化存档时消费
+  refunds: SKIN_REFUNDS,
 };
 
 export const MENU: MenuEntry[] = [

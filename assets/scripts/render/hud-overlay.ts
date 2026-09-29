@@ -62,7 +62,8 @@ export class HudOverlay {
       if (land > CO.left - 60 && land < CO.right + 60) {
         const isSmash = b.shot.kind === "smash";
         const a = isSmash ? 0.65 + Math.sin(t * 0.25) * 0.25 : 0.30 + Math.sin(t * 0.14) * 0.12;
-        const rx = isSmash ? 17 : 13, ry = isSmash ? 6 : 4.5;
+        // 手机上椭圆物理高度不足 1mm 根本认不出,比原版放大一档(15×5.5 / 19×7)
+        const rx = isSmash ? 19 : 15, ry = isSmash ? 7 : 5.5;
         const cy = Y(CO.groundY + 2) - ry;   // 椭圆中心(Graphics 圆心)
         if (isSmash) {
           g.fillColor = withAlpha(pal("#ff6400"), 0.25 * a);
@@ -70,7 +71,7 @@ export class HudOverlay {
           g.fill();
         }
         g.strokeColor = withAlpha(pal(b.shot.intoNet ? "#ff6b6b" : isSmash ? "#ff5500" : "#ffe14d"), a);
-        g.lineWidth = isSmash ? 3.5 : 2;
+        g.lineWidth = isSmash ? 4 : 2.5;
         g.ellipse(X(land), cy, rx, ry);
         g.stroke();
       }

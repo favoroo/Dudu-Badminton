@@ -79,7 +79,29 @@ function profile(): Profile {
   const legacyMatches = load<number>("matches", 0);
   if (cache.stats.wins < legacyWins) cache.stats.wins = legacyWins;
   if (cache.stats.matches < legacyMatches) cache.stats.matches = legacyMatches;
+  // 商店重构退款:owned 里的已下架皮肤按原价退币、equipped 回落默认款
+  if (refundDelisted(cache)) saveProfile();
   return cache;
+}
+
+// 已下架皮肤退款:owned 里不在现行皮肤表、但命中 C.refunds 的 id,移出并按原价退币。
+// 幂等 —— 退款后 id 已不在 owned,下次进来不会再命中。equipped 指向下架皮肤回落默认款
+// (skinOf 本就有失效回退,这里清干净是为了存档里不留死引用)。
+function refundDelisted(p: Profile): boolean {
+  const keep: string[] = [];
+  let refund = 0;
+  for (const id of p.owned) {
+    if (skinById(id)) { keep.push(id); continue; }
+    const price = C.refunds[id];
+    if (price) refund += price;
+    else keep.push(id); // 不在退款表里的未知 id 原样保留,不误删
+  }
+  let changed = keep.length !== p.owned.length;
+  if (changed) { p.owned = keep; p.coins += refund; }
+  for (const k of KINDS) {
+    if (!skinById(p.equipped[k])) { p.equipped[k] = DEFAULTS[k].id; changed = true; }
+  }
+  return changed;
 }
 
 function saveProfile(): void { save(KEY, cache); }
@@ -259,14 +281,16 @@ function buyAndEquip(kind: SkinKind, id: string): BuyResult {
   return r;
 }
 
-// 把当前装备解析成 theme / racketSkin,只挂在左队 0 号真人(「你」)身上。
-// CPU 与 P2 保持阵营色 —— 敌我一眼分明,这也是现有视觉语言
+// 把当前装备解析成 theme / playerSkin / racketSkin,只挂在左队 0 号真人(「你」)身上。
+// CPU 与 P2 保持阵营色 —— 敌我一眼分明,这也是现有视觉语言。
+// theme 只承载三色(与 CPU 阵营色同构),发型/头饰/纹样/光环等设计字段走 playerSkin
 function applyToMatch(): void {
   if (!Rules.R.players.length) return;
   const me = Rules.R.players[0];
   if (me && !me.isAI) {
     const ps = skinOf("player");
     me.theme = { main: ps.main || "#ff4d4d", dark: ps.dark || "#a8202c", glow: ps.glow || "#ff8a6a", name: ps.name };
+    me.playerSkin = ps;
     me.racketSkin = skinOf("racket");
   }
 }

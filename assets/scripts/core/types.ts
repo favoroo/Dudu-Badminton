@@ -137,6 +137,8 @@ export interface Player {
   smashGlow: number;
   sweetGlow: number;
   perfectGlow: number;
+  /** 连击热手:本分内连续 sweet/perfect 计数(tryHit 增减,beginPoint 清零) */
+  heat: number;
   /** 击球身体后仰(度):命中瞬间设值,每帧衰减回 0 */
   hitRecoil: number;
   /** 跨步救球:-1=未激活,>=0=当前帧计数 */
@@ -147,6 +149,8 @@ export interface Player {
   /** rules.step 每步记下的输入快照(调试/回放用) */
   lastInp?: PlayerInput;
   racketSkin?: SkinDef;
+  /** 完整人物皮肤定义:theme 只传三色,发型/头饰/纹样/光环等设计字段从这里读 */
+  playerSkin?: SkinDef;
   hideTag?: boolean;
   groundY?: number;
 }
@@ -184,6 +188,8 @@ export interface ShotResult {
   contactX: number;
   contactY: number;
   hitter: Player;
+  /** 命中后的连击热度(渲染层球残影换「火热」风格用) */
+  heat?: number;
   /** 时机教学:命中了但不甜时提示该往哪边调(只给真人) */
   timingHint?: "early" | "late";
 }
@@ -198,19 +204,36 @@ export interface GameEvent {
 
 // ---------- 数据表类型(config.ts 使用) ----------
 
-/** 皮肤:三类共用一张表结构,颜色字段按 kind 各取所需 */
+/** 稀有度:商店卡片框色/角标/排序依据;纯色款=common,设计款按设计量分级 */
+export type Rarity = "common" | "rare" | "epic" | "legendary";
+
+/** 皮肤:三类共用一张表结构,颜色字段按 kind 各取所需;
+ *  设计字段(发型/头饰/纹样/特效)同样按 kind 各取所需,全部可选=纯色款只填颜色 */
 export interface SkinDef {
   id: string;
   kind: "player" | "racket" | "shuttle";
   name: string;
   price: number;
   unlockLevel?: number;
+  rarity?: Rarity;
   /** player 皮肤主题色 */
   main?: string; dark?: string; glow?: string;
+  /** player 设计字段:发型/发色/头饰/球衣纹样/脚下光环(传说专属) */
+  hairStyle?: "spiky" | "twin" | "bun" | "mohawk";
+  hairColor?: string;
+  headwear?: "cap" | "crown" | "goggles" | "ribbon" | "bandana";
+  jersey?: "stripes" | "sash" | "trim" | "twoTone";
+  aura?: "gold" | "neon" | "flame" | "ice";
   /** racket 配色;frame 留空 = 跟随人物主题 glow 色 */
   grip?: string; shaft?: string; frame?: string | null;
+  /** racket 设计字段:拍线颜色/拍框贴章/挥拍弧光专属风格(残影同步) */
+  stringColor?: string;
+  decal?: "star" | "bolt" | "flame" | "crystal";
+  swingFx?: "fire" | "ice" | "electric" | "rainbow";
   /** shuttle 配色;裙羽一律浅色系,暗色球馆里不丢辨识度 */
   cap?: string; band?: string; skirt?: string; vein?: string;
+  /** shuttle 设计字段:专属拖尾风格(全场可见,高稀有度卖点) */
+  trailStyle?: "star" | "flame" | "petal" | "rainbow";
 }
 
 export type SkinKind = "player" | "racket" | "shuttle";

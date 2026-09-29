@@ -5,14 +5,14 @@
 // 网顶在 -70)的开阔区,与两侧控制簇错开。
 // 同步策略与老 DD.UI.sync(R) 一致:由 UIManager 每帧喂入 R,UI 只读。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3, Widget, sys, view } from "cc";
+import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3, Widget } from "cc";
 import { CFG } from "../core/config";
 import { Rules } from "../core/rules";
 import { Drill } from "../core/drill";
 import type { RulesState } from "../core/rules";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { ARCADE, bannerOnce, drawArcadePanel, drawChip, drawHardShadow, drawMenuCard, popScore, textW } from "./ui-arcade";
+import { ARCADE, bannerOnce, cancelFade, drawArcadePanel, drawChip, drawHardShadow, drawMenuCard, fadeOutHide, popScore, safePad, textW } from "./ui-arcade";
 
 export class Hud {
   readonly root: Node;
@@ -59,21 +59,9 @@ export class Hud {
     this.cPlain.fromHEX(P.text);
 
     // ---------- 安全区避让:刘海/圆角把顶部压掉多少,整条记分牌就往下挪多少 ----------
-    // 与老 DOM 层的 #marquee 定位等价:设计高度固定 540,把像素内缩换算成世界单位。
-    let safeTop = 0, safeLeft = 14, safeRight = 14;
-    try {
-      const vs = view.getVisibleSize();
-      const sr = sys.getSafeAreaRect();
-      if (vs.height > 0 && sr) {
-        const topPx = vs.height - (sr.y + sr.height);
-        const leftPx = sr.x;
-        const rightPx = vs.width - (sr.x + sr.width);
-        const scale = CFG.world.h / vs.height;
-        if (topPx > 0) safeTop = Math.min(48, topPx * scale);
-        if (leftPx > 0) safeLeft = Math.max(safeLeft, leftPx * scale + 8);
-        if (rightPx > 0) safeRight = Math.max(safeRight, rightPx * scale + 8);
-      }
-    } catch {}
+    // 换算与 cap 规则收编进 ui-arcade.safePad():世界单位出尺,不再本地手算
+    const sp = safePad();
+    const safeTop = sp.top, safeLeft = sp.left, safeRight = sp.right;
 
     // 顶部整簇(比分牌 / 中缝徽章 / 状态行 / 训练进度 / 发球指示)一起让开安全区
     const top = new Node("top-bar");
@@ -145,7 +133,7 @@ export class Hud {
     this.statusBg.setParent(top);
     this.statusBg.active = false;
 
-    this.statusLine = kit.label(top, "", 15, P.text);
+    this.statusLine = kit.label(top, "", 15, P.text, { outline: P.ink, outlineW: 2 });
     this.statusLine.node.setPosition(0, 190, 0);
     this.statusOp = this.statusLine.node.addComponent(UIOpacity);
 
@@ -201,7 +189,8 @@ export class Hud {
     this.serveFlag.active = false;
 
     // ---------- 暂停按钮(右上角,Widget 对齐真机拉宽后的边缘并避让安全区) ----------
-    this.pauseBtn = kit.button(this.root, "II", 56, 56, { bg: P.panel, size: 22, stroke: P.line, strokeAlpha: 0.35 });
+    // 64×64:横屏下离拇指最远的角落,不能再小;字号跟着按钮走
+    this.pauseBtn = kit.button(this.root, "II", 64, 64, { bg: P.panel, size: 24, stroke: P.line, strokeAlpha: 0.35 });
     const wd = this.pauseBtn.addComponent(Widget);
     wd.isAlignTop = true; wd.top = 12 + safeTop;
     wd.isAlignRight = true; wd.right = safeRight;
@@ -218,7 +207,10 @@ export class Hud {
       this.lastScore = "";
       this.lastStatus = "";
       this.lastModeTag = "";
+      fadeOutHide(this.root);
+      return;
     }
+    cancelFade(this.root);
     this.root.active = on;
   }
 
@@ -234,7 +226,7 @@ export class Hud {
     g.node.getComponent(UITransform)!.setContentSize(w, 28);
     g.clear();
     drawHardShadow(g, w, 28, 9, 3, 3, 0.4);
-    drawMenuCard(g, w, 28, 9, { edge: 0, bar: 0, alpha: 0.74 });
+    drawMenuCard(g, w, 28, 9, { edge: 0, bar: 0, alpha: 0.86 });   // 底块加深:亮色球馆上字要站得住
   }
 
   /** 局别标签底块:左缘贴在 Widget 的 left 上,只往右长(文字已锚到左缘) */
@@ -245,7 +237,7 @@ export class Hud {
     g.node.getComponent(UITransform)!.setContentSize(w, 24);
     g.node.setPosition(-95 + w / 2, 0, 0);
     g.clear();
-    drawMenuCard(g, w, 24, 7, { edge: 0, bar: 0, alpha: 0.74 });
+    drawMenuCard(g, w, 24, 7, { edge: 0, bar: 0, alpha: 0.86 });
   }
 
   /** 每帧由 UIManager 调用;只读 R,不推进任何游戏状态 */

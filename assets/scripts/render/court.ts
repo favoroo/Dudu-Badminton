@@ -314,6 +314,100 @@ interface DojoLantern {
   r: number;
 }
 
+// --- Phase 1 新增数据类型 ---
+
+/** Arena: 观众手机闪光灯 */
+interface ArenaFlash {
+  crowdIdx: number;
+  interval: number;
+  timer: number;
+  duration: number;
+}
+
+/** Arena: 观众挥舞毛巾 */
+interface ArenaTowler {
+  crowdIdx: number;
+  color: Color;
+  phase: number;
+  period: number;
+}
+
+/** Beach: 海面跃鱼 */
+interface BeachFish {
+  x: number;
+  baseY: number;
+  interval: number;
+  timer: number;
+  jumpPhase: number;
+  arcHeight: number;
+  size: number;
+  active: boolean;
+}
+
+/** Beach: 沙滩阳光闪烁 */
+interface BeachSparkle {
+  x: number;
+  y: number;
+  phase: number;
+  speed: number;
+  maxSize: number;
+}
+
+/** Beach: 海面焦散光斑 */
+interface BeachCaustic {
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  phase: number;
+  speed: number;
+}
+
+/** Cyber: 霓虹雨丝 */
+interface CyberRain {
+  x: number;
+  y: number;
+  speed: number;
+  len: number;
+  isCyan: boolean;
+}
+
+/** Cyber: 飞行器 */
+interface CyberDrone {
+  x: number;
+  y: number;
+  speed: number;
+  size: number;
+  hue: number;
+}
+
+/** Dojo: 萤火虫 */
+interface DojoFirefly {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  phase: number;
+  pulseSpeed: number;
+  size: number;
+}
+
+/** Dojo: 线香烟雾 */
+interface DojoIncense {
+  baseX: number;
+  baseY: number;
+  segments: { dx: number; dy: number; phase: number }[];
+}
+
+/** Dojo: 缘侧踏石 */
+interface DojoStone {
+  x: number;
+  y: number;
+  rx: number;
+  ry: number;
+  shade: number;
+}
+
 // ============================================================
 // 球场渲染器核心类
 // ============================================================
@@ -324,6 +418,7 @@ export class CourtRenderer {
 
   // 物理与时间状态
   private time = 0;
+  private windX = 0;
   private netShakeAmp = 0;
   private netHitY = CO.netTopY + 18;
   private netShakeTime = 0;
@@ -334,6 +429,8 @@ export class CourtRenderer {
   private arenaSigns: string[] = [];
   private boards: ArenaBoard[] = [];
   private dusts: DustParticle[] = [];
+  private arenaFlashes: ArenaFlash[] = [];
+  private arenaTowels: ArenaTowler[] = [];
 
   // 2. 阳光海滩数据
   private beachClouds: BeachCloud[] = [];
@@ -342,11 +439,16 @@ export class CourtRenderer {
   private beachIslands: { x: number; y: number; w: number; h: number }[] = [];
   private beachBoats: { x: number; y: number; speed: number; bobPh: number }[] = [];
   private beachShells: BeachShell[] = [];
+  private beachFishes: BeachFish[] = [];
+  private beachSparkles: BeachSparkle[] = [];
+  private beachCaustics: BeachCaustic[] = [];
 
   // 3. 赛博夜市数据
   private cyberBuildings: CyberBuilding[] = [];
   private cyberParticles: CyberParticle[] = [];
   private cyberFloorTraces: CyberFloorTrace[] = [];
+  private cyberRains: CyberRain[] = [];
+  private cyberDrones: CyberDrone[] = [];
 
   // 4. 竹林道场数据
   private dojoMountains: DojoMountain[] = [];
@@ -354,6 +456,9 @@ export class CourtRenderer {
   private dojoBamboos: DojoBamboo[] = [];
   private dojoPetals: DojoPetal[] = [];
   private dojoLanterns: DojoLantern[] = [];
+  private dojoFireflies: DojoFirefly[] = [];
+  private dojoIncenses: DojoIncense[] = [];
+  private dojoStones: DojoStone[] = [];
 
   constructor() {
     // 这里原本在构造函数里 load("court_theme") —— 但本类是模块级单例
@@ -448,6 +553,30 @@ export class CourtRenderer {
       });
     }
 
+    // Arena 闪光灯：10 个观众位随机闪烁
+    this.arenaFlashes = [];
+    for (let i = 0; i < 10; i++) {
+      this.arenaFlashes.push({
+        crowdIdx: Math.floor(rnd() * this.crowd.length),
+        interval: 120 + rnd() * 280,
+        timer: rnd() * 200,
+        duration: 3 + Math.floor(rnd() * 3),
+      });
+    }
+
+    // Arena 毛巾挥舞者：3 名分散在不同排
+    this.arenaTowels = [];
+    const towelColors = [colRgba(239, 68, 68, 0.85), colRgba(253, 224, 71, 0.85), colRgba(56, 189, 248, 0.85)];
+    for (let i = 0; i < 3; i++) {
+      const rowStart = i * 44;
+      this.arenaTowels.push({
+        crowdIdx: rowStart + Math.floor(rnd() * 30),
+        color: towelColors[i],
+        phase: rnd() * 6.28,
+        period: 0.04 + rnd() * 0.03,
+      });
+    }
+
     // 2. 阳光海滩
     this.beachClouds = [];
     for (let i = 0; i < 6; i++) {
@@ -502,6 +631,46 @@ export class CourtRenderer {
       });
     }
 
+    // Beach 跃鱼：3 条在不同位置轮流跳跃
+    this.beachFishes = [];
+    for (let i = 0; i < 3; i++) {
+      this.beachFishes.push({
+        x: 120 + rnd() * (W - 240),
+        baseY: 290 + rnd() * 60,
+        interval: 300 + rnd() * 300,
+        timer: rnd() * 400,
+        jumpPhase: 0,
+        arcHeight: 20 + rnd() * 15,
+        size: 3 + rnd() * 2,
+        active: false,
+      });
+    }
+
+    // Beach 沙滩阳光闪烁：45 个散布在沙地区域
+    this.beachSparkles = [];
+    for (let i = 0; i < 45; i++) {
+      this.beachSparkles.push({
+        x: -EXT_W + 40 + rnd() * (TOTAL_W - 80),
+        y: CO.groundY + 8 + rnd() * (BOTTOM_WY - CO.groundY - 20),
+        phase: rnd() * 6.28,
+        speed: 0.6 + rnd() * 1.2,
+        maxSize: 1.0 + rnd() * 1.5,
+      });
+    }
+
+    // Beach 海面焦散光斑：14 个在海面漂移
+    this.beachCaustics = [];
+    for (let i = 0; i < 14; i++) {
+      this.beachCaustics.push({
+        cx: rnd() * W,
+        cy: 270 + rnd() * 150,
+        rx: 15 + rnd() * 25,
+        ry: 6 + rnd() * 10,
+        phase: rnd() * 6.28,
+        speed: 0.3 + rnd() * 0.5,
+      });
+    }
+
     // 3. 赛博夜市
     this.cyberBuildings = [];
     const numBuildings = Math.ceil(TOTAL_W / 34);
@@ -543,6 +712,30 @@ export class CourtRenderer {
       { y: CO.groundY + 80, x1: -EXT_W + 80, x2: W + 60, hue: 190 },
       { y: CO.groundY + 125, x1: 80, x2: TOTAL_W - 120, hue: 330 },
     ];
+
+    // Cyber 霓虹雨丝：70 条斜向雨滴
+    this.cyberRains = [];
+    for (let i = 0; i < 70; i++) {
+      this.cyberRains.push({
+        x: rnd() * TOTAL_W - EXT_W,
+        y: rnd() * CO.groundY,
+        speed: 4 + rnd() * 4,
+        len: 8 + rnd() * 12,
+        isCyan: rnd() > 0.45,
+      });
+    }
+
+    // Cyber 飞行器：2 架在不同高度
+    this.cyberDrones = [];
+    for (let i = 0; i < 2; i++) {
+      this.cyberDrones.push({
+        x: rnd() * W,
+        y: 100 + rnd() * 120,
+        speed: (rnd() > 0.5 ? 1 : -1) * (0.6 + rnd() * 0.8),
+        size: 5 + rnd() * 4,
+        hue: rnd() > 0.5 ? 190 : 330,
+      });
+    }
 
     // 4. 竹林道场
     this.dojoMountains = [
@@ -591,6 +784,48 @@ export class CourtRenderer {
       { x: 620, y: 68, r: 14 },
       { x: 820, y: 75, r: 16 },
     ];
+
+    // Dojo 萤火虫：15 个在竹林间飘浮
+    this.dojoFireflies = [];
+    for (let i = 0; i < 15; i++) {
+      this.dojoFireflies.push({
+        x: rnd() * W,
+        y: 80 + rnd() * 340,
+        vx: (rnd() - 0.5) * 0.3,
+        vy: (rnd() - 0.5) * 0.2,
+        phase: rnd() * 6.28,
+        pulseSpeed: 0.8 + rnd() * 1.5,
+        size: 1.5 + rnd() * 1.5,
+      });
+    }
+
+    // Dojo 线香烟雾：3 柱
+    this.dojoIncenses = [];
+    const incensePositions = [200, 480, 760];
+    for (const bx of incensePositions) {
+      const segs: { dx: number; dy: number; phase: number }[] = [];
+      for (let s = 0; s < 8; s++) {
+        segs.push({
+          dx: (rnd() - 0.5) * 12,
+          dy: s * 18,
+          phase: rnd() * 6.28,
+        });
+      }
+      this.dojoIncenses.push({ baseX: bx, baseY: CO.groundY - 10, segments: segs });
+    }
+
+    // Dojo 缘侧踏石：4 块
+    this.dojoStones = [];
+    const stoneXs = [180, 400, 600, 820];
+    for (const sx of stoneXs) {
+      this.dojoStones.push({
+        x: sx + (rnd() - 0.5) * 30,
+        y: 650 + rnd() * 40,
+        rx: 10 + rnd() * 6,
+        ry: 6 + rnd() * 3,
+        shade: rnd(),
+      });
+    }
   }
 
   // ------------------------------------------------------------
@@ -646,6 +881,8 @@ export class CourtRenderer {
     this.ensureTheme();
     const glow = clamp(rallyCount / 18, 0, 1);
     const t = this.time;
+    // 统一风力系统 — 所有漂浮粒子共享风向
+    this.windX = Math.sin(t * 0.005) * Math.cos(t * 0.013) * 3.5;
 
     if (this.currentTheme === "beach") {
       this.drawBeach(g, vp, t, glow);
@@ -655,6 +892,15 @@ export class CourtRenderer {
       this.drawDojo(g, vp, t, glow);
     } else {
       this.drawArena(g, vp, t, glow);
+    }
+
+    // 回合升温氛围 — 全屏极低 alpha 主题色调色
+    if (glow > 0.05) {
+      let tintR = 255, tintG = 200, tintB = 100;
+      if (this.currentTheme === "cyber") { tintR = 140; tintG = 40; tintB = 200; }
+      else if (this.currentTheme === "beach") { tintR = 255; tintG = 220; tintB = 80; }
+      else if (this.currentTheme === "dojo") { tintR = 255; tintG = 180; tintB = 80; }
+      fillRect(g, vp, -EXT_W, 0, TOTAL_W, H, colRgba(tintR, tintG, tintB, glow * 0.06));
     }
 
     // 绘制具有弹性受力晃动的物理球网
@@ -746,6 +992,33 @@ export class CourtRenderer {
       );
       // 观众头部
       fillCircle(g, vp, c.x, c.y + bob, c.r, new Color(shade + 8, shade + 6, shade + 28, 255));
+    }
+
+    // 观众手机闪光灯（拍照闪烁效果）
+    const flashIntervalMul = glow > 0.3 ? 0.5 : 1.0;
+    for (const f of this.arenaFlashes) {
+      f.timer -= 1;
+      if (f.timer <= 0) {
+        const c = this.crowd[f.crowdIdx];
+        if (c) {
+          const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
+          fillCircle(g, vp, c.x, c.y + bob - 2, 2, colRgba(255, 255, 255, 0.9));
+          fillConcentricGlow(g, vp, c.x, c.y + bob - 2, 8, 6, colRgba(255, 255, 255, 0.4), colRgba(255, 255, 255, 0), 2);
+        }
+        f.timer = f.interval * flashIntervalMul;
+      }
+    }
+
+    // 观众挥舞毛巾
+    for (const tw of this.arenaTowels) {
+      const c = this.crowd[tw.crowdIdx];
+      if (!c) continue;
+      const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
+      const wave = Math.sin(time * tw.period + tw.phase);
+      if (wave > 0.3) {
+        const towelY = c.y + bob - c.r * 2.5 - wave * 4;
+        fillRect(g, vp, c.x - 4, towelY, 8, 3, tw.color);
+      }
     }
 
     // 相持高潮挥动荧光棒
@@ -877,7 +1150,7 @@ export class CourtRenderer {
         const y2 = 42 + t2 * (CO.groundY - 42);
         const w1 = 36 + t1 * (165 - 36);
         const w2 = 36 + t2 * (165 - 36);
-        const alpha = beamBaseAlpha * (1.0 - t1 * 0.75);
+        const alpha = beamBaseAlpha * (1.0 - t1 * 0.75) * (0.92 + Math.sin(time * 0.018 + lamp * 0.007) * 0.08);
 
         g.fillColor = colRgba(255, 240, 195, alpha);
         g.moveTo(vp.x(lamp - w1), vp.y(y1));
@@ -896,7 +1169,7 @@ export class CourtRenderer {
         42,
         110,
         70,
-        colRgba(255, 248, 220, 0.26 + glow * 0.08),
+        colRgba(255, 248, 220, (0.26 + glow * 0.08) * (0.93 + Math.sin(time * 0.018 + lamp * 0.007) * 0.07)),
         colRgba(255, 225, 150, 0),
         4
       );
@@ -920,7 +1193,7 @@ export class CourtRenderer {
       }
       if (inBeam) {
         const alpha = d.baseAlpha * (0.6 + Math.sin(time * 0.04 + d.ph) * 0.4);
-        fillCircle(g, vp, d.x, d.y, d.r, colRgba(255, 245, 210, alpha * 0.6));
+        fillCircle(g, vp, d.x + this.windX * 2, d.y, d.r, colRgba(255, 245, 210, alpha * 0.6));
       }
     }
 
@@ -991,6 +1264,20 @@ export class CourtRenderer {
     }
     fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, colRgba(255, 238, 195, 0.55));
 
+    // 场边教练剪影 — 左右各一个坐姿剪影，头部微晃
+    for (const side of [-1, 1]) {
+      const cx = side === -1 ? CO.left - 45 : CO.right + 45;
+      const cy = CO.groundY + 20;
+      const headBob = Math.sin(time * 0.015 + side * 2) * 2;
+      // 身体
+      fillEllipse(g, vp, cx, cy + 8, 10, 14, new Color(20, 25, 40, 220));
+      // 头部
+      fillCircle(g, vp, cx + headBob, cy - 8, 7, new Color(20, 25, 40, 220));
+      // 水壶
+      fillRect(g, vp, cx + side * 14, cy + 10, 5, 8, new Color(60, 130, 200, 180));
+      fillRect(g, vp, cx + side * 14.5, cy + 7, 4, 3, new Color(60, 130, 200, 180));
+    }
+
     // 【专属延展细节】：底部近景场边哑光防滑包边收边条 (wy: 680~720)
     fillRect(g, vp, -EXT_W, 680, TOTAL_W, 40, new Color(24, 18, 14, 255));
     fillRect(g, vp, -EXT_W, 680, TOTAL_W, 2, colRgba(255, 255, 255, 0.12));
@@ -1044,6 +1331,15 @@ export class CourtRenderer {
       8
     );
 
+    // 海面焦散光斑（阳光穿透水体的折射光纹）
+    for (const ca of this.beachCaustics) {
+      const cx = ca.cx + Math.sin(time * 0.02 + ca.phase) * 8;
+      const alpha = 0.04 + Math.sin(time * ca.speed * 0.03 + ca.phase) * 0.03;
+      if (alpha > 0.01) {
+        fillEllipse(g, vp, cx, ca.cy, ca.rx, ca.ry, colRgba(255, 255, 255, alpha));
+      }
+    }
+
     // 远海微型三角白帆船
     for (const boat of this.beachBoats) {
       boat.x += boat.speed;
@@ -1058,6 +1354,38 @@ export class CourtRenderer {
       g.lineTo(vp.x(boat.x + 6), vp.y(by - 3));
       g.close();
       g.fill();
+    }
+
+    // 海面跃鱼（抛物线弧线 + 落水涟漪）
+    for (const fish of this.beachFishes) {
+      if (fish.active) {
+        fish.jumpPhase += 0.06;
+        if (fish.jumpPhase > Math.PI * 1.5) {
+          fish.active = false;
+          fish.timer = fish.interval;
+          fish.jumpPhase = 0;
+        } else if (fish.jumpPhase < Math.PI) {
+          // 鱼在空中
+          const arcY = fish.baseY - Math.sin(fish.jumpPhase) * fish.arcHeight;
+          const fx = fish.x + Math.cos(fish.jumpPhase) * 8;
+          fillEllipse(g, vp, fx, arcY, fish.size, fish.size * 0.5, colRgba(60, 80, 100, 0.8));
+        } else {
+          // 落水涟漪
+          const splashT = (fish.jumpPhase - Math.PI) / (Math.PI * 0.5);
+          const rippleR = 3 + splashT * 8;
+          const rippleA = 0.5 * (1 - splashT);
+          g.strokeColor = colRgba(255, 255, 255, rippleA);
+          g.lineWidth = 1;
+          g.ellipse(vp.x(fish.x), vp.y(fish.baseY), rippleR, rippleR * 0.3);
+          g.stroke();
+        }
+      } else {
+        fish.timer -= 1;
+        if (fish.timer <= 0) {
+          fish.active = true;
+          fish.jumpPhase = 0;
+        }
+      }
     }
 
     // 翻滚波浪白线 (双层动态相位流动)
@@ -1193,6 +1521,14 @@ export class CourtRenderer {
       fillCircle(g, vp, sh.x, sh.y, sh.size, sh.col);
     }
 
+    // 沙滩阳光闪烁 — 微小白色亮点渐隐渐现
+    for (const sp of this.beachSparkles) {
+      const alpha = Math.max(0, Math.sin(time * sp.speed * 0.05 + sp.phase));
+      if (alpha > 0.1) {
+        fillCircle(g, vp, sp.x, sp.y, sp.maxSize * alpha, colRgba(255, 255, 255, alpha * 0.7));
+      }
+    }
+
     // 潮水退去湿润水渍呼吸线
     const wetAlpha = 0.65 + Math.sin(time * 0.04) * 0.15;
     fillRect(g, vp, -EXT_W, CO.groundY - 2, TOTAL_W, 3, colRgba(255, 255, 255, wetAlpha));
@@ -1273,6 +1609,23 @@ export class CourtRenderer {
       }
     }
 
+    // 楼宇窗户随机闪烁 — 个别窗户随机亮灭
+    for (let bi = 0; bi < this.cyberBuildings.length; bi++) {
+      const b = this.cyberBuildings[bi];
+      const topY = CO.groundY - b.h;
+      for (let r = 0; r < 8; r++) {
+        for (let col = 0; col < 2; col++) {
+          const winIdx = bi * 16 + r * 2 + col;
+          const flk = Math.sin(time * 0.03 + winIdx * 2.7);
+          if (flk > 0.85) {
+            const fa = (flk - 0.85) / 0.15 * 0.6;
+            const wCol = col % 2 ? colRgba(0, 240, 255, fa) : colRgba(255, 0, 127, fa);
+            fillRect(g, vp, b.x + 6 + col * (b.w - 18), topY + 16 + r * 14, 4, 6, wCol);
+          }
+        }
+      }
+    }
+
     // 4. 赛博全息 HUD 标语屏
     fillRect(g, vp, -EXT_W, 72, TOTAL_W, 32, colRgba(10, 4, 25, 0.85));
     fillRect(g, vp, -EXT_W, 72, TOTAL_W, 2, new Color(255, 0, 127, 255));
@@ -1284,6 +1637,20 @@ export class CourtRenderer {
       const isCyan = (x + cyberOff) % 110 < 55;
       const col = isCyan ? colRgba(0, 240, 255, 0.75) : colRgba(255, 0, 127, 0.75);
       fillRect(g, vp, x, 84, 14, 8, col);
+    }
+
+    // 全息旋转广告 — 宽度随 cos 振荡模拟 3D 旋转，颜色 glitch 跳变
+    {
+      const holoW = 60 + Math.cos(time * 0.025) * 30;
+      const holoX = 720;
+      const holoY = 56;
+      const glitchT = Math.floor(time * 0.15) % 3;
+      const holoCol = glitchT === 0 ? colRgba(0, 240, 255, 0.5) : glitchT === 1 ? colRgba(255, 0, 127, 0.5) : colRgba(140, 80, 255, 0.5);
+      fillRect(g, vp, holoX - holoW / 2, holoY, holoW, 20, holoCol);
+      // 扫描线
+      for (let sy = holoY + 2; sy < holoY + 18; sy += 4) {
+        fillRect(g, vp, holoX - holoW / 2 + 2, sy, holoW - 4, 1, colRgba(255, 255, 255, 0.15));
+      }
     }
 
     // 5. 顶棚激光发射器与双色霓虹光幕 (随相持升温)
@@ -1322,7 +1689,7 @@ export class CourtRenderer {
       if (p.y < 30) p.y = CO.groundY - 10;
       if (p.x < 0) p.x = W;
       if (p.x > W) p.x = 0;
-      fillRect(g, vp, p.x, p.y, p.size, p.size, p.color);
+      fillRect(g, vp, p.x + this.windX, p.y, p.size, p.size, p.color);
     }
 
     // 6. 【核心·赛博合金高光地面与透视网格延伸】：延伸至 BOTTOM_WY (720)
@@ -1390,6 +1757,58 @@ export class CourtRenderer {
         colRgba(0, 0, 0, 0),
         3
       );
+    }
+
+    // 飞行器剪影 — 菱形飞行器在楼宇间穿梭
+    for (const dr of this.cyberDrones) {
+      dr.x += dr.speed;
+      if (dr.x > W + EXT_W) dr.x = -EXT_W;
+      if (dr.x < -EXT_W) dr.x = W + EXT_W;
+      const dx = dr.x, dy = dr.y;
+      // 发光尾迹
+      const trailCol = hslToRgb(dr.hue, 1, 0.5, 0.2);
+      fillRect(g, vp, dx - dr.size * 3, dy - 1, dr.size * 2.5, 2, trailCol);
+      // 菱形机身
+      g.fillColor = hslToRgb(dr.hue, 0.8, 0.6, 0.85);
+      g.moveTo(vp.x(dx - dr.size), vp.y(dy));
+      g.lineTo(vp.x(dx), vp.y(dy + dr.size * 0.5));
+      g.lineTo(vp.x(dx + dr.size), vp.y(dy));
+      g.lineTo(vp.x(dx), vp.y(dy - dr.size * 0.5));
+      g.close();
+      g.fill();
+      // 前灯
+      fillCircle(g, vp, dx + dr.size * 0.6, dy, 1.5, colRgba(255, 255, 255, 0.9));
+    }
+
+    // 霓虹雨丝 — 斜向雨线，青/粉交替
+    {
+      g.lineWidth = 1;
+      // 青色批次
+      g.strokeColor = colRgba(0, 240, 255, 0.3);
+      g.moveTo(0, 0); // 起笔
+      let hasCyan = false;
+      for (const r of this.cyberRains) {
+        if (!r.isCyan) continue;
+        const ry = ((r.y + time * r.speed * 0.8) % 700) - 100;
+        if (ry > CO.groundY) continue;
+        g.moveTo(r.x + this.windX * 0.5, ry);
+        g.lineTo(r.x - 3 + this.windX * 0.5, ry + r.len);
+        hasCyan = true;
+      }
+      if (hasCyan) g.stroke();
+      // 粉色批次
+      g.strokeColor = colRgba(255, 0, 127, 0.25);
+      g.moveTo(0, 0);
+      let hasPink = false;
+      for (const r of this.cyberRains) {
+        if (r.isCyan) continue;
+        const ry = ((r.y + time * r.speed * 0.8) % 700) - 100;
+        if (ry > CO.groundY) continue;
+        g.moveTo(r.x + this.windX * 0.5, ry);
+        g.lineTo(r.x - 3 + this.windX * 0.5, ry + r.len);
+        hasPink = true;
+      }
+      if (hasPink) g.stroke();
     }
 
     // 7. 发光双色场地标线与暗角
@@ -1462,6 +1881,22 @@ export class CourtRenderer {
       }
     }
 
+    // 竹叶簇摆动 — 间隔竹子顶部 2~3 片窄椭圆竹叶
+    let bambooIdx = 0;
+    for (const b of this.dojoBamboos) {
+      if (bambooIdx % 2 === 0) {
+        const topX = b.x + b.lean * (45 / CO.groundY); // 顶部偏移
+        const gust = Math.sin(time * 0.02 + b.x * 0.01) * Math.cos(time * 0.013 + b.x * 0.007);
+        for (let li = 0; li < 3; li++) {
+          const leafAngle = (li - 1) * 0.4 + gust * 0.3;
+          const lx = topX + Math.sin(leafAngle) * 12 + this.windX * 0.8;
+          const ly = 42 + li * 5;
+          fillEllipse(g, vp, lx, ly, 8, 2, new Color(45, 85, 60, 200));
+        }
+      }
+      bambooIdx++;
+    }
+
     // 4. 日式木格障子门屏风 (Shoji Screens，内透竹影)
     fillRect(g, vp, -EXT_W, 280, TOTAL_W, 150, colRgba(245, 237, 218, 0.16));
 
@@ -1525,7 +1960,25 @@ export class CourtRenderer {
         p.x = Math.random() * W;
       }
       if (p.x > W) p.x = 0;
-      fillEllipse(g, vp, p.x, p.y, p.size * 1.5, p.size * 0.8, colRgba(251, 207, 232, p.alpha));
+      fillEllipse(g, vp, p.x + this.windX * 1.5, p.y, p.size * 1.5, p.size * 0.8, colRgba(251, 207, 232, p.alpha));
+    }
+
+    // 线香烟雾 — 纤细 sin 曲线烟雾从香炉升起
+    for (const inc of this.dojoIncenses) {
+      // 香炉底座
+      fillEllipse(g, vp, inc.baseX, inc.baseY + 2, 8, 4, new Color(60, 50, 40, 255));
+      fillRect(g, vp, inc.baseX - 6, inc.baseY - 4, 12, 6, new Color(80, 65, 50, 255));
+      // 香棍
+      fillRect(g, vp, inc.baseX - 0.5, inc.baseY - 18, 1, 16, new Color(160, 130, 80, 255));
+      // 烟雾曲线
+      for (const seg of inc.segments) {
+        const sx = inc.baseX + seg.dx + Math.sin(time * 0.012 + seg.phase) * (6 + seg.dy * 0.1);
+        const sy = inc.baseY - 18 + seg.dy;
+        const alpha = Math.max(0, 0.25 * (1 - (-seg.dy) / 100));
+        if (alpha > 0.03) {
+          fillCircle(g, vp, sx, sy, 3 + (-seg.dy) * 0.04, colRgba(200, 200, 210, alpha));
+        }
+      }
     }
 
     // 7. 【核心·草编榻榻米地坪延展与和风回廊缘侧】：延伸至 BOTTOM_WY (720)
@@ -1577,6 +2030,25 @@ export class CourtRenderer {
     }
     for (let px = -EXT_W + 40; px < TOTAL_W; px += 80) {
       fillCircle(g, vp, px, 638, 1.8, new Color(217, 119, 6, 200)); // 金铜固定泡钉
+    }
+
+    // 缘侧踏石 — 深灰绿椭圆踏石带湿润光泽
+    for (const st of this.dojoStones) {
+      const shade = 40 + st.shade * 25;
+      fillEllipse(g, vp, st.x, st.y, st.rx, st.ry, new Color(shade, shade + 10, shade + 5, 255));
+      // 白色高光模拟湿润光泽
+      fillEllipse(g, vp, st.x - 2, st.y - 1.5, st.rx * 0.4, st.ry * 0.3, colRgba(255, 255, 255, 0.15));
+    }
+
+    // 萤火虫 — 暖黄色小光点在竹林间飘浮明灭
+    for (const ff of this.dojoFireflies) {
+      const fx = ff.x + Math.sin(time * 0.02 + ff.phase) * 15 + this.windX;
+      const fy = ff.y + Math.cos(time * 0.015 + ff.phase * 0.7) * 10;
+      const alpha = Math.max(0, Math.sin(time * ff.pulseSpeed * 0.03 + ff.phase));
+      if (alpha > 0.1) {
+        fillConcentricGlow(g, vp, fx, fy, ff.size * 4, ff.size, colRgba(255, 240, 150, alpha * 0.5), colRgba(255, 240, 150, 0), 2);
+        fillCircle(g, vp, fx, fy, ff.size, colRgba(255, 250, 200, alpha * 0.9));
+      }
     }
 
     // 8. 暗朱红场地标线与暗角

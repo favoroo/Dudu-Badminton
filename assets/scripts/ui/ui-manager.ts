@@ -32,7 +32,7 @@ import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
 import { courtRenderer, CourtThemeItem } from "../render/court";
-import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawVeil, drawVignette, textW } from "./ui-arcade";
+import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawVeil, drawVignette, textW, TOUCH_MIN } from "./ui-arcade";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
 import { Hud } from "./hud";
@@ -116,8 +116,10 @@ export interface BtnOpts {
 /**
  * 街机按钮:硬偏移阴影 + 厚底 3D(primary)/浮起(ghost)+ Label;
  * 按压反馈用 Button(SCALE),与老 .btn:active 的「按下去」等价。
+ * 高度钳到 TOUCH_MIN:移动端拇指点准的下限,低于它的按钮一律抬到 44。
  */
 export function uiButton(parent: Node, text: string, w: number, h: number, opts: BtnOpts = {}): Node {
+  h = Math.max(h, TOUCH_MIN);
   const style: BtnStyle = opts.style
     ?? (opts.bg === PAL.accent || opts.bg?.toLowerCase() === "#ffe14d" ? "primary" : "ghost");
   const n = new Node(`btn:${text}`);
@@ -433,7 +435,7 @@ export class UIManager extends Component {
     this.settingsPanel?.hide();
     switch (st) {
       case "MENU":
-        this.pausePanel.root.active = false;
+        this.pausePanel.hide();
         this.settlePanel.hide();
         this.menu.show();
         this.hud.setPlaying(false);
@@ -463,7 +465,7 @@ export class UIManager extends Component {
         this.menu.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
-        this.pausePanel.root.active = false;
+        this.pausePanel.hide();
         this.settlePanel.hide();
         this.hud.setPlaying(true);
         break;
@@ -640,7 +642,7 @@ export class UIManager extends Component {
     }
     const fromPause = Rules.R.state === "PAUSED";
     if (!fromPause) this.menu.hide();
-    else this.pausePanel.root.active = false;
+    else this.pausePanel.hide();
     this.settingsPanel.show(this.node, this.kit, () => {
       this.settingsPanel?.hide();
       if (fromPause) this.pausePanel.show();

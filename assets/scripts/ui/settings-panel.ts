@@ -18,19 +18,20 @@
 // 是什么位子。所以「暗底 + 卡片」从建的时候就得挂进 listView 这个容器里。
 //
 // 版面按设计分辨率 960×540 排;内容收在 ±380 内(可见宽最窄就是 16:9 的 960),
-// 卡片顶边 198 低于 HUD 记分牌底边 203,从暂停页打开时不会挡住身后的比分。
+// 卡片顶边 201 低于 HUD 记分牌底边 203,从暂停页打开时不会挡住身后的比分。
 // ============================================================
-import { _decorator, Button, Color, Component, Label, Node, UITransform, Vec2, sys, view } from "cc";
+import { _decorator, Button, Color, Component, Label, Node, UITransform, Vec2 } from "cc";
 import { Settings, PAD_LIMIT, type PadAction } from "../core/settings";
 import type { UiKit } from "./ui-manager";
-import { riseIn, slamIn } from "./ui-arcade";
+import { fadeOutHide, riseIn, safePad, slamIn } from "./ui-arcade";
 import type { Slider, Toggle } from "./widgets";
 import { newPad } from "../input/pad";
 import { buildTouchPad, type TouchPadHandle } from "../input/touchpad";
 
 const { ccclass } = _decorator;
 
-const PW = 760, PH = 396;      // 卡片尺寸
+const PW = 760, PH = 424;      // 卡片尺寸(比旧版高 28:开关行距放宽到 46+,加一行震动开关)
+const CARD_Y = -11;            // 卡片中心下移:顶边 201 仍低于 HUD 记分牌底边 203
 
 @ccclass("SettingsPanel")
 export class SettingsPanel extends Component {
@@ -73,7 +74,9 @@ export class SettingsPanel extends Component {
     this.listView = null;
     this.editView = null;
     this.card = null;
-    if (this.root && this.root.isValid) this.root.destroy();
+    // 退场淡出后再销毁整树;引用立刻置空,避免 update/回调摸到已收走的节点
+    const r = this.root;
+    if (r && r.isValid) fadeOutHide(r, () => { if (r.isValid) r.destroy(); });
     this.root = null;
   }
 
@@ -93,29 +96,30 @@ export class SettingsPanel extends Component {
 
     const card = this.kit.panel(this.listView, PW, PH, { r: 16, alpha: 0.94 });
     this.card = card.node;
+    this.card.setPosition(0, CARD_Y, 0);
 
     const title = this.kit.label(this.card, "设置", 26, P.accent);
-    title.node.setPosition(0, 166, 0);
+    title.node.setPosition(0, 186, 0);
     title.enableShadow = true;
     title.shadowColor = new Color(0, 0, 0, 130);
     title.shadowOffset = new Vec2(0, -4);
-    this.kit.label(this.card, "SETTINGS", 11, P.dim).node.setPosition(0, 142, 0);
+    this.kit.label(this.card, "SETTINGS", 11, P.dim).node.setPosition(0, 160, 0);
 
-    const done = this.kit.button(this.card, "完成", 120, 42, { style: "primary", size: 17 });
-    done.setPosition(PW / 2 - 82, 152, 0);
+    const done = this.kit.button(this.card, "完成", 150, 48, { style: "primary", size: 17 });
+    done.setPosition(PW / 2 - 98, 176, 0);
     done.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.close(); });
 
     // ---------- 左列:按键布局 ----------
-    this.txt(this.card, "按键布局", 15, P.accent, -PW / 2 + 20, 104, 200);
+    this.txt(this.card, "按键布局", 15, P.accent, -PW / 2 + 20, 130, 200);
     this.txt(this.card, "操作按钮只在真正打球时出现;这里调成自己最顺手的位子。",
-      12, P.dim, -PW / 2 + 20, 72, 320);
+      12, P.dim, -PW / 2 + 20, 98, 340);
 
     const adjust = this.kit.button(this.card, "调整位置", 220, 52, { style: "primary", size: 19 });
-    adjust.setPosition(-PW / 2 + 130, 6, 0);
+    adjust.setPosition(-PW / 2 + 130, 34, 0);
     adjust.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.openEditor(); });
 
-    const reset = this.kit.button(this.card, "重置默认", 220, 44, { size: 16 });
-    reset.setPosition(-PW / 2 + 130, -62, 0);
+    const reset = this.kit.button(this.card, "重置默认", 220, 48, { size: 16 });
+    reset.setPosition(-PW / 2 + 130, -38, 0);
     reset.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("ui");
       Settings.resetPad();
@@ -124,40 +128,48 @@ export class SettingsPanel extends Component {
     });
 
     this.txt(this.card, "拖动按钮 = 移动位置 · 选中后用滑杆 = 改大小",
-      12, "#6f7ca6", -PW / 2 + 20, -116, 320);
+      12, "#6f7ca6", -PW / 2 + 20, -94, 340);
     this.txt(this.card, "存的是相对屏幕角落的位子,换手机不会被刘海挤歪",
-      12, "#6f7ca6", -PW / 2 + 20, -140, 320);
+      12, "#6f7ca6", -PW / 2 + 20, -120, 340);
 
-    // ---------- 右列:声音 ----------
+    // ---------- 右列:声音 + 震动 ----------
     // 列内几何都按「不越过卡片右缘 ±380」排:开关 150 + 滑杆 140 + 中间留 5
     const rx = 78;                       // 右列内容左缘
     const rw = PW / 2 - 20 - rx;         // 右列可用宽
-    this.txt(this.card, "声音", 15, P.accent, rx, 104, rw);
+    this.txt(this.card, "声音", 15, P.accent, rx, 130, rw);
 
     const sfxTog = this.kit.toggle(this.card, "音效", 150, {
       get: () => Settings.v.sfxOn,
       set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ sfxOn: v }); },
     });
-    sfxTog.node.setPosition(rx + 75, 56, 0);
+    sfxTog.node.setPosition(rx + 75, 80, 0);
     this.toggles.push(sfxTog);
 
     const sfxSl = this.kit.slider(this.card, 140, { min: 0, max: 1, step: 0.05, value: Settings.v.sfxVol });
-    sfxSl.node.setPosition(rx + 225, 56, 0);
+    sfxSl.node.setPosition(rx + 225, 80, 0);
     this.wireVolume(sfxSl, "sfxVol", "sfxOn");
 
     const bgmTog = this.kit.toggle(this.card, "音乐", 150, {
       get: () => Settings.v.bgmOn,
       set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ bgmOn: v }); },
     });
-    bgmTog.node.setPosition(rx + 75, 2, 0);
+    bgmTog.node.setPosition(rx + 75, 32, 0);
     this.toggles.push(bgmTog);
 
     const bgmSl = this.kit.slider(this.card, 140, { min: 0, max: 1, step: 0.05, value: Settings.v.bgmVol });
-    bgmSl.node.setPosition(rx + 225, 2, 0);
+    bgmSl.node.setPosition(rx + 225, 32, 0);
     this.wireVolume(bgmSl, "bgmVol", "bgmOn");
 
+    // 震动反馈:按键/击球/得分的触觉短震(移动端才有体感,Web 是空操作)
+    const hapticTog = this.kit.toggle(this.card, "震动反馈", 150, {
+      get: () => Settings.v.hapticOn,
+      set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ hapticOn: v }); },
+    });
+    hapticTog.node.setPosition(rx + 75, -16, 0);
+    this.toggles.push(hapticTog);
+
     // ---------- 右列:画面提示 ----------
-    this.txt(this.card, "画面提示", 15, P.accent, rx, -40, rw);
+    this.txt(this.card, "画面提示", 15, P.accent, rx, -62, rw);
 
     const mkHint = (text: string, key: "hintLanding" | "hintShake" | "hintFloat", y: number): void => {
       const cardNode = this.card!;      // 闭包里 this.card 的窄化会丢,捕获一次
@@ -168,9 +180,9 @@ export class SettingsPanel extends Component {
       t.node.setPosition(rx + 140, y, 0);
       this.toggles.push(t);
     };
-    mkHint("落点预测圈", "hintLanding", -84);
-    mkHint("屏幕震动", "hintShake", -128);
-    mkHint("飘字提示", "hintFloat", -172);
+    mkHint("落点预测圈", "hintLanding", -106);
+    mkHint("屏幕震动", "hintShake", -152);
+    mkHint("飘字提示", "hintFloat", -198);
 
     this.repaint();
   }
@@ -213,17 +225,8 @@ export class SettingsPanel extends Component {
     // 玩家真正手感里的明暗 —— 这一屏要判断的正是「按钮压不压到场上东西」。
     this.kit.dim(this.editView, 0.16, 0.46);
 
-    // 顶部操作条:让开刘海/状态栏(hud.ts 同款算法,安全区内缩像素 == 世界单位)
-    let safeTop = 0;
-    try {
-      const vs = view.getVisibleSize();
-      const sr = sys.getSafeAreaRect();
-      if (vs.height > 0 && sr) {
-        const topPx = vs.height - (sr.y + sr.height);
-        if (topPx > 0) safeTop = Math.min(48, topPx);
-      }
-    } catch { /* 拿不到就按无刘海排 */ }
-    const stripY = 270 - 34 - safeTop;
+    // 顶部操作条:让开刘海/状态栏(safePad 统一换算,像素内缩 → 世界单位)
+    const stripY = 270 - 34 - safePad().top;
 
     const strip = new Node("strip");
     strip.layer = this.root!.layer;

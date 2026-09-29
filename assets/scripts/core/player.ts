@@ -41,6 +41,7 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     smashGlow: 0,
     sweetGlow: 0,
     perfectGlow: 0,
+    heat: 0,                        // 连击热手:本分内连续 sweet/perfect 计数(rules 在 beginPoint 清零)
     hitRecoil: 0,                   // 击球身体后仰(度):命中瞬间设值,每帧衰减回 0
     lungeT: -1,                     // 跨步救球:-1=未激活,>=0=当前帧计数
     lungeDir: 0,                    // 跨步方向(1=右,-1=左)
@@ -150,7 +151,12 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   p.vy += PL.gravity;
   p.y += p.vy;
   if (p.y >= CO.groundY) {
-    if (!p.onGround) { p.sq = PL.landSquash; inp.onLand && inp.onLand(p, p.vy); }
+    if (!p.onGround) {
+      // 扣杀落地:比正常落地蹲得更深(渲染层据此增强膝盖弯曲/躯干前倾)
+      const smashLand = p.swingHit && p.swingStyle === "over";
+      p.sq = smashLand ? (C.fx.landSquashSmash || 0.62) : PL.landSquash;
+      inp.onLand && inp.onLand(p, p.vy);
+    }
     p.y = CO.groundY; p.vy = 0; p.onGround = true;
   }
   p.sq = approach(p.sq, 1, 0.05);
@@ -240,6 +246,8 @@ function ballInZone(p: ZoneProbe, ball: Ball): number | null {
 
 export interface HitOpt {
   q?: number; sweet?: boolean; perfect?: boolean; dEdge?: number;
+  /** 连击热手:本次命中「之前」的连续好球数(0 = 无加成;发球等直调路径不带) */
+  heat?: number;
   /** 发球等场景直接指定落点深度(绕过瞄准表) */
   forced?: { depth: number };
 }
@@ -278,7 +286,13 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
     p.perfectGlow = 14;
   }
 
-  const shot = buildShot(p, ball, { q, sweet, perfect, dEdge });
+  // 连击热手:连续 sweet/perfect 累积热度(断一拍立刻清零)。
+  // 传给 buildShot 的是命中「前」的热度 —— 第一拍好球不白给,连到第二拍才开始涨凶。
+  const hot = sweet || perfect;
+  const heatBefore = p.heat;
+  p.heat = hot ? Math.min(heatBefore + 1, C.heat.maxStreak) : 0;
+
+  const shot = buildShot(p, ball, { q, sweet, perfect, dEdge, heat: hot ? heatBefore : 0 });
   // 球体接触瞬间形变:按档位设压扁比
   ball.sqPrev = ball.sq;
   ball.sq = (shot.kind === "smash")
@@ -318,7 +332,12 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
 
   // 力量兑现:踩得准 → 弧度额外压平 + 初速上限放宽,求解器自动用更快的初速
   // 补同一个落点 → 球更凶、到得更早。低击球点会被 minClearDeg 兜底抬回来,不会乱下网。
-  const boost = perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0;
+  // 连击热手在同一预算上再加余量,但总 boost 封在物理上限的差额里(27→30),
+  // 不与 shuttle.maxSpeed 冲突。
+  const heatBoost = Math.min((opt.heat || 0) * C.heat.speedBonus, C.heat.speedBonusMax);
+  const boost = Math.min(
+    (perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0) + heatBoost,
+    C.shuttle.maxSpeed - C.shot.speedMax);
   const powerDeg = perfect ? C.perfect.powerDeg : sweet ? C.sweet.powerDeg : 0;
   const loft = clamp(Physics.loftFor(depth, h, q) - powerDeg, C.shot.loftMinDeg, C.shot.loftMaxDeg);
 
@@ -331,6 +350,7 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     intoNet: shot.trace.hitNet,
     contactX: ball.x, contactY: ball.y,
     hitter: p,
+    heat: p.heat,
   };
 }
 

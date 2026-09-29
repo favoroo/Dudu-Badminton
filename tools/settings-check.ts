@@ -46,6 +46,7 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   const s = new SettingsStore().init();
   ok(s.sfxOn && s.bgmOn, "默认音效与音乐都开");
   ok(s.hintLanding && s.hintShake && s.hintFloat, "默认三个画面提示都开");
+  ok(s.hapticOn, "默认触觉反馈开");
   ok(near(s.sfxVol, 0.8) && near(s.bgmVol, 0.6), `默认音量 sfx=${s.sfxVol} bgm=${s.bgmVol}`);
   for (const a of PAD_ACTIONS) {
     const p = s.pad[a];
@@ -84,9 +85,10 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(near(sanitize(undefined).bgmVol, 0.6), "sanitize(undefined) 不抛异常");
   ok(near(sanitize("垃圾字符串" as unknown).sfxVol, 0.8), "sanitize(字符串) 不抛异常");
 
-  const junk = sanitize({ sfxOn: "yes", sfxVol: "x", pad: { left: { dx: "10", r: null }, right: 7 } });
+  const junk = sanitize({ sfxOn: "yes", sfxVol: "x", hapticOn: 42, pad: { left: { dx: "10", r: null }, right: 7 } });
   ok(junk.sfxOn === true, "sfxOn 收到字符串 → 回默认 true");
   ok(near(junk.sfxVol, 0.8), "sfxVol 收到字符串 → 回默认");
+  ok(junk.hapticOn === true, "hapticOn 收到数字 → 回默认 true");
   ok(junk.pad.left.dx === 0 && near(junk.pad.left.r, PAD_BASE.left.r), "pad 项里字段类型不对 → 该键回默认");
   ok(junk.pad.right.dx === 0, "pad 项整个不是对象 → 该键回默认,不抛");
 

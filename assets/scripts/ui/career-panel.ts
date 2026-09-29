@@ -4,16 +4,16 @@
 // 依赖:Career(逻辑层)、CFG.skins(配置)、Sprites.drawPlayer/drawShuttle(渲染)
 // ============================================================
 import {
-  _decorator, BlockInputEvents, Color, Component, EventKeyboard, Graphics, Input, input, Label, Layers, Node,
+  _decorator, BlockInputEvents, Button, Color, Component, EventKeyboard, Graphics, Input, input, Label, Layers, Node,
   UITransform, UIOpacity, Widget, KeyCode,
 } from "cc";
 import { Career } from "../core/career";
 import { CFG, DRILLS } from "../core/config";
 import { Ball, Player, SkinDef, SkinKind, Theme } from "../core/types";
-import { drawPlayer, drawRacketStill, drawShuttle, Viewport } from "../render/sprites";
+import { drawPlayer, drawRacketStill, drawShuttle, hueColor, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
-import { drawHardShadow, drawMenuCard, drawVeil, makeCoinIcon, slamIn, textW } from "./ui-arcade";
+import { drawHardShadow, drawMenuCard, drawVeil, fadeOutHide, makeCoinIcon, pressFx, slamIn, textW, uiIconButton } from "./ui-arcade";
 
 const { ccclass } = _decorator;
 
@@ -31,9 +31,9 @@ const LV_NAMES = [
   "不朽传奇", "羽球之神", "至高无上", "传说再现", "巅峰至尊",
 ];
 
-/** 列数:两行制(10→5、8→4),与老项目一致 */
+/** 列数:两行制(10→5、8→4),与老项目一致;上限 5 —— 6 列 96px 卡会顶破 520 网格宽 */
 function gridCols(n: number): number {
-  return n % 5 === 0 ? 5 : n % 4 === 0 ? 4 : Math.min(n, 6);
+  return n % 5 === 0 ? 5 : n % 4 === 0 ? 4 : Math.min(n, 5);
 }
 
 // 布局(设计分辨率 960×540)
@@ -147,7 +147,7 @@ function dummyPlayer(theme: Theme, racketSkin: SkinDef, ov: Partial<Player> = {}
     swingRadius: 52,
     racket: { x: 0, y: 0, ang: 0 }, racketPrev: { x: 0, y: 0 },
     hitLock: 0, contactFlash: 0, speedMul: 1, aiAimErr: 0,
-    zoneScale: 1, score: 0, smashGlow: 0, sweetGlow: 0, perfectGlow: 0,
+    zoneScale: 1, score: 0, smashGlow: 0, sweetGlow: 0, perfectGlow: 0, heat: 0,
     hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeRecovery: 0,
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
     racketSkin,
@@ -175,6 +175,52 @@ function previewVp(scale: number, cx: number, cy: number): Viewport {
   };
 }
 
+/** 设计款卖点一句话:卡片底部小字与购买欲直接挂钩 */
+function fxTag(s: SkinDef): string {
+  if (s.kind === "racket") {
+    switch (s.swingFx) {
+      case "fire": return "专属火焰挥拍弧光";
+      case "ice": return "专属寒冰挥拍弧光";
+      case "electric": return "专属雷电挥拍弧光";
+      case "rainbow": return "专属彩虹挥拍弧光";
+    }
+    return s.decal || s.stringColor ? "定制拍面徽记" : "";
+  }
+  if (s.kind === "shuttle") {
+    switch (s.trailStyle) {
+      case "star": return "全场可见 · 星芒拖尾";
+      case "flame": return "全场可见 · 火羽拖尾";
+      case "petal": return "全场可见 · 花瓣拖尾";
+      case "rainbow": return "全场可见 · 星云拖尾";
+    }
+    return "";
+  }
+  return s.aura ? "专属脚下光环"
+    : (s.hairStyle || s.headwear || s.jersey) ? "全新人物形象" : "";
+}
+
+/** 预览球的专属拖尾示意:球后斜向 5 颗衰减圆点(与 world 拖尾同色系) */
+function drawTrailHint(g: Graphics, vp: Viewport, s: SkinDef): void {
+  const style = s.trailStyle;
+  if (!style) return;
+  const cols: Record<string, string[]> = {
+    star: ["#7ecbff", "#aadcff", "#eaf6ff"],
+    flame: ["#ff4d26", "#ff9a3d", "#ffe14d"],
+    petal: ["#ff8fb8", "#ffb7d0", "#ffe0ec"],
+  };
+  for (let i = 0; i < 5; i++) {
+    const d = 16 + i * 10;                       // 球后距离(预览局部 px)
+    const a = Math.max(0.08, 0.55 - i * 0.11);
+    const wx = -d, wy = d * 1.73;                // dummyBall 速度 (1,-1.73) 的反方向
+    let col: Color;
+    if (style === "rainbow") col = parseColor(hueColor(i * 58), COL.white);
+    else col = parseColor((cols[style] ?? cols.star)[i % 3], COL.white);
+    g.fillColor = new Color(col.r, col.g, col.b, Math.round(255 * a));
+    g.circle(vp.x(wx), vp.y(wy), (4.6 - i * 0.55) * 2.5);
+    g.fill();
+  }
+}
+
 // ============================================================
 
 @ccclass("CareerPanel")
@@ -198,8 +244,9 @@ export class CareerPanel extends Component {
     this._onCloseCb = null;
     this._panelNode = null;
     input.off(Input.EventType.KEY_DOWN, this._onKey, this);
-    // 整树销毁并清空缓存引用,避免每次 show() 重建时旧节点泄漏
-    if (this.root && this.root.isValid) this.root.destroy();
+    // 退场淡出后再销毁整树;引用立刻置空,避免 update() 对已收走的节点继续画
+    const r = this.root;
+    if (r && r.isValid) fadeOutHide(r, () => { if (r.isValid) r.destroy(); });
     this.root = null;
     this._lvLabel = null;
     this._lvNameLabel = null;
@@ -342,7 +389,7 @@ export class CareerPanel extends Component {
     expFillNode.setPosition(-PW / 2 + 310, 8, 0);
     this._expFill = expFillNode.addComponent(Graphics);
 
-    this._expLabel = mkLabel(bar, "expNum", "0 / 80 EXP", 11, COL.dimWhite, {
+    this._expLabel = mkLabel(bar, "expNum", "0 / 80 EXP", 12, COL.dimWhite, {
       x: -PW / 2 + 310, y: -10, w: 200, align: 1,
     });
 
@@ -352,16 +399,10 @@ export class CareerPanel extends Component {
       x: PW / 2 - 140, y: 6, w: 100, align: 0,
     });
 
-    // 返回按钮
-    const back = mkNode("back", bar, 36, 36);
-    back.setPosition(PW / 2 - 28, 6, 0);
-    const bg = back.addComponent(Graphics);
-    bg.fillColor = new Color(200, 60, 60, 180);
-    bg.circle(0, 0, 16); bg.fill();
-    bg.strokeColor = new Color(255, 120, 120, 200);
-    bg.lineWidth = 1.5; bg.circle(0, 0, 16); bg.stroke();
-    mkLabel(back, "icon", "✕", 15, COL.white, { x: 0, y: 0, w: 36, align: 1 });
-    back.on(Node.EventType.TOUCH_END, () => {
+    // 返回按钮:命中区 56(视觉圆底 44),Button.CLICK 自带按压反馈
+    const back = uiIconButton(bar, "✕", { bg: "#6e2029", edge: "#ff8a8a", fontSize: 20 });
+    back.setPosition(PW / 2 - 40, 6, 0);
+    back.on(Button.EventType.CLICK, () => {
       this._onCloseCb?.();
       this.hide();
     });
@@ -390,6 +431,7 @@ export class CareerPanel extends Component {
         if (this._kind === k) return;
         this._setKind(k as SkinKind | "stats");
       });
+      pressFx(tab);   // 裸触摸交互补按压反馈,与 Button 风格统一
 
       this._tabGraphics.push({ g, l, ut });
     });
@@ -431,6 +473,20 @@ export class CareerPanel extends Component {
 
   // ========== 卡片网格 ==========
 
+  /** 商店展示顺序:默认款 → 设计款(稀有度降序→价格升序) → 纯色款(价格升序)。
+   *  设计款放前面是货架语言:开门先看到好看的东西,纯色款垫底当「基础款」 */
+  private _list(): SkinDef[] {
+    const all = CFG.skins[this._kind as SkinKind] ?? [];
+    const rank: Record<string, number> = { legendary: 0, epic: 1, rare: 2, common: 3 };
+    return [...all].sort((a, b) => {
+      if (a.price === 0) return -1;
+      if (b.price === 0) return 1;
+      const ra = rank[a.rarity ?? "common"], rb = rank[b.rarity ?? "common"];
+      if (ra !== rb) return ra - rb;
+      return a.price - b.price;
+    });
+  }
+
   private _buildGrid() {
     if (!this._gridNode) return;
     // 清空旧卡片:移除所有子节点
@@ -439,7 +495,7 @@ export class CareerPanel extends Component {
       children[i].removeFromParent();
     }
 
-    const list = CFG.skins[this._kind as SkinKind] ?? [];
+    const list = this._list();
     const cols = gridCols(list.length);
     const totalW = cols * CARD_W + (cols - 1) * GAP;
     const prof = Career.profile();
@@ -453,6 +509,9 @@ export class CareerPanel extends Component {
       const owned = Career.owns(s.id);
       const locked = !Career.unlocked(s);
       const broke = !owned && !locked && prof.coins < s.price;
+      const rarity = s.rarity ?? "common";
+      const rmeta = CFG.rarity[rarity];
+      const rarityCol = parseColor(rmeta.color, COL.white);
 
       // 卡片节点
       const card = mkNode(`card-${i}`, this._gridNode!, CARD_W, CARD_H);
@@ -460,13 +519,21 @@ export class CareerPanel extends Component {
 
       const g = card.addComponent(Graphics);
       const sel = i === this._sel;
-      // 未选中卡只有描边一道,cardBg 与 panelBg 差不到哪儿去 → 描边提到冷灰
+      // 边框层级:装备中(绿) > 选中(acid) > 稀有度色 > 默认冷灰
       const borderCol = equipped ? COL.green
         : sel ? COL.cardSel
-          : new Color(107, 124, 166, 170);
+          : rarity !== "common" ? rarityCol
+            : new Color(107, 124, 166, 170);
       const bgCol = equipped ? COL.cardEquip : locked ? COL.cardLock : COL.cardBg;
       if (sel) drawHardShadow(g, CARD_W, CARD_H, 8, 4, 4, 0.5);   // 选中卡浮起(老 .skin-card.sel)
       drawRR(g, CARD_W, CARD_H, 8, bgCol, borderCol, sel ? 2.5 : 1.5);
+      if (rarity === "legendary") {
+        // 传说款:外圈再罩一道同色微光,货架上第一个被看到
+        g.strokeColor = new Color(rarityCol.r, rarityCol.g, rarityCol.b, 80);
+        g.lineWidth = 5;
+        g.roundRect(-CARD_W / 2 - 2.5, -CARD_H / 2 - 2.5, CARD_W + 5, CARD_H + 5, 10.5);
+        g.stroke();
+      }
 
       // 缩略图区域
       const thumbW = 64, thumbH = 76;
@@ -474,6 +541,17 @@ export class CareerPanel extends Component {
       thumbNode.setPosition(0, CARD_H / 2 - thumbH / 2 - 6, 0);
       const tg = thumbNode.addComponent(Graphics);
       this._drawCardThumb(tg, s);
+
+      // 稀有度角标(common 不挂,基础款保持素净)
+      if (rarity !== "common") {
+        const chip = mkNode("rarity", card, 34, 14);
+        chip.setPosition(-CARD_W / 2 + 19, CARD_H / 2 - 8, 0);
+        const cg = chip.addComponent(Graphics);
+        drawRR(cg, 34, 14, 7,
+          new Color(rarityCol.r, rarityCol.g, rarityCol.b, 240),
+          new Color(10, 13, 24, 190), 1);
+        mkLabel(chip, "rarityTxt", rmeta.name, 9, new Color(12, 14, 22, 255), { y: -1, w: 34, align: 1 });
+      }
 
       // 名称
       const nameColor = locked ? COL.dimGray : COL.white;
@@ -487,9 +565,17 @@ export class CareerPanel extends Component {
       else if (owned) { statusText = "已拥有"; statusColor = COL.dimWhite; }
       else if (locked) { statusText = `Lv.${s.unlockLevel} 解锁`; statusColor = COL.dimGray; }
       else { statusText = `金币 ${s.price}`; statusColor = broke ? COL.dimGray : COL.gold; }
-      mkLabel(card, "status", statusText, 11, statusColor, {
+      mkLabel(card, "status", statusText, 12, statusColor, {
         y: -28, w: CARD_W - 8, align: 1,
       });
+
+      // 卖点小字(设计款专属效果,稀有度色)
+      const fx = fxTag(s);
+      if (fx) {
+        mkLabel(card, "fx", fx, 9, new Color(rarityCol.r, rarityCol.g, rarityCol.b, 215), {
+          y: -47, w: CARD_W - 6, align: 1,
+        });
+      }
 
       // 锁定遮罩(独立子节点:一个节点只能挂一个 renderable,card 已有背景 Graphics)
       if (locked) {
@@ -507,9 +593,10 @@ export class CareerPanel extends Component {
         ov.fill();
       }
 
-      // 点击
+      // 点击(先注册业务回调再补按压反馈:重建网格销毁卡片时动画不会晚到一步)
       const idx = i;
       card.on(Node.EventType.TOUCH_END, () => this._confirm(idx));
+      pressFx(card);
     });
   }
 
@@ -520,11 +607,12 @@ export class CareerPanel extends Component {
     const kind = this._kind;
 
     if (kind === "player") {
-      // 缩小版 drawPlayer 静态像(对齐原版 scale 0.6:100px 的人物画成 60px 高)
+      // 缩小版 drawPlayer 静态像(对齐原版 scale 0.6:100px 的人物画成 60px 高);
+      // playerSkin 挂卡片自身 → 缩略图直接带发型/头饰,设计款一眼可辨
       const vp = previewVp(0.60, 0, -30);
       const th = themeOf(s);
       const curRacket = Career.skinOf("racket");
-      const p = dummyPlayer(th, curRacket);
+      const p = dummyPlayer(th, curRacket, { playerSkin: s });
       drawPlayer(g, vp, p, 0, 1, null);
     } else if (kind === "racket") {
       // 真球拍(与上场同一套 drawRacket,拍头朝上竖放;皮肤来自卡片本身)
@@ -541,8 +629,7 @@ export class CareerPanel extends Component {
   private _confirm(index: number) {
     const kind = this._kind;
     if (kind === "stats") return;
-    const list = CFG.skins[kind];
-    const s = list[index];
+    const s = this._list()[index];
     if (!s) return;
 
     const p = Career.profile();
@@ -637,23 +724,29 @@ export class CareerPanel extends Component {
     const kind = this._kind;
     if (kind === "stats") return;
 
-    const list = CFG.skins[kind as SkinKind] ?? [];
+    const list = this._list();
     const s = list[this._sel];
     if (!s) return;
 
     const curPlayer = Career.skinOf("player");
     const curRacket = Career.skinOf("racket");
 
-    // 试衣间:player tab 用候选球衣+当前球拍;racket tab 反之
-    const playerTheme = kind === "player" ? themeOf(s) : themeOf(curPlayer);
+    // 试衣间:player tab 用候选人物+当前球拍;racket tab 反之。
+    // playerSkin 挂完整定义 → 发型/头饰/光环在预览里实时可见
+    const playerSkinDef = kind === "player" ? s : curPlayer;
+    const playerTheme = themeOf(playerSkinDef);
     const racketSkin = kind === "racket" ? s : curRacket;
 
-    // --- 羽毛球 tab:展示羽毛球 ---
+    // --- 羽毛球 tab:展示羽毛球 + 专属拖尾示意 ---
     if (kind === "shuttle") {
       const vp = previewVp(2.5, 0, 20);
       const ball = dummyBall();
+      drawTrailHint(g, vp, s);
       drawShuttle(g, vp, ball, s);
-      if (this._previewName) this._previewName.string = s.name;
+      if (this._previewName) {
+        const rn = CFG.rarity[s.rarity ?? "common"].name;
+        this._previewName.string = `${s.name} · ${rn}`;
+      }
       return;
     }
 
@@ -683,6 +776,7 @@ export class CareerPanel extends Component {
     }
 
     const player = dummyPlayer(playerTheme, racketSkin, {
+      playerSkin: playerSkinDef,
       swingT, swingStyle: "over",
       swingRadius: 52, recoverT,
       contactFlash, smashGlow, sweetGlow,
@@ -690,7 +784,10 @@ export class CareerPanel extends Component {
     });
 
     drawPlayer(g, vp, player, 0, 1, null);
-    if (this._previewName) this._previewName.string = s.name;
+    if (this._previewName) {
+      const rn = CFG.rarity[s.rarity ?? "common"].name;
+      this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;
+    }
   }
 
   // ========== Toast 提示 ==========
@@ -811,7 +908,7 @@ export class CareerPanel extends Component {
 
   private _moveSel(d: number) {
     if (this._kind === "stats") return;
-    const list = CFG.skins[this._kind as SkinKind] ?? [];
+    const list = this._list();
     if (list.length === 0) return;
     this._sel = (this._sel + d + list.length) % list.length;
     this._elapsed = 0;

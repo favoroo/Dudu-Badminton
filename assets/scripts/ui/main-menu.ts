@@ -12,8 +12,8 @@ import type { DiffKey } from "../core/types";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import {
-  ARCADE, drawArcadeButton, drawChevron, drawHardShadow, drawMenuCard,
-  floatLoop, makeChip, makeCoinIcon, riseIn, stopLoops,
+  ARCADE, cancelFade, drawArcadeButton, drawChevron, drawHardShadow, drawMenuCard,
+  fadeOutHide, floatLoop, makeChip, makeCoinIcon, riseIn, safePad, stopLoops,
 } from "./ui-arcade";
 import type { MenuCardOpts } from "./ui-arcade";
 import { APP_VERSION_NAME } from "../core/version";
@@ -60,18 +60,21 @@ export class MainMenu {
     kit.atmosphere(this.root);
 
     // ---------- 顶部条:等级(左) / 金币 + 声音 + 设置(右) ----------
-    // 四块都收在 ±448 内:16:9 屏(FIXED_HEIGHT 下可见宽正好 960)也不贴到边。
-    const lvBadge = this.badge(-380, 246, 118, "primary");
+    // 安全区:刘海把顶部压掉多少,整条顶部簇就往下挪多少(safePad 统一换算)。
+    // 四块收在 ±466 内,相邻间隙 ≥14(移动端误触线);徽章高度 44 = 触控下限。
+    const sp = safePad();
+    const topY = 246 - sp.top;
+    const lvBadge = this.badge(-380, topY, 118, 44, "primary");
     this.lvLabel = kit.label(lvBadge, "Lv.1", 16, "#14100a");
     this.lvLabel.node.setPosition(0, -3, 0);
 
-    const coinBadge = this.badge(236, 246, 128, "ghost");
+    const coinBadge = this.badge(230, topY, 128, 44, "ghost");
     makeCoinIcon(coinBadge, -42, -2, 9);   // Graphics 金币(替代 🪙 emoji,原生平台无彩色 emoji 字体)
     this.coinLabel = kit.label(coinBadge, "0", 16, P.accent);
     this.coinLabel.node.setPosition(6, -2, 0);
 
     // 「声音」= 音效 + 音乐两条总线一起切(单独的开关在设置页里)
-    const soundBadge = this.badge(341, 246, 66, "ghost");
+    const soundBadge = this.badge(344, topY, 72, 44, "ghost");
     this.soundLabel = kit.label(soundBadge, "声音", 13, P.dim);
     const sndBtn = soundBadge.addComponent(Button);
     sndBtn.transition = Button.Transition.SCALE;
@@ -83,7 +86,7 @@ export class MainMenu {
       this.paintSound();
     });
 
-    const setBadge = this.badge(414, 246, 64, "ghost");
+    const setBadge = this.badge(430, topY, 72, 44, "ghost");
     kit.label(setBadge, "设置", 13, ARCADE.acid);
     const setBtn = setBadge.addComponent(Button);
     setBtn.transition = Button.Transition.SCALE;
@@ -100,7 +103,7 @@ export class MainMenu {
     );
 
     // ---------- 球馆铭牌(老 .hero-kicker:跟着当前球馆走) ----------
-    this.kickerLabel = this.txt(this.root, kit.getCourtTheme().sub, 11, DIM_FAINT, -240, 200, 480, 1, P.ink);
+    this.kickerLabel = this.txt(this.root, kit.getCourtTheme().sub, 11, DIM_FAINT, -240, 200 - sp.top, 480, 1, P.ink);
     this.kickerLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
     this.riseNodes.push({ node: this.kickerLabel.node, delay: 0.12 });
 
@@ -136,18 +139,18 @@ export class MainMenu {
     // ---------- 球馆选择(老 .court-picker:名称 + 描述,选中描边该馆主题色) ----------
     kit.courtThemes().forEach((c, i) => {
       const { node, g } = this.card(`court:${c.id}`, 200, 48, { r: 10, edge: 0, bar: 0, alpha: 0.82 });
-      node.setPosition((i - 1.5) * 212, 80, 0);
+      node.setPosition((i - 1.5) * 216, 80, 0);   // 卡间距 16:相邻可点目标的最小间隙
       const name = this.txt(node, c.name, 14, P.text, -88, 13, 96);
-      this.txt(node, c.tag, 10, DIM_FAINT, -88, -13, 100);
+      this.txt(node, c.tag, 11, DIM_FAINT, -88, -13, 100);
       // 「使用中」角标:选中才亮,贴在卡片右上角
       const flag = new Node("flag");
       flag.layer = this.root.layer;
-      flag.addComponent(UITransform).setContentSize(52, 18);
+      flag.addComponent(UITransform).setContentSize(56, 18);
       const fg = flag.addComponent(Graphics);
       fg.fillColor = col(c.accent);
-      fg.roundRect(-26, -9, 52, 18, 4);
+      fg.roundRect(-28, -9, 56, 18, 4);
       fg.fill();
-      kit.label(flag, "使用中", 10, "#0a0e1c").node.setPosition(0, 0, 0);
+      kit.label(flag, "使用中", 11, "#0a0e1c").node.setPosition(0, 0, 0);
       flag.setPosition(62, 13, 0);
       flag.setParent(node);
 
@@ -170,10 +173,10 @@ export class MainMenu {
       const { node } = this.card(`mode:${diff}`, 268, 104, {
         r: 12, accent, tint: 0.09 + i * 0.045, bar: 5, edge: 5, alpha: 0.9,
       });
-      node.setPosition((i - 1) * 280, -34, 0);
-      makeChip(node, m.tag ?? diff.toUpperCase(), 9, accent, "#0a0e1c").setPosition(98, 34, 0);
+      node.setPosition((i - 1) * 284, -34, 0);    // 卡间距 16,难度卡整卡即按钮
+      makeChip(node, m.tag ?? diff.toUpperCase(), 11, accent, "#0a0e1c").setPosition(98, 34, 0);
       this.txt(node, CN_DIFF[diff], 22, accent, -108, 14, 150);
-      this.txt(node, m.desc, 11, DIM_SUB, -108, -26, 212);
+      this.txt(node, m.desc, 12, DIM_SUB, -108, -26, 212);
       node.on(Button.EventType.CLICK, () => {
         kit.sfx.play("ui");
         kit.startMatch(diff);
@@ -186,18 +189,18 @@ export class MainMenu {
       r: 12, accent: ARCADE.cyan, tint: 0.1, bar: 5, edge: 4, alpha: 0.9,
     });
     career.node.setPosition(-212, -134, 0);
-    makeChip(career.node, "TRAINING", 9, ARCADE.cyan, "#04121a").setPosition(-156, 8, 0);
+    makeChip(career.node, "TRAINING", 11, ARCADE.cyan, "#04121a").setPosition(-156, 8, 0);
     this.txt(career.node, "专项训练", 19, ARCADE.paper, -116, 8, 120);
-    this.drillSub = this.txt(career.node, "", 11, DIM_FAINT, -116, -16, 258);
+    this.drillSub = this.txt(career.node, "", 12, DIM_FAINT, -116, -16, 258);
     this.arrow(career.node, ARCADE.cyan);
 
     const shop = this.card("entry:shop", 408, 62, {
       r: 12, accent: ARCADE.acid, tint: 0.1, bar: 5, edge: 4, alpha: 0.9,
     });
     shop.node.setPosition(212, -134, 0);
-    makeChip(shop.node, "CAREER", 9, ARCADE.acid, "#0a0e1c").setPosition(-156, 8, 0);
+    makeChip(shop.node, "CAREER", 11, ARCADE.acid, "#0a0e1c").setPosition(-156, 8, 0);
     this.txt(shop.node, "生涯与商店", 19, ARCADE.paper, -116, 8, 130);
-    this.careerSub = this.txt(shop.node, "", 11, DIM_FAINT, -116, -16, 258);
+    this.careerSub = this.txt(shop.node, "", 12, DIM_FAINT, -116, -16, 258);
     this.arrow(shop.node, ARCADE.acid);
 
     career.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openDrills(); });
@@ -206,9 +209,9 @@ export class MainMenu {
 
     // ---------- 玩法提示:落点教学只在发球那一次说(hud.ts 状态行),首页不再复述 ----------
 
-    // ---------- 底部版本号与更新检查入口 ----------
-    const verBtn = kit.button(this.root, `${APP_VERSION_NAME} 检查更新`, 200, 30, { size: 13, fg: P.dim });
-    verBtn.setPosition(0, -230, 0);
+    // ---------- 底部版本号与更新检查入口(高度由 uiButton 钳到触控下限) ----------
+    const verBtn = kit.button(this.root, `${APP_VERSION_NAME} 检查更新`, 200, 44, { size: 13, fg: P.dim });
+    verBtn.setPosition(0, -222, 0);
     verBtn.on(Button.EventType.CLICK, async () => {
       kit.sfx.play("ui");
       kit.toast("正在检查更新...");
@@ -277,15 +280,15 @@ export class MainMenu {
     n.setPosition(182, 0, 0);
   }
 
-  /** 顶部徽章:primary = 荧光黄厚底(Lv),ghost = 玻璃(金币 / 音效) */
-  private badge(x: number, y: number, w: number, style: "primary" | "ghost"): Node {
+  /** 顶部徽章:primary = 荧光黄厚底(Lv),ghost = 玻璃(金币 / 音效);高度给调用方,≥44 才点得准 */
+  private badge(x: number, y: number, w: number, h: number, style: "primary" | "ghost"): Node {
     const n = new Node(`badge:${style}:${w}`);
     n.layer = this.root.layer;
-    n.addComponent(UITransform).setContentSize(w, 34);
+    n.addComponent(UITransform).setContentSize(w, h);
     const g = n.addComponent(Graphics);
-    drawHardShadow(g, w, 34, 8, 3, 3, 0.42);
-    if (style === "primary") drawArcadeButton(g, w, 34, "primary", 8);
-    else drawMenuCard(g, w, 34, 8, { edge: 0, bar: 0, alpha: 0.85 });
+    drawHardShadow(g, w, h, 8, 3, 3, 0.42);
+    if (style === "primary") drawArcadeButton(g, w, h, "primary", 8);
+    else drawMenuCard(g, w, h, 8, { edge: 0, bar: 0, alpha: 0.85 });
     n.setParent(this.root);
     n.setPosition(x, y, 0);
     return n;
@@ -317,6 +320,7 @@ export class MainMenu {
   }
 
   show(): void {
+    cancelFade(this.root);
     this.root.active = true;
     this.refresh();
 
@@ -363,7 +367,7 @@ export class MainMenu {
   }
 
   hide(): void {
-    this.root.active = false;
+    fadeOutHide(this.root);   // 退场淡出:BlockInputEvents 立即放行,不拦刚开局的拇指
   }
 
   private refresh(): void {

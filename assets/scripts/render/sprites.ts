@@ -188,9 +188,9 @@ function fillRectTr(g: Graphics, f: Frame, lx: number, ly: number, w: number, h:
 }
 
 /** 老代码的 px():半像素对齐的实心矩形(减少亚像素抖动);取整在局部坐标里做,与原版一致 */
-function px(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number, color: string): void {
+function px(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number, color: string | Color): void {
   const x0 = Math.round(lx * 2) / 2, y0 = Math.round(ly * 2) / 2;
-  fillRectTr(g, f, x0, y0, Math.ceil(w), Math.ceil(h), pal(color));
+  fillRectTr(g, f, x0, y0, Math.ceil(w), Math.ceil(h), typeof color === "string" ? pal(color) : color);
 }
 
 // 头部固定配色(重设计):一整颗黑脸圆 + 白色线条五官,队色只上发带 ——
@@ -200,13 +200,59 @@ const HEAD = "#0a0e18", HEAD_LINE = "rgba(235,240,255,0.5)", FACE = "#ffffff";
 
 // 皮肤默认值(与 config.skins 对应项同色):没装备皮肤或旧调用方没传时兜回原配色,
 // 皮肤只换颜色不改形状,判定半径与手感完全不受影响
-const RACKET_DEFAULT = { grip: "#20242f", shaft: "#efe7d8", frame: null as string | null };
+const RACKET_DEFAULT: SkinDef = { id: "r-std", kind: "racket", name: "标准拍", price: 0, grip: "#20242f", shaft: "#efe7d8", frame: null };
 const SHUTTLE_DEFAULT = { cap: "#f6f1e6", band: "#ff4d4d", skirt: "#fbfaf5", vein: "rgba(120,130,150,0.65)" };
 
 // 主题兜底:老工程 applyToMatch 保证必有主题;类型上可选,这里兜成红方默认队色(未装备皮肤时本来就是它)
 const DEFAULT_THEME: Theme = {
   main: C.colors.red.main, dark: C.colors.red.dark, glow: C.colors.red.glow, name: C.colors.red.name,
 };
+
+// ---------- 皮肤设计款渲染常量(纯装饰,与 SKIN/HEAD 同级的绘制常量) ----------
+// 设计字段本体在 types.SkinDef / config.SKINS;这里只是它们落到笔画的颜色与尺寸
+const HAIR_LINE = "rgba(10,13,24,0.55)";
+
+// 脚下光环(传说人物专属):主环/副环两色 + 三颗环绕光点
+const AURA_COLORS: Record<string, { a: string; b: string }> = {
+  gold: { a: "#ffd24d", b: "#fff3c4" },
+  neon: { a: "#3dffa8", b: "#a5ffe0" },
+  flame: { a: "#ff6a1f", b: "#ffd24d" },
+  ice: { a: "#7ecbff", b: "#eaffff" },
+};
+
+// 挥拍弧光专属风格(设计款球拍):主色/副光色对;rainbow 不在表里,走 hueColor 随时间变相
+const SWING_FX_COLORS: Record<string, { a: string; b: string }> = {
+  fire: { a: "#ff6a1f", b: "#ffd24d" },
+  ice: { a: "#7ecbff", b: "#eaffff" },
+  electric: { a: "#b18cff", b: "#f0e6ff" },
+};
+
+// 拍框贴章配色(decal):章体用高饱和色,压在拍线上仍一眼可辨
+const DECAL_COLORS: Record<string, string> = {
+  star: "#ffd24d", bolt: "#ffe14d", flame: "#ff6a1f", crystal: "#7ecbff",
+};
+
+/** HSL → #rrggbb(pal 不认 hsl 串);rainbow 弧光/拖尾按时间变相用(world.ts 拖尾也复用) */
+export function hueColor(hDeg: number, s = 0.85, l = 0.62): string {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + hDeg / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * c).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/** 设计款挥拍弧光配色:racketSkin.swingFx → [主色, 副光色];无专属风格返回 null */
+function swingFxPair(sk: SkinDef | null | undefined, t: number): [string, string] | null {
+  const fx = sk?.swingFx;
+  if (!fx) return null;
+  if (fx === "rainbow") {
+    return [hueColor((t * 0.9) % 360), hueColor((t * 0.9 + 140) % 360, 0.8, 0.7)];
+  }
+  const p = SWING_FX_COLORS[fx];
+  return p ? [p.a, p.b] : null;
+}
 
 // 待机持拍姿势(肩坐标系):屈肘把拍收在体前,拍头朝上举在胸侧。
 // 起拍/收拍都在它和挥拍弧线之间插值,替代原先两套硬编码坐标之间的瞬跳
@@ -275,12 +321,15 @@ function angKey(p: Player): string {
   return p.side + ":" + p.idx;
 }
 
-/** 挥拍弧光残影数据:老代码由 sprites 直接推 FX.addSwingArc,移植版经 sink 交还表现层 */
+/** 挥拍弧光残影数据:老代码由 sprites 直接推 FX.addSwingArc,移植版经 sink 交还表现层。
+ *  color2 = 设计款球拍的副光色(外圈宽描边),无则普通单色弧光 */
 export interface SwingArcFx {
   x: number; y: number;
+  facing: number;
   fromAng: number; ang: number;
   reach: number;
   color: string;
+  color2?: string;
   isSweet: boolean;
 }
 
@@ -289,6 +338,41 @@ let swingArcSink: ((fx: SwingArcFx) => void) | null = null;
 /** 表现层接线:把挥拍弧光残影送到衰减渲染(对应老 fx.js 的 addSwingArc);不接则只画当帧弧光 */
 export function setSwingArcSink(sink: ((fx: SwingArcFx) => void) | null): void {
   swingArcSink = sink;
+}
+
+/** 挥拍弧光残影绘制(供 world.ts 调,对应老 fx.js swingArcs 段):
+ *  世界坐标肩点 + facing 镜像 + canvas arc 语义采样,角度约定与当帧弧光一致(取负、扫向随角增减);
+ *  isSweet 走白弧 + 金晕宽描边(老 shadowBlur 的加宽近似)。alpha 是残影衰减后的不透明度。 */
+export function drawSwingArcGhost(
+  g: Graphics, vp: Viewport,
+  sa: SwingArcFx,
+  alpha: number,
+): void {
+  if (alpha <= 0.004) return;
+  const F: Frame = {
+    pt: (lx, ly) => ({ x: vp.x(sa.x + (sa.facing || 1) * lx), y: vp.y(sa.y + ly) }),
+    lw: (v) => v,
+    kx: 0, ky: 0,
+  };
+  const arc = arcPts(F, 0, 0, sa.reach, -sa.fromAng * D2R, -sa.ang * D2R, sa.ang > sa.fromAng);
+  const w = sa.isSweet ? 8 : 6;
+  if (sa.isSweet) {
+    g.strokeColor = withAlpha(pal(C.colors.sweet ? C.colors.sweet.gold : "#ffe14d"), 0.35 * alpha);
+    g.lineWidth = w + 5;
+    polyPath(g, arc, false);
+    g.stroke();
+  }
+  if (sa.color2) {
+    // 设计款副光:外圈宽一道低透明度,与当帧弧光同构(shadowBlur 加宽近似)
+    g.strokeColor = withAlpha(pal(sa.color2), 0.32 * alpha);
+    g.lineWidth = w + 6;
+    polyPath(g, arc, false);
+    g.stroke();
+  }
+  g.strokeColor = withAlpha(pal(sa.isSweet ? "#ffffff" : sa.color), alpha);
+  g.lineWidth = w;
+  polyPath(g, arc, false);
+  g.stroke();
 }
 
 // 两套姿势间逐点插值:肘/手/拍角/拍长同时过渡,手臂不会中途脱节
@@ -338,6 +422,8 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const t = animT;
   const x = pp.rx ?? pp.x, y = pp.ry ?? pp.y;
   const th = p.theme ?? DEFAULT_THEME;
+  // 完整人物皮肤(发型/头饰/纹样/光环):CPU/P2 没挂 → null 走原版画法
+  const ps = p.playerSkin ?? null;
   const H = C.player.h, W = C.player.w;
 
   // 圆头笔画贯穿全身(老 canvas 里首个 arm() 设完就随状态泄漏到后续笔画,闭合路径上无视觉差)
@@ -352,6 +438,31 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   g.fillColor = withAlpha("#000000", 0.38 - air * 0.22);
   g.ellipse(vp.x(x), vp.y(groundY + 3), W * 0.62 * (1 - air * 0.3) * vsx, 5 * (1 - air * 0.35) * vsy);
   g.fill();
+
+  // 传说人物脚下光环:双环呼吸 + 三颗环绕光点(升空时不画,避免悬空光环)
+  if (ps?.aura && !air) {
+    const ac = AURA_COLORS[ps.aura] || AURA_COLORS.gold;
+    const vs = Math.sqrt(vsx * vsy) || 1;
+    const pulse = 1 + Math.sin(t * 0.085) * 0.09;
+    const rx0 = W * 0.95 * pulse, ry0 = 8.5 * pulse;
+    g.strokeColor = withAlpha(pal(ac.a), 0.34);
+    g.lineWidth = 2.2 * vs;
+    g.ellipse(vp.x(x), vp.y(groundY + 2), rx0 * vsx, ry0 * vsy);
+    g.stroke();
+    g.strokeColor = withAlpha(pal(ac.b), 0.22);
+    g.lineWidth = 1.2 * vs;
+    g.ellipse(vp.x(x), vp.y(groundY + 2), rx0 * 1.28 * vsx, ry0 * 1.3 * vsy);
+    g.stroke();
+    for (let i = 0; i < 3; i++) {
+      const oa = t * 0.055 + (i * TAU) / 3;
+      const ox = x + Math.cos(oa) * rx0 * 1.12;                       // 环绕椭圆长轴
+      const oy = groundY + 2 + Math.sin(oa) * ry0 * 1.12;
+      const rise = 6 + Math.sin(t * 0.05 + i * 2.1) * 4;              // 光点小幅漂浮(世界 y 向上为负)
+      g.fillColor = withAlpha(pal(i === 1 ? ac.b : ac.a), 0.8);
+      g.circle(vp.x(ox), vp.y(oy - rise), 1.6 * vs);
+      g.fill();
+    }
+  }
 
   // 唯一的坐标系:脚底原点 + facing 镜像 + squash。躯干/腿/双臂/头同场绘制,
   // 肩随 bob 浮动、随 sq 压扁 —— 挥拍臂不再钉在固定肩高上
@@ -377,7 +488,13 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const runAmt = p.runAmt ?? 0;
   const cycRaw = Math.sin(p.runPhase ?? 0);
   const spN = clamp(Math.abs(p.vx) / C.player.vmax, 0, 1);
+  // 跑步躯干反向扭转 + 肩高差:上下半身不再像焊死的整体
+  const runTwist = cycRaw * 1.8 * runAmt * spN;
+  const runShDy = cycRaw * 0.6 * runAmt;
   const airborne = !p.onGround;
+  // 落地冲击:squash 还没恢复 = 刚着地,幅度随 squash 衰减(0=完全恢复,~0.28=刚落地)
+  const landing = p.onGround && p.sq < 0.85;
+  const landAmt = landing ? (1 - p.sq) : 0;
   // ---------- 跨步救球姿势 ----------
   const lunging = p.lungeT >= 0;
   const lungeU = lunging ? clamp(p.lungeT / (C.lunge.duration || 14), 0, 1) : 0;
@@ -397,29 +514,44 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   // 庆祝:身体微微后仰 + 手臂上举;沮丧:身体前倾 + 肩膀下沉
   const emotionLean = celebrating ? -3 * Math.sin(celebrateU * Math.PI) : frustrated ? 2 * Math.sin(frustrateU * Math.PI) : 0;
 
-  const bob = airborne ? Math.sin(t * 0.05) * 0.7
-    : lerp(Math.sin(t * 0.05) * 0.7, Math.abs(cycRaw) * (1.2 + 1.2 * spN), runAmt);
+  // 呼吸律动:复合波(~3s 主周期 + ~6s 副周期),待机时最明显,跑/跳时降级为背景
+  const breathBob = Math.sin(t * 0.035) * 1.2 + Math.sin(t * 0.017) * 0.4;
+  const bob = airborne ? breathBob * 0.3 + Math.sin(t * 0.05) * 0.4
+    : lerp(breathBob, Math.abs(cycRaw) * (1.2 + 1.2 * spN), runAmt);
+  // 重心微移:极慢横向偏移(~8s 周期),只影响上半身;挥拍/跨步时大幅衰减
+  const idleWeight = swinging || lunging ? 0.1 : 1;
+  const weightShift = Math.sin(t * 0.012) * 1.0 * (1 - runAmt * 0.7) * idleWeight;
 
   // ---------- 躯干倾斜量:基础前倾 + 随速度俯身 + 挥拍拧转(引拍后仰→发力前压) ----------
+  // 命中后跟随动作:身体跟着球的方向大幅前压(over 更前倾,under 更后仰)
+  const ft = p.swingHit;
   const leanTbl = p.swingStyle === "over"
-    ? [[0, -1.2], [0.12, -3], [0.4, 2.8], [1, 0.6]]
-    : [[0, 0.8], [0.12, 1.8], [0.4, -2], [1, -0.4]];
+    ? [[0, -1.2], [0.12, -3], [0.4, 2.8], [1, ft ? 1.8 : 0.6]]
+    : [[0, 0.8], [0.12, 1.8], [0.4, -2], [1, ft ? -1.2 : -0.4]];
   const lean = 2
     + (p.vx * p.facing / C.player.vmax) * 2.5
     + (swinging ? lut(leanTbl, poseU) : p.recoverT > 0 ? lut(leanTbl, 1) * (1 - recK) : 0)
     + (p.hitRecoil || 0) * p.facing * 0.5   // 击球身体后仰:命中瞬间短暂后仰
     + lungeLean * lungeDirRel               // 跨步救球:身体沿跨步方向大幅倾斜
-    + emotionLean;                            // CPU 情绪:庆祝后仰/沮丧前倾
+    + emotionLean                            // CPU 情绪:庆祝后仰/沮丧前倾
+    + weightShift                            // 待机重心微移(跑/挥时衰减)
+    + landAmt * 4;                           // 落地冲击:躯干前倾吸收冲击
 
   // ---------- 远臂:躯干后层的远侧手臂(景深)。两段 FK + 肤色小臂 + 手,跟着动作反相 ----------
   // 画在腿/躯干/头之前 → 内侧被躯干盖住是刻意的景深。不要在这里"对称地"补一颗肩关节圆:
   // 远肩距躯干背缘只有 5.8,画了会被整个抹掉(近侧那颗有效是因为它画在躯干之后)。
   const bsx = -9 + (lean - 2) * 0.9;             // 远侧肩:与近侧 A 相距 10.5 = 3/4 视角的肩宽透视;
-  const bsy = SW.pivotY + bob - 2;               //   离转体轴更远所以 lean 系数 0.9 > 近侧的 0.8
+  const bsy = SW.pivotY + bob - 2 + runShDy;    //   离转体轴更远所以 lean 系数 0.9 > 近侧的 0.8;跑步时肩高差
   const B = offsetFrame(F, bsx, bsy);            //   比近侧肩高 2:斜侧视角远肩略抬,肘更容易露出背缘
 
   // 基准 = 待机放松挂位(肘朝后外翻、前臂垂在后下),跑动/空中/跨步/情绪逐层覆盖
   let fea = 206, fef = 250;
+  // 待机呼吸:远臂基线角度随呼吸微变(不同周期,避免与近臂同步)
+  if (!swinging && p.recoverT <= 0 && !airborne && !lunging && !celebrating && !frustrated) {
+    fea += Math.sin(t * 0.018) * 3; fef += Math.sin(t * 0.014 + 0.5) * 2.5;
+  }
+  // 落地冲击:远臂下意识外展缓冲
+  if (landing) { fea += landAmt * 8; fef += landAmt * 6; }
   // 对侧步态:远侧臂与近侧(前)腿同相。旧版写的是 -cycRaw,与前腿反相 = 顺拐
   fea += cycRaw * 14 * runAmt; fef += cycRaw * 18 * runAmt;
   if (airborne) { fea = lerp(fea, 178, 1 - runAmt); fef = lerp(fef, 128, 1 - runAmt); }
@@ -454,6 +586,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   } else {
     fea = cea; fef = cef;
   }
+  // 命中后跟随:远臂反向平衡(近臂横拉过身体,远臂自然外展)
+  if (ft && poseU > 0.5) {
+    fea += (poseU - 0.5) * 2 * 12;
+  }
 
   // 手指向来球:只在远臂已抬起(fea<195)且球在肩以上时轻推,±12° 封顶。绝不做全 IK ——
   // 手一往前上就撞进后脑的遮挡圆,往回缩就没过躯干背缘,两头都坏事
@@ -478,10 +614,13 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   // ---------- 腿:跑姿(幅度随速度)与空中姿势(升收腿/落展腿)按权重混合 ----------
   const hipY = -H * 0.34 + bob;
   const thigh = H * 0.19, shin = H * 0.09;
-  // 后腿(远侧)整体压暗,前腿(近侧)受光 —— 前后景深一眼读出侧身
+  const skinGap = H * 0.04;                    // 短裤与球袜之间露出的膝盖皮肤段
+  const sockH = shin - skinGap;                 // 球袜相应缩短
+  const shoeH = H * 0.095;                     // 鞋高(加厚:7→9.5,羽毛球鞋厚底)
+  // 后腿(远侧)整体压暗 + 收窄,前腿(近侧)受光 —— 前后景深一眼读出侧身
   const legs = [
-    { bx: -W * 0.14, sock: "#cdc9bd", shoe: "#141824", s: -1 },
-    { bx: W * 0.10, sock: "#f2efe6", shoe: "#1b1f2e", s: 1 },
+    { bx: -W * 0.14, sock: "#cdc9bd", shoe: "#141824", s: -1, far: true },
+    { bx: W * 0.10, sock: "#f2efe6", shoe: "#1b1f2e", s: 1, far: false },
   ];
   const airK = clamp((p.vy + 3) / 6, 0, 1);           // 0=刚起跳(收腿) 1=快落地(展腿)
   const wAir = airborne ? 1 - runAmt : 0;
@@ -496,35 +635,105 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     const lungeLift = isLeadLeg ? -lungeLegExt * 3 : lungeLegExt * 2;
     const dx = runDx * runAmt + airDx * wAir + lungeDx;
     const lift = runLift * runAmt + airLift * wAir + lungeLift;
-    px(g, F, L.bx + dx - W * 0.12, hipY, W * 0.24, thigh - lift, th.dark);                        // 短裤/大腿
-    px(g, F, L.bx + dx - W * 0.10, hipY + thigh - lift, W * 0.20, shin, L.sock);                  // 小腿袜
-    px(g, F, L.bx + dx - W * 0.15, hipY + thigh + shin - 1 - lift, W * 0.30, H * 0.07, L.shoe);   // 鞋
+    // 跑步膝盖弯曲:摆动期(腿在前)小腿向后折,支撑期(腿在后)伸直
+    // L.s * cycRaw > 0 = 该腿在前(摆动期),弯曲; < 0 = 在后(支撑期),伸直
+    const kneeBend = Math.max(0, L.s * cycRaw) * (C.player.kneeBendMax || 8) * spN * runAmt;
+    // 落地冲击:双腿同步深弯吸收冲击,幅度随 squash 恢复衰减
+    const landKnee = landAmt * 14;
+    const kneeOff = -(kneeBend + landKnee);                     // 小腿向后(远离网方向)偏移
+    const kneeLift = (kneeBend + landKnee) * 0.35;              // 弯曲时脚微抬(脚跟离地)
+    // 远侧腿:宽度收窄 8%(透视缩短) + 颜色压暗(景深)
+    const lw = L.far ? 0.92 : 1.0;
+    const darkColor = L.far ? withAlpha(pal(th.dark), 0.78) : pal(th.dark);
+    const skinColor = L.far ? withAlpha(pal(SKIN), 0.78) : pal(SKIN);
+    const sockColor = L.far ? withAlpha(pal(L.sock), 0.82) : pal(L.sock);
+    const shoeColor = L.far ? withAlpha(pal(L.shoe), 0.80) : pal(L.shoe);
+    px(g, F, L.bx + dx - W * 0.12 * lw, hipY, W * 0.24 * lw, thigh - lift, darkColor);              // 短裤/大腿
+    px(g, F, L.bx + dx + kneeOff - W * 0.10 * lw, hipY + thigh - lift, W * 0.20 * lw, skinGap, skinColor);     // 膝盖皮肤
+    px(g, F, L.bx + dx + kneeOff - W * 0.10 * lw, hipY + thigh + skinGap - lift - kneeLift, W * 0.20 * lw, sockH, sockColor); // 球袜
+    px(g, F, L.bx + dx + kneeOff - W * 0.165 * lw, hipY + thigh + shin - 1 - lift - kneeLift, W * 0.33 * lw, shoeH, shoeColor); // 鞋(加厚加宽)
   }
 
-  // ---------- 躯干:3/4 斜侧 —— 向网侧偏置 + 上段前倾 + 前亮后暗 ----------
+  // ---------- 躯干:3/4 斜侧 —— 向网侧偏置 + 上段前倾 + 前亮后暗 + 脊柱曲度 ----------
   const bodyTop = -H * 0.72 + bob;
   const bodyH = H * 0.38;
   const tw = W * 0.66, tx = -W * 0.40;
+  // 脊柱曲度:髋部稳定、肩部拧转,中间渐变形成弯曲感(而非两段折角)
+  const spineCurve = Math.abs(lean - 2) * 0.35
+    + (swinging ? Math.sin(Math.min(poseU, 1) * Math.PI) * 1.5 : 0)
+    + Math.abs(lungeLean) * 0.15
+    + Math.abs(cycRaw) * 0.4 * runAmt * spN;
+  const midLean = lean * 0.45 + Math.sign(lean - 2) * spineCurve;  // 腰部中间段偏移
   px(g, F, tx, bodyTop + bodyH * 0.42, tw, bodyH * 0.58, th.main);                    // 下段(髋)
-  px(g, F, tx + lean, bodyTop, tw, bodyH * 0.5, th.main);                             // 上段(肩,前倾)
-  px(g, F, tx + lean + tw - 3, bodyTop + 5, 3, bodyH * 0.5 - 9, "rgba(255,255,255,0.20)");   // 前缘受光
+  px(g, F, tx + midLean, bodyTop + bodyH * 0.22, tw, bodyH * 0.22, th.main);          // 中段(腰,脊柱曲度)
+  px(g, F, tx + lean + runTwist, bodyTop, tw, bodyH * 0.5, th.main);                  // 上段(肩,前倾+扭转)
+  px(g, F, tx + lean + runTwist + tw - 3, bodyTop + 5, 3, bodyH * 0.5 - 9, "rgba(255,255,255,0.20)");   // 前缘受光
   px(g, F, tx + tw - 3, bodyTop + bodyH * 0.42 + 5, 3, bodyH * 0.58 - 9, "rgba(255,255,255,0.12)");
-  px(g, F, tx + lean, bodyTop + 5, 3, bodyH * 0.42 - 4, "rgba(0,0,0,0.20)");          // 背缘背光
+  px(g, F, tx + lean + runTwist, bodyTop + 5, 3, bodyH * 0.42 - 4, "rgba(0,0,0,0.20)");          // 背缘背光
   px(g, F, tx, bodyTop + bodyH * 0.42 + 5, 3, bodyH * 0.58 - 5, "rgba(0,0,0,0.24)");
   // 领口从脖子前沿往网侧延伸:若拖到脖子后面,会在颈后留一块没归属的深色补丁
-  px(g, F, 2, bodyTop, tx + lean + tw - 2, 5, th.dark);
+  px(g, F, 2, bodyTop, tx + lean + runTwist + tw - 2, 5, th.dark);
   px(g, F, tx + tw * 0.25, bodyTop + bodyH - 4, tw * 0.75, 4, "rgba(255,255,255,0.20)");
-  // 号码:还在胸前,但随视角偏向网侧。
-  // 【移植限制】canvas fillText 无法用 Graphics 复刻:老版以 700 H*0.115px "DIN Alternate"
-  // 居中画 p.jersey 于局部 (1, bodyTop + bodyH*0.40),色 rgba(255,255,255,0.8)。
-  // 需要时由表现层把局部点 F.pt(1, bodyTop + bodyH*0.40) 转成节点坐标挂 Label。
+  // V 领:躯干上段顶部中央的 V 形线条,运动球衣的领口细节
+  const vCollarCx = tx + lean + runTwist + tw * 0.52;
+  const vCollarTop = bodyTop + 3;
+  g.strokeColor = withAlpha(pal(FACE), 0.30);
+  g.lineWidth = F.lw(1.2);
+  lineSeg(g, F, vCollarCx - 3.5, vCollarTop, vCollarCx, vCollarTop + 5.5);
+  lineSeg(g, F, vCollarCx, vCollarTop + 5.5, vCollarCx + 3.5, vCollarTop);
+  g.stroke();
+  // 侧条纹:躯干前缘一道纵向亮线,运动球衣的常见装饰
+  px(g, F, tx + lean + runTwist + tw * 0.18, bodyTop + 6, 1.5, bodyH * 0.82, "rgba(255,255,255,0.10)");
+  // ---------- 球衣纹样(设计款人物专属):压在底色上、领口描边之下 ----------
+  // 局部参考:躯干从 (tx+lean+runTwist, bodyTop) 到 (+tw, +bodyH);glow 色做纹样主色
+  if (ps?.jersey) {
+    const jx = tx + lean + runTwist;
+    if (ps.jersey === "stripes") {
+      // 霓虹双条纹:前胸两道竖纹(赛博骇客)
+      px(g, F, jx + tw * 0.30, bodyTop + 4, 2, bodyH * 0.86, withAlpha(pal(th.glow), 0.9));
+      px(g, F, jx + tw * 0.46, bodyTop + 4, 2, bodyH * 0.86, withAlpha(pal(th.glow), 0.55));
+    } else if (ps.jersey === "sash") {
+      // 斜披巾:背肩 → 前髋一条斜带,双线勾边(烈焰少年)
+      g.strokeColor = withAlpha(pal(th.glow), 0.92);
+      g.lineWidth = F.lw(5);
+      lineSeg(g, F, jx + 2, bodyTop + 4, jx + tw - 3, bodyTop + bodyH - 3);
+      g.stroke();
+      g.strokeColor = withAlpha(pal(th.dark), 0.8);
+      g.lineWidth = F.lw(1.2);
+      lineSeg(g, F, jx + 2, bodyTop + 7, jx + tw - 4, bodyTop + bodyH - 3);
+      g.stroke();
+    } else if (ps.jersey === "trim") {
+      // 樱纹描边:领口/下摆/前缘走一道 glow 细边(樱花少女)
+      g.strokeColor = withAlpha(pal(th.glow), 0.95);
+      g.lineWidth = F.lw(1.4);
+      lineSeg(g, F, jx + 1, bodyTop + bodyH - 2, jx + tw - 1, bodyTop + bodyH - 2);   // 下摆
+      lineSeg(g, F, jx + tw - 2, bodyTop + 4, jx + tw - 2, bodyTop + bodyH - 4);      // 前缘
+      g.stroke();
+      px(g, F, jx + tw * 0.34, bodyTop + bodyH * 0.42, 2.2, 2.2, th.glow);            // 一颗小樱点
+      px(g, F, jx + tw * 0.52, bodyTop + bodyH * 0.58, 2.2, 2.2, withAlpha(pal(th.glow), 0.7));
+    } else if (ps.jersey === "twoTone") {
+      // 拼色:腰腹以下整段换 glow 色 + 一道腰带分界(球场之王:白金拼色)
+      px(g, F, jx, bodyTop + bodyH * 0.55, tw, bodyH * 0.45, withAlpha(pal(th.glow), 0.85));
+      px(g, F, jx, bodyTop + bodyH * 0.55, tw, 2, th.dark);
+    }
+  }
+  // 胸前号码:已取消(不画、也不由表现层挂 Label)。老版曾在局部 (1, bodyTop + bodyH*0.40)
+  // 以 700 H*0.115px "DIN Alternate" 居中画 p.jersey,色 rgba(255,255,255,0.8);
+  // p.jersey 仅作数据保留,world.ts 的名牌池只喂头顶名牌。
 
   // ---------- 头(代码绘制的 3/4 卡通头) ----------
   // 头抬高到下巴不压肩:肩关节露在脖子下面,手臂才是从肩膀长出来的;
   // 颈子补在头和领口之间,避免下巴悬空。
   // 挥拍时头随动作俯仰(over 抬头盯球 / under 压头发力),位置随躯干拧转前移
-  const headDy = swinging
+  const swingHeadDy = swinging
     ? (p.swingStyle === "over" ? -1.6 : 1.2) * Math.sin(Math.min(poseU, 1) * Math.PI) : 0;
+  // 跑步头部律动:随步频微动(幅度小于身体 bob——头要稳定)
+  const runHeadBob = -Math.abs(cycRaw) * 0.6 * runAmt;
+  // 落地低头:squash 降低时头部下沉,随恢复抬起
+  const landHeadTuck = (p.sq < 0.85 && p.onGround) ? (1 - p.sq) * 4 : 0;
+  // 跨步倾斜:头朝跨步方向微倾
+  const lungeHeadTilt = lungeLean * lungeDirRel * 0.15;
+  const headDy = swingHeadDy + runHeadBob + landHeadTuck + lungeHeadTilt;
   // 眼神追球:瞳孔朝球的方向偏一点(局部坐标);没球时看向前方。眨眼按相位错开的
   // 周期触发,无状态 —— 不用给每个角色维护计时器
   let lookX = 0.6, lookY = 0;
@@ -534,12 +743,14 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     lookX = ldx / ld * 1.3; lookY = ldy / ld * 1.3;
   }
   const blink = ((t + (p.blinkSeed ?? 0)) % 220) < 5;
-  px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, HEAD);
+  px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, SKIN);
   drawHead(g, F, th, H * 0.21, 2 + (lean - 2) * 0.6, bodyTop - H * 0.21 * 1.12 + headDy,
-    { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD });
+    { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD, skin: ps });
 
   // ---------- 持拍臂:一条姿势管线,挥拍弧线 ↔ 待机收拍全程连续 ----------
-  const A = offsetFrame(F, 1.5 + (lean - 2) * 0.8, SW.pivotY + bob);   // 肩点在躯干上段内,随拧转前移
+  // 命中后持拍臂横拉过身体:肩点朝网侧额外偏移(增强跟随感)
+  const ftPull = (ft && poseU > 0.6) ? (poseU - 0.6) * 2.5 * p.facing : 0;
+  const A = offsetFrame(F, 1.5 + (lean - 2) * 0.8 + ftPull, SW.pivotY + bob - runShDy);   // 肩点在躯干上段内,随拧转前移;跑步肩高差与远肩反向
   let pose: Pose;
   const prevAng = lastAng.get(angKey(p)) ?? null;
   if (swinging && sp) {
@@ -559,7 +770,9 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
       // 弧光:上一帧视觉角 → 本帧视觉角,半径用同一份呼吸值,跟着手臂走
       const isSweet = p.sweetGlow > 0 || p.perfectGlow > 0;
       const mainA = isSweet ? 0.75 : 0.34;
-      const arcColor = isSweet ? "#ffffff" : p.contactFlash > 0 ? "#ffffff" : C.colors.accent;
+      // 设计款球拍专属弧光:swingFx → 主/副双色对(rainbow 随时间变相)
+      const fxPair = swingFxPair(p.racketSkin, t);
+      const arcColor = isSweet ? "#ffffff" : p.contactFlash > 0 ? "#ffffff" : (fxPair ? fxPair[0] : C.colors.accent);
       const arcW = isSweet ? 14 : 10;
       // canvas arc(0,0,r,-a0,-a1, a1>a0):扫向由挥拍角增减决定,采样按 canvas 语义复刻
       const arc = arcPts(A, 0, 0, sp.reach, -(prevAng ?? pose.ang) * D2R, -pose.ang * D2R, pose.ang > (prevAng ?? pose.ang));
@@ -570,18 +783,30 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
         polyPath(g, arc, false);
         g.stroke();
       }
+      if (fxPair) {
+        // 设计款副光:外圈宽一道的低透明度描边(火焰/寒冰/雷电辉光)
+        g.strokeColor = withAlpha(pal(fxPair[1]), 0.30 * mainA);
+        g.lineWidth = A.lw(arcW) + 6;
+        polyPath(g, arc, false);
+        g.stroke();
+      }
       g.strokeColor = withAlpha(pal(arcColor), mainA);
       g.lineWidth = A.lw(arcW);
       polyPath(g, arc, false);
       g.stroke();
-      // 挥拍弧光残影:老代码推入 FX 数组由 fx.js 衰减渲染;移植版经 sink 交还表现层
+      // 挥拍弧光残影:老代码推入 FX 数组由 fx.js 衰减渲染;移植版经 sink 交还表现层。
+      // color/color2 原样传给残影,专属风格的辉光在残影里同步衰减
       const shoulderX = x + p.facing * (1.5 + (lean - 2) * 0.8);
       const shoulderY = y + SW.pivotY + bob;
       if (swingArcSink) {
         swingArcSink({
           x: shoulderX, y: shoulderY,
+          facing: p.facing,
           fromAng: prevAng ?? pose.ang, ang: pose.ang,
-          reach: sp.reach, color: C.colors.accent, isSweet,
+          reach: sp.reach,
+          color: arcColor,
+          color2: fxPair ? fxPair[1] : undefined,
+          isSweet,
         });
       }
     }
@@ -600,7 +825,13 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     lastAng.set(angKey(p), null);
   } else {
     lastAng.set(angKey(p), null);
-    pose = IDLE_POSE;                    // 待机:屈肘把拍收在体前
+    // 待机:屈肘把拍收在体前 + 呼吸微摆(拍角/手位随呼吸漂移)
+    pose = {
+      pts: IDLE_POSE.pts,
+      hand: [IDLE_POSE.hand[0], IDLE_POSE.hand[1] + Math.sin(t * 0.025) * 1.2],
+      ang: IDLE_POSE.ang + Math.sin(t * 0.025) * 2.5,
+      len: IDLE_POSE.len,
+    };
   }
   // 上臂深色衣袖 + 前臂露肤色:整条深色会在球衣上读成「斜挎的带子」
   arm(g, A, th.dark, pose.pts);
@@ -700,9 +931,11 @@ function estTextWidth(s: string): number {
 // 注意 cc.Graphics 的 fill()/stroke() 会消费当前路径(弧光双描边处靠重建路径证实),
 // 所以「填充 + 描边」同一形状必须重建路径,攒路径后一次性 stroke 与 canvas 同构。
 function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
-  opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number } = {}): void {
+  opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number;
+    skin?: SkinDef | null } = {}): void {
   const lx = opt.lookX || 0, ly = opt.lookY || 0;
   const face: FaceKind = (opt.faceT ?? 0) > 0 ? (opt.face ?? "normal") : "normal";
+  const sk = opt.skin ?? null;
 
   // 黑脸圆:近黑填充 + 淡白描边,暗色球馆里勾出轮廓
   g.fillColor = pal(HEAD);
@@ -713,17 +946,46 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
   g.lineWidth = f.lw(1.6);
   g.stroke();
 
+  // 近侧耳朵:3/4 视角下背侧(远网侧)的一个小半圆凸起,让头部轮廓从"光头球"变成"有人形"
+  // 位置在头的背侧边缘偏下(耳廓大约在眼-嘴中线高度),半径约头径 18%
+  const earX = cx - hr * 0.85, earY = cy + hr * 0.10;
+  g.fillColor = pal(HEAD);
+  circleAA(g, f, earX, earY, hr * 0.18);
+  g.fill();
+  g.strokeColor = pal(HEAD_LINE);
+  circleAA(g, f, earX, earY, hr * 0.18);
+  g.lineWidth = f.lw(1.0);
+  g.stroke();
+
   // 头顶高光:一道极淡反光弧,黑脸不至于闷成纯色块
   g.strokeColor = withAlpha(pal(FACE), 0.15);
   g.lineWidth = f.lw(2.5);
   polyPath(g, arcPts(f, cx, cy, hr * 0.76, Math.PI * 1.12, Math.PI * 1.42, false), false);
   g.stroke();
 
-  // 队色发带:压在头顶,黑脸上的红蓝识别靠它
-  g.strokeColor = pal(th.main);
-  g.lineWidth = f.lw(4);
-  polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.14, Math.PI * 1.86, false), false);
-  g.stroke();
+  // ---------- 发型(设计款):盖在头圆上部,发带/头饰压在它上面 ----------
+  if (sk?.hairStyle && sk.hairColor) {
+    drawHair(g, f, sk.hairStyle, sk.hairColor, hr, cx, cy);
+  }
+
+  // 头饰(设计款)替换默认队色发带;ribbon 是叠饰,发带照画再补结饰
+  const hw = sk?.headwear;
+  if (hw === "cap") {
+    drawCap(g, f, th, hr, cx, cy);
+  } else if (hw === "crown") {
+    drawCrown(g, f, hr, cx, cy);
+  } else if (hw === "goggles") {
+    drawGoggles(g, f, th, hr, cx, cy);
+  } else if (hw === "bandana") {
+    drawBandana(g, f, th, hr, cx, cy, opt.t ?? 0);
+  } else {
+    // 队色发带:压在头顶,黑脸上的红蓝识别靠它
+    g.strokeColor = pal(th.main);
+    g.lineWidth = f.lw(4);
+    polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.14, Math.PI * 1.86, false), false);
+    g.stroke();
+    if (hw === "ribbon") drawRibbon(g, f, th, hr, cx, cy);
+  }
 
   // ---------- 五官基线:眼距沿用 3/4 透视(网侧大、背侧小) ----------
   const exN = cx + hr * 0.40, exF = cx - hr * 0.16;   // 近/远眼 x
@@ -822,6 +1084,186 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
   }
 
   drawFaceSticker(g, f, opt.t ?? 0, face, opt.faceT ?? 0, opt.faceD ?? 1, cx, cy, hr);
+}
+
+// ---------- 设计款发型与头饰零件(全部局部坐标,角度沿用 canvas y 向下约定:
+// π..2π = 头顶上半圆,+x = 朝球网侧。「填充+描边」必须重建路径再 stroke) ----------
+
+// 发型总入口:spiky 刺猬 / mohawk 莫霍克 / bun 发髻 / twin 双马尾(后两者叠在基础发盖上)
+function drawHair(g: Graphics, f: Frame, style: NonNullable<SkinDef["hairStyle"]>, color: string,
+  hr: number, cx: number, cy: number): void {
+  const fillStroke = (pts: Pt[], lw: number): void => {
+    g.fillColor = pal(color);
+    polyPath(g, pts, true);
+    g.fill();
+    g.strokeColor = pal(HAIR_LINE);
+    g.lineWidth = f.lw(lw);
+    polyPath(g, pts, true);
+    g.stroke();
+  };
+  if (style === "spiky") {
+    // 刺猬头:沿头顶轮廓向外扎 7 根尖刺(长短错落),根部埋进头圆
+    const N = 7, a0 = Math.PI * 1.06, a1 = Math.PI * 1.94;
+    const pts: Pt[] = [];
+    for (let i = 0; i <= N; i++) {
+      const a = a0 + ((a1 - a0) * i) / N;
+      pts.push(f.pt(cx + Math.cos(a) * hr * 1.02, cy + Math.sin(a) * hr * 1.02));
+      if (i < N) {
+        const am = a + (a1 - a0) / N / 2;
+        const spike = hr * (1.3 + 0.09 * Math.sin(i * 2.7));
+        pts.push(f.pt(cx + Math.cos(am) * spike, cy + Math.sin(am) * spike));
+      }
+    }
+    fillStroke(pts, 1.0);
+  } else if (style === "mohawk") {
+    // 莫霍克:头顶正中一排高耸窄刺,从后脑排到额前
+    const N = 5, a0 = Math.PI * 1.22, a1 = Math.PI * 1.78;
+    const pts: Pt[] = [];
+    for (let i = 0; i <= N; i++) {
+      const a = a0 + ((a1 - a0) * i) / N;
+      pts.push(f.pt(cx + Math.cos(a) * hr * 0.98, cy + Math.sin(a) * hr * 0.98));
+      if (i < N) {
+        const am = a + (a1 - a0) / N / 2;
+        pts.push(f.pt(cx + Math.cos(am) * hr * 1.52, cy + Math.sin(am) * hr * 1.52));
+      }
+    }
+    fillStroke(pts, 1.0);
+  } else {
+    // 基础发盖:外缘贴头圆外一圈、内缘压到额头上方的新月形
+    const outer = arcPts(f, cx, cy, hr * 1.06, Math.PI * 1.0, Math.PI * 2.0, false);
+    const inner = arcPts(f, cx, cy, hr * 0.66, Math.PI * 1.94, Math.PI * 1.06, true);
+    fillStroke(outer.concat(inner), 1.0);
+    if (style === "bun") {
+      // 发髻:头顶后侧一枚圆髻
+      const bx = cx - hr * 0.62, by = cy - hr * 0.88;
+      g.fillColor = pal(color);
+      circleAA(g, f, bx, by, hr * 0.34);
+      g.fill();
+      g.strokeColor = pal(HAIR_LINE);
+      g.lineWidth = f.lw(1.0);
+      circleAA(g, f, bx, by, hr * 0.34);
+      g.stroke();
+    } else if (style === "twin") {
+      // 双马尾:脑后两条垂落的束发,远侧先画、压暗一档读出前后
+      hairTail(g, f, withAlpha(pal(color), 0.82), cx - hr * 0.9, cy - hr * 0.1, cx - hr * 1.18, cy + hr * 0.9, hr * 0.42);
+      hairTail(g, f, pal(color), cx - hr * 0.66, cy - hr * 0.28, cx - hr * 0.95, cy + hr * 1.18, hr * 0.46);
+    }
+  }
+}
+
+// 束发/飘带:两点之间的一条旋转长椭圆(发梢自然收窄靠宽参数给小)
+function hairTail(g: Graphics, f: Frame, color: Color, x0: number, y0: number, x1: number, y1: number, w: number): void {
+  const ang = Math.atan2(y1 - y0, x1 - x0);
+  const len = Math.hypot(x1 - x0, y1 - y0) || 1;
+  const R = rotateFrame(f, x0, y0, ang);
+  g.fillColor = color;
+  polyPath(g, ellipsePts(R, len / 2, 0, len / 2, w / 2), true);
+  g.fill();
+  g.strokeColor = pal(HAIR_LINE);
+  g.lineWidth = f.lw(1.0);
+  polyPath(g, ellipsePts(R, len / 2, 0, len / 2, w / 2), true);
+  g.stroke();
+}
+
+// 棒球帽:扣在头顶的半球帽体 + 朝网侧伸出的帽檐 + 帽顶小扣
+function drawCap(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
+  const dome = (): void => { polyPath(g, arcPts(f, cx, cy - hr * 0.08, hr * 1.02, Math.PI * 0.98, Math.PI * 2.02, false), true); };
+  g.fillColor = pal(th.main);
+  dome();
+  g.fill();
+  g.strokeColor = pal(HAIR_LINE);
+  g.lineWidth = f.lw(1.2);
+  dome();
+  g.stroke();
+  g.fillColor = withAlpha(pal(th.dark), 0.96);
+  polyPath(g, ellipsePts(f, cx + hr * 0.88, cy - hr * 0.3, hr * 0.62, hr * 0.17), true);
+  g.fill();
+  g.stroke();
+  g.fillColor = withAlpha(pal(th.glow), 0.9);
+  circleAA(g, f, cx, cy - hr * 1.08, hr * 0.10);
+  g.fill();
+}
+
+// 王冠:金色三尖冠 + 深金描边 + 冠心宝石(球场之王)
+function drawCrown(g: Graphics, f: Frame, hr: number, cx: number, cy: number): void {
+  const baseY = cy - hr * 0.86, topY = cy - hr * 1.5, hw = hr * 0.62;
+  const pts: Pt[] = [
+    f.pt(cx - hw, baseY),
+    f.pt(cx - hw * 0.78, topY),
+    f.pt(cx - hw * 0.42, baseY + hr * 0.14),
+    f.pt(cx, topY - hr * 0.1),
+    f.pt(cx + hw * 0.42, baseY + hr * 0.14),
+    f.pt(cx + hw * 0.78, topY),
+    f.pt(cx + hw, baseY),
+  ];
+  g.fillColor = pal("#ffd24d");
+  polyPath(g, pts, true);
+  g.fill();
+  g.strokeColor = pal("#8a6a1c");
+  g.lineWidth = f.lw(1.1);
+  polyPath(g, pts, true);
+  g.stroke();
+  g.fillColor = pal("#ff4d6a");
+  circleAA(g, f, cx, topY + hr * 0.28, hr * 0.11);
+  g.fill();
+}
+
+// 护目镜:推在额头上的荧光镜片(赛博骇客),束带用皮肤深色、镜面用 glow 色
+function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
+  const gy = cy - hr * 0.52;
+  g.strokeColor = pal(th.dark);
+  g.lineWidth = f.lw(3);
+  polyPath(g, arcPts(f, cx, cy, hr * 0.92, Math.PI * 1.08, Math.PI * 1.92, false), false);
+  g.stroke();
+  const lens = (ex: number, er: number): void => {
+    g.fillColor = withAlpha(pal(th.glow), 0.32);
+    circleAA(g, f, ex, gy, er);
+    g.fill();
+    g.strokeColor = pal(th.glow);
+    g.lineWidth = f.lw(1.3);
+    circleAA(g, f, ex, gy, er);
+    g.stroke();
+  };
+  lens(cx + hr * 0.34, hr * 0.26);
+  lens(cx - hr * 0.30, hr * 0.21);
+}
+
+// 忍者额带:更宽的束带 + 额前金属贴片 + 脑后两条随风微摆的飘带(影忍)
+function drawBandana(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number, t: number): void {
+  g.strokeColor = pal(th.main);
+  g.lineWidth = f.lw(5.5);
+  polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.1, Math.PI * 1.9, false), false);
+  g.stroke();
+  g.fillColor = withAlpha(pal(th.glow), 0.95);
+  fillRectTr(g, f, cx + hr * 0.40, cy - hr * 0.46, hr * 0.30, hr * 0.20, withAlpha(pal(th.glow), 0.95));
+  const wv = Math.sin(t * 0.06) * hr * 0.12;
+  g.strokeColor = pal(th.main);
+  g.lineWidth = f.lw(2.6);
+  lineSeg(g, f, cx - hr * 0.88, cy - hr * 0.30, cx - hr * 1.52, cy - hr * 0.46 + wv);
+  lineSeg(g, f, cx - hr * 0.88, cy - hr * 0.18, cx - hr * 1.42, cy + hr * 0.06 + wv * 0.7);
+  g.stroke();
+}
+
+// 蝴蝶结:头顶后侧的双耳结饰,系在双马尾根部(樱花少女)
+function drawRibbon(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
+  const bx = cx - hr * 0.58, by = cy - hr * 0.72;
+  const ear = (sx: number): Pt[] => [
+    f.pt(bx + sx * hr * 0.3, by - hr * 0.22), f.pt(bx, by), f.pt(bx + sx * hr * 0.3, by + hr * 0.22),
+  ];
+  g.fillColor = pal(th.glow);
+  polyPath(g, ear(-1), true);
+  g.fill();
+  polyPath(g, ear(1), true);
+  g.fill();
+  g.strokeColor = pal(HAIR_LINE);
+  g.lineWidth = f.lw(0.9);
+  polyPath(g, ear(-1), true);
+  g.stroke();
+  polyPath(g, ear(1), true);
+  g.stroke();
+  g.fillColor = pal(th.main);
+  circleAA(g, f, bx, by, hr * 0.13);
+  g.fill();
 }
 
 // ---------- 表情五官零件(全部白色线条,由 drawHead 按种类取用) ----------
@@ -966,13 +1408,13 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   const frame = sk.frame || th.glow;
 
   g.lineCap = LineCap.ROUND;
-  g.strokeColor = pal(sk.grip || RACKET_DEFAULT.grip);   // 拍柄
+  g.strokeColor = pal(sk.grip || "#20242f");             // 拍柄
   g.lineWidth = f.lw(4.5);
   lineSeg(g, f, hx - dx * 2.5, hy - dy * 2.5, hx + dx * 4.5, hy + dy * 4.5);
   g.stroke();
 
   // 拍杆
-  g.strokeColor = pal(sk.shaft || RACKET_DEFAULT.shaft);
+  g.strokeColor = pal(sk.shaft || "#efe7d8");
   g.lineWidth = f.lw(2.4);
   lineSeg(g, f, hx + dx * 4.5, hy + dy * 4.5, hx + dx * len * 0.62, hy + dy * len * 0.62);
   g.stroke();
@@ -1027,12 +1469,56 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
     }
   }
 
-  // 拍面网线
-  g.strokeColor = withAlpha(pal("#ffffff"), 0.35);
+  // 拍面网线(设计款可自定义拍线色,如星辉拍的金线)
+  const strColor = sk.stringColor || "#ffffff";
+  g.strokeColor = withAlpha(pal(strColor), sk.stringColor ? 0.6 : 0.35);
   g.lineWidth = R.lw(0.8);
   for (let i = -2; i <= 2; i++) lineSeg(g, R, i * 3, -10, i * 3, 10);
   for (let i = -3; i <= 3; i++) lineSeg(g, R, -8, i * 3, 8, i * 3);
   g.stroke();
+
+  // 拍框贴章(设计款):压在网线上,拍面下缘正中的小徽记
+  if (sk.decal) drawDecal(g, R, sk.decal);
+}
+
+// 拍框贴章:星/电/火/冰晶四种小徽记,画在拍面局部坐标(R)下缘 (0, 6) 处
+function drawDecal(g: Graphics, R: Frame, kind: NonNullable<SkinDef["decal"]>): void {
+  const col = DECAL_COLORS[kind] || "#ffd24d";
+  const at = (dx: number, dy: number): Pt => R.pt(dx, dy);
+  if (kind === "star") {
+    // 四角星芒
+    g.fillColor = pal(col);
+    polyPath(g, [at(0, 3.2), at(0.9, 5.2), at(0, 8.6), at(-0.9, 5.2)], true);
+    g.fill();
+    polyPath(g, [at(-2.4, 6.1), at(-0.9, 5.2), at(0.9, 5.2), at(2.4, 6.1)], true);
+    g.fill();
+  } else if (kind === "bolt") {
+    // 闪电折线
+    g.strokeColor = pal(col);
+    g.lineWidth = R.lw(1.4);
+    g.moveTo(at(0.9, 3.4).x, at(0.9, 3.4).y);
+    g.lineTo(at(-0.7, 6.0).x, at(-0.7, 6.0).y);
+    g.lineTo(at(0.3, 6.2).x, at(0.3, 6.2).y);
+    g.lineTo(at(-0.9, 9.0).x, at(-0.9, 9.0).y);
+    g.stroke();
+  } else if (kind === "flame") {
+    // 火苗:外焰 + 内焰两层泪滴
+    g.fillColor = pal(col);
+    polyPath(g, [at(0, 3.2), at(1.5, 5.8), at(0.7, 8.4), at(0, 9.4), at(-0.8, 8.2), at(-1.4, 5.6)], true);
+    g.fill();
+    g.fillColor = withAlpha(pal("#ffe14d"), 0.9);
+    polyPath(g, [at(0, 5.4), at(0.7, 7.2), at(0, 9.0), at(-0.7, 7.0)], true);
+    g.fill();
+  } else {
+    // 冰晶:菱形六角晶面
+    g.fillColor = withAlpha(pal(col), 0.85);
+    polyPath(g, [at(0, 3.4), at(1.3, 5.6), at(0, 9.0), at(-1.3, 5.6)], true);
+    g.fill();
+    g.strokeColor = withAlpha(pal("#eaffff"), 0.9);
+    g.lineWidth = R.lw(0.7);
+    polyPath(g, [at(0, 3.4), at(1.3, 5.6), at(0, 9.0), at(-1.3, 5.6)], true);
+    g.stroke();
+  }
 }
 
 /**

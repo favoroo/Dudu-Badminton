@@ -12,7 +12,7 @@ import type { SettleResult } from "../core/career";
 import type { DrillResult } from "../core/drill";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { drawMenuCard } from "./ui-arcade";
+import { cancelFade, drawMenuCard, fadeOutHide } from "./ui-arcade";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -183,7 +183,7 @@ export class SettlePanel {
         const g = cell.addComponent(Graphics);
         drawMenuCard(g, CELL_W, CELL_H, 9, { edge: 0, bar: 0, alpha: 0.6 });
         this.kit.label(cell, "", 20, P.text).node.setPosition(0, 8, 0);   // 大数
-        this.kit.label(cell, "", 11, P.dim).node.setPosition(0, -13, 0);  // 标签
+        this.kit.label(cell, "", 12, P.dim).node.setPosition(0, -13, 0);  // 标签
         cell.setParent(this.statLayer);
       }
       const r = rows[i];
@@ -220,6 +220,7 @@ export class SettlePanel {
   }
 
   show(p: SettlePayload): void {
+    cancelFade(this.root);
     this.payload = p;
     this.root.active = true;
     const P = this.kit.pal;
@@ -260,7 +261,7 @@ export class SettlePanel {
   }
 
   hide(): void {
-    this.root.active = false;
+    fadeOutHide(this.root);
     this.anim = null;
     this.payload = null;
   }

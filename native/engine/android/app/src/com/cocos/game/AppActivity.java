@@ -29,6 +29,9 @@ import android.content.Intent;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.net.Uri;
+import android.os.Build;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.util.Log;
 import androidx.core.content.FileProvider;
 import java.io.File;
@@ -71,6 +74,25 @@ public class AppActivity extends CocosActivity {
             return;
         }
         SDKWrapper.shared().onDestroy();
+    }
+
+    /**
+     * 触觉反馈震动:游戏层经 native.reflection 调用(game/haptics.ts)。
+     * @param ms 震动时长(毫秒);<=0 不震。O 以上走 VibrationEffect,旧系统退回 deprecated 重载
+     */
+    public static void vibrate(int ms) {
+        try {
+            if (sContext == null || ms <= 0) return;
+            Vibrator v = (Vibrator) sContext.getSystemService(Context.VIBRATOR_SERVICE);
+            if (v == null || !v.hasVibrator()) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                v.vibrate(ms);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "vibrate exception: " + e.getMessage());
+        }
     }
 
     public static boolean installApk(String filePath) {

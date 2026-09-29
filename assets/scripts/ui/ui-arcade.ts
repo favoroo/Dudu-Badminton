@@ -3,11 +3,12 @@
 // 「黄昏体育馆 · 街机赛事海报」语言 —— 硬偏移阴影贴纸感、
 // 厚底 3D 按钮、扫描线氛围、rise / slam / pop 分层入场。
 //
-// 只依赖 cc,不 import 其它 ui 文件:ui-manager 与 career/drill
+// 只依赖 cc 与 core/config,不 import 其它 ui 文件:ui-manager 与 career/drill
 // 面板都要用它,放独立文件避免互相 import 成环。
 // Graphics 为保留型画布:一次构建,运行时零重绘(动画只用 tween)。
 // ============================================================
-import { Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec3 } from "cc";
+import { BlockInputEvents, Button, Color, Graphics, Label, Node, sys, Tween, tween, UIOpacity, UITransform, Vec3, view } from "cc";
+import { CFG } from "../core/config";
 
 // ---------- 设计令牌(老 base.css :root 同源) ----------
 export const ARCADE = {
@@ -30,6 +31,150 @@ export const ARCADE = {
   dim: "#8f9cbe",        // 老项目里高频出现的灰蓝字
   dimDeep: "#6f7ca6",    // 更暗一档
 };
+
+// ---------- 移动端触控令牌(统一从这把尺子出,不再每个面板各写各的) ----------
+
+/** 触控目标最小高度(世界单位):1 单位 ≈ 0.15mm,44 ≈ 6.6mm,是拇指点准的下限 */
+export const TOUCH_MIN = 44;
+/** 相邻可点目标的最小间隙:低于它就到了「想按 A 按成 B」的误触区 */
+export const TOUCH_GAP = 14;
+/** 关停类小按钮(返回 ✕ 等)的命中区边长:视觉小、命中大 */
+export const ICON_HIT = 56;
+
+// ---------- 安全区:三处私有实现收编成一份 ----------
+
+export interface SafePad { top: number; right: number; bottom: number; left: number }
+
+/**
+ * 刘海/打孔/圆角的安全内缩,像素 → 世界单位换算只在这里做一次。
+ * hud.ts 与 settings-panel.ts 曾各抄一份且算法漂移(后者忘了乘缩放,
+ * 高分屏上避让量差一截),touchpad.ts 又是第三套 —— UI 层一律改用本函数。
+ * 顶边 cap 48:刘海再高也不能把记分牌推到球场中间;左右给 14 的基础边距。
+ */
+export function safePad(): SafePad {
+  let top = 0, left = 14, right = 14, bottom = 0;
+  try {
+    const vs = view.getVisibleSize();
+    const sr = sys.getSafeAreaRect();
+    if (vs.height > 0 && sr) {
+      const k = CFG.world.h / vs.height;          // 像素 → 世界单位
+      const t = vs.height - (sr.y + sr.height);
+      if (t > 0) top = Math.min(48, t * k);
+      if (sr.x > 0) left = Math.max(left, sr.x * k + 8);
+      const r = vs.width - (sr.x + sr.width);
+      if (r > 0) right = Math.max(right, r * k + 8);
+      if (sr.y > 0) bottom = Math.min(24, sr.y * k);
+    }
+  } catch { /* 拿不到安全区就按无刘海排 */ }
+  return { top, right, bottom, left };
+}
+
+// ---------- 统一按压反馈与面板退场 ----------
+
+/**
+ * 裸 TOUCH_END 交互的按压反馈:按下缩到 0.94、抬起回弹。
+ * Button(SCALE) 组件的等价物 —— 皮肤卡/关卡卡用不到 Button 的 CLICK 语义,
+ * 但「按下去有回应」不能缺席(此前这两块面板点了毫无反应,与全站手感割裂)。
+ */
+export function pressFx(node: Node): void {
+  node.on(Node.EventType.TOUCH_START, () => {
+    if (!node.isValid) return;
+    Tween.stopAllByTarget(node);
+    node.setScale(0.94, 0.94, 1);
+  });
+  const up = (): void => {
+    if (!node.isValid) return;
+    Tween.stopAllByTarget(node);
+    tween(node).to(0.14, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+  };
+  node.on(Node.EventType.TOUCH_END, up);
+  node.on(Node.EventType.TOUCH_CANCEL, up);
+}
+
+/** 在途退场动画的作废令牌:show 前调 cancelFade,晚到的 fade 回调不再关面板 */
+const fadeTags = new Map<Node, number>();
+
+/**
+ * 面板退场统一收尾:淡出 + 轻缩,完了再关 active。
+ * 曾经所有面板 hide 都是瞬间 active=false —— 进有 rise/slam,出却是硬切。
+ * 退场比进场快(0.15s),别让人等;BlockInputEvents 立即失效,
+ * 淡出的残影不该拦着已经在打球的拇指。
+ */
+export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {
+  for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = false;
+  const op = node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
+  Tween.stopAllByTarget(node);
+  Tween.stopAllByTarget(op);
+  op.opacity = 255;
+  node.setScale(1, 1, 1);
+  const tag = (fadeTags.get(node) ?? 0) + 1;
+  fadeTags.set(node, tag);
+  tween(op)
+    .to(dur, { opacity: 0 })
+    .call(() => {
+      if (!node.isValid || fadeTags.get(node) !== tag) return;
+      node.active = false;
+      op.opacity = 255;                 // 复位:下次 show 的入场动画从可见起步
+      node.setScale(1, 1, 1);
+      onDone?.();
+    })
+    .start();
+}
+
+/** show() 前调:作废在途退场,面板从可见态起步(快速关-开不会被旧动画收走) */
+export function cancelFade(node: Node): void {
+  fadeTags.set(node, (fadeTags.get(node) ?? 0) + 1);
+  const op = node.getComponent(UIOpacity);
+  if (op) {
+    Tween.stopAllByTarget(op);
+    op.opacity = 255;
+  }
+  Tween.stopAllByTarget(node);
+}
+
+/**
+ * 图标按钮:视觉圆底小、命中区大 —— 触摸目标是 contentSize(默认 56),
+ * 圆底只是其中央一块,拇指不用瞄准。返回节点自带 Button(SCALE),接 CLICK 用。
+ */
+export function uiIconButton(
+  parent: Node, glyph: string,
+  opts: { hit?: number; vis?: number; bg?: string; bgA?: number; edge?: string; edgeA?: number; fg?: string; fontSize?: number } = {},
+): Node {
+  const hit = opts.hit ?? ICON_HIT;
+  const vis = opts.vis ?? TOUCH_MIN;
+  const n = new Node(`icon-btn:${glyph}`);
+  n.layer = parent.layer;
+  n.addComponent(UITransform).setContentSize(hit, hit);
+  const g = n.addComponent(Graphics);
+  const r = vis / 2;
+  g.fillColor = ac("#000000", 0.45);          // 硬偏移阴影
+  g.circle(2.5, -2.5, r);
+  g.fill();
+  g.fillColor = ac(opts.bg ?? "#6e2029", opts.bgA ?? 0.94);
+  g.circle(0, 0, r);
+  g.fill();
+  g.strokeColor = ac(opts.edge ?? "#ff8a8a", opts.edgeA ?? 0.7);
+  g.lineWidth = 1.5;
+  g.circle(0, 0, r);
+  g.stroke();
+  const ln = new Node("glyph");
+  ln.layer = parent.layer;
+  ln.addComponent(UITransform).setContentSize(vis, vis);
+  ln.setParent(n);
+  const l = ln.addComponent(Label);
+  l.string = glyph;
+  l.fontSize = opts.fontSize ?? 18;
+  l.lineHeight = vis;
+  l.horizontalAlign = Label.HorizontalAlign.CENTER;
+  l.verticalAlign = Label.VerticalAlign.CENTER;
+  l.color = ac(opts.fg ?? ARCADE.paper);
+  const b = n.addComponent(Button);
+  b.transition = Button.Transition.SCALE;
+  b.zoomScale = 0.9;
+  b.target = n;
+  n.setParent(parent);
+  return n;
+}
 
 export function ac(hex: string, alpha = 1): Color {
   const c = new Color();

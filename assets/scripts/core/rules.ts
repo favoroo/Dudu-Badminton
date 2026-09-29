@@ -180,7 +180,7 @@ function beginPoint(): void {
   R.state = "SERVE";
   R.timer = C.scoring.servePause;
   R.serveWait = 0;
-  for (const p of R.players) AI.reset(p);
+  for (const p of R.players) { AI.reset(p); p.heat = 0; }   // 连击热手随新的一分清零
   emit("point-start", { server: R.server });
 }
 
@@ -202,7 +202,7 @@ function applyShot(ball: Ball, shot: ShotLike): void {
     perfect: shot.perfect, timingHint: shot.timingHint || null,
     x: shot.contactX, y: shot.contactY, power: shot.power,
     landX: shot.landX, steps: shot.steps, intoNet: shot.intoNet, rally: R.rally,
-    vx: shot.vx, vy: shot.vy,
+    vx: shot.vx, vy: shot.vy, heat: shot.hitter.heat,
   });
 }
 

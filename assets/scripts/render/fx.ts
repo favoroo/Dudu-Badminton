@@ -254,6 +254,30 @@ export class FXSystem {
     this._dust(x, y, 3, COL_WHITE, 1.2);
   }
 
+  /**
+   * 扣杀落地冲击波:地面椭圆扩张波纹(主波 + 延迟次波)。
+   * 管线(池/步进/绘制)老工程就有,此前一直没有公开入口 —— 这次把落地瞬间接上。
+   * 参数全部来自 config.fx.shockwave*。
+   */
+  shockwave(lx: number, ly: number): void {
+    const maxR = C.fx.shockwaveMaxR || 80;
+    const speed = C.fx.shockwaveSpeed || 5.5;
+    const life = C.fx.shockwaveLife || 18;
+    this._shockwave(lx, ly, 6, maxR, speed, life, 6, COL_ORANGE, 0);
+    this._shockwave(lx, ly, 4, maxR * 0.7, speed * 0.8, life - 4, 4, COL_WHITE, 3);
+  }
+
+  /** 普通击球接触小火花:一小撮白金粒子,让平抽/高远的对拉每拍都有「打到了」的手感 */
+  miniSpark(hx: number, hy: number): void {
+    for (let i = 0; i < 6; i++) {
+      const a = rand(0, TAU);
+      const spd = rand(2.5, 7);
+      this._particle(hx, hy, cos(a) * spd, sin(a) * spd,
+        0.08, 0.92, randi(7, 12), 12,
+        rand(1.2, 2.2), 0, 0, i < 2 ? COL_GOLD : COL_WHITE, SH_SQUARE);
+    }
+  }
+
   /** 羽毛飘落:count 片白羽从 (x,y) 散落,重力+风阻+湍流 */
   feather(fx: number, fy: number, count = 5): void {
     for (let i = 0; i < count; i++) {

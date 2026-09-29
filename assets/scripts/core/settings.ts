@@ -47,6 +47,8 @@ export interface GameSettings {
   bgmOn: boolean; bgmVol: number;
   // 画面提示:落点预测圈 / 屏幕震动 / 飘字
   hintLanding: boolean; hintShake: boolean; hintFloat: boolean;
+  // 触觉反馈:按键/击球/得分的短震动(移动端,Web 是空操作)
+  hapticOn: boolean;
   pad: Record<PadAction, PadBtn>;
 }
 
@@ -60,6 +62,7 @@ function fresh(): GameSettings {
     sfxOn: true, sfxVol: 0.8,
     bgmOn: true, bgmVol: 0.6,
     hintLanding: true, hintShake: true, hintFloat: true,
+    hapticOn: true,
     pad,
   };
 }
@@ -82,6 +85,7 @@ export function sanitize(raw: unknown): GameSettings {
   s.hintLanding = bool(r.hintLanding, s.hintLanding);
   s.hintShake = bool(r.hintShake, s.hintShake);
   s.hintFloat = bool(r.hintFloat, s.hintFloat);
+  s.hapticOn = bool(r.hapticOn, s.hapticOn);
   const pad = r.pad as Record<string, Partial<PadBtn>> | null | undefined;
   if (pad && typeof pad === "object") {
     for (const a of PAD_ACTIONS) {
@@ -138,6 +142,7 @@ export class SettingsStore {
   get hintLanding(): boolean { return this.v.hintLanding; }
   get hintShake(): boolean { return this.v.hintShake; }
   get hintFloat(): boolean { return this.v.hintFloat; }
+  get hapticOn(): boolean { return this.v.hapticOn; }
 
   /** 某个键的当前布局(默认位 + 位移) */
   padOf(a: PadAction): PadBtn { return this.v.pad[a]; }
@@ -167,7 +172,7 @@ export class SettingsStore {
    * persist=false 同 setPad:音量滑杆拖动时逐帧改内存、松手再 flush,
    * 原生 sys.localStorage.setItem 是同步文件 IO,不能跟着手指 60Hz 写盘。
    */
-  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat">>, persist = true): void {
+  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn">>, persist = true): void {
     const s = this.v;
     if (p.sfxOn !== undefined) s.sfxOn = bool(p.sfxOn, s.sfxOn);
     if (p.sfxVol !== undefined) s.sfxVol = num(p.sfxVol, s.sfxVol, 0, 1);
@@ -176,6 +181,7 @@ export class SettingsStore {
     if (p.hintLanding !== undefined) s.hintLanding = bool(p.hintLanding, s.hintLanding);
     if (p.hintShake !== undefined) s.hintShake = bool(p.hintShake, s.hintShake);
     if (p.hintFloat !== undefined) s.hintFloat = bool(p.hintFloat, s.hintFloat);
+    if (p.hapticOn !== undefined) s.hapticOn = bool(p.hapticOn, s.hapticOn);
     this.after(persist);
   }
 

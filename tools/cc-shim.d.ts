@@ -155,6 +155,8 @@ declare module "cc" {
     addComponent<T>(type: { new(): T }): T;
     getComponent<T>(type: { new(): T }): T | null;
     getComponents<T>(type: { new(): T }): T[];
+    /** 递归查找自身+所有子孙节点上挂的同类型组件(真实引擎同名 API 的兜底声明) */
+    getComponentsInChildren<T>(type: { new(): T }): T[];
     /**
      * 事件回调参数放宽成 any[]:真实 cc 类型里 TOUCH_START/MOVE 等回调是 EventTouch,
      * 写成 never[] 会让 handler 里的 e.getUILocation() 报 TS2339(编辑器外检查与引擎不符)。
@@ -172,6 +174,10 @@ declare module "cc" {
     /** 节点是否有效(未销毁);面板析构时防悬空 */
     readonly isValid: boolean;
     setScale(x: number, y: number, z?: number): void;
+    /** 世界坐标(真实引擎同名 API 的兜底声明;touchpad 层级命中把键心转层坐标用) */
+    readonly worldPosition: Readonly<Vec3>;
+    /** 当前缩放(真实引擎同名 API 的兜底声明) */
+    readonly scale: Readonly<Vec3>;
     /** 3.x 保留 API,等价 setParent */
     addChild(child: Node): void;
     /** 2D 旋转角(度,settle 面板飘字/徽章用) */
@@ -254,6 +260,8 @@ declare module "cc" {
 
   export class Component {
     node: Node;
+    /** 组件开关(真实引擎同名属性):批量禁用 BlockInputEvents 等场景用 */
+    enabled: boolean;
     /** 对象有效性(CCObject.isValid):tween 回调里防悬空 */
     isValid: boolean;
     /** 生命周期按需覆写;shim 只声明可选签名供子类覆写 */

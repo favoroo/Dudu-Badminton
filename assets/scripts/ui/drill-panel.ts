@@ -5,14 +5,14 @@
 // 依赖:DrillAnim(演示动画)、Career(存档)、DRILLS(关卡配置)
 // ============================================================
 import {
-  BlockInputEvents, Color, Component, EventKeyboard, Graphics, Input, input, KeyCode, Label, Layers, Node,
+  BlockInputEvents, Button, Color, Component, EventKeyboard, Graphics, Input, input, KeyCode, Label, Layers, Node,
   UITransform, Widget, _decorator,
 } from "cc";
 import { Career } from "../core/career";
 import { CFG, DRILLS } from "../core/config";
 import { DrillDef } from "../core/types";
 import * as DrillAnim from "../render/drill-anim";
-import { drawHardShadow, drawVeil, slamIn } from "./ui-arcade";
+import { drawArcadeButton, drawHardShadow, drawVeil, fadeOutHide, pressFx, slamIn, uiIconButton } from "./ui-arcade";
 
 // ---------- 布局(设计分辨率 960×540) ----------
 
@@ -172,7 +172,9 @@ export class DrillPanel extends Component {
     this._rig = null;
     this._animGfx = null;
     this._animMs = 0;
-    if (this.root && this.root.isValid) this.root.destroy();
+    // 退场淡出后再销毁整树;引用立刻置空,防止 update() 摸到已收走的节点
+    const r = this.root;
+    if (r && r.isValid) fadeOutHide(r, () => { if (r.isValid) r.destroy(); });
     this.root = null!;
     this._panelNode = null;
   }
@@ -269,16 +271,10 @@ export class DrillPanel extends Component {
       x: 0, y: 4, w: 200, align: 1,
     });
 
-    // 返回按钮
-    const back = mkNode("back", bar, 36, 36);
-    back.setPosition(PW / 2 - 28, 2, 0);
-    const bg = back.addComponent(Graphics);
-    bg.fillColor = new Color(200, 60, 60, 180);
-    bg.circle(0, 0, 16); bg.fill();
-    bg.strokeColor = new Color(255, 120, 120, 200);
-    bg.lineWidth = 1.5; bg.circle(0, 0, 16); bg.stroke();
-    mkLabel(back, "icon", "✕", 15, COL.white, { x: 0, y: 0, w: 36, align: 1 });
-    back.on(Node.EventType.TOUCH_END, () => {
+    // 返回按钮:命中区 56(视觉圆底 44),Button.CLICK 自带按压反馈
+    const back = uiIconButton(bar, "✕", { bg: "#6e2029", edge: "#ff8a8a", fontSize: 20 });
+    back.setPosition(PW / 2 - 40, 2, 0);
+    back.on(Button.EventType.CLICK, () => {
       this._onBack?.();
       this.hide();
     });
@@ -346,13 +342,14 @@ export class DrillPanel extends Component {
       const footColor = cleared ? COL.green : COL.gold;
       mkLabel(card, "foot", footText, 12, footColor, { y: -CARD_H / 2 + 16, w: CARD_W - 20, align: 1 });
 
-      // 点击
+      // 点击(先注册业务回调再补按压反馈:重建网格销毁卡片时动画不会晚到一步)
       const idx = i;
       card.on(Node.EventType.TOUCH_END, () => {
         this._sel = idx;
         this._buildCards();
         this._openBrief(DRILLS[idx]);
       });
+      pressFx(card);
     });
 
     // 更新头部信息
@@ -413,29 +410,38 @@ export class DrillPanel extends Component {
     // 底部说明
     const shot = DrillAnim.shotLabel(def.wantKey);
     mkLabel(infoArea, "caption", `按「${shot}」· 第 ${DrillAnim.contactFrame().toFixed(0)} 帧出手最甜`,
-      11, COL.dimGray, { y: -ANIM_H / 2 + 50, w: INFO_W - 20, align: 1 });
+      12, COL.dimGray, { y: -ANIM_H / 2 + 54, w: INFO_W - 20, align: 1 });
 
-    // 按钮区
-    const btnY = -ANIM_H / 2 + 10;
+    // 按钮区:主/次并排,52 高够拇指;街机厚底样式与全站按钮同源
+    const btnY = -ANIM_H / 2 + 6;
 
     // 开始训练
-    const btnGo = mkNode("btnGo", infoArea, 140, 36);
-    btnGo.setPosition(0, btnY, 0);
+    const btnGo = mkNode("btnGo", infoArea, 190, 52);
+    btnGo.setPosition(-92, btnY, 0);
     const goG = btnGo.addComponent(Graphics);
-    drawHardShadow(goG, 140, 36, 8, 3, 3, 0.45);
-    drawRR(goG, 140, 36, 8, COL.btnPrimary, COL.btnPrimaryEdge, 2);
-    mkLabel(btnGo, "text", "开始训练", 15, DARK_FG, { align: 1, w: 140 });
-    btnGo.on(Node.EventType.TOUCH_END, () => {
+    drawHardShadow(goG, 190, 52, 8, 3, 4, 0.45);
+    drawArcadeButton(goG, 190, 52, "primary", 8);
+    mkLabel(btnGo, "text", "开始训练", 16, DARK_FG, { align: 1, w: 190 });
+    const goBtn = btnGo.addComponent(Button);
+    goBtn.transition = Button.Transition.SCALE;
+    goBtn.zoomScale = 0.94;
+    goBtn.target = btnGo;
+    btnGo.on(Button.EventType.CLICK, () => {
       this._onSelectDrill?.(def);
     });
 
     // 换个项目
-    const btnBack = mkNode("btnBack", infoArea, 120, 32);
-    btnBack.setPosition(0, btnY - 42, 0);
+    const btnBack = mkNode("btnBack", infoArea, 150, 52);
+    btnBack.setPosition(108, btnY, 0);
     const bkG = btnBack.addComponent(Graphics);
-    drawRR(bkG, 120, 32, 8, COL.btnGhost, COL.btnGhostEdge, 1.5);
-    mkLabel(btnBack, "text", "换个项目", 13, COL.dimWhite, { align: 1, w: 120 });
-    btnBack.on(Node.EventType.TOUCH_END, () => {
+    drawHardShadow(bkG, 150, 52, 8, 3, 4, 0.4);
+    drawArcadeButton(bkG, 150, 52, "ghost", 8);
+    mkLabel(btnBack, "text", "换个项目", 15, COL.dimWhite, { align: 1, w: 150 });
+    const backBtn = btnBack.addComponent(Button);
+    backBtn.transition = Button.Transition.SCALE;
+    backBtn.zoomScale = 0.94;
+    backBtn.target = btnBack;
+    btnBack.on(Button.EventType.CLICK, () => {
       this._showList();
     });
   }
