@@ -50,12 +50,15 @@ data_uri = f"data:image/jpeg;base64,{b64}"
 corners = [img_small.getpixel((x, y)) for x, y in [(5,5),(505,5),(5,505),(505,505)]]
 avg = tuple(sum(c[i] for c in corners) / 4 / 255 for i in range(3))
 
+# 注意: background.type 只能是 "custom"(必须带 base64 图片)或其它(用 color 纯色填充)。
+# 引擎启动链对 splash 图片加载失败没有任何兜底, Promise 会 reject 且永不恢复 → 游戏永久黑屏。
+# 纯色背景绝不能写 type:"custom", 否则引擎拿 undefined 当图片 URL 加载必然失败。
 splash = {
     "displayRatio": config["displayRatio"],
     "totalTime": config["totalTime"],
     "logo": {"type": "custom", "base64": data_uri},
     "background": {
-        "type": "custom",
+        "type": "default",
         "color": {"x": round(avg[0], 6), "y": round(avg[1], 6), "z": round(avg[2], 6), "w": 1.0}
     },
     "watermarkLocation": config.get("watermarkLocation", "default"),

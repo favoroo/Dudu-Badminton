@@ -12,8 +12,8 @@ def getAppVersionInfo() {
         file("${rootDir}/../../../../package.json"),
         file("${RES_PATH}/../../package.json")
     ]
-    def verName = "0.0.5"
-    def verCode = 5
+    def verName = "0.0.6"
+    def verCode = 6
     for (def pkgFile : candidates) {
         if (pkgFile.exists()) {
             try {

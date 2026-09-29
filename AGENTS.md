@@ -8,7 +8,7 @@
 从老仓库 `嘟嘟02`(零依赖 canvas 版)重构而来,目标平台:**Android APK + 微信小游戏**。
 老仓库保留为行为对照基准,手感以它为准。
 
-- 当前版本:`0.0.5`(见 `package.json` 与 `assets/scripts/core/version.ts`)
+- 当前版本:`0.0.6`(见 `package.json` 与 `assets/scripts/core/version.ts`)
 - 设计分辨率:960×540,FIXED_HEIGHT 适配
 - 包名:`com.dudu.badminton`
 - 远端仓库:GitHub `favoroo/Dudu-Badminton` + Gitee `favo9/dudu-badminton`
@@ -28,7 +28,8 @@
 | 跑回归测试 | `tools/` 下脚本(见下文) |
 | 查历史改动/排查问题 | [CHANGELOG.md](CHANGELOG.md)(Agent 变更日志,仅本地) |
 | 构建配置 | [build-android.json](file:///Users/a1/Documents/01Code/dudu-cocos/build-android.json) / [build-web-mobile.json](file:///Users/a1/Documents/01Code/dudu-cocos/build-web-mobile.json) |
-| 发版流程 | [.agents/skills/dudu-release/SKILL.md](file:///Users/a1/Documents/01Code/dudu-cocos/.agents/skills/dudu-release/SKILL.md) |
+| 打 Android APK | [.agents/skills/export-apk/SKILL.md](file:///Users/a1/Documents/01Code/dudu-cocos/.agents/skills/export-apk/SKILL.md) |
+| 发版/Git 提交推送 | [.agents/skills/dudu-release/SKILL.md](file:///Users/a1/Documents/01Code/dudu-cocos/.agents/skills/dudu-release/SKILL.md) |
 
 ## 分层铁律(改代码前必读)
 
@@ -41,6 +42,7 @@
 ## 开发规范
 
 - TypeScript strict 模式,禁止 `any`(类型检查必须零错误)。
+- **严禁自动 `git commit` / `git push`** — 日常改动一律留在工作区,只有用户明确指示才执行(提交格式、双端推送、版本递增等细则见 dudu-release skill)。
 - 模块间用 ES Module import/export,不使用全局命名空间。
 - 每个模块文件顶部有 `// ============` 注释块说明设计动机 — **改代码前先读注释**。
 - canvas → cc.Graphics 的移植约定见 [sprites.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/sprites.ts) 顶部注释。
@@ -75,17 +77,9 @@ npx tsc -p tools/tsconfig.check.json
 ```bash
 # Web Mobile 预览(构建后)
 python3 -m http.server 8899 --bind 127.0.0.1 --directory build/web-mobile
-
-# Android 构建(需要 JDK 17 + Android SDK + NDK,配置见 build-android.json)
 ```
 
-## Git 与发布规范
-
-- **严禁自动 git commit / git push** — 只有用户明确指示时才执行。
-- 提交格式:`<type>(<scope>): <description>`,Type:`feat`/`fix`/`refactor`/`style`/`docs`/`test`/`chore`。
-- 推送时必须同时同步至 GitHub 与 Gitee 两端。
-- 每次发布版本号必须递增 +1,禁止同版本覆盖;`package.json` 的 `version`、`version.ts` 的 `APP_VERSION` 以及 Android 原生层 `native/engine/android/app/build.gradle`(`versionName` 与 `versionCode`)保持严格一致(已通过 Gradle 与 release.py 自动化动态联动)。
-- 发版流程详见 [.agents/skills/dudu-release/SKILL.md](file:///Users/a1/Documents/01Code/dudu-cocos/.agents/skills/dudu-release/SKILL.md);一键脚本:`python3 .agents/skills/dudu-release/release.py build --version X.Y.Z`。
+Android 构建流程见 [.agents/skills/export-apk/SKILL.md](file:///Users/a1/Documents/01Code/dudu-cocos/.agents/skills/export-apk/SKILL.md)。
 
 ## 变更日志(每次改代码必读必写)
 
@@ -97,10 +91,9 @@ python3 -m http.server 8899 --bind 127.0.0.1 --directory build/web-mobile
 2. **ZCode 内置浏览器跑不了 Cocos 构建** — 引擎内置资源加载在 IAB 里永远 hang,验证游戏用真实浏览器或编辑器预览。
 3. **Bash 里 curl 走系统代理** — 访问 localhost 必须 `--noproxy '*'`。
 4. **python http.server 可能只绑 IPv6** — 用 `--bind 127.0.0.1` 起本地服务。
-5. **键盘输入待验证** — keyboard.ts 假设 `EventKeyboard.keyCode` 值就是浏览器 `e.code` 字符串(如 'KeyA'),若真机按键无反应先查这个。
-6. **名牌文字用 Label(世界坐标),球衣号已去除** — sprites.ts 画不了字,径向渐变用描边环近似。
-7. **老仓库有意差异(不是 bug)** — rules 拖尾改为 `setTrailHook()` 注入;config `serve` 段原版定义两次已合并。
-8. **Android 安装包版本与应用名** — 手机安装界面读取的是 AndroidManifest 的 `versionName`/`versionCode` 与 `strings.xml` 的 `app_name`。`native/engine/android/app/build.gradle` 已接入动态读取 `package.json` 解析 `versionName` 与 `versionCode`，`strings.xml` 已设为「嘟嘟羽毛球」，发版时切勿在 Gradle 里写死静态版本号。
+5. **名牌文字用 Label(世界坐标),球衣号已去除** — sprites.ts 画不了字,径向渐变用描边环近似。
+6. **老仓库有意差异(不是 bug)** — rules 拖尾改为 `setTrailHook()` 注入;config `serve` 段原版定义两次已合并。
+7. **改 Android 应用名要改构建脚本** — 手机安装界面显示的名字是「嘟嘟羽毛球」,由 `.agents/skills/export-apk/scripts/build.sh` 每次构建用 sed 注入到产物 `build/android/proj/res/values/strings.xml`。源文件 `native/engine/android/res/values/strings.xml` 是**空的**,在那儿改没用(会被覆盖且不生效)。版本号联动规则见 dudu-release skill。
 
 ## 尚未移植
 
