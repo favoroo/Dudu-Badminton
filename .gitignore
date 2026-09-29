@@ -15,6 +15,7 @@ node_modules/
 .zcode/
 .workbuddy/
 .clawhub/
+vibe_images/
 
 # Agent 变更日志(仅本地追踪,规范见 AGENTS.md「变更日志」)
 CHANGELOG.md

@@ -17,6 +17,8 @@ const KEYCODE_TO_CODE: Record<number, string> = {
   [KeyCode.KEY_S]: "KeyS",
   [KeyCode.KEY_J]: "KeyJ",
   [KeyCode.KEY_K]: "KeyK",
+  [KeyCode.KEY_L]: "KeyL",
+  [KeyCode.COMMA]: "Comma",
   [KeyCode.KEY_Z]: "KeyZ",
   [KeyCode.KEY_X]: "KeyX",
   [KeyCode.KEY_R]: "KeyR",
@@ -40,10 +42,18 @@ function getCode(e: EventKeyboard): string {
 }
 
 // 动作 → 候选键 code 列表(取自 config.keys.p1,与老仓库 input.js 同一来源)
-const KEYMAP: Array<{ action: "left" | "right" | "jump" | "swingFar" | "swingNear"; codes: string[] }> = [
+type PadAct = "left" | "right" | "jump" | "lunge" | "swingFar" | "swingNear";
+/** 纯边沿语义的动作:一次按下就是一个动作,没有「按住」状态可松 */
+const EDGE_ACTIONS: PadAct[] = ["lunge", "swingFar", "swingNear"];
+
+/** 有「按住」状态的动作(类型守卫:KEY_UP 只会把这类交给 release) */
+const isHoldAction = (a: PadAct): a is "left" | "right" | "jump" => !EDGE_ACTIONS.includes(a);
+
+const KEYMAP: Array<{ action: PadAct; codes: string[] }> = [
   { action: "left", codes: C.keys.p1.left },
   { action: "right", codes: C.keys.p1.right },
   { action: "jump", codes: C.keys.p1.jump },
+  { action: "lunge", codes: C.keys.p1.lunge },
   { action: "swingFar", codes: C.keys.p1.swingFar },
   { action: "swingNear", codes: C.keys.p1.swingNear },
 ];
@@ -66,10 +76,8 @@ export function bindKeyboard(pad: Pad, onSystemKey: (code: string) => void): voi
     const code = getCode(e);
     if (!code) return;
     for (const m of KEYMAP) {
-      // 击球键是纯边沿语义,没有「按住」状态可松
-      if (m.action !== "swingFar" && m.action !== "swingNear" && match(m.codes, code)) {
-        release(pad, m.action);
-      }
+      // 边沿键(跨步/击球)没有「按住」状态可松
+      if (isHoldAction(m.action) && match(m.codes, code)) release(pad, m.action);
     }
   });
 }

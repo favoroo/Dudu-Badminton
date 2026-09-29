@@ -119,9 +119,15 @@ export class GameRoot extends Component {
     // 生涯/训练面板都不露;隐藏时顺带清按下状态,见 input/touchpad 控制器注释。
     touchPad.setPlaying(Rules.isPlaying());
     this.frameT++;
-    // 慢动作(FX.timeScale)与赛点常驻微慢放相乘;BGM 跑在音频时钟上,节奏不被拖慢
+    // 累加器速度。BGM 跑在音频时钟上,所以变速不会拖慢音乐节奏。
+    // 定格段恒按真实速度走:定格步调 stepFx(frozen),慢动作计时 slowT 被一起冻住不递减,
+    // 若这里照旧乘 timeScale,慢放的速度就会泄漏进定格段 —— 顶档定格曾被拉成半秒多的完全静止。
+    // 慢放段与赛点常驻 0.9 微慢放统一由 config.fx.slowmoEnabled 总闸决定(当前 false:世界恒速)。
     const mp = R.state === "RALLY" && Rules.isMatchPoint();
-    this.acc += Math.min(dt, 0.25) * this.world.timeScale() * (mp ? 0.9 : 1);          // 切后台回来不追帧
+    const speed = this.stopFrames > 0 ? 1
+      : this.slowmoOn ? this.world.timeScale() * (mp ? 0.9 : 1)
+        : 1;
+    this.acc += Math.min(dt, 0.25) * speed;          // 切后台回来不追帧
 
     // 回放刚结束(播完或被跳过):模拟前恢复真实状态,避免一帧的快照位置污染逻辑
     if (this.wasReplaying && !this.replay.isActive()) {
@@ -131,9 +137,13 @@ export class GameRoot extends Component {
       this.replayBlocker.active = false;
     }
     // 完美重扣的延迟触发:等 hitstop 播完再回放(老 setTimeout (stopF+4)*16.7ms 的帧计数版)
+    // 递减留在闸外走:万一 replayDelay 有残留值也要被清干净,而不是卡在半路。
+    // 这一层是硬闸,不靠「上游不赋值」间接失效 —— 三个入口(push/trigger/赋值)各自都有闸。
     if (this.replayDelay > 0 && --this.replayDelay === 0) {
-      this.replay.trigger();
-      this.replayBlocker.active = this.replay.isActive();
+      if (this.replayOn) {
+        this.replay.trigger();
+        this.replayBlocker.active = this.replay.isActive();
+      }
     }
 
     // BGM 自适应编排:每帧观察比赛状态(分层强度/场景/赛点/暂停)
@@ -143,13 +153,21 @@ export class GameRoot extends Component {
     let n = 0;
     while (this.acc >= step && n < C.sim.maxSteps) {
       this.acc -= step; n++;
+      // 定格步不消费输入:见下面 stopFrames 分支
+      let keepEdges = false;
       if (!(C.frozen as string[]).includes(R.state)) {
         if (this.stopFrames > 0) {
           this.stopFrames--;                 // hitstop:反馈计时照走,世界时钟不递增
           this.world.stepFx(step, true);     // 定格:镜头/白闪/慢动作/粒子一起冻住
+          // 定格期间 Rules.step 没跑,这一按的边沿若照常被清掉就凭空消失了 ——
+          // 逻辑层那 8 帧输入缓冲(swing.buffer / player.jumpBuffer)一次都收不到,
+          // 玩家在顿帧里按的起跳/跨步/落点全成哑键,体感就是「卡住不能操控」。
+          // 边沿留到定格结束的第一步,由 buildIntent 正常交给 Rules.step 消费。
+          keepEdges = true;
         } else if (this.replay.isActive()) {
           // 回放中:冻结游戏逻辑与一切 FX 走时,只推进回放帧;
           // 触发时残余的慢动作会让回放自然半速播放(老版同款电影感,设计使然)
+          // 回放是观演段,边沿照旧每步吞掉(点按键无反应、点空白跳过,见 replayBlocker)
           this.replay.step();
           this.replay.applySnapshot(R);
         } else {
@@ -160,11 +178,11 @@ export class GameRoot extends Component {
           for (const p of R.players) {
             if (p.swingT === C.swing.windup) this.sfx.play("swing", 0.35);
           }
-          if (R.state === "RALLY") this.replay.push(R);
+          if (this.replayOn && R.state === "RALLY") this.replay.push(R);
           this.world.stepFx(step);
         }
       }
-      clearEdges(this.pad);
+      if (!keepEdges) clearEdges(this.pad);
     }
     if (n === C.sim.maxSteps) this.acc = 0;
 
@@ -180,6 +198,23 @@ export class GameRoot extends Component {
     this.world.hudOverlay.draw(R, this.world.frameT);
   }
 
+  // ---------- 定格帧数统一入口 ----------
+  /**
+   * hitstop 帧数走这里,理由是档位是六档三元式叠出来的,没有一个总闸就没法保证
+   * 「最长的那记也不会冻住多久」。定格帧现在是真实帧(见主循环的 speed),
+   * cap 直接等于最坏静止毫秒数 × 60,任何档都不许把画面按停超过它。
+   */
+  private setStop(frames: number): void {
+    const cap = C.fx.hitstopCap || 7;
+    this.stopFrames = Math.max(1, Math.min(cap, Math.round(frames)));
+  }
+
+  /** 慢放总闸(见 config.fx.slowmoEnabled):关掉时两处 world.slowmo() 与赛点常驻微慢放全不发,世界恒速 */
+  private get slowmoOn(): boolean { return C.fx.slowmoEnabled === true; }
+
+  /** 即时回放总闸(见 config.fx.replayEnabled):关掉时快照一个都不记,blocker 永不打开 */
+  private get replayOn(): boolean { return C.fx.replayEnabled === true; }
+
   // ---------- 输入 → 意图(与老 buildInputs 同构) ----------
   private buildInputs(): PlayerInput[] {
     const R = Rules.R;
@@ -194,7 +229,7 @@ export class GameRoot extends Component {
       onWhiff: () => {
         this.sfx.play("whiff");
         this.world.shake(C.fx.shakeWhiff || 1.5);
-        this.stopFrames = C.fx.hitstopWhiff || 1;
+        this.setStop(C.fx.hitstopWhiff || 1);
       },
       onFootstep: (p) => {
         this.world.fx.stepDust(p.x, C.court.groundY);
@@ -220,12 +255,12 @@ export class GameRoot extends Component {
           const smash = e.kind === "smash";
           const sweet = !!e.sweet, perfect = !!e.perfect;
           // 六档打击阶梯(hitstop + 震屏 + 镜头 punch + 白闪;赛点重锤另有慢动作)
-          this.stopFrames = (perfect && smash) ? (C.fx.hitstopPerfectSmash || 11)
-            : perfect ? (C.fx.hitstopPerfect || 7)
-            : (smash && sweet) ? (C.fx.hitstopSweetSmash || 9)
-            : smash ? (C.fx.hitstopSmash || 7)
-            : sweet ? (C.fx.hitstopSweet || 5)
-            : (C.fx.hitstopNormal || 2);
+          this.setStop((perfect && smash) ? (C.fx.hitstopPerfectSmash || 7)
+            : perfect ? (C.fx.hitstopPerfect || 5)
+            : (smash && sweet) ? (C.fx.hitstopSweetSmash || 6)
+            : smash ? (C.fx.hitstopSmash || 5)
+            : sweet ? (C.fx.hitstopSweet || 4)
+            : (C.fx.hitstopNormal || 2));
           this.world.shake((perfect && smash) ? (C.fx.shakePerfectSmash || 18)
             : perfect ? (C.fx.shakePerfect || 9)
             : (smash && sweet) ? (C.fx.shakeSweetSmash || 15)
@@ -246,12 +281,17 @@ export class GameRoot extends Component {
             : (e.q as number) >= (C.fx.flashNormalAt || 0.86) ? (C.fx.flashNormal || 0.35)
             : (e.q as number) >= (C.fx.flashNormalLowAt || 0.6) ? (C.fx.flashNormalLow || 0.18) : 0);
           // 赛点重锤慢动作(老 game.js:训练场单独放行——它永不记分,赛点判定恒 false)
-          if ((smash || perfect) && R.state === "RALLY"
+          // 受 fx.slowmoEnabled 总闸控制:关掉后这一拍只剩 hitstop 顿帧,世界不减速
+          if (this.slowmoOn && (smash || perfect) && R.state === "RALLY"
             && (R.mode === "drill" || Rules.isMatchPoint())) {
-            this.world.slowmo(C.fx.slowmoFrames || 16, C.scoring.matchPointSlowmo || 0.34);
+            this.world.slowmo(C.fx.slowmoFrames || 10, C.scoring.matchPointSlowmo || 0.5);
           }
           // 完美重扣 → 延迟触发即时回放(等 hitstop 播完;回放中/已排队时不重复)
-          if (perfect && smash && !this.replay.isActive() && this.replayDelay === 0) {
+          // 受 fx.replayEnabled 总闸控制:当前 false,这一段整条停用 ——
+          // 回放期 Rules.step 不跑满 90 步(1.5 秒),且全屏 blocker 垫在虚拟按键之下,
+          // 玩家狂按跳/深球/短球一个都不响应,只有点空白才跳得过,是「重击后失控」的主因。
+          // 定格延迟本身不受影响,它由上面的 setStop 决定。
+          if (this.replayOn && perfect && smash && !this.replay.isActive() && this.replayDelay === 0) {
             this.replayDelay = this.stopFrames + 4;
           }
           this.sfx.hit(e.q as number, e.kind as string, sweet, perfect);
@@ -323,7 +363,7 @@ export class GameRoot extends Component {
         }
         case "serve": {
           this.sfx.hit(0.6, "clear", false, false);
-          this.stopFrames = 2;
+          this.setStop(2);
           this.world.shake(1.6);
           this.world.punch(C.court.netX, C.court.groundY - 110, C.fx.punchServe || 1.02);
           if (e.type === "flick") {
@@ -337,7 +377,7 @@ export class GameRoot extends Component {
         case "net":
           this.sfx.play("net");
           this.world.shake(3);
-          this.stopFrames = 4;
+          this.setStop(4);
           this.world.hitNet(e.y as number, 1.2);
           this.world.fx.feather(C.court.netX, e.y as number, 3);
           this.world.floatSys(C.court.netX, (e.y as number) - 30, "下网", "#ff8a8a", 20, 46);
@@ -387,7 +427,7 @@ export class GameRoot extends Component {
           // 扣杀得分专属:观众大欢呼 + 庆祝短慢放 + 中央大字,与普通得分拉开层次
           if (e.reason === "扣杀得分") {
             this.sfx.cheer(0.7);
-            this.world.slowmo(C.fx.scoreSlowmoFrames || 10, C.fx.scoreSlowmo || 0.45);
+            if (this.slowmoOn) this.world.slowmo(C.fx.scoreSlowmoFrames || 10, C.fx.scoreSlowmo || 0.45);
             this.world.float(C.world.w / 2, 96, "扣杀得分!", "#ffe14d", 24, 52);
           } else if ((e.score as number[])[0] + (e.score as number[])[1] > 4) {
             this.sfx.cheer(0.4);

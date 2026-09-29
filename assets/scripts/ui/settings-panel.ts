@@ -42,6 +42,7 @@ export class SettingsPanel extends Component {
   private editView: Node | null = null;
   private padHandle: TouchPadHandle | null = null;
   private sizeSlider: Slider | null = null;
+  private alphaSlider: Slider | null = null;
   private selected: PadAction | null = null;
   private toggles: Toggle[] = [];
   private sliders: Slider[] = [];
@@ -70,6 +71,7 @@ export class SettingsPanel extends Component {
     this.toggles.length = 0;
     this.sliders.length = 0;
     this.sizeSlider = null;
+    this.alphaSlider = null;
     this.onCloseCb = null;
     this.listView = null;
     this.editView = null;
@@ -127,7 +129,7 @@ export class SettingsPanel extends Component {
       this.kit.toast("操作按钮已回到默认位子");
     });
 
-    this.txt(this.card, "拖动按钮 = 移动位置 · 选中后用滑杆 = 改大小",
+    this.txt(this.card, "拖动按钮 = 移动位置 · 选中后用滑杆 = 改大小和透明度",
       12, "#6f7ca6", -PW / 2 + 20, -94, 340);
     this.txt(this.card, "存的是相对屏幕角落的位子,换手机不会被刘海挤歪",
       12, "#6f7ca6", -PW / 2 + 20, -120, 340);
@@ -207,6 +209,9 @@ export class SettingsPanel extends Component {
       const a = this.selected;
       if (a) this.sizeSlider.set(Settings.padOf(a).r);
     }
+    if (this.alphaSlider && this.alphaSlider.get() !== Settings.padAlpha) {
+      this.alphaSlider.set(Settings.padAlpha);
+    }
   }
 
   // ---------- EDIT 视图 ----------
@@ -237,17 +242,28 @@ export class SettingsPanel extends Component {
     g.node.setPosition(0, 0, 0);
 
     this.txt(strip, "大小", 14, P.text, -PW / 2 + 26, 0, 60);
-    this.sizeSlider = this.kit.slider(strip, 220, {
+    this.sizeSlider = this.kit.slider(strip, 180, {
       min: PAD_LIMIT.rMin, max: PAD_LIMIT.rMax, step: 1,
       value: Settings.padOf(this.selected ?? "left").r,
     });
-    this.sizeSlider.node.setPosition(-PW / 2 + 226, 0, 0);
+    this.sizeSlider.node.setPosition(-PW / 2 + 196, 0, 0);
     this.sizeSlider.onChange((v) => {
       const a = this.selected;
       if (!a) return;
       Settings.setPad(a, { r: v }, false);      // 半径变化不夹位置,内存改完 apply 自动跟上
     });
     this.sizeSlider.onCommit(() => Settings.flush());
+
+    this.txt(strip, "透明度", 14, P.text, 40, 0, 80);
+    this.alphaSlider = this.kit.slider(strip, 180, {
+      min: PAD_LIMIT.alphaMin, max: PAD_LIMIT.alphaMax, step: 0.05,
+      value: Settings.padAlpha,
+    });
+    this.alphaSlider.node.setPosition(244, 0, 0);
+    this.alphaSlider.onChange((v) => {
+      Settings.setPart({ padAlpha: v }, false);  // 拖动中不落盘
+    });
+    this.alphaSlider.onCommit(() => Settings.flush());
 
     const eReset = this.kit.button(strip, "重置默认", 150, 44, { size: 15 });
     eReset.setPosition(PW / 2 - 268, 0, 0);
@@ -257,18 +273,19 @@ export class SettingsPanel extends Component {
       Settings.flush();
       this.padHandle?.apply();
       this.sizeSlider?.set(Settings.padOf(this.selected ?? "left").r);
+      this.alphaSlider?.set(Settings.padAlpha);
     });
 
     const eDone = this.kit.button(strip, "完成", 150, 44, { style: "primary", size: 16 });
     eDone.setPosition(PW / 2 - 100, 0, 0);
     eDone.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.closeEditor(); });
 
-    const hint = this.kit.label(this.editView, "拖动屏幕上的按钮可移动 · 点一下选中后用上方滑杆改大小",
+    const hint = this.kit.label(this.editView, "拖动按钮移动 · 上方滑杆改大小和透明度",
       13, "#dfe6ff", { outline: "#05070f", outlineW: 2 });
     hint.node.setPosition(0, stripY - 58, 0);
 
     // 第二个按键实例:挂在一个临时 Pad 上,edit 模式又跳过 press/release,
-    // 双保险保证这里怎么拖都不会打出一个球、也不会污染玩家 pad 的跨步计时。
+    // 双保险保证这里怎么拖都不会打出一个球、也不会往玩家 pad 上写跨步/移动状态。
     this.padHandle = buildTouchPad(this.editView, newPad(), {
       edit: true,
       onPick: (a) => this.pick(a),

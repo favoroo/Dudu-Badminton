@@ -93,7 +93,8 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   } else if (inRecovery) {
     p.lungeRecovery--;
   }
-  // 触发跨步:地面、未在挥拍、未在跨步中、按下跨步键(或双击方向键)
+  // 触发跨步:地面、未在挥拍、未在跨步中、按下跨步键。
+  // 方向由输入层解(当前按着的方向键 → 沿用最近按过的),这里只兜底朝网。
   if (inp.lungePressed && p.onGround && p.swingT < 0 && !lunging) {
     p.lungeT = 0;
     p.lungeDir = inp.lungeDir ? inp.lungeDir : p.facing;
@@ -103,7 +104,12 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   }
 
   // ---------- 水平:加速度 + 摩擦,挥拍期限速(挥拍是有代价的承诺) ----------
-  const mv = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+  // 摇杆优先:非零且超过死区时给出模拟量 → 半速小碎步、边界缓冲都是可能的;
+  // 键盘/按钮模式下 moveAxis 未定义或为 0,回落到旧的离散左右键。
+  // |mv| 同时用作速度上限的缩尺:小推 = 慢走,大推 = 快冲;|mv|==1 时与旧逻辑严格等价。
+  const axis = inp.moveAxis ?? 0;
+  const mv = Math.abs(axis) > 0.15 ? axis : (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+  const axisCap = Math.min(1, Math.abs(mv));
   const swinging = p.swingT >= 0;
   // 跨步中或恢复期:覆盖正常移动逻辑
   if (lunging) {
@@ -113,14 +119,14 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     const recovMaxV = PL.vmax * p.speedMul * LG.recoverySpeedMul;
     p.vx = clamp(p.vx, -recovMaxV, recovMaxV);
   } else {
-    const maxV = PL.vmax * p.speedMul;
+    const maxV = PL.vmax * p.speedMul * axisCap;
     const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * p.speedMul;
     if (mv !== 0) p.vx += mv * accel * (swinging ? SW.recoverAccelMul : 1);
     else p.vx *= p.onGround ? PL.groundFriction : PL.airFriction;
     if (swinging) {
       // 起板承诺依旧,但限速不再一帧砍死:超出上限的部分每步按比例渐收,
       // 全速跑动中起拍是一段可感的刹车,而不是瞬间的顿挫
-      const cap = maxV * SW.recoverSpeedMul;
+      const cap = PL.vmax * p.speedMul * SW.recoverSpeedMul;
       const over = p.vx - clamp(p.vx, -cap, cap);
       if (over) p.vx -= over * SW.recoverBrake;
     } else if (mv !== 0) {
@@ -174,6 +180,11 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   }
 
   // ---------- 挥拍状态机 ----------
+  // 提前按下的缓冲连落点一起记:先按近球键再进挥拍窗口,打出去的还是近球。
+  // 挥拍中也记录(原来直接丢弃,拇指稍早一按就丢输入):收招时仍在 buffer
+  // 窗口内的按键自动续拍,与跳跃 jumpBuffer 同一套手感;更早的按键自然过期,
+  // whiff 惩罚照旧,不助长乱按。hitstop 顿帧期保留的输入边沿照常从这里消化。
+  if (inp.swingAim != null) { p.swingBuf = SW.buffer; p.swingBufAim = inp.swingAim; }
   if (p.swingT >= 0) {
     p.swingT++;
     const total = Physics.swingTotal() + (p.swingHit ? 0 : SW.whiffExtra);
@@ -181,11 +192,11 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
       if (!p.swingHit) { p.stats.whiffs++; inp.onWhiff && inp.onWhiff(p); }
       p.swingT = -1;
       p.recoverT = SW.blendOut;    // 收拍回摆:渲染端把弧线终点插回待机姿势
+      // 收招瞬间消化排队的击球键(挥拍尾声 ~7 帧内按下的就无缝接续下一拍)
+      if (p.swingBuf > 0) { startSwing(p, ball, p.swingBufAim); p.swingBuf = 0; }
     }
-  } else {
-    // 提前按下的缓冲要连落点一起记:先按近球键再进挥拍窗口,打出去的还是近球
-    if (inp.swingAim != null) { p.swingBuf = SW.buffer; p.swingBufAim = inp.swingAim; }
-    if (p.swingBuf > 0) { startSwing(p, ball, p.swingBufAim); p.swingBuf = 0; }
+  } else if (p.swingBuf > 0) {
+    startSwing(p, ball, p.swingBufAim); p.swingBuf = 0;
   }
   if (p.swingBuf > 0) p.swingBuf--;
   if (p.recoverT > 0) p.recoverT--;
@@ -331,8 +342,8 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   const depth = Math.max(0, aim + (Math.random() * 2 - 1) * err / SPAN);
 
   // 力量兑现:踩得准 → 弧度额外压平 + 初速上限放宽,求解器自动用更快的初速
-  // 补同一个落点 → 球更凶、到得更早。低击球点会被 minClearDeg 兜底抬回来,不会乱下网。
-  // 连击热手在同一预算上再加余量,但总 boost 封在物理上限的差额里(27→30),
+  // 补同一个落点 → 球更凶、到得更早。低击球点会被「安全过网角」兜底抬回来,不会乱下网。
+  // 连击热手在同一预算上再加余量,但总 boost 封在物理上限的差额里(25→30),
   // 不与 shuttle.maxSpeed 冲突。
   const heatBoost = Math.min((opt.heat || 0) * C.heat.speedBonus, C.heat.speedBonusMax);
   const boost = Math.min(
@@ -344,7 +355,9 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   const shot = Physics.solveShot(ball.x, ball.y, dir, depth, loft, boost);
   if (shot.kind === "smash") p.stats.smashes++;
   return {
-    kind: shot.kind, q, sweet, perfect, depth,
+    kind: shot.kind, q, sweet, perfect,
+    // 报「真正打出去的深度」而不是瞄的那个数:求解器可能把落点往场内收过
+    depth: shot.depth,
     vx: shot.vx, vy: shot.vy, power: shot.speed, deg: shot.deg,
     landX: shot.trace.landX, steps: shot.trace.steps,
     intoNet: shot.trace.hitNet,

@@ -1,9 +1,40 @@
 import org.apache.tools.ant.taskdefs.condition.Os
+import groovy.json.JsonSlurper
 
 apply plugin: 'com.android.application'
 
 RES_PATH = RES_PATH.replace("\\", "/")
 COCOS_ENGINE_PATH = COCOS_ENGINE_PATH.replace("\\", "/")
+
+def getAppVersionInfo() {
+    def candidates = [
+        file("${projectDir}/../../../../package.json"),
+        file("${rootDir}/../../../../package.json"),
+        file("${RES_PATH}/../../package.json")
+    ]
+    def verName = "0.0.5"
+    def verCode = 5
+    for (def pkgFile : candidates) {
+        if (pkgFile.exists()) {
+            try {
+                def parsed = new JsonSlurper().parseText(pkgFile.text)
+                if (parsed.version) {
+                    verName = parsed.version.toString().trim()
+                    def parts = verName.tokenize('.')
+                    def major = parts.size() > 0 ? parts[0].toInteger() : 0
+                    def minor = parts.size() > 1 ? parts[1].toInteger() : 0
+                    def patch = parts.size() > 2 ? parts[2].tokenize('-')[0].toInteger() : 0
+                    verCode = major * 10000 + minor * 100 + patch
+                    if (verCode <= 0) verCode = 1
+                    break
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+    return [name: verName, code: verCode]
+}
+
+def appVer = getAppVersionInfo()
 
 buildDir = "${RES_PATH}/proj/build/${project.name ==~ /^[_a-zA-Z0-9-]+$/ ? project.name : 'CocosGame'}"
 android {
@@ -21,8 +52,8 @@ android {
         applicationId APPLICATION_ID
         minSdkVersion PROP_MIN_SDK_VERSION
         targetSdkVersion PROP_TARGET_SDK_VERSION
-        versionCode 1
-        versionName "0.0.1"
+        versionCode project.hasProperty('PROP_VERSION_CODE') ? project.PROP_VERSION_CODE.toInteger() : appVer.code
+        versionName project.hasProperty('PROP_VERSION_NAME') ? project.PROP_VERSION_NAME : appVer.name
 
         externalNativeBuild {
             cmake {

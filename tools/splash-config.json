@@ -1,0 +1,14 @@
+{
+  "splashSource": "tools/splash-source.png",
+  "config": {
+    "displayRatio": 0.8,
+    "totalTime": 2000,
+    "watermarkLocation": "default",
+    "autoFit": true,
+    "bgColor": {
+      "r": 19,
+      "g": 21,
+      "b": 23
+    }
+  }
+}

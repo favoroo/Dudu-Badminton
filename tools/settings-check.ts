@@ -47,6 +47,7 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(s.sfxOn && s.bgmOn, "默认音效与音乐都开");
   ok(s.hintLanding && s.hintShake && s.hintFloat, "默认三个画面提示都开");
   ok(s.hapticOn, "默认触觉反馈开");
+  ok(near(s.padAlpha, 0.8), `默认透明度 ${s.padAlpha}`);
   ok(near(s.sfxVol, 0.8) && near(s.bgmVol, 0.6), `默认音量 sfx=${s.sfxVol} bgm=${s.bgmVol}`);
   for (const a of PAD_ACTIONS) {
     const p = s.pad[a];
@@ -55,7 +56,7 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(PAD_ACTIONS.every((a) => PAD_BASE[a].r >= PAD_LIMIT.rMin && PAD_BASE[a].r <= PAD_LIMIT.rMax),
     "每个键的默认半径都落在可调区间内");
   const leftN = PAD_ACTIONS.filter((a) => PAD_BASE[a].cluster === "left").length;
-  ok(leftN === 2 && PAD_ACTIONS.length - leftN === 3, "左簇 2 键 / 右簇 3 键");
+  ok(leftN === 2 && PAD_ACTIONS.length - leftN === 4, "左簇 2 键 / 右簇 4 键");
 }
 
 // ---------- ② 夹取:越界写回被夹住 ----------
@@ -75,6 +76,11 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(near(st.v.sfxVol, 1), "音量 >1 夹到 1");
   ok(near(st.v.bgmVol, 0), "音量 <0 夹到 0");
   ok(st.v.hintShake === true, "布尔字段收到垃圾值时保持原默认,而不是被 falsy 悄悄关掉");
+
+  st.setPart({ padAlpha: 5 });
+  ok(near(st.v.padAlpha, PAD_LIMIT.alphaMax), `padAlpha >1 夹到 ${PAD_LIMIT.alphaMax}`);
+  st.setPart({ padAlpha: -1 });
+  ok(near(st.v.padAlpha, PAD_LIMIT.alphaMin), `padAlpha <0.2 夹到 ${PAD_LIMIT.alphaMin}`);
 }
 
 // ---------- ③ 消毒:坏 JSON 不许崩,认得出的一部分要留住 ----------
@@ -92,6 +98,17 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(junk.pad.left.dx === 0 && near(junk.pad.left.r, PAD_BASE.left.r), "pad 项里字段类型不对 → 该键回默认");
   ok(junk.pad.right.dx === 0, "pad 项整个不是对象 → 该键回默认,不抛");
 
+  // 跨步键是后来加的:老档只有 5 个键,消毒后必须给新键补默认(缺了 = Settings.padOf("lunge")
+  // 读到 undefined,建键那一帧直接崩)。
+  const old5 = sanitize({
+    pad: {
+      left: { dx: 10, dy: 0, r: 44 }, right: { dx: 0, dy: 0, r: 44 },
+      jump: { dx: 0, dy: 0, r: 48 }, swingFar: { dx: 0, dy: 0, r: 38 }, swingNear: { dx: 0, dy: 0, r: 38 },
+    },
+  });
+  ok(old5.pad.left.dx === 10, "老档里已调过的键位照旧生效");
+  ok(old5.pad.lunge.dx === 0 && near(old5.pad.lunge.r, PAD_BASE.lunge.r), "老档没有跨步键 → 该键回默认布局");
+
   const partial = sanitize({ bgmOn: false, pad: { jump: { dx: 20, dy: -5, r: 60 } } });
   ok(partial.bgmOn === false, "认得出的标量保留");
   ok(partial.pad.jump.dx === 20 && partial.pad.jump.dy === -5 && near(partial.pad.jump.r, 60), "认得出的布局项保留");
@@ -102,6 +119,9 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   const nan = sanitize({ pad: { swingNear: { dx: NaN, r: Infinity } }, sfxVol: NaN });
   ok(nan.pad.swingNear.dx === 0 && near(nan.pad.swingNear.r, PAD_BASE.swingNear.r), "NaN/Infinity → 默认");
   ok(near(nan.sfxVol, 0.8), "sfxVol=NaN → 默认");
+
+  ok(near(sanitize({ padAlpha: "x" }).padAlpha, 0.8), "padAlpha 收到字符串 → 回默认 0.8");
+  ok(near(sanitize({ padAlpha: 0.5 }).padAlpha, 0.5), "padAlpha 合法值保留");
 }
 
 // ---------- ④ 落盘时机:拖动中不写,松手才写 ----------
@@ -176,6 +196,19 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   Settings.init();
   ok(typeof Settings.v.sfxVol === "number", "全局单例可读");
   ok(!kv.m.has("dd02.settings"), "只读盘不写盘:启动不该凭空造档");
+}
+
+// ---------- ⑨ resetPad 同时重置透明度 ----------
+
+{
+  freshKV();
+  const st = new SettingsStore();
+  st.init();
+  st.setPad("left", { dx: 50, dy: 30, r: 60 });
+  st.setPart({ padAlpha: 0.4 });
+  st.resetPad();
+  ok(near(st.v.pad.left.dx, 0) && near(st.v.pad.left.r, PAD_BASE.left.r), "resetPad 位移与半径回默认");
+  ok(near(st.v.padAlpha, 0.8), "resetPad 透明度也回默认 0.8");
 }
 
 console.log(`\n${bad === 0 ? "全部通过" : `${bad} 项失败`}`);

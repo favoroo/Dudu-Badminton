@@ -94,14 +94,26 @@ export function pressFx(node: Node): void {
 /** 在途退场动画的作废令牌:show 前调 cancelFade,晚到的 fade 回调不再关面板 */
 const fadeTags = new Map<Node, number>();
 
+/** 已完成淡出的面板:hide 对隐着的面板重复调用时短路,防止 opacity 复位 255 闪现 */
+const fadedOut = new WeakSet<Node>();
+
 /**
- * 面板退场统一收尾:淡出 + 轻缩,完了再关 active。
+ * 面板退场统一收尾:淡出 + 轻缩,完了把交互件禁用。
  * 曾经所有面板 hide 都是瞬间 active=false —— 进有 rise/slam,出却是硬切。
  * 退场比进场快(0.15s),别让人等;BlockInputEvents 立即失效,
  * 淡出的残影不该拦着已经在打球的拇指。
+ *
+ * 隐藏语义刻意**不用 active=false**:「UIOpacity 归零后整树 deactivate」会踩进
+ * 引擎的坑 —— Graphics 的渲染数据在 onDisable 里被清掉,重新 activate 不会自动
+ * 重传,面板再显示时所有一次绘制的底块全部隐身(标签无事,Label 每帧重建自己的
+ * 数据)。用户报告的「训练场返回主菜单后按钮全透明」即此因。而纯透明度 0↔255
+ * 往返从不丢 Graphics(slamIn 每次显示都在跑),故隐藏改为:
+ * 保持 active + UIOpacity 0 + Button/BlockInputEvents 禁用,重显由 cancelFade 还原。
  */
 export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {
+  if (fadedOut.has(node)) { onDone?.(); return; }
   for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = false;
+  for (const b of node.getComponentsInChildren(Button)) b.enabled = false;
   const op = node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
   Tween.stopAllByTarget(node);
   Tween.stopAllByTarget(op);
@@ -113,9 +125,9 @@ export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {
     .to(dur, { opacity: 0 })
     .call(() => {
       if (!node.isValid || fadeTags.get(node) !== tag) return;
-      node.active = false;
-      op.opacity = 255;                 // 复位:下次 show 的入场动画从可见起步
+      op.opacity = 0;
       node.setScale(1, 1, 1);
+      fadedOut.add(node);
       onDone?.();
     })
     .start();
@@ -130,6 +142,9 @@ export function cancelFade(node: Node): void {
     op.opacity = 255;
   }
   Tween.stopAllByTarget(node);
+  // 从隐藏态恢复:把退场时禁用的交互件全部开回(首次显示时它们从未被禁,开了也无副作用)
+  for (const b of node.getComponentsInChildren(Button)) b.enabled = true;
+  for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = true;
 }
 
 /**

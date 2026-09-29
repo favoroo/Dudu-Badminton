@@ -38,7 +38,8 @@ description: Dudu Badminton 应用的 Git 提交存档、双平台推送与版�
 | 产物目录 | `build/` |
 | Tag 命名 | `v<version>`（如 `v0.0.1`），使用 annotated tag |
 | 版本号递增 | **每次发布/打包 APK，版本号必须递增 +1**（如 `v0.0.2` -> `v0.0.3`），禁止同版本覆盖发布 |
-| 版本来源 | `package.json` 的 `version` 与 `assets/scripts/core/version.ts` 的 `APP_VERSION` 保持严格一致 |
+| 版本来源 | `package.json` 的 `version`、`assets/scripts/core/version.ts` 的 `APP_VERSION` 以及 Android 原生层 `native/engine/android/app/build.gradle`（`versionName` 与 `versionCode`）保持严格一致 |
+| Android版本同步 | Gradle 自动动态读取 `package.json` 解析 `versionName` 并按 `Major*10000 + Minor*100 + Patch` 换算递增 `versionCode`；`release.py` 构建时注入环境变量双重兜底 |
 | 两端一致性 | GitHub 与 Gitee 必须使用相同 Tag、相同 APK 文件名、同为正式 Release（非 draft / prerelease） |
 | 更新服务 | `assets/scripts/core/update-service.ts` 优先读 Gitee `/releases/latest`，备选 GitHub，并配合国内加速代理 |
 
@@ -47,7 +48,7 @@ description: Dudu Badminton 应用的 Git 提交存档、双平台推送与版�
 脚本：`.agents/skills/dudu-release/release.py`（仅标准库）。核心思路：**两阶段解耦**。
 
 ```text
-① 升级 package.json 与 assets/scripts/core/version.ts 版本号
+① 升级 package.json 与 assets/scripts/core/version.ts 版本号（Android 原生层自动联动）
 ② 后台启动构建:  python3 .agents/skills/dudu-release/release.py build --version X.Y.Z   ← run_in_background
 ③ 前台跑测试:    npx tsc -p tools/tsconfig.check.json                   ← 与构建重叠
 ④ 提交:          git add -A && git commit -m "feat(...): ... 版本升至 X.Y.Z"

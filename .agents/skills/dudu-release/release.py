@@ -163,6 +163,18 @@ def write_meta(meta: dict) -> None:
     os.replace(tmp, META_FILE)
 
 
+def version_code_from_version(ver: str) -> int:
+    try:
+        parts = ver.split('.')
+        major = int(parts[0]) if len(parts) > 0 else 0
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        patch = int(parts[2].split('-')[0]) if len(parts) > 2 else 0
+        code = major * 10000 + minor * 100 + patch
+        return code if code > 0 else 1
+    except Exception:
+        return 1
+
+
 def cmd_build(args) -> None:
     pkg_ver, ts_ver = read_project_versions()
     target_ver = args.version.lstrip('vV')
@@ -170,7 +182,8 @@ def cmd_build(args) -> None:
         die(f'package.json version={pkg_ver} 与 --version {args.version} 不一致')
     if ts_ver and ts_ver != target_ver:
         die(f'assets/scripts/core/version.ts version={ts_ver} 与 --version {args.version} 不一致')
-    log(f'版本校验通过: v{target_ver}')
+    ver_code = version_code_from_version(target_ver)
+    log(f'版本校验通过: v{target_ver} (Android versionCode={ver_code})')
 
     apk_name = f'dudu-badminton-v{target_ver}-arm64-v8a.apk'
     BUILD_DIR.mkdir(exist_ok=True)
@@ -182,8 +195,9 @@ def cmd_build(args) -> None:
         if not build_script.exists():
             raise RuntimeError(f'构建脚本不存在: {build_script}')
 
-        log('开始构建 Release APK...')
-        r = run(['bash', str(build_script), 'release'])
+        log(f'开始构建 Release APK (versionName={target_ver}, versionCode={ver_code})...')
+        env = dict(os.environ, PROP_VERSION_NAME=target_ver, PROP_VERSION_CODE=str(ver_code))
+        r = run(['bash', str(build_script), 'release'], env=env)
         if r.returncode != 0:
             detail = (r.stderr or r.stdout or '')[-3000:]
             raise RuntimeError(f'构建脚本执行失败: {detail}')

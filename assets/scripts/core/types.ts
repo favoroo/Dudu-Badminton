@@ -40,11 +40,16 @@ export type FaceKind =
 export interface PlayerInput {
   left: boolean;
   right: boolean;
+  /**
+   * 摇杆模拟量:-1..1(左负右正)。非零且超过死区时优先于 left/right,
+   * 让玩家能给出"半速小碎步"这种中间态;键盘/老按钮模式不提供此字段。
+   */
+  moveAxis?: number;
   jumpPressed: boolean;
   jumpHeld: boolean;
   swingAim: string | number | null;
   lungePressed: boolean;
-  /** 跨步方向(-1=向左, 1=向右; 未指定时兜底面向方向 p.facing) */
+  /** 跨步方向(-1=向左, 1=向右; 未指定时兜底面向方向 p.facing)。Pad 端按最近的方向键解出 */
   lungeDir?: number;
   onJump?(p: Player): void;
   onLand?(p: Player, vy: number): void;

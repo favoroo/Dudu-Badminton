@@ -219,7 +219,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   if (p.onGround && p.swingT < 0 && p.lungeT < 0 && incoming && ball.live && !ball.held) {
     const dist = Math.abs(ball.x - p.x);
     const reach = p.swingRadius * 1.1;
-    const lungeReach = reach * (C.lunge.reachMul || 1.45);
+    const lungeReach = reach * (C.lunge.reachMul || 1.55);
     const h = CO.groundY - ball.y;
     // 球在网前高度以下、距离超出正常但进入跨步范围
     if (dist > reach && dist < lungeReach && h < C.aiReach.stand * 0.7) {

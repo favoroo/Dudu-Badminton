@@ -178,32 +178,44 @@ export const CFG = {
     nearOffset: 22,    // depth=0 → 落点贴网 22px(网前小球要真的能打死人)
     farOffset: 368,    // depth=1 → 落点距网 368px(约 848,贴着底线)
     speedMin: 4,
-    speedMax: 27,      // 甜蜜点压平后要靠更快的初速够到同一落点
+    speedMax: 25,      // 甜蜜点压平后要靠更快的初速够到同一落点
     sweetBoost: 2,     // 甜蜜点初速上限 +2:踩得准才许打得更凶
-    perfectBoost: 3,   // 完美击球 +3(27+3=30 恰好是 shuttle.maxSpeed 物理上限)
+    perfectBoost: 3,   // 完美击球 +3(25+3=28;距 shuttle.maxSpeed 的差额留给热度加成)
     loftMinDeg: -24,
     loftMaxDeg: 79,
     solveIters: 14,    // 速度二分迭代次数
+    // 求解器的「能过网」判定余量(px):球心过网时必须比网带高出这么多。
+    // 二分解出来的是临界角,不夹余量就正好贴着网带擦过去 —— 轻击擦网的主因(实测 39% 的短球余量 <5px)。
+    // 7 = 球半径(视觉上球头刚碰网带),取 10 让球真正越过网带。
+    netClearMargin: 10,
+    // 找安全过网角时的角度网格步长(度):单调性不成立,只能沿网格扫(见 physics.safeAngle)
+    angleProbeDeg: 8,
+    // 落点根本没有安全解时(后场低球搓贴网球 = 物理禁手),每步把落点往对方场内收这么多,
+    // 收到有解为止;代价是球更高更慢,而不是白送一分。
+    pullTargetDepth: 0.07,
+    pullTargetTries: 8,
     netBumpDeg: 9,     // 下网后每次抬弧度
     netBumpTries: 5,
   },
 
   // 出射角锚点:[击球点离地高度, θ]。这张表就是「滞空时间表」——
   // 落点由求解器反解速度保证,所以想整体放慢或加快回球,改这里最直接。
-  // 低球被迫挑高(约 70 帧,有时间回位),高球可以压平(约 25 帧,来不及反应)。
+  // 低球被迫挑高(约 70 帧,有时间回位),高球可以压平(约 30 帧,还来得及反应)。
+  // 想放慢只抬 h≥80 段(快球才是来不及反应的来源);低段别动 —— 低点球已够慢,
+  // 再抬弧只会让低点深球够不着底线(speedMax cap 下防守深度会崩,实测 798→696)。
   loftByHeight: [
-    [0, 74], [40, 66], [80, 46], [110, 30], [150, 16], [200, 0], [250, -12],
+    [0, 74], [40, 66], [80, 52], [110, 36], [150, 22], [200, 6], [250, -6],
   ],
   aimLoftSwing: 0,     // 深浅不再耦合弧度:能不能过网有「最小可过网角」兜底
   aimLoftGate: [60, 180], // 击球高度低于 60 不给压平,高于 180 给满
-  sweetLoftShift: 12,  // 甜蜜点比打偏少多少度弧度(更平更快)
+  sweetLoftShift: 9,   // 甜蜜点比打偏少多少度弧度(更平更快)
 
   player: {
     // 100px 身高 vs 80px 网高:比真实比例(1.70/1.55)略夸张,换角色更醒目
     w: 42,
     h: 100,
-    accel: 1.50,
-    vmax: 8.6,
+    accel: 1.60,
+    vmax: 9.2,
     groundFriction: 0.78,
     airAccelMul: 0.60,
     airFriction: 0.985,
@@ -223,18 +235,18 @@ export const CFG = {
   // 挥拍:windup → active(可命中) → recovery
   swing: {
     windup: 1,
-    active: 14,        // 命中窗口 233ms
+    active: 16,        // 命中窗口 267ms
     recover: 5,
     whiffExtra: 4,     // 挥空的额外硬直(防无脑连打)
-    buffer: 8,         // 提前按下的输入缓冲
+    buffer: 10,        // 提前按下的输入缓冲
     pivotY: -70,       // 挥拍支点(肩,相对脚底)
-    radiusBase: 50,      // 拍头到肩的距离
+    radiusBase: 55,      // 拍头到肩的距离
     radiusSpeedGain: 0.8, // 来球越快允许越远够球
-    radiusMax: 92,
+    radiusMax: 98,
     headR: 30,           // 并入判定区半径;命中判定见 Player.strikeZone
-    zoneFullSpeed: 9,    // 来球速度 ≤ 此值给完整判定区
+    zoneFullSpeed: 11,   // 来球速度 ≤ 此值给完整判定区
     zoneTightenSpan: 11, // 到 zoneFullSpeed+此值 收到最小
-    zoneFastMul: 0.5,    // 快球判定区最小只剩这么多(重杀必须对上时机)
+    zoneFastMul: 0.62,   // 快球判定区最小只剩这么多(重杀必须对上时机)
     recoverSpeedMul: 0.45, // recovery 期限速,挥拍是有代价的承诺
     recoverBrake: 0.6,     // 期限速的刹车感:每步衰减「超出上限部分」的比例,替代一帧硬切
     recoverAccelMul: 0.5,  // 挥拍中持续按键的加速打折,配合刹车让稳速收敛在上限附近
@@ -247,7 +259,7 @@ export const CFG = {
 
   // 甜蜜点:命中时刻在 active 窗口中的位置
   // coreRatio 换算成手感 = ±(active/2 × coreRatio) 帧的起手容错(见 Player.qualityAt):
-  // 0.34 → ±2.4 帧(咬中间 5 帧,偏紧);0.50 → ±3.5 帧(咬中间 7 帧,约 117ms)
+  // 0.34 → ±2.7 帧(咬中间 6 帧,偏紧);0.50 → ±4 帧(咬中间 9 帧,约 133ms)
   sweet: {
     coreRatio: 0.50,   // 窗口中心 50% 算甜蜜
     powerBonus: 1.16,
@@ -255,7 +267,7 @@ export const CFG = {
     powerDeg: 5,       // 在 q 压平之外再压的弧度(度):逼 solver 用更快初速补同一落点
   },
 
-  // 完美击球:甜蜜点正中心再收一档(窗口约 2 帧 ≈ 35ms),是天花板操作的专属回报:
+  // 完美击球:甜蜜点正中心再收一档(窗口约 2.4 帧 ≈ 40ms),是天花板操作的专属回报:
   // 落点零误差(瞄哪打哪、绝不出界)+ 最高初速上限 + 最顶级的一整套反馈
   perfect: {
     coreRatio: 0.15,   // qRaw ≥ 0.85
@@ -284,10 +296,10 @@ export const CFG = {
 
   // 落点误差(px):打不准才会下网/出界
   aimErr: {
-    base: 26,
-    moving: 22,        // 跑动中
-    airborne: 30,      // 空中
-    edge: 34,          // 命中框边缘
+    base: 20,
+    moving: 16,        // 跑动中
+    airborne: 24,      // 空中
+    edge: 28,          // 命中框边缘
     sweetReduce: 0.42, // 甜蜜点时误差 ×0.42
   },
 
@@ -295,7 +307,11 @@ export const CFG = {
     winScore: 11,
     pointPause: 78,    // 得分停顿帧
     servePause: 26,
-    matchPointSlowmo: 0.34,
+    // 赛点重锤慢放的倍速。0.34 那种「几乎停住」在手机上读起来像掉帧而不是演出,
+    // 而且训练场每一拍重扣都会走它(见 game-root 的 drill 放行),0.5 保住电影感又能操控。
+    // 现状:fx.slowmoEnabled 已置 false,这个值和 slowmoFrames / scoreSlowmo 一起被总闸屏蔽,
+    // 只在总闸打开时生效 —— 别把它当成能直接调的活旋钮。
+    matchPointSlowmo: 0.5,
     deuceMinLead: 2,     // 平分后需领先此分数才获胜
     deuceCap: 0,         // 0=无上限;>0 时到此分数强制结束(如 15)
   },
@@ -329,12 +345,28 @@ export const CFG = {
   },
 
   fx: {
+    // 慢动作总闸。false 时下列四组变速旋钮全部不生效:fx.slowmoFrames / fx.scoreSlowmo(Frames)、
+    // scoring.matchPointSlowmo,以及主循环里赛点常驻的 0.9 微慢放 —— 世界恒速。
+    // 用户反馈「重击卡住不好操控」后决定整条慢放关掉,只保留 hitstop 顿帧本身;
+    // 想恢复赛点演出,把这里改回 true 即可,其余接线都还在。
+    slowmoEnabled: false,
+    // 完美重扣即时回放总闸。false 时彻底不播:主循环既不再每步写快照(replay.push),
+    // 也不再排队触发(replayDelay),于是 RALLY 期间不产生「每步 new 一个快照 + map 全体球员」
+    // 的分配,全屏 replayBlocker 也永不打开。
+    // 关它的理由不是性能而是操控:回放段 Rules.step 整段不跑(BUF_SIZE=90 → 1.5 秒),
+    // 且 blocker 刻意垫在虚拟按键之下,玩家本能狂按跳/深球/短球时一个都不响应,
+    // 只有点屏幕空白才跳得过 —— 用户判定「回放太影响体验了」,整条关掉。
+    // 完美重扣的奖励感改由飘字/白闪/震屏/触觉承担;想恢复复述镜头把这里改回 true。
+    replayEnabled: false,
+    // hitstop 定格帧数 = 真实帧数(主循环在定格段不乘慢放系数),换算 ms ≈ 帧数 × 16.7。
+    // 顶档压在 7 帧:够读出「啪」的一下,又不会把手指按下去的那段时间整段吃掉。
+    hitstopCap: 7,          // 定格帧总闸:任何来源(六档/发球/擦网/挥空)都不许超过
     hitstopNormal: 2,
-    hitstopSweet: 5,        // 约 0.08 秒(5帧),微幅定格制造绝佳打击顿挫感
-    hitstopSmash: 7,
-    hitstopSweetSmash: 9,   // 甜蜜点扣杀终极定格快感
-    hitstopPerfect: 7,      // 完美击球(非扣杀):比甜蜜点更重的顿挫
-    hitstopPerfectSmash: 11,// 完美重扣:全游戏最高定格
+    hitstopSweet: 4,        // 约 0.07 秒,微幅定格制造绝佳打击顿挫感
+    hitstopSmash: 5,
+    hitstopSweetSmash: 6,   // 甜蜜点扣杀的重顿挫
+    hitstopPerfect: 5,      // 完美击球(非扣杀):与甜蜜点扣杀同档但白闪/震屏更重
+    hitstopPerfectSmash: 7, // 完美重扣:全游戏最高定格
     shakeNormal: 2,
     shakeSweet: 6,          // 甜蜜点清脆利落震屏
     shakeSmash: 12,
@@ -344,7 +376,7 @@ export const CFG = {
     punchSmash: 1.055,      // 扣杀镜头冲击:整块世界向击球点推近(只放大不缩小,不露边)
     punchPerfectSmash: 1.09,
     punchDecay: 0.85,       // 镜头每帧保留的超出量比例(指数回弹到 1)
-    slowmoFrames: 16,       // 赛点重锤慢动作时长:模拟帧数,真实时长 = 帧数/timeScale
+    slowmoFrames: 10,       // 赛点重锤慢动作时长:模拟帧数,真实时长 = 帧数/timeScale
     shakeLand: 4,
     shakeLandSmash: 7,
     trailLen: 18,
@@ -462,12 +494,14 @@ export const CFG = {
   },
 
   // 键位表(桌面端按 e.code 绑定,跨布局稳定;每项可给多个候选)
-  // 击球键自带落点:swingFar = 远球压底线,swingNear = 短球放网前。方向键移动,双击方向键触发跨步。
+  // 击球键自带落点:swingFar = 远球压底线,swingNear = 短球放网前。
+  // 移动只占用方向键,跨步是独立一键(lunge):方向由输入层按「最近的方向键」解出。
+  // 旧的「双击方向键跨步」已删 —— 对拉时快速换向会稳定凑成双击,误触代价是一次带恢复期的爆发位移。
   // 触屏端的虚拟按键在输入适配层映射到同一套语义,不另立第二张表
   keys: {
-    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], swingFar: ["KeyJ"], swingNear: ["KeyK"] },
+    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], lunge: ["KeyL"], swingFar: ["KeyJ"], swingNear: ["KeyK"] },
     p2: {
-      left: ["ArrowLeft"], right: ["ArrowRight"], jump: ["ArrowUp"],
+      left: ["ArrowLeft"], right: ["ArrowRight"], jump: ["ArrowUp"], lunge: ["Comma"],
       swingFar: ["Slash"], swingNear: ["Period"],
     },
     sys: {
@@ -479,14 +513,13 @@ export const CFG = {
     },
   },
 
-  // 跨步救球:向前爆发一段距离,判定区扩大,结束后有恢复期
+  // 跨步救球:朝「最近的方向键」那一侧爆发一段距离,判定区扩大,结束后有恢复期
   lunge: {
     speed: 12,              // 跨步爆发速度(px/帧)
     duration: 14,           // 跨步持续帧数
-    reachMul: 1.45,         // 判定区半径倍率
+    reachMul: 1.55,         // 判定区半径倍率
     recoveryFrames: 18,     // 恢复期帧数
     recoverySpeedMul: 0.35, // 恢复期速度倍率
-    doubleTapWindowMs: 300, // 双击方向键触发跨步的时间窗口(毫秒)
   },
 
   // AI 拦截高度带:站立够球上限 / 跳起够球上限(px 离地)
@@ -495,7 +528,7 @@ export const CFG = {
   // AI 难度:全部走同一套挥拍机制,只是时机更不准、反应更慢
   diffs: {
     easy:   { label: "简单", tick: 20, speed: 0.74, aimErr: 92, timingErr: 9, aggr: 0.12 },
-    normal: { label: "普通", tick: 13, speed: 0.88, aimErr: 58, timingErr: 5, aggr: 0.48 },
+    normal: { label: "普通", tick: 14, speed: 0.88, aimErr: 66, timingErr: 6, aggr: 0.40 },
     hard:   { label: "困难", tick: 8,  speed: 1.00, aimErr: 20, timingErr: 2, aggr: 0.58 },
   },
 

@@ -1,16 +1,20 @@
 // ============================================================
-// 触屏虚拟按键:左下「左移/右移(双击跨步)」,右下「跳/深球/短球」。
+// 触屏虚拟按键:左下「左移/右移」,右下「跳/跨步/深球/短球」。
 // 和键盘映射同一套 Pad 动作语义;按钮节点由本模块程序化生成,
 // 编辑器里不用摆任何东西。
 //
+// 跨步是右手独立键(旧的双击方向键触发已删:对拉时快速换向太容易凑成双击,
+// 而误触的代价是一次带恢复期的爆发位移)。方向不写在键上 —— 输入层按下跨步
+// 那一刻从「最近的方向键」现解,左手带方向、右手管出手。
+//
 // 对局态的触摸命中收在**层节点**统一裁决(编辑态仍是逐键拖动):
 // 每根手指 claim 一个 touch id,按住中滑动会重新命中 —— 「左」滑到「右」
-// 不抬手直接换向,对拉快攻不用先松手;划过击球键不触发(只认按住类动作),
-// 防止滑动误出球。多指各玩各的 claim,互不干扰。
+// 不抬手直接换向,对拉快攻不用先松手;划过跨步/击球键不触发(只认按住类动作),
+// 防止滑动误出球、误跨步。多指各玩各的 claim,互不干扰。
 //
 // 屏幕自适应与安全区防遮挡设计:
 // 1. 左侧移动簇(左/右)通过 Widget 吸附屏幕左下角,避让刘海/打孔。
-// 2. 右侧击球簇(跳/短球/深球)通过 Widget 吸附屏幕右下角。
+// 2. 右侧操作簇(跳/跨步/短球/深球)通过 Widget 吸附屏幕右下角。
 // 3. 底部留出安全边距,避免沉底或触发全面屏系统手势。
 //
 // 可自定义布局(设置页「调整位置」)存的是**簇内相对位移 dx/dy + 半径 r**,
@@ -31,17 +35,18 @@ import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
 import { haptic } from "../game/haptics";
 
-/** 有按下/抬起两种状态的键;击球键是边沿语义,抬起不动它 */
+/** 有按下/抬起两种状态的键;跨步键与击球键是边沿语义,抬起不动它 */
 const RELEASE_ACTIONS: PadAction[] = ["left", "right", "jump"];
 
 /**
  * 每一簇的建键顺序(照改造前的书写序,别顺手改成 PAD_ACTIONS 的顺序):
  * 兄弟序即绘制/命中序,后建的压在前一个上面。用户把两个键拖到重叠时,
  * 谁的命中优先必须由建层顺序决定(层级命中从最上层往回找),不能每次启动都变。
+ * 「跨步」插在击球两键之后、「跳」之前:跳是右手最容易误碰的大键,保持它最高优先级。
  */
 const CLUSTER_ORDER: Record<"left" | "right", PadAction[]> = {
   left: ["left", "right"],
-  right: ["swingFar", "swingNear", "jump"],
+  right: ["swingFar", "swingNear", "lunge", "jump"],
 };
 
 /** 顶部让开记分牌带(HUD 比分牌占 y≈203..261),按键中心不许进这一带 */
@@ -76,24 +81,25 @@ interface BtnRec {
 function paint(rec: BtnRec, edit: boolean): void {
   const g = rec.g;
   const S = CFG.padSkin;
+  const A = Settings.padAlpha;   // 用户全局透明度(0.2~1.0),乘到所有 skinColor alpha 上
   g.clear();
   // 深蓝玻璃底:球场透得过,按钮在亮/暗场地上都看得清(纯白 15% 会直接融进背景)
-  g.fillColor = rec.pressed ? skinColor(S.downFill, S.downFillA) : skinColor(S.idleFill, S.idleFillA);
-  g.strokeColor = rec.pressed ? skinColor(S.downEdge, S.downEdgeA) : skinColor(S.idleEdge, S.idleEdgeA);
+  g.fillColor = rec.pressed ? skinColor(S.downFill, S.downFillA * A) : skinColor(S.idleFill, S.idleFillA * A);
+  g.strokeColor = rec.pressed ? skinColor(S.downEdge, S.downEdgeA * A) : skinColor(S.idleEdge, S.idleEdgeA * A);
   g.lineWidth = rec.pressed ? 4 : 3;
   g.circle(0, 0, rec.r);
   g.fill();
   g.stroke();
   if (edit && rec.selected) {
     // 外圈荧光黄环 = 「选中」,与按下的内亮区分开:编辑态两者可能同时成立
-    g.strokeColor = skinColor(S.downEdge, 1);
+    g.strokeColor = skinColor(S.downEdge, 1 * A);
     g.lineWidth = 3;
     g.circle(0, 0, rec.r + 8);
     g.stroke();
   }
   // 图标跟随按下/选中态变色
   drawIcon(g, rec.action, rec.r,
-    rec.pressed ? skinColor(S.downIcon, S.downIconA) : skinColor(S.icon, S.iconA));
+    rec.pressed ? skinColor(S.downIcon, S.downIconA * A) : skinColor(S.icon, S.iconA * A));
 }
 
 // ---------- 按钮图标(矢量,跟随按钮半径缩放) ----------
@@ -102,6 +108,7 @@ function paint(rec: BtnRec, edit: boolean): void {
  * 在 Graphics 原点周围画按钮图标。
  * - left / right: 箭头
  * - jump: 上箭头
+ * - lunge: 左右背对背箭头 + 中缝起振线(键本身不带方向,往哪跨由方向键决定)
  * - swingFar: 粗笔高弧 + 实心球 + 力量爆发线(重击/高远球)
  * - swingNear: 细笔低弧 + 空心球 + 落地反弹弧(轻击/吊球)
  */
@@ -137,6 +144,27 @@ function drawIcon(g: Graphics, action: PadAction, r: number, color: Color): void
       g.moveTo(-s, -s * 0.25);
       g.lineTo(0, s * 0.65);
       g.lineTo(s, -s * 0.25);
+      g.stroke();
+      break;
+    }
+
+    case "lunge": {
+      // 跨步:左右两个背对背箭头 + 中间一道起振竖线。
+      // 刻意不画成单个方向的箭头 —— 这个键不带方向,往哪跨由左手方向键决定,
+      // 图形先替玩家把「按住哪边就往哪跨」这件事说清楚。
+      const s = r * 0.4;
+      g.lineWidth = 6;
+      g.moveTo(-s * 0.32, s * 0.78);
+      g.lineTo(-s * 1.02, 0);
+      g.lineTo(-s * 0.32, -s * 0.78);
+      g.stroke();
+      g.moveTo(s * 0.32, s * 0.78);
+      g.lineTo(s * 1.02, 0);
+      g.lineTo(s * 0.32, -s * 0.78);
+      g.stroke();
+      g.lineWidth = 4;
+      g.moveTo(0, -s * 0.5);
+      g.lineTo(0, s * 0.5);
       g.stroke();
       break;
     }
@@ -220,7 +248,7 @@ function safeMargins(): SafeMargins {
 // ---------- 建层 ----------
 
 export interface TouchPadOpts {
-  /** 编辑实例:可拖动、只通知回调,绝不写 Pad(拖动不许打出球,也不许污染跨步计时) */
+  /** 编辑实例:可拖动、只通知回调,绝不写 Pad(拖动不许打出球,也不许打出一个跨步) */
   edit?: boolean;
   onPick?(action: PadAction): void;
   onDrag?(action: PadAction, dx: number, dy: number): void;
@@ -337,7 +365,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
 
   for (const a of CLUSTER_ORDER.left) makeButton(a, leftCluster, opts, recs);
 
-  // 2. 右侧击球簇(「短球」「深球」「跳」)
+  // 2. 右侧操作簇(「短球」「深球」「跨步」「跳」)
   const rightCluster = new Node("cluster-right");
   rightCluster.layer = Layers.Enum.UI_2D;
   const rightTrans = rightCluster.addComponent(UITransform);
@@ -359,8 +387,8 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   // 每根手指 claim 一个 touch id;按住中滑动会重新命中:
   //   「左」滑到「右」= 不抬手直接换向(对拉快攻省一次抬手);
   //   滑出所有键 = 松键(与旧的 TOUCH_CANCEL 自愈同语义);
-  //   划过击球键不触发 —— 换向只认「按住类」动作(left/right/jump),
-  //   防止手指路过深球键凭空打出一拍。
+  //   划过跨步/击球键不触发 —— 换向只认「按住类」动作(left/right/jump),
+  //   防止手指路过右手键区凭空打出一拍、或凭空摔一次跨步。
   const claims = new Map<number, { rec: BtnRec | null }>();
 
   const bindPlayLayer = (): void => {
@@ -538,7 +566,7 @@ class TouchPadController {
       h.apply();               // 藏起来的这段时间里用户可能改过布局
     } else {
       // ⚠ 关键:手指按着「左」时把层 active=false,那个 TOUCH_END 就永远送不到
-      // 节点,pad.left 卡在 true → 下一局人自己往左跑,双击跨步的计时字段也被污染。
+      // 节点,pad.left 卡在 true → 下一局人自己往左跑。
       // 所以「藏起来」这个动作必须顺带把所有按下状态清干净(pad 状态 + claim + 视觉)。
       this.releaseAll();
       h.clearPressed();

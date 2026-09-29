@@ -38,6 +38,7 @@ export interface SolveResult {
   vx: number; vy: number; speed: number; deg: number;
   trace: TraceResult;
   targetX: number; short: boolean; depth: number;
+  /** 实际命中的安全过网角;null = 这个落点没有安全解(球被压在网带下,认命下网) */
   floorClear: number | null; floorReach: number;
   kind: ShotKind;
   /** 由调用方(标定工具)按命中质量补记,物理层本身不填 */
@@ -94,7 +95,12 @@ function trace(x0: number, y0: number, vx: number, vy: number, maxSteps = 260): 
   return { landX: x, landY: y, steps: maxSteps, apex, netY, lvx: vx, lvy: vy, hitNet: netY !== null && netY > NET_HIT_Y };
 }
 
-const clears = (t: TraceResult): boolean => !t.hitNet;
+// 「能过网」不能只看是否撞上球网:二分解出的是**临界角**,不夹余量就正好贴着网带擦过去,
+// 这就是轻击容易擦网的原因(实测 39% 的短球过网余量 <5px,球头已经在视觉上蹭到网带)。
+// 所以安全解要求球心比网带高出一个余量;netY 为空(球没越过网平面就落地)也一律算没过网。
+const MARGIN = C.shot.netClearMargin;
+const clears = (t: TraceResult): boolean =>
+  !t.hitNet && t.netY !== null && t.netY <= NET_HIT_Y - MARGIN;
 
 // 给定 θ,二分出「前进距离」最接近需求的初速(前进距离随 speed 单调递增)
 // boost:初速上限的临时余量(甜蜜点/完美击球专属)——踩得准才许突破 speedMax 打更凶的球
@@ -115,23 +121,59 @@ function bisectSpeed(x0: number, y0: number, dir: number, deg: number, targetX: 
   return { speed: (lo + hi) / 2, short: false };
 }
 
-// 打同一落点时,能过网的最小出射角(θ↑ 单调地更容易过网 → 可二分)
-// boost 透传:更快初速下「贴网下压」的解空间要重新评估,否则下限会吃掉压平量
-function minClearDeg(x0: number, y0: number, dir: number, targetX: number, boost = 0): number | null {
-  const S = C.shot;
-  const okAt = (deg: number): boolean => {
-    const r = bisectSpeed(x0, y0, dir, deg, targetX, boost);
-    const rad = deg * U.D2R;
-    return clears(trace(x0, y0, dir * r.speed * Math.cos(rad), -r.speed * Math.sin(rad)));
-  };
-  if (okAt(S.loftMinDeg)) return S.loftMinDeg;
-  if (!okAt(S.loftMaxDeg)) return null;          // 怎么抬都下网(被压得太低)
-  let lo = S.loftMinDeg, hi = S.loftMaxDeg;
-  for (let i = 0; i < 8; i++) {
-    const mid = (lo + hi) / 2;
-    if (okAt(mid)) hi = mid; else lo = mid;
+// 一个角度下的候选解:按该角度反解初速(落点达标),再模拟这条弹道
+interface AngleSolve { deg: number; speed: number; short: boolean; trace: TraceResult }
+
+function solveAt(x0: number, y0: number, dir: number, deg: number, targetX: number, boost = 0): AngleSolve {
+  const r = bisectSpeed(x0, y0, dir, deg, targetX, boost);
+  const rad = deg * U.D2R;
+  return { deg, speed: r.speed, short: !!r.short, trace: trace(x0, y0, dir * r.speed * Math.cos(rad), -r.speed * Math.sin(rad)) };
+}
+
+// 在「不安全角 bad」与「安全角 ok」之间二分,收敛到贴着 bad 那侧的最小改动安全角。
+// bad 恒为靠 loft 的一端、ok 恒为安全的一端,所以抬高/压平两个方向共用这套更新规则。
+function tighten(x0: number, y0: number, dir: number, bad: number, ok: number, targetX: number, boost: number): AngleSolve | null {
+  let a = bad, b = ok;
+  for (let i = 0; i < 6; i++) {
+    const mid = (a + b) / 2;
+    if (clears(solveAt(x0, y0, dir, mid, targetX, boost).trace)) b = mid; else a = mid;
   }
-  return hi;
+  const s = solveAt(x0, y0, dir, b, targetX, boost);
+  return clears(s.trace) ? s : null;
+}
+
+/**
+ * 找一个「安全过网」的出射角(网口余量 ≥ shot.netClearMargin)。
+ * 先按模型 loft 试 —— 绝大多数球在这一步就出解,「高度 → 滞空」那张表照常说话。
+ * 不通再沿角度网格往两头扫。旧实现假定 clears 随 θ 单调、直接二分,这个前提不成立:
+ * 大角度顶到初速上限后反而够不到落点,小角度贴网太低,安全解常常夹在中间一段;
+ * 于是整段可行解被判成 null,球被逼到「挑到最高认命下网」—— 擦网就是这么来的。
+ * 抬高弧度的解优先(打不高就挑高,与旧行为一致),两头都没有才考虑压平。
+ * @returns null = 这个落点怎么打都过不了网
+ */
+function safeAngle(x0: number, y0: number, dir: number, targetX: number, loft: number, boost = 0): AngleSolve | null {
+  const S = C.shot;
+  const first = solveAt(x0, y0, dir, loft, targetX, boost);
+  if (clears(first.trace)) return first;
+  const rungs = (up: boolean): number[] => {
+    const out: number[] = [];
+    for (let i = 1; i <= 40; i++) {
+      const d = loft + (up ? S.angleProbeDeg : -S.angleProbeDeg) * i;
+      if (up && d >= S.loftMaxDeg) { out.push(S.loftMaxDeg); break; }
+      if (!up && d <= S.loftMinDeg) { out.push(S.loftMinDeg); break; }
+      out.push(d);
+    }
+    return out;
+  };
+  for (const up of [true, false]) {
+    let bad = loft;
+    for (const d of rungs(up)) {
+      const s = solveAt(x0, y0, dir, d, targetX, boost);
+      if (clears(s.trace)) return tighten(x0, y0, dir, bad, d, targetX, boost) || s;
+      bad = d;
+    }
+  }
+  return null;
 }
 
 // 满力也够不到落点时,能够到的最小出射角(射程在 45° 前随 θ 递增)
@@ -156,8 +198,8 @@ function minReachDeg(x0: number, y0: number, dir: number, targetX: number, boost
 
 /**
  * 解一发回球。甜蜜点靠"压平 θ"体现:同样落点需要更快的初速 → 球更凶、到得更早。
- * 期望角会被两个下限夹住(最小可过网角 / 最小可够到角),两者都与质量无关,
- * 所以「质量 → 滞空」严格单调,不会出现好球反而更慢。
+ * 出射角只在「模型 loft 不安全」时才被改动(safeAngle 抬弧度/压平),
+ * 且改动量取离 loft 最近的安全解,所以「质量 → 滞空」的单调关系照常成立。
  * @param x0,y0   击球点
  * @param dir     出球方向(朝对方半场,±1)
  * @param depth   0=贴网短球 … 1=底线深球(>1 表示打出界)
@@ -166,26 +208,40 @@ function minReachDeg(x0: number, y0: number, dir: number, targetX: number, boost
  */
 function solveShot(x0: number, y0: number, dir: number, depth: number, loft: number, boost = 0): SolveResult {
   const S = C.shot;
-  const targetX = CO.netX + dir * (S.nearOffset + depth * (S.farOffset - S.nearOffset));
-  const floorClear = minClearDeg(x0, y0, dir, targetX, boost);
+  const SPAN = S.farOffset - S.nearOffset;
+  const targetOf = (d: number): number => CO.netX + dir * (S.nearOffset + d * SPAN);
+  let d = depth, targetX = targetOf(d);
+  let best = safeAngle(x0, y0, dir, targetX, loft, boost);
+  // 这个落点根本没有安全解(例:后场低球要搓出贴网 22px = 物理禁手)。
+  // 与其挑到最高认命下网,不如把落点一格一格往对方场内收,收到有解为止:
+  // 代价是一拍更高更慢的过渡球,而不是一眼可预见的白送一分。
+  for (let i = 0; !best && i < S.pullTargetTries && d < 1; i++) {
+    d = Math.min(1, d + S.pullTargetDepth);
+    targetX = targetOf(d);
+    best = safeAngle(x0, y0, dir, targetX, loft, boost);
+  }
   const floorReach = minReachDeg(x0, y0, dir, targetX, boost);
-  let deg = loft;
-  if (floorClear === null) deg = S.loftMaxDeg;                 // 救不回来:挑最高,认命下网
-  else deg = Math.max(deg, floorClear, floorReach);
-  deg = U.clamp(deg, S.loftMinDeg, S.loftMaxDeg);
 
-  const r = bisectSpeed(x0, y0, dir, deg, targetX, boost);
+  let deg: number, speed: number, short: boolean;
+  if (best) {
+    deg = best.deg; speed = best.speed; short = best.short;
+  } else {
+    // 连收到最深都过不了网:球被压在网带以下,按可达下限挑最高,认命下网
+    deg = U.clamp(Math.max(loft, floorReach), S.loftMinDeg, S.loftMaxDeg);
+    const r = bisectSpeed(x0, y0, dir, deg, targetX, boost);
+    speed = r.speed; short = !!r.short;
+  }
   const rad = deg * U.D2R;
-  const vx = dir * r.speed * Math.cos(rad);
-  const vy = -r.speed * Math.sin(rad);
-  const best: SolveResult = {
-    vx, vy, speed: r.speed, deg, trace: trace(x0, y0, vx, vy),
-    targetX, short: !!r.short, depth,
-    floorClear, floorReach,
+  const vx = dir * speed * Math.cos(rad);
+  const vy = -speed * Math.sin(rad);
+  const result: SolveResult = {
+    vx, vy, speed, deg, trace: trace(x0, y0, vx, vy),
+    targetX, short, depth: d,
+    floorClear: best ? deg : null, floorReach,
     kind: "clear",
   };
-  best.kind = classify(best, depth, y0);
-  return best;
+  result.kind = classify(result, d, y0);
+  return result;
 }
 
 // 击球点高度 → 基础弧度 θ(单调下降:越低的球被迫挑越高)
@@ -220,7 +276,9 @@ function classify(shot: { deg: number; speed: number }, depth: number, y0: numbe
   if (shot.deg < 15 && h > 105 && shot.speed > 16) return "smash";
   if (shot.deg < 22 && h > 92) return "slash";
   if (shot.deg > 55) return "lob";
-  if (depth < 0.3 && h < 100) return "netshot";
+  // 落点贴网就是网前小球 —— 不再要求击球点低:轻击为了过网被抬到 30~50° 时,
+  // 它依然是打在网前的小球,不该叫「高远球」(放网提示与 hit 音效都读这个标签)
+  if (depth < 0.3) return "netshot";
   if (shot.deg < 28) return "drive";
   return "clear";
 }

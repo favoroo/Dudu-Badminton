@@ -1283,9 +1283,8 @@ export class CourtRenderer {
     fillRect(g, vp, -EXT_W, 680, TOTAL_W, 2, colRgba(255, 255, 255, 0.12));
     fillRect(g, vp, -EXT_W, 683, TOTAL_W, 3, new Color(234, 179, 8, 200)); // 专业防滑警戒黄线
 
-    // 9. 标线与暗角
+    // 9. 标线
     this.drawLines(g, vp, colRgba(255, 248, 235, 0.92), colRgba(255, 248, 235, 0.55));
-    this.drawVignette(g, vp, 0.52);
   }
 
   // ============================================================
@@ -1539,9 +1538,8 @@ export class CourtRenderer {
       fillEllipse(g, vp, bx, 650, 90, 18, colRgba(254, 240, 138, 0.12));
     }
 
-    // 9. 沙滩防滑编织织带标线与暗角
+    // 9. 沙滩防滑编织织带标线
     this.drawLines(g, vp, new Color(2, 132, 199, 255), colRgba(2, 132, 199, 0.65));
-    this.drawVignette(g, vp, 0.28);
   }
 
   // ============================================================
@@ -1811,9 +1809,8 @@ export class CourtRenderer {
       if (hasPink) g.stroke();
     }
 
-    // 7. 发光双色场地标线与暗角
+    // 7. 发光双色场地标线
     this.drawLines(g, vp, new Color(0, 240, 255, 255), colRgba(255, 0, 127, 0.85));
-    this.drawVignette(g, vp, 0.65);
   }
 
   // ============================================================
@@ -2051,13 +2048,12 @@ export class CourtRenderer {
       }
     }
 
-    // 8. 暗朱红场地标线与暗角
+    // 8. 暗朱红场地标线
     this.drawLines(g, vp, new Color(220, 38, 38, 255), colRgba(220, 38, 38, 0.65));
-    this.drawVignette(g, vp, 0.48);
   }
 
   // ------------------------------------------------------------
-  // 通用场地标线与暗角
+  // 通用场地标线
   // ------------------------------------------------------------
   private drawLines(g: Graphics, vp: Viewport, mainCol: Color, subCol: Color): void {
     // 地表主基准水平线
@@ -2067,29 +2063,6 @@ export class CourtRenderer {
     for (const x of [CO.left, CO.right, CO.shortServeL, CO.shortServeR]) {
       const slant = x < W / 2 ? 14 : -14;
       drawLine(g, vp, x, CO.groundY + 4, x + slant, BOTTOM_WY, subCol, 2);
-    }
-  }
-
-  /**
-   * 椭圆暗角:由外向内一圈圈椭圆「描边环」淡出。
-   * 不能整片椭圆叠加:半透明黑填充从大到小叠,中心只会越叠越黑,
-   * 反而画出巨型黑圆盘 + 一圈圈可见边界(老 bug)。
-   * 描边环只画环带不叠中心,外圈暗、中心干净、无接缝。
-   */
-  private drawVignette(g: Graphics, vp: Viewport, maxAlpha: number): void {
-    const rings = 24;
-    const w = 17;                 // 每环宽度(路径间距 = 环宽 → 环带精确首尾相接)
-    const rxO = 700, ryO = 436;   // 外缘罩住四角(角点归一化半径 ≈ 0.92)
-    const k = ryO / rxO;          // 保持纵横比,归一化半径 = rx / rxO
-    const smooth = (t: number): number => t * t * (3 - 2 * t);
-    for (let i = 0; i < rings; i++) {
-      const a = maxAlpha * smooth(1 - i / rings);
-      if (a <= 0.004) continue;
-      g.strokeColor = colRgba(0, 0, 0, a);
-      g.lineWidth = w;
-      const rx = rxO - i * w;
-      g.ellipse(vp.x(W / 2), vp.y(H * 0.5), rx, rx * k);
-      g.stroke();
     }
   }
 

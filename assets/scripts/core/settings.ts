@@ -17,9 +17,9 @@
 // ============================================================
 import { clamp, load, save } from "./utils";
 
-export type PadAction = "left" | "right" | "jump" | "swingFar" | "swingNear";
+export type PadAction = "left" | "right" | "jump" | "swingFar" | "swingNear" | "lunge";
 
-/** 5 个虚拟键的默认布局(数值来源:input/touchpad.ts 原来的字面量) */
+/** 6 个虚拟键的默认布局(数值来源:input/touchpad.ts 原来的字面量) */
 export interface PadBase { x: number; y: number; r: number; cluster: "left" | "right" }
 export const PAD_BASE: Record<PadAction, PadBase> = {
   left: { x: 50, y: 50, r: 44, cluster: "left" },
@@ -27,16 +27,30 @@ export const PAD_BASE: Record<PadAction, PadBase> = {
   swingFar: { x: -48, y: 48, r: 38, cluster: "right" },
   swingNear: { x: -146, y: 48, r: 38, cluster: "right" },
   jump: { x: -60, y: 142, r: 48, cluster: "right" },
+  // 跨步键与「跳」同一排、靠左:右手四键成 2×2,拇指不用重新学位置。
+  // 与 jump 圆心相距 92 > 半径和 88,默认布局下不重叠。
+  lunge: { x: -152, y: 142, r: 40, cluster: "right" },
 };
 /** 键名(设置面板与编辑器 chip 共用;文案只写触屏向,不出现键位名) */
 export const PAD_LABEL: Record<PadAction, string> = {
-  left: "左", right: "右", jump: "跳", swingFar: "深球", swingNear: "短球",
+  left: "左", right: "右", jump: "跳", swingFar: "深球", swingNear: "短球", lunge: "跨步",
 };
-/** 顺序即编辑器 chip 的展示顺序:左手两键 → 右手三键 */
-export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swingFar", "swingNear"];
+/** 顺序即编辑器 chip 的展示顺序:左手两键 → 右手四键 */
+export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swingFar", "swingNear", "lunge"];
 
-/** 位移按簇内相对值夹,半径给一个手指可点又不至于糊屏的区间 */
-export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: 240, maxDy: 180 };
+/**
+ * 触屏移动方式:
+ *   "joystick" —— 左半屏一个虚拟摇杆,推多少走多少,能做小碎步与缓冲;
+ *   "buttons"  —— 老式「左 / 右」两个按钮,离散全速。
+ * 新装机默认 joystick;老用户存档 sanitize 时保留 buttons,不打断肌肉记忆。
+ */
+export type MoveMode = "joystick" | "buttons";
+
+/** 位移按簇内相对值夹,半径给一个手指可点又不至于糊屏的区间;透明度 0.2~1.0(1.0 = 完全不透明) */
+export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: 240, maxDy: 180, alphaMin: 0.2, alphaMax: 1.0 };
+
+/** 摇杆本体默认:底圈半径 / knob 相对底圈的半径比例 */
+export const JOYSTICK_DEFAULT = { baseR: 68, knobRatio: 0.46 };
 
 export interface PadBtn { dx: number; dy: number; r: number }
 
@@ -49,7 +63,13 @@ export interface GameSettings {
   hintLanding: boolean; hintShake: boolean; hintFloat: boolean;
   // 触觉反馈:按键/击球/得分的短震动(移动端,Web 是空操作)
   hapticOn: boolean;
+  // 按钮整体透明度(0.2~1.0,1.0 = 完全不透明)—— 全局一条,不逐键独立
+  padAlpha: number;
   pad: Record<PadAction, PadBtn>;
+  /** 触屏移动方式:摇杆 or 左右按键。老档缺失时 sanitize 走 "buttons"(不打断既成习惯) */
+  moveMode: MoveMode;
+  /** 摇杆底圈半径(原始值,渲染时再乘设备自适应 scale) */
+  joystickR: number;
 }
 
 const KEY = "settings";
@@ -63,7 +83,10 @@ function fresh(): GameSettings {
     bgmOn: true, bgmVol: 0.6,
     hintLanding: true, hintShake: true, hintFloat: true,
     hapticOn: true,
+    padAlpha: 0.8,
     pad,
+    moveMode: "joystick",
+    joystickR: JOYSTICK_DEFAULT.baseR,
   };
 }
 
@@ -72,6 +95,8 @@ function fresh(): GameSettings {
 const num = (v: unknown, d: number, lo: number, hi: number): number =>
   typeof v === "number" && Number.isFinite(v) ? clamp(v, lo, hi) : d;
 const bool = (v: unknown, d: boolean): boolean => (typeof v === "boolean" ? v : d);
+const moveModeOf = (v: unknown, d: MoveMode): MoveMode =>
+  v === "joystick" || v === "buttons" ? v : d;
 
 /** 坏档不许崩:认不出的字段一律退回默认。导出给 tools/settings-check.ts 直接断言 */
 export function sanitize(raw: unknown): GameSettings {
@@ -86,11 +111,14 @@ export function sanitize(raw: unknown): GameSettings {
   s.hintShake = bool(r.hintShake, s.hintShake);
   s.hintFloat = bool(r.hintFloat, s.hintFloat);
   s.hapticOn = bool(r.hapticOn, s.hapticOn);
+  s.padAlpha = num(r.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
   const pad = r.pad as Record<string, Partial<PadBtn>> | null | undefined;
+  let padSeen = false;
   if (pad && typeof pad === "object") {
     for (const a of PAD_ACTIONS) {
       const p = pad[a];
       if (!p || typeof p !== "object") continue;
+      padSeen = true;
       s.pad[a] = {
         dx: num(p.dx, 0, -PAD_LIMIT.maxDx, PAD_LIMIT.maxDx),
         dy: num(p.dy, 0, -PAD_LIMIT.maxDy, PAD_LIMIT.maxDy),
@@ -98,6 +126,11 @@ export function sanitize(raw: unknown): GameSettings {
       };
     }
   }
+  // 老档升级:raw 里带 pad 却没有 moveMode → 判定为摇杆功能上线前装机的老玩家,
+  // 保持他们的「左右按键」体验,不无预警换成摇杆。新装机走 fresh() 的 "joystick"。
+  const legacyMode: MoveMode = padSeen ? "buttons" : "joystick";
+  s.moveMode = moveModeOf(r.moveMode, legacyMode);
+  s.joystickR = num(r.joystickR, JOYSTICK_DEFAULT.baseR, PAD_LIMIT.rMin, PAD_LIMIT.rMax);
   return s;
 }
 
@@ -143,6 +176,9 @@ export class SettingsStore {
   get hintShake(): boolean { return this.v.hintShake; }
   get hintFloat(): boolean { return this.v.hintFloat; }
   get hapticOn(): boolean { return this.v.hapticOn; }
+  get padAlpha(): number { return this.v.padAlpha; }
+  get moveMode(): MoveMode { return this.v.moveMode; }
+  get joystickR(): number { return this.v.joystickR; }
 
   /** 某个键的当前布局(默认位 + 位移) */
   padOf(a: PadAction): PadBtn { return this.v.pad[a]; }
@@ -160,19 +196,21 @@ export class SettingsStore {
     this.after(persist);
   }
 
-  /** 批量改布局(重置默认用) */
+  /** 批量改布局(重置默认用)。只回位按钮半径,不动移动方式(用户偏好独立于布局) */
   resetPad(): void {
     const s = this.v;
     for (const a of PAD_ACTIONS) s.pad[a] = { dx: 0, dy: 0, r: PAD_BASE[a].r };
+    s.padAlpha = 0.8;
+    s.joystickR = JOYSTICK_DEFAULT.baseR;
     this.after(true);
   }
 
   /**
-   * 改声音/画面提示那批标量。
+   * 改声音/画面提示那批标量 + 移动方式。
    * persist=false 同 setPad:音量滑杆拖动时逐帧改内存、松手再 flush,
    * 原生 sys.localStorage.setItem 是同步文件 IO,不能跟着手指 60Hz 写盘。
    */
-  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn">>, persist = true): void {
+  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "padAlpha" | "moveMode" | "joystickR">>, persist = true): void {
     const s = this.v;
     if (p.sfxOn !== undefined) s.sfxOn = bool(p.sfxOn, s.sfxOn);
     if (p.sfxVol !== undefined) s.sfxVol = num(p.sfxVol, s.sfxVol, 0, 1);
@@ -182,6 +220,9 @@ export class SettingsStore {
     if (p.hintShake !== undefined) s.hintShake = bool(p.hintShake, s.hintShake);
     if (p.hintFloat !== undefined) s.hintFloat = bool(p.hintFloat, s.hintFloat);
     if (p.hapticOn !== undefined) s.hapticOn = bool(p.hapticOn, s.hapticOn);
+    if (p.padAlpha !== undefined) s.padAlpha = num(p.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
+    if (p.moveMode !== undefined) s.moveMode = moveModeOf(p.moveMode, s.moveMode);
+    if (p.joystickR !== undefined) s.joystickR = num(p.joystickR, s.joystickR, PAD_LIMIT.rMin, PAD_LIMIT.rMax);
     this.after(persist);
   }
 
