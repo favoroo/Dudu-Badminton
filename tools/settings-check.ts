@@ -13,7 +13,7 @@
 // 用法(先 npx tsc -p tools/tsconfig.json 编译):
 //   node .tools-build/tools/settings-check.js
 import { setStorageBackend, type KVStorage } from "../assets/scripts/core/utils";
-import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, JOYSTICK_LIMIT, JOYSTICK_BASE, PAD_ACTIONS } from "../assets/scripts/core/settings";
+import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, JOYSTICK_LIMIT, JOYSTICK_BASE, SLIDER_BASE, SLIDER_LIMIT, PAD_ACTIONS } from "../assets/scripts/core/settings";
 
 // ---------- 假后端 ----------
 
@@ -47,6 +47,7 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(s.sfxOn && s.bgmOn, "默认音效与音乐都开");
   ok(s.hintLanding && s.hintShake && s.hintFloat, "默认三个画面提示都开");
   ok(s.hapticOn, "默认触觉反馈开");
+  ok(s.replayMode === "matchpoint", "默认回放模式为 matchpoint(赛点回放)");
   ok(near(s.padAlpha, 0.8), `默认透明度 ${s.padAlpha}`);
   ok(near(s.sfxVol, 0.8) && near(s.bgmVol, 0.6), `默认音量 sfx=${s.sfxVol} bgm=${s.bgmVol}`);
   for (const a of PAD_ACTIONS) {
@@ -55,8 +56,14 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   }
   ok(PAD_ACTIONS.every((a) => PAD_BASE[a].r >= PAD_LIMIT.rMin && PAD_BASE[a].r <= PAD_LIMIT.rMax),
     "每个键的默认半径都落在可调区间内");
-  const leftN = PAD_ACTIONS.filter((a) => PAD_BASE[a].cluster === "left").length;
-  ok(leftN === 2 && PAD_ACTIONS.length - leftN === 4, "左簇 2 键 / 右簇 4 键");
+  // 这里断言的是「跳跃不再和击球键挤同一只手」这个**性质**,不是全局键数 ——
+  // 右簇后续还会加键(击球 swipe 正在改),写死 3/3 这种数字会把别人正常的
+  // 迭代炸成红灯,而且红的是不相干的那条。
+  ok(PAD_BASE.jump.cluster === "left", "跳跃键归属左簇(不再和击球键挤右手)");
+  ok(PAD_BASE.left.cluster === "left" && PAD_BASE.right.cluster === "left", "左右移动键在左簇");
+  for (const a of ["swingFar", "swingNear", "lunge"] as const) {
+    ok(PAD_BASE[a].cluster === "right", `${a} 留在右簇(击球/跨步本来就该右手管)`);
+  }
 }
 
 // ---------- ② 夹取:越界写回被夹住 ----------
@@ -108,14 +115,31 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   });
   ok(old5.pad.left.dx === 10, "老档里已调过的键位照旧生效");
   ok(old5.pad.lunge.dx === 0 && near(old5.pad.lunge.r, PAD_BASE.lunge.r), "老档没有跨步键 → 该键回默认布局");
+  ok(old5.pad.swing.dx === 0 && near(old5.pad.swing.r, PAD_BASE.swing.r), "老档没有击球键(合并后新增) → 该键回默认布局");
 
-  const partial = sanitize({ bgmOn: false, pad: { jump: { dx: 20, dy: -5, r: 60 } } });
+  const partial = sanitize({ v: 2, bgmOn: false, pad: { jump: { dx: 20, dy: -5, r: 60 } } });
   ok(partial.bgmOn === false, "认得出的标量保留");
   ok(partial.pad.jump.dx === 20 && partial.pad.jump.dy === -5 && near(partial.pad.jump.r, 60), "认得出的布局项保留");
+
+  // ---------- 跳跃键换簇的老档迁移(v<2) ----------
+  // 老档里 jump 的 dx/dy 是相对**右下角**的位移,新基准在**左下角**,照原值套过去
+  // 会飞到屏幕正中甚至屏外。位移上限本来夹在 ±240/±180,老值全都合法 —— 只有"簇变了"
+  // 这件事在数值上检测不出来,必须靠版本号。半径与簇无关,要保留用户调过的大小。
+  const legacyJump = sanitize({
+    pad: { jump: { dx: -60, dy: 142, r: 55 }, left: { dx: 8, dy: 0, r: 44 } },
+  });
+  ok(legacyJump.pad.jump.dx === 0 && legacyJump.pad.jump.dy === 0, "v<2 老档:跳跃偏移重置到新的左簇默认位");
+  ok(near(legacyJump.pad.jump.r, 55), "v<2 老档:跳跃半径仍保留(半径与簇无关)");
+  ok(legacyJump.pad.left.dx === 8, "v<2 老档:没换簇的键位不受迁移牵连");
+  // v=2 及以后的档不能再被重置,否则用户每次冷启动摆的位置都没了
+  const v2Jump = sanitize({ v: 2, pad: { jump: { dx: -30, dy: 40, r: 55 } } });
+  ok(v2Jump.pad.jump.dx === -30 && v2Jump.pad.jump.dy === 40, "v=2 档:跳跃偏移原样读回,迁移只认一次");
   ok(partial.pad.left.dx === 0 && near(partial.pad.left.r, PAD_BASE.left.r), "档里缺的键补默认(以后加键不用写迁移)");
 
   const over = sanitize({ pad: { swingFar: { dx: 1e9, dy: 1e9, r: 1e9 } } });
   ok(over.pad.swingFar.dx === PAD_LIMIT.maxDx && near(over.pad.swingFar.r, PAD_LIMIT.rMax), "读档这一路也夹一次越界值");
+  const overSwing = sanitize({ pad: { swing: { dx: 1e9, dy: 1e9, r: 1e9 } } });
+  ok(overSwing.pad.swing.dx === PAD_LIMIT.maxDx && near(overSwing.pad.swing.r, PAD_LIMIT.rMax), "击球键(合并版)越界也夹");
   const nan = sanitize({ pad: { swingNear: { dx: NaN, r: Infinity } }, sfxVol: NaN });
   ok(nan.pad.swingNear.dx === 0 && near(nan.pad.swingNear.r, PAD_BASE.swingNear.r), "NaN/Infinity → 默认");
   ok(near(nan.sfxVol, 0.8), "sfxVol=NaN → 默认");
@@ -206,14 +230,16 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   st.init();
   st.setPad("left", { dx: 50, dy: 30, r: 60 });
   st.setJoystick({ dx: 40, dy: -20, r: 90 });
+  st.setSlider({ dx: 30, dy: -10, r: 35 });
   st.setPart({ padAlpha: 0.4 });
   st.resetPad();
   ok(near(st.v.pad.left.dx, 0) && near(st.v.pad.left.r, PAD_BASE.left.r), "resetPad 位移与半径回默认");
   ok(near(st.v.padAlpha, 0.8), "resetPad 透明度也回默认 0.8");
   ok(near(st.v.joystick.dx, 0) && near(st.v.joystick.r, JOYSTICK_BASE.r), "resetPad 摇杆本体也回默认");
+  ok(near(st.v.slider.dx, 0) && near(st.v.slider.r, SLIDER_BASE.r), "resetPad 滑轨本体也回默认");
 }
 
-// ---------- ⑩ moveMode 老档默认 buttons / 新档默认 joystick ----------
+// ---------- ⑩ moveMode 老档默认 buttons / 新档默认 joystick / 支持 slider ----------
 
 {
   // 老档:raw 里带 pad 但没有 moveMode → 判定为摇杆功能上线前装机,保持左右键
@@ -227,22 +253,30 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(explicit.moveMode === "joystick", "显式存的 moveMode 优先于「老档 → buttons」的兜底");
   const explicitBtn = sanitize({ moveMode: "buttons" });
   ok(explicitBtn.moveMode === "buttons", "显式存 buttons 也照读");
+  const explicitSld = sanitize({ moveMode: "slider" });
+  ok(explicitSld.moveMode === "slider", "显式存 slider 也照读");
   // 垃圾值 → 回默认(注意此时 raw 里没 pad → 视作新档,默认 joystick)
   const junk = sanitize({ moveMode: "nonsense" });
   ok(junk.moveMode === "joystick", "moveMode 收到垃圾值 → 走默认");
 }
 
-// ---------- ⑪ 摇杆本体字段:消毒与夹取 ----------
+// ---------- ⑪ 摇杆与滑轨本体字段:消毒与夹取 ----------
 
 {
-  const over = sanitize({ joystick: { dx: 9999, dy: -9999, r: 999 } });
+  const over = sanitize({ joystick: { dx: 9999, dy: -9999, r: 999 }, slider: { dx: 9999, dy: -9999, r: 999 } });
   ok(over.joystick.dx === JOYSTICK_LIMIT.maxDx, `摇杆 dx 越上限夹到 ${JOYSTICK_LIMIT.maxDx}`);
   ok(over.joystick.dy === -JOYSTICK_LIMIT.maxDy, `摇杆 dy 越下限夹到 ${-JOYSTICK_LIMIT.maxDy}`);
   ok(over.joystick.r === JOYSTICK_LIMIT.rMax, `摇杆 r 越上限夹到 ${JOYSTICK_LIMIT.rMax}`);
-  const small = sanitize({ joystick: { r: 1 } });
+  ok(over.slider.dx === SLIDER_LIMIT.maxDx, `滑轨 dx 越上限夹到 ${SLIDER_LIMIT.maxDx}`);
+  ok(over.slider.dy === -SLIDER_LIMIT.maxDy, `滑轨 dy 越下限夹到 ${-SLIDER_LIMIT.maxDy}`);
+  ok(over.slider.r === SLIDER_LIMIT.rMax, `滑轨 r 越上限夹到 ${SLIDER_LIMIT.rMax}`);
+
+  const small = sanitize({ joystick: { r: 1 }, slider: { r: 1 } });
   ok(small.joystick.r === JOYSTICK_LIMIT.rMin, `摇杆 r 越下限夹到 ${JOYSTICK_LIMIT.rMin}`);
-  const junk = sanitize({ joystick: "nonsense" });
+  ok(small.slider.r === SLIDER_LIMIT.rMin, `滑轨 r 越下限夹到 ${SLIDER_LIMIT.rMin}`);
+  const junk = sanitize({ joystick: "nonsense", slider: "nonsense" });
   ok(junk.joystick.r === JOYSTICK_BASE.r, "joystick 字段整体是垃圾 → 回默认,不抛");
+  ok(junk.slider.r === SLIDER_BASE.r, "slider 字段整体是垃圾 → 回默认,不抛");
 
   freshKV();
   const st = new SettingsStore();
@@ -250,10 +284,23 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   st.setJoystick({ dx: 999, dy: 0, r: 200 });
   ok(st.v.joystick.dx === JOYSTICK_LIMIT.maxDx && st.v.joystick.r === JOYSTICK_LIMIT.rMax,
     "setJoystick 也夹越界值");
+  st.setSlider({ dx: 999, dy: 0, r: 200 });
+  ok(st.v.slider.dx === SLIDER_LIMIT.maxDx && st.v.slider.r === SLIDER_LIMIT.rMax,
+    "setSlider 也夹越界值");
+
+  st.setPart({ moveMode: "slider" });
+  ok(st.v.moveMode === "slider", "setPart 能设为 slider 模式");
   st.setPart({ moveMode: "buttons" });
   ok(st.v.moveMode === "buttons", "setPart 能翻 moveMode");
   st.setPart({ moveMode: "nonsense" as never });
   ok(st.v.moveMode === "buttons", "moveMode 收到垃圾值 → 保持原值不动");
+
+  st.setPart({ replayMode: "all" });
+  ok(st.v.replayMode === "all", "setPart 能翻 replayMode 到 all");
+  st.setPart({ replayMode: "off" });
+  ok(st.v.replayMode === "off", "setPart 能翻 replayMode 到 off");
+  st.setPart({ replayMode: "nonsense" as never });
+  ok(st.v.replayMode === "off", "replayMode 收到垃圾值 → 保持原值不动");
 }
 
 console.log(`\n${bad === 0 ? "全部通过" : `${bad} 项失败`}`);

@@ -45,7 +45,8 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     hitRecoil: 0,                   // 击球身体后仰(度):命中瞬间设值,每帧衰减回 0
     lungeT: -1,                     // 跨步救球:-1=未激活,>=0=当前帧计数
     lungeDir: 0,                    // 跨步方向(1=右,-1=左)
-    lungeRecovery: 0,               // 跨步恢复期计数
+    lungeCd: 0,                     // 跨步冷却:>0 不许再跨,移动照常
+    lungeShotT: 0,                  // 跨步后特殊击球窗口倒计时(>0=窗口内)
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
   };
 }
@@ -75,66 +76,95 @@ function qualityAt(elapsed: number): number {
   return clamp(1 - Math.abs(a - (SW.active - 1) / 2) / (SW.active / 2), 0, 1);
 }
 
+/** 最佳按拍提前量(帧):qualityAt 峰值对应的挥拍帧 —— 想踩窗口正中,球到判定区心前这么多帧就得按 */
+export const PRESS_LEAD_FRAMES = SW.windup + 0.5 + (SW.active - 1) / 2;
+
 function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   p.px = p.x; p.py = p.y; p.sqPrev = p.sq;
 
   // ---------- 跨步救球状态机 ----------
+  // 触发判断放在持续推进之前:按下当帧立即爆发(旧结构先推进再判触发,移动中按下
+  // 会先吃 1 帧旧移动逻辑再起步,手感和视觉上都像「顿了一下」)。
   const LG = C.lunge;
-  const lunging = p.lungeT >= 0;
-  const inRecovery = p.lungeRecovery > 0;
-  if (lunging) {
-    p.lungeT++;
-    // 跨步中:锁定方向,爆发速度,判定区扩大
-    p.vx = p.lungeDir * LG.speed;
-    if (p.lungeT >= LG.duration) {
-      p.lungeT = -1;
-      p.lungeRecovery = LG.recoveryFrames;  // 进入恢复期
-    }
-  } else if (inRecovery) {
-    p.lungeRecovery--;
-  }
-  // 触发跨步:地面、未在挥拍、未在跨步中、按下跨步键。
-  // 方向由输入层解(当前按着的方向键 → 沿用最近按过的),这里只兜底朝网。
-  if (inp.lungePressed && p.onGround && p.swingT < 0 && !lunging) {
+  // 触发:地面、未在挥拍、未在跨步中、冷却完毕、按下跨步键。
+  // 方向由输入层解(摇杆 → 当前按着的方向键 → 最近按过的);都没给时兜底 ——
+  // 有移动惯性就顺势跨(不逆转去向),完全静止才朝网。
+  if (inp.lungePressed && p.onGround && p.swingT < 0 && p.lungeT < 0 && p.lungeCd <= 0) {
     p.lungeT = 0;
-    p.lungeDir = inp.lungeDir ? inp.lungeDir : p.facing;
-    p.lungeRecovery = 0;
+    p.lungeDir = inp.lungeDir ? inp.lungeDir
+      : (Math.abs(p.vx) > 1 ? (p.vx > 0 ? 1 : -1) : p.facing);
+    p.lungeShotT = LG.shotWindow;  // 启动跨步后特殊击球窗口
     p.sq = 0.85;  // 跨步时身体压低
+    // 跨步是冲量,叠加在当前水平速度上 —— 跑动中跨步 = 跑速 + 爆发,不再被替换成
+    // 爆发速(旧逻辑 vx=dir×15 把跑速抹掉,跑动时只比干跑快一点点,「跨了像没跨」)。
+    p.vx += p.lungeDir * LG.speed;
     inp.onLunge && inp.onLunge(p);
   }
+  if (p.lungeT >= 0) {
+    p.lungeT++;
+    // 跨步中:vx 在触发帧已锁定(含跑速+爆发),这里只推进帧数与判定区扩大;不重写
+    // vx,以免把叠加后的高速又抹回纯爆发速。移动覆盖段跳过正常加速/摩擦,保住锁定值。
+    if (p.lungeT >= LG.duration) {
+      p.lungeT = -1;
+      p.lungeCd = LG.cooldownFrames;  // 进冷却:移动照常,只是不许立刻再跨
+    }
+  } else if (p.lungeCd > 0) {
+    p.lungeCd--;
+  }
 
-  // ---------- 水平:加速度 + 摩擦,挥拍期限速(挥拍是有代价的承诺) ----------
-  // 摇杆优先:非零且超过死区时给出模拟量 → 半速小碎步、边界缓冲都是可能的;
-  // 键盘/按钮模式下 moveAxis 未定义或为 0,回落到旧的离散左右键。
+  // ---------- 水平:加速度 + 摩擦 ----------
+  // 模式优先级:
+  // 1. targetX 优先(滑轨模式):精准平滑定点刹停。进入 slowDownDist 减速,进入 arriveEps 绝对落定。
+  // 2. 摇杆优先:非零且超过死区时给出模拟量 → 半速小碎步、边界缓冲都是可能的;
+  // 3. 键盘/按钮模式下 moveAxis 未定义或为 0,回落到旧的离散左右键。
   // |mv| 同时用作速度上限的缩尺:小推 = 慢走,大推 = 快冲;|mv|==1 时与旧逻辑严格等价。
-  const axis = inp.moveAxis ?? 0;
-  const mv = Math.abs(axis) > 0.15 ? axis : (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
-  const axisCap = Math.min(1, Math.abs(mv));
-  const swinging = p.swingT >= 0;
-  // 跨步中或恢复期:覆盖正常移动逻辑
-  if (lunging) {
+  const targetX = inp.targetX;
+  const SC = C.sliderControl;
+  let mv = 0;
+  let axisCap = 1;
+  const isSliderActive = targetX !== undefined;
+
+  if (isSliderActive) {
+    const dx = targetX - p.x;
+    if (Math.abs(dx) <= (SC?.arriveEps ?? 1.5)) {
+      p.x = targetX;
+      p.vx = 0;
+      mv = 0;
+      axisCap = 0;
+    } else {
+      const dir = dx > 0 ? 1 : -1;
+      const dist = Math.abs(dx);
+      // 减速缓冲带:若距离小于 slowDownDist,按比例线性收缩速度上限,避免超调与来回震荡
+      const slowDist = SC?.slowDownDist ?? 22;
+      axisCap = dist < slowDist ? Math.max(0.2, dist / slowDist) : 1;
+      mv = dir * axisCap;
+    }
+  } else {
+    const axis = inp.moveAxis ?? 0;
+    mv = Math.abs(axis) > 0.15 ? axis : (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+    axisCap = Math.min(1, Math.abs(mv));
+  }
+
+  // 跨步中:覆盖正常移动逻辑(速度已锁定)。
+  // 爆发结束没有慢速恢复期 —— 惯性交给正常摩擦/输入接管(旧 35% 硬钳会把 15px/帧
+  // 一帧刹到 3.2,移动中跨步比干跑还慢,手感像急刹)。冷却只限制再次跨步。
+  if (p.lungeT >= 0) {
     // 跨步中:速度由 lunge 逻辑控制,跳过正常加速
-  } else if (inRecovery) {
-    // 恢复期:速度上限降低
-    const recovMaxV = PL.vmax * p.speedMul * LG.recoverySpeedMul;
-    p.vx = clamp(p.vx, -recovMaxV, recovMaxV);
+  } else if (isSliderActive && axisCap === 0) {
+    // 精准定点刹停达成:vx 已置零,无需摩擦
   } else {
     const maxV = PL.vmax * p.speedMul * axisCap;
     const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * p.speedMul;
-    if (mv !== 0) p.vx += mv * accel * (swinging ? SW.recoverAccelMul : 1);
+    if (mv !== 0) p.vx += mv * accel;
     else p.vx *= p.onGround ? PL.groundFriction : PL.airFriction;
-    if (swinging) {
-      // 起板承诺依旧,但限速不再一帧砍死:超出上限的部分每步按比例渐收,
-      // 全速跑动中起拍是一段可感的刹车,而不是瞬间的顿挫
-      const cap = PL.vmax * p.speedMul * SW.recoverSpeedMul;
-      const over = p.vx - clamp(p.vx, -cap, cap);
-      if (over) p.vx -= over * SW.recoverBrake;
-    } else if (mv !== 0) {
+    if (mv !== 0) {
       p.vx = clamp(p.vx, -maxV, maxV);
     }
   }
   if (Math.abs(p.vx) < 0.04) p.vx = 0;
-  p.x += clamp(p.vx, -12, 12);
+  // 横向安全钳制:跨步是叠加冲量,跑动中爆发可达 vmax+speed,钳制要留够余量
+  const xvCap = Math.max(12, PL.vmax + LG.speed + 3);
+  p.x += clamp(p.vx, -xvCap, xvCap);
 
   // 侧视球场:始终面向球网,拍面方向 = 出球方向
   p.facing = p.side === "left" ? 1 : -1;
@@ -180,7 +210,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   }
 
   // ---------- 挥拍状态机 ----------
-  // 提前按下的缓冲连落点一起记:先按近球键再进挥拍窗口,打出去的还是近球。
+  // 提前按下的缓冲连落点一起记:先按击球键再进挥拍窗口,打出去的还是那拍。
   // 挥拍中也记录(原来直接丢弃,拇指稍早一按就丢输入):收招时仍在 buffer
   // 窗口内的按键自动续拍,与跳跃 jumpBuffer 同一套手感;更早的按键自然过期,
   // whiff 惩罚照旧,不助长乱按。hitstop 顿帧期保留的输入边沿照常从这里消化。
@@ -198,6 +228,14 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   } else if (p.swingBuf > 0) {
     startSwing(p, ball, p.swingBufAim); p.swingBuf = 0;
   }
+  // 滑动手势覆盖落点:startSwing 设的初值是 mid,挥拍期间手指横滑提交方向后,
+  // 实时覆盖 p.swingAim。tryHit → buildShot 读的就是这里的最终值。
+  // 键盘路径在 press 时就定好了 ±1,这一步等价于立即覆盖(保持一致)。
+  if (p.swingT >= 0 && inp.swingSwipe != null) {
+    if (inp.swingSwipe > 0) p.swingAim = "deep";
+    else if (inp.swingSwipe < 0) p.swingAim = "near";
+    // swingSwipe === 0 → 不覆盖,保留 startSwing 的 mid(由物理自动决定球种)
+  }
   if (p.swingBuf > 0) p.swingBuf--;
   if (p.recoverT > 0) p.recoverT--;
   if (p.hitLock > 0) p.hitLock--;
@@ -205,6 +243,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   if (p.smashGlow > 0) p.smashGlow--;
   if (p.sweetGlow > 0) p.sweetGlow--;
   if (p.perfectGlow > 0) p.perfectGlow--;
+  if (p.lungeShotT > 0) p.lungeShotT--;
   if ((p.faceT ?? 0) > 0) p.faceT = (p.faceT as number) - 1;
 
   p.racketPrev = p.racket;
@@ -259,6 +298,8 @@ export interface HitOpt {
   q?: number; sweet?: boolean; perfect?: boolean; dEdge?: number;
   /** 连击热手:本次命中「之前」的连续好球数(0 = 无加成;发球等直调路径不带) */
   heat?: number;
+  /** 跨步后特殊击球窗口内命中(buildShot 叠加 shotBoost + shotPowerDeg) */
+  lungeShot?: boolean;
   /** 发球等场景直接指定落点深度(绕过瞄准表) */
   forced?: { depth: number };
 }
@@ -303,7 +344,8 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   const heatBefore = p.heat;
   p.heat = hot ? Math.min(heatBefore + 1, C.heat.maxStreak) : 0;
 
-  const shot = buildShot(p, ball, { q, sweet, perfect, dEdge, heat: hot ? heatBefore : 0 });
+  const lungeShot = p.lungeShotT > 0;
+  const shot = buildShot(p, ball, { q, sweet, perfect, dEdge, heat: hot ? heatBefore : 0, lungeShot });
   // 球体接触瞬间形变:按档位设压扁比
   ball.sqPrev = ball.sq;
   ball.sq = (shot.kind === "smash")
@@ -345,11 +387,15 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   // 补同一个落点 → 球更凶、到得更早。低击球点会被「安全过网角」兜底抬回来,不会乱下网。
   // 连击热手在同一预算上再加余量,但总 boost 封在物理上限的差额里(25→30),
   // 不与 shuttle.maxSpeed 冲突。
+  // 跨步后窗口内击球(lungeShot):额外加 boost + 压弧度,同一预算封顶,不绕过 classify。
+  const lungeShot = !!opt.lungeShot;
   const heatBoost = Math.min((opt.heat || 0) * C.heat.speedBonus, C.heat.speedBonusMax);
   const boost = Math.min(
-    (perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0) + heatBoost,
+    (perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0) + heatBoost
+      + (lungeShot ? C.lunge.shotBoost : 0),
     C.shuttle.maxSpeed - C.shot.speedMax);
-  const powerDeg = perfect ? C.perfect.powerDeg : sweet ? C.sweet.powerDeg : 0;
+  const powerDeg = (perfect ? C.perfect.powerDeg : sweet ? C.sweet.powerDeg : 0)
+    + (lungeShot ? C.lunge.shotPowerDeg : 0);
   const loft = clamp(Physics.loftFor(depth, h, q) - powerDeg, C.shot.loftMinDeg, C.shot.loftMaxDeg);
 
   const shot = Physics.solveShot(ball.x, ball.y, dir, depth, loft, boost);
@@ -364,6 +410,7 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     contactX: ball.x, contactY: ball.y,
     hitter: p,
     heat: p.heat,
+    lungeShot,
   };
 }
 

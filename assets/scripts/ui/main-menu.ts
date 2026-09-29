@@ -184,28 +184,40 @@ export class MainMenu {
       this.riseNodes.push({ node, delay: 0.4 + i * 0.06 });
     });
 
-    // ---------- 功能入口(老 .career-entry:色块标签 + 现状一行 + 右侧箭标) ----------
-    const career = this.card("entry:career", 408, 62, {
+    // ---------- 功能入口(专项训练 / 无限练习 / 生涯与商店) ----------
+    // 原来是两张 408 宽卡片(±212),现分为三张卡片横排:
+    // 宽度 268, 间距 16: (i - 1) * 284, 与单人三难度卡网格保持一致, 触控目标间距适宜
+    const career = this.card("entry:career", 268, 62, {
       r: 12, accent: ARCADE.cyan, tint: 0.1, bar: 5, edge: 4, alpha: 0.9,
     });
-    career.node.setPosition(-212, -134, 0);
-    makeChip(career.node, "TRAINING", 11, ARCADE.cyan, "#04121a").setPosition(-156, 8, 0);
-    this.txt(career.node, "专项训练", 19, ARCADE.paper, -116, 8, 120);
-    this.drillSub = this.txt(career.node, "", 12, DIM_FAINT, -116, -16, 258);
-    this.arrow(career.node, ARCADE.cyan);
+    career.node.setPosition(-284, -134, 0);
+    makeChip(career.node, "TRAIN", 10, ARCADE.cyan, "#04121a").setPosition(-88, 12, 0);
+    this.txt(career.node, "专项训练", 17, ARCADE.paper, -50, 12, 80);
+    this.drillSub = this.txt(career.node, "", 11, DIM_FAINT, -88, -16, 170);
+    this.arrow(career.node, ARCADE.cyan, 112);
 
-    const shop = this.card("entry:shop", 408, 62, {
+    const endless = this.card("entry:endless", 268, 62, {
+      r: 12, accent: ARCADE.good, tint: 0.1, bar: 5, edge: 4, alpha: 0.9,
+    });
+    endless.node.setPosition(0, -134, 0);
+    makeChip(endless.node, "ENDLESS", 10, ARCADE.good, "#04121a").setPosition(-84, 12, 0);
+    this.txt(endless.node, "无限练习", 17, ARCADE.paper, -36, 12, 80);
+    this.txt(endless.node, "无视比分 · 选AI持续对拉", 11, DIM_FAINT, -88, -16, 170);
+    this.arrow(endless.node, ARCADE.good, 112);
+
+    const shop = this.card("entry:shop", 268, 62, {
       r: 12, accent: ARCADE.acid, tint: 0.1, bar: 5, edge: 4, alpha: 0.9,
     });
-    shop.node.setPosition(212, -134, 0);
-    makeChip(shop.node, "CAREER", 11, ARCADE.acid, "#0a0e1c").setPosition(-156, 8, 0);
-    this.txt(shop.node, "生涯与商店", 19, ARCADE.paper, -116, 8, 130);
-    this.careerSub = this.txt(shop.node, "", 12, DIM_FAINT, -116, -16, 258);
-    this.arrow(shop.node, ARCADE.acid);
+    shop.node.setPosition(284, -134, 0);
+    makeChip(shop.node, "CAREER", 10, ARCADE.acid, "#0a0e1c").setPosition(-84, 12, 0);
+    this.txt(shop.node, "生涯与商店", 17, ARCADE.paper, -36, 12, 90);
+    this.careerSub = this.txt(shop.node, "", 11, DIM_FAINT, -88, -16, 170);
+    this.arrow(shop.node, ARCADE.acid, 112);
 
     career.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openDrills(); });
+    endless.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openEndlessDialog(); });
     shop.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openCareer(); });
-    this.riseNodes.push({ node: career.node, delay: 0.58 }, { node: shop.node, delay: 0.63 });
+    this.riseNodes.push({ node: career.node, delay: 0.58 }, { node: endless.node, delay: 0.61 }, { node: shop.node, delay: 0.64 });
 
     // ---------- 玩法提示:落点教学只在发球那一次说(hud.ts 状态行),首页不再复述 ----------
 
@@ -271,13 +283,13 @@ export class MainMenu {
   }
 
   /** 入口条右侧箭标:一眼看出「这格点进去还有下一页」,而不是一个信息块 */
-  private arrow(parent: Node, hex: string): void {
+  private arrow(parent: Node, hex: string, x = 182): void {
     const n = new Node("arrow");
     n.layer = this.root.layer;
     n.addComponent(UITransform).setContentSize(24, 20);
     drawChevron(n.addComponent(Graphics), 11, hex, 0.8, 2);
     n.setParent(parent);
-    n.setPosition(182, 0, 0);
+    n.setPosition(x, 0, 0);
   }
 
   /** 顶部徽章:primary = 荧光黄厚底(Lv),ghost = 玻璃(金币 / 音效);高度给调用方,≥44 才点得准 */
@@ -319,13 +331,17 @@ export class MainMenu {
     this.soundLabel.color = col(muted ? "#626f96" : ARCADE.acid);
   }
 
-  show(): void {
+  /**
+   * fromIntro = 从开机演出交棒而来:演出淡出本身就是「从黑渐透」,
+   * 再叠一层黑罩会闪两次黑,故跳过 dim-cover,卡片直接压在残影背后 rise。
+   */
+  show(fromIntro = false): void {
     cancelFade(this.root);
     this.root.active = true;
     this.refresh();
 
     // 暗底「从黑渐透」入场:先叠一层纯黑遮罩,再淡出 → 球场渐渐显出来
-    if (this.dimNode) {
+    if (this.dimNode && !fromIntro) {
       const cover = new Node("dim-cover");
       cover.layer = this.dimNode.layer;
       cover.addComponent(UITransform).setContentSize(CFG.world.w, CFG.world.h);

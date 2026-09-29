@@ -19,12 +19,12 @@ const TRACK_X = -190;
 const TRACK_W = 380;
 const TRACK_H = 14;
 
-/** 更新日志框:长公告按行数撑高,上限内自适应,超限截断加省略号(不再无声裁切) */
+/** 更新日志框:白名单式精简 + 按字宽精确折行,行数即框高,绝不溢出 */
 const NOTE_W = 390;
-const NOTE_LINE_H = 17;
-const NOTE_MAX_LINES = 7;
-const NOTE_BOX_MIN = 110;
-const NOTE_BOX_MAX = 150;
+const NOTE_LINE_H = 16;
+const NOTE_MAX_LINES = 6;
+const NOTE_BOX_MIN = 96;
+const NOTE_BOX_MAX = 112;
 
 /** 字节数 → 人话;小于 1 MB 用 KB,免得显示 0.0 MB */
 function fmtSize(bytes: number): string {
@@ -34,24 +34,65 @@ function fmtSize(bytes: number): string {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** 估算文案折行数:全角 1.05/半角 0.62 的 textW 折算(与 Graphics 底块同一把尺) */
-function noteLines(s: string): number {
-  let lines = 0;
-  for (const seg of s.split("\n")) lines += Math.max(1, Math.ceil(textW(seg, 13) / NOTE_W));
-  return lines;
-}
-
-/** 超长公告按宽度预算截断,尾部加省略号 —— 裁得明明白白,好过无声裁切 */
-function noteFit(s: string): string {
-  if (noteLines(s) <= NOTE_MAX_LINES) return s;
-  let budget = NOTE_W * NOTE_MAX_LINES;
-  let out = "";
-  for (const ch of s) {
-    budget -= textW(ch, 13);
-    if (budget <= textW("…", 13)) return `${out}…`;
-    out += ch;
+/**
+ * Release 正文(markdown)→ 弹窗友好的纯文本行:
+ * 跳过一级标题与 SHA-256 行;`### 小节` → 「小节」;`- 项` → `· 项`;
+ * 剥掉 **加粗** / `代码` 标记。弹窗里只留干货,语法噪音一概不出现。
+ */
+function notesToLines(md: string): string[] {
+  const out: string[] = [];
+  for (const raw of md.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    // 一级/二级标题里带版本号的当文档标题,跳过(版本号弹窗上方已有)
+    if (/^#{1,2}\s+.*\d+\.\d+\.\d+/.test(line)) continue;
+    if (/^SHA-256/i.test(line.replace(/[*`\s]/g, ""))) continue;
+    const head = line.match(/^#{2,6}\s+(.+)$/);
+    if (head) {
+      out.push(`「${head[1].replace(/[*`_]/g, "").trim()}」`);
+      continue;
+    }
+    const item = line.match(/^[-*+]\s+(.+)$/);
+    const text = (item ? item[1] : line).replace(/[*`_]/g, "").trim();
+    if (text) out.push(item ? `· ${text}` : text);
   }
   return out;
+}
+
+/**
+ * 按字宽逐字折行 —— 与 textW 同一把尺,行数即所见,
+ * 折行宽度留 6px 安全边,估值宁早勿晚,保证 Label 不横向溢出。
+ */
+function wrapNoteLine(s: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let w = 0;
+  for (const ch of s) {
+    const cw = textW(ch, 13);
+    if (w + cw > NOTE_W - 6) {
+      out.push(cur);
+      cur = ch;
+      w = cw;
+    } else {
+      cur += ch;
+      w += cw;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+/** 精简 → 折行 → 最多 NOTE_MAX_LINES 行,超限末行补省略号;返回带 \n 的最终文案 */
+function noteFit(md: string): string {
+  const lines: string[] = [];
+  for (const seg of notesToLines(md)) lines.push(...wrapNoteLine(seg));
+  const shown = lines.slice(0, NOTE_MAX_LINES);
+  if (lines.length > NOTE_MAX_LINES && shown.length > 0) {
+    let last = shown[shown.length - 1];
+    while (textW(`${last}…`, 13) > NOTE_W && last.length > 1) last = last.slice(0, -1);
+    shown[shown.length - 1] = `${last}…`;
+  }
+  return shown.join("\n");
 }
 
 /** 剩余时间 → 人话 */
@@ -131,9 +172,10 @@ export class UpdateDialog {
     this.notesBoxG = notesBox;
     this.notesBoxNode = notesBox.node;
 
-    // 更新日志文本:RESIZE_HEIGHT 让文字按内容自然换行撑开,不再被 CLAMP 裁掉下半截
+    // 更新日志文本:RESIZE_HEIGHT + 显式 \n 折行(行高锁 NOTE_LINE_H,行数即框高)
     this.notesLabel = kit.label(notesBox.node, "更新内容", 13, P.text, { align: 0 });
     this.notesLabel.overflow = Label.Overflow.RESIZE_HEIGHT;
+    this.notesLabel.lineHeight = NOTE_LINE_H;
     this.notesLabel.node.getComponent(UITransform)?.setContentSize(NOTE_W, NOTE_BOX_MIN - 14);
     this.notesLabel.node.setPosition(0, 0, 0);
 
@@ -280,9 +322,9 @@ export class UpdateDialog {
 
     this.verLabel.string = `新版本: ${info.tagName}`;
     this.sizeLabel.string = info.fileSizeText ? `安装包大小: ${info.fileSizeText}` : "安装包大小: 未知";
-    const notes = info.releaseNotes || "修复已知问题，优化游戏体验。";
-    this.notesLabel.string = noteFit(notes);
-    this.paintNotesBox(Math.min(NOTE_MAX_LINES, noteLines(notes)));
+    const fitted = noteFit(info.releaseNotes || "修复已知问题，优化游戏体验。");
+    this.notesLabel.string = fitted;
+    this.paintNotesBox(fitted.split("\n").length);
 
     this.progressFill.clear();
     this.progressNode.active = false;

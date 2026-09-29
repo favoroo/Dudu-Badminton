@@ -255,7 +255,9 @@ function swingFxPair(sk: SkinDef | null | undefined, t: number): [string, string
 }
 
 // 待机持拍姿势(肩坐标系):屈肘把拍收在体前,拍头朝上举在胸侧。
-// 起拍/收拍都在它和挥拍弧线之间插值,替代原先两套硬编码坐标之间的瞬跳
+// 起拍/收拍都在它和挥拍弧线之间插值,替代原先两套硬编码坐标之间的瞬跳。
+// 发球等待也用它(配合远臂后摆托球 =「一手拍、一手球」);旧的 SERVE_POSE(拍举脑后)
+// 已删 —— 拍头正好压在脸中心,pose-preview 实测整个脸被拍面糊住。
 const IDLE_POSE: Pose = { pts: [[0, -2], [9, 10]], hand: [20, 22], ang: 68, len: 25 };
 
 interface Pose {
@@ -498,8 +500,8 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   // ---------- 跨步救球姿势 ----------
   const lunging = p.lungeT >= 0;
   const lungeU = lunging ? clamp(p.lungeT / (C.lunge.duration || 14), 0, 1) : 0;
-  // 恢复期也保留一点前倾残影,渐出
-  const lungeRecov = p.lungeRecovery > 0 ? clamp(p.lungeRecovery / (C.lunge.recoveryFrames || 18), 0, 1) : 0;
+  // 冷却期也保留一点前倾残影,渐出
+  const lungeRecov = p.lungeCd > 0 ? clamp(p.lungeCd / (C.lunge.cooldownFrames || 10), 0, 1) : 0;
   const lungeLean = (lunging ? Math.sin(lungeU * Math.PI) * 8 : lungeRecov * 3);  // 跨步中身体大幅倾斜
   const lungeLegExt = lunging ? Math.sin(lungeU * Math.PI) : 0;                   // 引导腿伸出量
   // 跨步方向相对于球员面朝方向(1=向前跨步, -1=向后跨步)
@@ -537,6 +539,9 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     + weightShift                            // 待机重心微移(跑/挥时衰减)
     + landAmt * 4;                           // 落地冲击:躯干前倾吸收冲击
 
+  // ---------- 发球等待:持球未挥拍 = 非持拍手后摆托球(远臂 serveHold 分支),球钉在 rules.handX/handY ----------
+  const serveHold = !!(ball && ball.held && ball.owner === p && !swinging);
+
   // ---------- 远臂:躯干后层的远侧手臂(景深)。两段 FK + 肤色小臂 + 手,跟着动作反相 ----------
   // 画在腿/躯干/头之前 → 内侧被躯干盖住是刻意的景深。不要在这里"对称地"补一颗肩关节圆:
   // 远肩距躯干背缘只有 5.8,画了会被整个抹掉(近侧那颗有效是因为它画在躯干之后)。
@@ -568,6 +573,14 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   if (frustrated) {                              // 耷拉:偏转角刻意收到 30 = limp,但手盘和肤色段还在
     const s = Math.sin(frustrateU * Math.PI);
     fea = lerp(fea, 230, s); fef = lerp(fef, 260, s);
+  }
+  // 发球持球(最高优先):球钉在 rules.handX/handY —— 非持拍手自然后摆的手心
+  // (远肩(-9,-72) + 悬挂角 206/250 反解 → x-28、0.515H),球在身体后侧,与体前的拍
+  // 明显分开 =「一手拍、一手球」。手到哪球到哪:呼吸/步态残摆收到 ±1.5° 防脱手;
+  // 收拍/空中/情绪一律让位。
+  if (serveHold) {
+    fea = 206 + Math.sin(t * 0.022) * 1.2 + cycRaw * 3 * runAmt;
+    fef = 250 + Math.sin(t * 0.018 + 0.7) * 1 + cycRaw * 4 * runAmt;
   }
   fea += (p.hitRecoil || 0) * 0.6;
 
@@ -825,7 +838,9 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     lastAng.set(angKey(p), null);
   } else {
     lastAng.set(angKey(p), null);
-    // 待机:屈肘把拍收在体前 + 呼吸微摆(拍角/手位随呼吸漂移)
+    // 待机/发球等待共用:屈肘把拍收在体前 + 呼吸微摆(拍角/手位随呼吸漂移)。
+    // 发球等待不另设引拍姿势 —— 拍举到脑后会把整个脸糊住(实测 pose-preview),
+    // 而体前持拍 + 远臂前伸托球正是标准发球准备站位,起拍引拍由挥拍动画自己完成。
     pose = {
       pts: IDLE_POSE.pts,
       hand: [IDLE_POSE.hand[0], IDLE_POSE.hand[1] + Math.sin(t * 0.025) * 1.2],
@@ -944,17 +959,6 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
   g.strokeColor = pal(HEAD_LINE);
   circleAA(g, f, cx, cy, hr);
   g.lineWidth = f.lw(1.6);
-  g.stroke();
-
-  // 近侧耳朵:3/4 视角下背侧(远网侧)的一个小半圆凸起,让头部轮廓从"光头球"变成"有人形"
-  // 位置在头的背侧边缘偏下(耳廓大约在眼-嘴中线高度),半径约头径 18%
-  const earX = cx - hr * 0.85, earY = cy + hr * 0.10;
-  g.fillColor = pal(HEAD);
-  circleAA(g, f, earX, earY, hr * 0.18);
-  g.fill();
-  g.strokeColor = pal(HEAD_LINE);
-  circleAA(g, f, earX, earY, hr * 0.18);
-  g.lineWidth = f.lw(1.0);
   g.stroke();
 
   // 头顶高光:一道极淡反光弧,黑脸不至于闷成纯色块
@@ -1540,7 +1544,7 @@ function glowStroke(g: Graphics, f: Frame, pts: Pt[], color: string, glowW: numb
   g.stroke();
 }
 
-export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | null): void {
+export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | null, cueGlow = 0): void {
   const bb = b as RBall;
   const sk = {
     cap: skin?.cap ?? SHUTTLE_DEFAULT.cap,
@@ -1560,6 +1564,27 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
 
   g.lineCap = LineCap.ROUND;
   g.lineJoin = LineJoin.ROUND;
+
+  // 按拍预告辉光(画在球体之前当背光):game 层把来球逼近度喂进来,注意力跟球的玩家
+  // 看不见按钮辉光,改为羽毛球本体发光。shadowBlur 近似 = 两层低透明度金晕,
+  // 越接近最佳按拍帧越亮越大;峰值(≥0.9,约 3 帧)在球头外再闪一道白环提示「就是现在」。
+  // 色值读 CFG.colors.sweet(铁律:数值只进 config)。
+  if (cueGlow > 0) {
+    const glow = Math.min(1, cueGlow) * C.swingCue.shuttleGlowMax;
+    const r = C.swingCue.shuttleGlowR * (0.75 + 0.45 * cueGlow);
+    g.fillColor = withAlpha(pal(C.colors.sweet.gold), 0.16 * glow);
+    polyPath(g, ellipsePts(S, -2, 0, r * 1.7, r * 1.7), true);
+    g.fill();
+    g.fillColor = withAlpha(pal(C.colors.sweet.gold), 0.30 * glow);
+    polyPath(g, ellipsePts(S, -2, 0, r, r), true);
+    g.fill();
+    if (cueGlow >= 0.9) {
+      g.strokeColor = withAlpha(pal(C.colors.sweet.core), 0.9 * glow);
+      g.lineWidth = S.lw(1.6);
+      polyPath(g, arcPts(S, 0, 0, 9.5, 0, TAU, false), true);
+      g.stroke();
+    }
+  }
 
   // 球托(软木)
   g.fillColor = pal(sk.cap);

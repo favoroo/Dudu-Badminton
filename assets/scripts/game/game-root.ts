@@ -13,10 +13,13 @@ import { Rules } from "../core/rules";
 import { AI } from "../core/ai";
 import { Drill } from "../core/drill";
 import { Career } from "../core/career";
-import { Replay } from "../core/replay";
+import { Replay, replay } from "../core/replay";
+import { flightFramesTo } from "../core/physics";
+import { Player, PRESS_LEAD_FRAMES } from "../core/player";
+import { clamp } from "../core/utils";
 import { Ball, FaceKind, PlayerInput } from "../core/types";
 import { WorldView } from "../render/world";
-import { newPad, clearEdges, buildIntent, emptyIntent, Pad } from "../input/pad";
+import { newPad, clearEdges, buildIntent, emptyIntent, tickHolds, Pad } from "../input/pad";
 import { bindKeyboard } from "../input/keyboard";
 import { touchPad } from "../input/touchpad";
 import { Sfx } from "./sfx";
@@ -38,9 +41,12 @@ export class GameRoot extends Component {
   private frameT = 0;
   private stopFrames = 0;      // hitstop:世界定格的剩余步数(老 FX.stop 的精简版)
 
-  // ---------- 完美重扣即时回放(老 replay.js 的接线) ----------
-  private replay = new Replay();
-  private replayDelay = 0;     // 完美重扣后等 hitstop 播完再回放的倒计时(真实帧)
+  // ---------- 精彩即时回放(死球/得分结算时播放,全屏零门槛跳过) ----------
+  private replay = replay;
+  private replayDelay = 0;     // 死球后等落地特效呈现再回放的倒计时(真实帧)
+  private replayTitle = "HIGHLIGHT REPLAY";
+  private rallyHighlight = ""; // 本回合是否有重扣/精彩击球记录
+  private swingCueArmed = true; // 按拍预告「到点了」一次性闪环的闩:来球退回前瞻线外再重新武装
   private wasReplaying = false; // 回放刚结束:下一模拟步前先 restore(老 game.js 同名旗标)
   private replayBlocker!: Node; // 回放期全屏触摸拦截:点按即跳过(移动端没有「任意键」)
 
@@ -90,6 +96,8 @@ export class GameRoot extends Component {
     Rules.newMatch(mode, diff);
     Career.applyToMatch();      // 换上的皮肤跟人走
     this.replay.reset();        // 上局的残帧不许混进本局的回放
+    this.replayDelay = 0;
+    this.rallyHighlight = "";
     this.world.clearFloats();
     this.sfx.play("whistle");
   }
@@ -104,8 +112,8 @@ export class GameRoot extends Component {
       Settings.toggleAllMute();
       return;
     }
-    if (R.state === "OVER" && code === "KeyR") { this.sfx.play("ui"); this.startMatch(R.mode as "1p", R.diff); return; }
-    if (code === "KeyR") { this.sfx.play("ui"); this.startMatch(R.mode as "1p", R.diff); return; }
+    if (R.state === "OVER" && code === "KeyR") { this.sfx.play("ui"); this.startMatch(R.mode, R.diff); return; }
+    if (code === "KeyR") { this.sfx.play("ui"); this.startMatch(R.mode, R.diff); return; }
     if (code === "Escape" || code === "KeyP") {
       if (R.state === "PAUSED") { Rules.resume(); this.sfx.play("ui"); }
       else if (!(C.frozen as string[]).includes(R.state)) { Rules.pause(); this.sfx.play("back"); }
@@ -136,13 +144,23 @@ export class GameRoot extends Component {
       this.world.setReplayOverlay(0);
       this.replayBlocker.active = false;
     }
-    // 完美重扣的延迟触发:等 hitstop 播完再回放(老 setTimeout (stopF+4)*16.7ms 的帧计数版)
-    // 递减留在闸外走:万一 replayDelay 有残留值也要被清干净,而不是卡在半路。
-    // 这一层是硬闸,不靠「上游不赋值」间接失效 —— 三个入口(push/trigger/赋值)各自都有闸。
+    // 回放中按键检测:触屏或键盘任意操作均立即跳过回放
+    if (this.replay.isActive()) {
+      if (this.pad.jump || this.pad.jumpPressed || this.pad.lungePressed ||
+          this.pad.swingPressed || this.pad.left || this.pad.right || Math.abs(this.pad.moveAxis) > 0.2) {
+        this.replay.skip();
+      }
+    }
+    // 精彩回放的延迟触发:等得分死球/落地呈现后再进入慢动作回放
     if (this.replayDelay > 0 && --this.replayDelay === 0) {
       if (this.replayOn) {
         this.replay.trigger();
         this.replayBlocker.active = this.replay.isActive();
+        if (this.replayBlocker.active) {
+          this.replayBlocker.setSiblingIndex(9999);
+        }
+      } else {
+        this.replay.setPending(false);
       }
     }
 
@@ -155,24 +173,24 @@ export class GameRoot extends Component {
       this.acc -= step; n++;
       // 定格步不消费输入:见下面 stopFrames 分支
       let keepEdges = false;
-      if (!(C.frozen as string[]).includes(R.state)) {
-        if (this.stopFrames > 0) {
+      const frozen = (C.frozen as string[]).includes(R.state);
+      if (!frozen || this.replay.isActive()) {
+        if (this.stopFrames > 0 && !frozen) {
           this.stopFrames--;                 // hitstop:反馈计时照走,世界时钟不递增
           this.world.stepFx(step, true);     // 定格:镜头/白闪/慢动作/粒子一起冻住
-          // 定格期间 Rules.step 没跑,这一按的边沿若照常被清掉就凭空消失了 ——
-          // 逻辑层那 8 帧输入缓冲(swing.buffer / player.jumpBuffer)一次都收不到,
-          // 玩家在顿帧里按的起跳/跨步/落点全成哑键,体感就是「卡住不能操控」。
-          // 边沿留到定格结束的第一步,由 buildIntent 正常交给 Rules.step 消费。
+          // 定格期间 Rules.step 没跑,这一按的边沿若照常被清掉就凭空消失了
           keepEdges = true;
         } else if (this.replay.isActive()) {
-          // 回放中:冻结游戏逻辑与一切 FX 走时,只推进回放帧;
-          // 触发时残余的慢动作会让回放自然半速播放(老版同款电影感,设计使然)
-          // 回放是观演段,边沿照旧每步吞掉(点按键无反应、点空白跳过,见 replayBlocker)
+          // 回放中:推进回放快照驱动渲染,物理世界与规则时钟冻结
           this.replay.step();
           this.replay.applySnapshot(R);
-        } else {
+        } else if (!frozen) {
           this.worldT++;                     // 只有世界真正推进的 step 累加世界时钟
           Rules.step(this.buildInputs());
+          // 跳跃按住时长:只在世界真推进的步里数。放这里而不是跟着 clearEdges 走 ——
+          // hitstop 定格与回放段世界不升,按住时长也不该涨,否则 tapCommitFrames
+          // 会把「顿帧里松手」误判成点跳并补一段现实里没发生的上升。
+          tickHolds(this.pad);
           // 挥拍风声:swingT 恰好走到起拍帧(引拍结束/发力开始)送一次,每挥必中一次
           // (音效早已烘焙,此前一直没接;双方玩家与 AI 都播,音量压低不抢戏)
           for (const p of R.players) {
@@ -187,12 +205,14 @@ export class GameRoot extends Component {
     if (n === C.sim.maxSteps) this.acc = 0;
 
     this.drain();
+    this.updateSwingCue();
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     // 氛围暗角输入(长回合金晕/赛点红晕在渲染层只读消费)
     this.world.setAtmo(R.state, R.rally, Rules.isMatchPoint());
     this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"), R.rally);
     // 回放转播氛围(暗角渐入 + 压暗 + 水印);旗标记忆到下一帧做 restore
-    this.world.setReplayOverlay(this.replay.isActive() ? this.replay.overlayAlpha() : 0);
+    this.world.setReplayOverlay(this.replay.isActive() ? this.replay.overlayAlpha() : 0, this.replayTitle);
+    if (this.replay.isActive()) this.wasReplaying = true;
     if (this.replay.isActive()) this.wasReplaying = true;
     // 画布内世界提示(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
     this.world.hudOverlay.draw(R, this.world.frameT);
@@ -209,11 +229,51 @@ export class GameRoot extends Component {
     this.stopFrames = Math.max(1, Math.min(cap, Math.round(frames)));
   }
 
+  // ---------- 按拍预告:来球逼近判定区心 → 击球两键渐亮,到最佳按拍帧闪一下 ----------
+  // 最佳按拍时刻 = 球到判定区心「前」PRESS_LEAD_FRAMES 帧(按下后第 9 帧才是质量峰),
+  // 所以亮度峰必须对着「球还没到」的那个时刻,提示的才是「现在按」而不是「球到了」。
+  // 预测用 Physics.flightFramesTo 按真实积分推算,只读不写游戏状态,纯表现层。
+  private updateSwingCue(): void {
+    const R = Rules.R;
+    const ball = R.ball;
+    const human = R.players[0];                 // 真人在左队 0 号;AI/喂球机没有按键,不给预告
+    const incoming = Rules.isPlaying() && R.state === "RALLY" && !this.replay.isActive()
+      && !!ball && ball.live && !ball.held && !!human && ball.lastHitter !== human.side;
+    const cue = C.swingCue;
+    if (!incoming || !ball || !human) {
+      this.swingCueArmed = true;
+      touchPad.setSwingGlow(0);
+      this.world.setSwingCue(0);
+      return;
+    }
+    const z = Player.strikeZone(human, Math.hypot(ball.vx, ball.vy));
+    const fc = flightFramesTo(ball, z.x, z.y, z.r * cue.arriveRadius, cue.horizonFrames);
+    if (fc === null) {
+      this.swingCueArmed = true;
+      touchPad.setSwingGlow(0);
+      this.world.setSwingCue(0);
+      return;
+    }
+    const lead = PRESS_LEAD_FRAMES;
+    const cueLevel = clamp(1 - Math.abs(fc - lead) / cue.rampFrames, 0, 1);
+    touchPad.setSwingGlow(cueLevel);
+    // 同一级辉光镜像到羽毛球本体:注意力跟球的玩家看不见按钮,球自己发光当预告
+    this.world.setSwingCue(cueLevel);
+    // 到点闪环带迟滞:过了最佳帧后再退出预告线 8 帧才重新武装,一记来球只闪一次
+    if (fc <= lead) {
+      if (this.swingCueArmed) { this.swingCueArmed = false; touchPad.pulseSwing("sweet"); }
+    } else if (fc > lead + 8) {
+      this.swingCueArmed = true;
+    }
+  }
+
   /** 慢放总闸(见 config.fx.slowmoEnabled):关掉时两处 world.slowmo() 与赛点常驻微慢放全不发,世界恒速 */
   private get slowmoOn(): boolean { return C.fx.slowmoEnabled === true; }
 
-  /** 即时回放总闸(见 config.fx.replayEnabled):关掉时快照一个都不记,blocker 永不打开 */
-  private get replayOn(): boolean { return C.fx.replayEnabled === true; }
+  /** 精彩即时回放总闸:受 Settings.replayMode 控制,且训练场跳过 */
+  private get replayOn(): boolean {
+    return C.fx.replayEnabled === true && Settings.replayMode !== "off" && Rules.R.mode !== "drill";
+  }
 
   // ---------- 输入 → 意图(与老 buildInputs 同构) ----------
   private buildInputs(): PlayerInput[] {
@@ -286,14 +346,10 @@ export class GameRoot extends Component {
             && (R.mode === "drill" || Rules.isMatchPoint())) {
             this.world.slowmo(C.fx.slowmoFrames || 10, C.scoring.matchPointSlowmo || 0.5);
           }
-          // 完美重扣 → 延迟触发即时回放(等 hitstop 播完;回放中/已排队时不重复)
-          // 受 fx.replayEnabled 总闸控制:当前 false,这一段整条停用 ——
-          // 回放期 Rules.step 不跑满 90 步(1.5 秒),且全屏 blocker 垫在虚拟按键之下,
-          // 玩家狂按跳/深球/短球一个都不响应,只有点空白才跳得过,是「重击后失控」的主因。
-          // 定格延迟本身不受影响,它由上面的 setStop 决定。
-          if (this.replayOn && perfect && smash && !this.replay.isActive() && this.replayDelay === 0) {
-            this.replayDelay = this.stopFrames + 4;
-          }
+          // 记录本回合高光打击,供死球/得分阶段裁决精彩回放(绝不对打中强行切回放)
+          if (perfect && smash) this.rallyHighlight = "perfect-smash";
+          else if (smash && sweet) { if (!this.rallyHighlight) this.rallyHighlight = "sweet-smash"; }
+          else if (smash) { if (!this.rallyHighlight) this.rallyHighlight = "smash"; }
           this.sfx.hit(e.q as number, e.kind as string, sweet, perfect);
           this.bgm.onHit({ rally: R.rally, kind: e.kind as string, q: e.q as number, sweet, perfect, intoNet: !!e.intoNet });
           if (smash) this.sfx.play("smash");
@@ -314,8 +370,14 @@ export class GameRoot extends Component {
 
           // 夸奖只给真人:喂球那拍不飘字(判据可信度)
           const praise = !(R.mode === "drill" && e.side === "right");
+          const hitterIdx = e.idx as number;
           // 触觉:真人击球短震,完美重扣用重档(喂球侧不震,与飘字同一判据)
           if (praise) haptic(perfect && smash ? "score" : "hit");
+          // 甜蜜/完美 → 击球两键档位辉光:飘字在球边上,拇指边的按键也直接亮一拍。
+          // 只认真人自己打出来的 —— 对手/AI 的好球不是你的操作反馈,亮了反而误导
+          if (praise && !R.players[hitterIdx]?.isAI && (sweet || perfect)) {
+            touchPad.pulseSwing(perfect ? "perfect" : "sweet");
+          }
           if (praise) {
             if (perfect && smash) this.world.float(e.x as number, (e.y as number) - 32, "完美重扣!!", "#ffe14d", 30, 56);
             else if (perfect) this.world.float(e.x as number, (e.y as number) - 30, "✦ PERFECT ✦", "#00f0ff", 24, 50);
@@ -323,6 +385,10 @@ export class GameRoot extends Component {
             else if (smash) this.world.float(e.x as number, (e.y as number) - 28, "扣杀!!", "#ffe14d", 26, 48);
             else if (sweet) this.world.float(e.x as number, (e.y as number) - 26, "✦ SWEET! ✦", "#ffe14d", 20, 42);
             else if ((e.q as number) > 0.86) this.world.float(e.x as number, (e.y as number) - 24, "好球", "#ffffff", 16, 34);
+          }
+          // 跨步后窗口内击球:力度强化的专属飘字(与上面球种飘字错开,放更高一档)
+          if (praise && e.lungeShot) {
+            this.world.float(e.x as number, (e.y as number) - 44, "跨步重击!", "#ff8c1a", 22, 46);
           }
           // 连击热手提示:热度首次烧到 fireAt 时飘一次(连打好球的人才看得到)
           if (praise && (e.heat as number) === (C.heat.fireAt || 3)) {
@@ -351,7 +417,6 @@ export class GameRoot extends Component {
             this.world.float(e.x as number, (e.y as number) - 44, e.timingHint === "early" ? "早了!" : "晚了!", "#ff9664", 14, 36);
           }
           // 表情:扣杀凶相 / 完美星眼 / 下网冒汗(训练场喂球机不做人,不给它表情)
-          const hitterIdx = e.idx as number;
           if (!(R.mode === "drill" && e.side === "right")) {
             if (e.intoNet) this.faceOf(hitterIdx, "oops", 50);
             else if (perfect) this.faceOf(hitterIdx, "star", 55);
@@ -421,7 +486,7 @@ export class GameRoot extends Component {
           if (p.done) this.finishDrill();
           break;
         }
-        case "score":
+        case "score": {
           this.sfx.score(true);
           this.bgm.onScore();
           // 触觉:自己得分给一记重震;丢分不震(安慰性 buzz 只会添堵)
@@ -439,14 +504,29 @@ export class GameRoot extends Component {
           // 表情:得分方开心、丢分方沮丧(整队同变,90 帧覆盖得分停顿)
           this.faceSide(e.side as string, "happy", 90);
           this.faceSide(e.side === "left" ? "right" : "left", "sad", 90);
+
+          // 死球精彩回放判定:仅在得分/终局停顿期触发,绝不对打中切回放
+          const isMatchOver = !!e.matchOver;
+          const smashScore = e.reason === "扣杀得分" || this.rallyHighlight === "perfect-smash";
+          const wantReplay = this.replayOn && (
+            (Settings.replayMode === "all" && smashScore) ||
+            isMatchOver
+          );
+          if (wantReplay && !this.replay.isPending()) {
+            this.replayTitle = isMatchOver ? "MATCH POINT REPLAY" : (this.rallyHighlight === "perfect-smash" ? "PERFECT SMASH REPLAY" : "SMASH REPLAY");
+            this.replayDelay = 14;   // 留 14 帧(~0.23s)让落地点羽毛火花与飘字完整呈现,随后顺滑切入回放
+            this.replay.setPending(true);
+          }
+          this.rallyHighlight = "";
           break;
+        }
         case "deuce":
           this.world.floatSys(C.world.w / 2, C.world.h / 2 - 40, "平分! DEUCE", "#ff6b9d", 32, 90);
           this.sfx.cheer(0.8);
           this.bgm.onDeuce();
           break;
         case "match-over": {
-          const youWon = R.mode === "1p" ? e.winner === "left" : true;
+          const youWon = (R.mode === "1p" || R.mode === "endless") ? e.winner === "left" : true;
           this.sfx.play(youWon ? "win" : "lose");
           this.sfx.cheer(1);
           this.bgm.onMatchOver(youWon);
@@ -472,6 +552,7 @@ export class GameRoot extends Component {
         }
         case "point-start":
           this.world.clearFloats();
+          this.rallyHighlight = "";
           if (Rules.isMatchPoint()) this.sfx.play("whistle");
           break;
       }

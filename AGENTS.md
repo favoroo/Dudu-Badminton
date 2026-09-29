@@ -65,10 +65,13 @@ node .tools-build/tools/probe.js
 # 3. 训练场六关自洽(exit 0)
 node .tools-build/tools/drill-check.js
 
-# 4. AI 对 AI 整机冒烟(exit 0)
+# 4. AI 接发成功率回归(改 AI/物理/数值必跑;阈值防回退)
+node .tools-build/tools/serve-check.js
+
+# 5. AI 对 AI 整机冒烟(exit 0)
 node .tools-build/tools/sim-check.js
 
-# 5. 全量类型检查(零错误)
+# 6. 全量类型检查(零错误)
 npx tsc -p tools/tsconfig.check.json
 ```
 

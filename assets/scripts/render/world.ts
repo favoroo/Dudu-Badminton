@@ -7,7 +7,7 @@
 import { Color, Graphics, Label, Layers, Node, UIOpacity, UITransform } from "cc";
 import { CFG } from "../core/config";
 import { Settings } from "../core/settings";
-import { lerp, clamp } from "../core/utils";
+import { lerp } from "../core/utils";
 import { Ball, GameEvent, Player, SkinDef } from "../core/types";
 import { drawPlayer, drawShuttle, setSwingArcSink, drawSwingArcGhost, hueColor, SwingArcFx } from "./sprites";
 import { courtRenderer, CourtThemeItem } from "./court";
@@ -80,6 +80,8 @@ export class WorldView {
   private slowFac = 1;          // 慢动作时间缩放
   private screenG!: Graphics;   // 屏幕特效层:白闪 + 氛围暗角(不随镜头缩放)
   private atmo: AtmoState = { state: "", rally: 0, matchPoint: false };
+  /** 按拍预告辉光级别(game 层 updateSwingCue 每帧喂;羽毛球本体发光,见 sprites.drawShuttle) */
+  private swingCue = 0;
   private replayAlpha = 0;      // 回放转播氛围渐入度(水印/暗角共用)
   private replayTag!: Label;    // "PERFECT REPLAY" 水印(Graphics 画不了字,Label 补)
   private replayOpacity!: UIOpacity;
@@ -148,6 +150,22 @@ export class WorldView {
     this.replayTag.outlineColor = new Color().fromHEX("#ffe14d");
     this.replayTag.outlineWidth = 3;
     this.replayTag.color = new Color(255, 255, 255, 255);
+
+    // 跳过提示小字:告知玩家轻触即跳,绝不死机
+    const hintNode = new Node("replay-hint");
+    hintNode.layer = Layers.Enum.UI_2D;
+    hintNode.addComponent(UITransform);
+    hintNode.setParent(tagNode);
+    hintNode.setPosition(0, -26, 0);
+    const hintLabel = hintNode.addComponent(Label);
+    hintLabel.string = "点击任意处跳过 · TAP TO SKIP";
+    hintLabel.fontSize = 12;
+    hintLabel.lineHeight = 16;
+    hintLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
+    hintLabel.enableOutline = true;
+    hintLabel.outlineColor = new Color(0, 0, 0, 220);
+    hintLabel.outlineWidth = 2;
+    hintLabel.color = new Color().fromHEX("#d8e2ff");
 
     // 挥拍弧光残影接线:sprites 在挥拍 active 窗口每帧推入,这里负责衰减与渲染
     // (老 fx.js addSwingArc 的职责;上限 30 条与老版一致)
@@ -277,10 +295,18 @@ export class WorldView {
     this.atmo.matchPoint = matchPoint;
   }
 
-  /** 回放转播氛围渐入度 0..1(0 = 隐藏;game 层每帧喂 Replay.overlayAlpha) */
-  setReplayOverlay(alpha: number): void {
+  /** 回放转播氛围渐入度 0..1(0 = 隐藏;game 层每帧喂 Replay.overlayAlpha 与标题) */
+  setReplayOverlay(alpha: number, title?: string): void {
     this.replayAlpha = alpha;
     this.replayOpacity.opacity = Math.round(255 * alpha * 0.85);
+    if (title && this.replayTag) {
+      this.replayTag.string = title;
+    }
+  }
+
+  /** 按拍预告辉光级别 0..1(0 = 无;与击球按钮的 setSwingGlow 同源同值) */
+  setSwingCue(level: number): void {
+    this.swingCue = level;
   }
 
   /**
@@ -425,7 +451,7 @@ export class WorldView {
       const by = ball.held ? ball.y : lerp(ball.py, ball.y, alpha);
       // sqR:形变的帧间插值(drawShuttle 无 alpha 参数,渲染前补进副本)
       const sqR = lerp(ball.sqPrev ?? ball.sq, ball.sq ?? 1, alpha);
-      drawShuttle(g, this.vp, { ...ball, x: bx, y: by, sqR } as Ball, skin);
+      drawShuttle(g, this.vp, { ...ball, x: bx, y: by, sqR } as Ball, skin, this.swingCue);
     }
 
     // 球残影(设计款专属拖尾优先:star/flame/petal/rainbow;未装备或纯色款走老风格:
@@ -618,4 +644,3 @@ export class WorldView {
   }
 }
 
-export const clampAlpha = (acc: number, step: number): number => clamp(acc / step, 0, 1);

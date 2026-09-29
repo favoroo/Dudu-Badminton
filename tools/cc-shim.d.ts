@@ -181,6 +181,8 @@ declare module "cc" {
     readonly scale: Readonly<Vec3>;
     /** 3.x 保留 API,等价 setParent */
     addChild(child: Node): void;
+    setSiblingIndex(index: number): void;
+    getSiblingIndex(): number;
     /** 2D 旋转角(度,settle 面板飘字/徽章用) */
     angle: number;
   }

@@ -45,9 +45,21 @@ export interface PlayerInput {
    * 让玩家能给出"半速小碎步"这种中间态;键盘/老按钮模式不提供此字段。
    */
   moveAxis?: number;
+  /**
+   * 滑轨精准定位目标点(场地世界坐标 x,仅 slider 移动模式生效)。
+   * 若指定此字段,player.ts 将采用平滑定点刹停算法,精准落位于该点且无过冲。
+   */
+  targetX?: number;
   jumpPressed: boolean;
   jumpHeld: boolean;
   swingAim: string | number | null;
+  /**
+   * 滑动手势方向(触屏击球键专用):0=未提交(mid,由物理自动决定球种),
+   * 1=右滑(deep/深球), -1=左滑(near/短球)。
+   * 挥拍期间可动态提交;player.ts 在命中前用它覆盖 p.swingAim。
+   * 键盘路径通过 press("swingFar"/"swingNear") 直接设 ±1,等价于即按即定。
+   */
+  swingSwipe?: number;
   lungePressed: boolean;
   /** 跨步方向(-1=向左, 1=向右; 未指定时兜底面向方向 p.facing)。Pad 端按最近的方向键解出 */
   lungeDir?: number;
@@ -149,7 +161,10 @@ export interface Player {
   /** 跨步救球:-1=未激活,>=0=当前帧计数 */
   lungeT: number;
   lungeDir: number;
-  lungeRecovery: number;
+  /** 跨步冷却:>0 期间不许再次跨步,但移动完全正常(不再有慢速恢复期) */
+  lungeCd: number;
+  /** 跨步后特殊击球窗口倒计时(>0=窗口内,每帧递减,跨步触发时重置为 C.lunge.shotWindow) */
+  lungeShotT: number;
   stats: { hits: number; smashes: number; sweets: number; perfects: number; whiffs: number };
   /** rules.step 每步记下的输入快照(调试/回放用) */
   lastInp?: PlayerInput;
@@ -195,6 +210,8 @@ export interface ShotResult {
   hitter: Player;
   /** 命中后的连击热度(渲染层球残影换「火热」风格用) */
   heat?: number;
+  /** 跨步后窗口内击球:力度强化标记(渲染层给专属飘字/反馈档位) */
+  lungeShot?: boolean;
   /** 时机教学:命中了但不甜时提示该往哪边调(只给真人) */
   timingHint?: "early" | "late";
 }

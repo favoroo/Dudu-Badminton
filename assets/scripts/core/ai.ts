@@ -65,16 +65,34 @@ function entryLead(p: Player, ball: Ball, radius: number): number {
 }
 
 // 追球点:重模拟,找球进入我方「可击高度」的位置
-// topH = 允许的最高拦截点:站立约 98px,跳起能到 220px(扣杀要提前在高点等球)
-function intercept(p: Player, ball: Ball, topH: number): Intercept {
+// topH = 允许的最高拦截点:站立约 140px,跳起能到 220px(扣杀要提前在高点等球)
+// contactH > 0 时启用「接球截面」兜底:球从可击高度降到地面的水平滑行超过
+// contactDrift(平飘球,常见于网前短球/平抽),按「第一次降到可击高度」站位
+// 会让球从头顶飞过落在身后(判定区背后是死角)—— 改等球下落穿过接球截面,
+// 站位贴近实际落点。陡坠球(高远/吊球)滑行小,维持原截点,回合照常能终结。
+function intercept(p: Player, ball: Ball, topH: number, contactH = 0): Intercept {
   const pts = future(ball, 150);
   let best: Intercept | null = null;
+  let iBest = 0;
   for (let i = 0; i < pts.length; i++) {
     const q = pts[i];
     const mine = p.side === "left" ? q.x < CO.netX - 4 : q.x > CO.netX + 4;
     if (!mine) continue;
     const h = CO.groundY - q.y;
-    if (h < topH) { best = { x: q.x, y: q.y, t: i, h }; break; }
+    if (h < topH) { best = { x: q.x, y: q.y, t: i, h }; iBest = i; break; }
+  }
+  if (best && contactH > 0) {
+    let landX = best.x;
+    for (let i = iBest; i < pts.length; i++) {
+      landX = pts[i].x;
+      if (pts[i].y >= CO.groundY - 2) break;
+    }
+    if (Math.abs(landX - best.x) > C.aiReach.contactDrift) {
+      for (let i = iBest; i < pts.length; i++) {
+        const q = pts[i];
+        if (CO.groundY - q.y <= contactH) { best = { x: q.x, y: q.y, t: i, h: CO.groundY - q.y }; break; }
+      }
+    }
   }
   if (!best) {
     const last = pts[pts.length - 1] || ball;
@@ -177,12 +195,12 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     const ladder = S.wantSmash ? [C.aiReach.attack, C.aiReach.stand, 92] : [C.aiReach.stand, 92];
     let ic: Intercept | null = null;
     for (const topH of ladder) {
-      const c = intercept(p, ball, topH);
+      const c = intercept(p, ball, topH, topH > C.aiReach.attack - 4 ? 0 : C.aiReach.contact);
       const jumping = topH > C.aiReach.attack - 4;
       const need = (jumping ? C.player.jumpApex : 0) + 6;
       if (c.t >= runTo(c.x) + need) { ic = c; S.wantSmash = jumping || S.wantSmash; break; }
     }
-    if (!ic) ic = intercept(p, ball, 90);
+    if (!ic) ic = intercept(p, ball, 90, C.aiReach.contact);
     const err = (Math.random() * 2 - 1) * d.aimErr;
     const lo = p.side === "left" ? CO.wallL : CO.netX + 10;
     const hi = p.side === "left" ? CO.netX - 10 : CO.wallR;

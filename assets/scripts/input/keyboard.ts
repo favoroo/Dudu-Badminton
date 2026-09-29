@@ -42,6 +42,8 @@ function getCode(e: EventKeyboard): string {
 }
 
 // 动作 → 候选键 code 列表(取自 config.keys.p1,与老仓库 input.js 同一来源)
+// 键盘不受触屏双键合并影响:J=深球(swingFar), K=短球(swingNear) 仍各占一键,
+// press() 内部自动把它们映射到 swingSwipe=±1,与触屏滑动手势殊途同归。
 type PadAct = "left" | "right" | "jump" | "lunge" | "swingFar" | "swingNear";
 /** 纯边沿语义的动作:一次按下就是一个动作,没有「按住」状态可松 */
 const EDGE_ACTIONS: PadAct[] = ["lunge", "swingFar", "swingNear"];

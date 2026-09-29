@@ -148,7 +148,7 @@ function dummyPlayer(theme: Theme, racketSkin: SkinDef, ov: Partial<Player> = {}
     racket: { x: 0, y: 0, ang: 0 }, racketPrev: { x: 0, y: 0 },
     hitLock: 0, contactFlash: 0, speedMul: 1, aiAimErr: 0,
     zoneScale: 1, score: 0, smashGlow: 0, sweetGlow: 0, perfectGlow: 0, heat: 0,
-    hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeRecovery: 0,
+    hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeCd: 0, lungeShotT: 0,
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
     racketSkin,
     hideTag: true,

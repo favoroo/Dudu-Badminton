@@ -54,7 +54,7 @@ function mkPlayer(ov: Partial<Player> = {}): Player {
     racket: { x: 0, y: 0, ang: 0 }, racketPrev: { x: 0, y: 0 },
     hitLock: 0, contactFlash: 0, speedMul: 1, aiAimErr: 0,
     zoneScale: 1, score: 0, smashGlow: 0, sweetGlow: 0, perfectGlow: 0, heat: 0,
-    hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeRecovery: 0,
+    hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeCd: 0, lungeShotT: 0,
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
     hideTag: true, groundY: CO.groundY,
     ...ov,
@@ -78,7 +78,15 @@ function mkBall(ov: Partial<Ball> = {}): Ball {
 
 // ---------- 姿势清单 ----------
 
-interface Named { name: string; held: boolean; p: Player; ball?: Ball }
+interface Named { name: string; held: boolean; holdBall?: boolean; p: Player; ball?: Ball }
+
+// 发球托球:p 与 ball.owner 必须是同一实例(drawPlayer 里用 === 判持球归属)。
+// 球按 rules.handX/handY 同源数值摆:非持拍手自然后摆的手心 x-28、0.515H
+const hold: Named = (() => {
+  const p = mkPlayer();
+  return { name: "serve-hold 发球托球", held: true, holdBall: true, p,
+    ball: mkBall({ x: p.x - 28, y: CO.groundY - CFG.player.h * 0.515, live: false, held: true, owner: p }) };
+})();
 
 /** held = 会持续保持几十帧的姿势(待机/跑动/空中/跨步/情绪);反之为只存在几帧的过渡姿势。
  *  为什么要分:肘折角 ≥28° 这条只对 held 姿势成立 —— 手臂从「垂在身后」抬到「举在头后」时
@@ -108,6 +116,10 @@ const POSES: Named[] = [
   { name: "frustrate 沮丧", held: true, p: mkPlayer({ ai: mkAi({ frustrateT: 12 }) }) },
   // 来球在右上方:验「远侧手指向来球」只在抬起时轻推、且手不缩回躯干后
   { name: "idle+ball 待机有球", held: true, p: mkPlayer(), ball: mkBall({ x: 520, y: 250 }) },
+  // 发球托球:球钉在 rules.handX/handY(x-facing*28、y-0.515H),远臂后摆手心托球。
+  // holdBall = 断言换成「手正好托在球下」—— 肘/手在体侧属于本姿势的预期,不走背缘外露检查。
+  // 注意 p 与 ball.owner 必须是同一实例(drawPlayer 里用 === 判持球归属)
+  hold,
 ];
 
 // ---------- 远臂几何反解 ----------
@@ -197,7 +209,7 @@ function check(name: string, ok: boolean, detail: string): void {
 
 // ---- 逐姿势:出图 + 断言 ----
 const sheet: { name: string; dark: string; light: string }[] = [];
-for (const { name, held, p, ball } of POSES) {
+for (const { name, held, holdBall, p, ball } of POSES) {
   const ops = render(p, ball ?? null);
   const arm = farArm(ops);
   const file = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");   // 中文名只留 ASCII 段做文件名
@@ -215,8 +227,17 @@ for (const { name, held, p, ball } of POSES) {
   const lFa = arm.hd ? Math.hypot(arm.hd.x - arm.el.x, arm.hd.y - arm.el.y) : 0;
   const disc = handDisc(ops, arm);
 
-  check(name + " 肘外露", el.x <= -9.5, `elbow.x=${el.x.toFixed(1)} (需 ≤ -9.5)`);
-  check(name + " 手外露", !!hd && hd.x <= -9.5, hd ? `hand.x=${hd.x.toFixed(1)}` : "无手");
+  if (holdBall && ball) {
+    // 托球姿势:断言换成「手托在球下」。球按 rules.handX/handY 同源数值摆,手/球偏差
+    // >2.5 判脱手(呼吸微摆 ±1.5° 折算 ~1px,留了余量)。远臂在体前是本姿势的预期,
+    // 背缘外露两条检查不适用 —— 否则好姿势反而报错。
+    const brel = { x: VP.x(ball.x) - arm.sh.x, y: -((CO.groundY - ball.y) - arm.sh.y) };
+    const gap = hd ? Math.hypot(hd.x - brel.x, hd.y - brel.y) : 99;
+    check(name + " 手托在球下", gap <= 2.5, `hand-ball gap=${gap.toFixed(1)} (需 ≤2.5)`);
+  } else {
+    check(name + " 肘外露", el.x <= -9.5, `elbow.x=${el.x.toFixed(1)} (需 ≤ -9.5)`);
+    check(name + " 手外露", !!hd && hd.x <= -9.5, hd ? `hand.x=${hd.x.toFixed(1)}` : "无手");
+  }
   // 肘折只对 held 姿势设地板值;过渡姿势伸直是真实手臂,由下面两条不变量兜底
   if (held) check(name + " 肘折可见", def >= 28, `deflection=${def.toFixed(1)}° (需 ≥28°)`);
   else rows.push(`  · ${name.padEnd(26)} 过渡姿势,肘折 ${def.toFixed(1)}°(伸直合法,不设地板)`);

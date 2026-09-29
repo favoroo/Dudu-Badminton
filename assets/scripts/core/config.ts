@@ -225,6 +225,16 @@ export const CFG = {
     coyote: 6,
     jumpBuffer: 8,
     jumpApex: 19,      // 到达跳跃最高点约需 19 帧(起跳时机预判用)
+    // 点跳门槛:按住不足这么多帧就松手,视作「点一下」,由输入层补一段 held 撑到顶点
+    // (input/pad.ts release("jump"))。**取 jumpApex 是刻意的**:人类这一路推上去就跳满。
+    // 定更小值会在边界上劈出台阶 —— jumpCut 是每帧砍半(不是一次),实测 tapCommit=5 时
+    //   按 4 帧 → 87.5px,按 5 帧 → 45.3px
+    // 多按 16ms 反而少跳一半;摇杆拇指「推上去停一下」会反复跨过这条线,跳高忽高忽低。
+    // 代价是没有「短跳」这一档了 —— 但原本也只有刻意推住 5~18 帧才碰得到,而 1~4 帧
+    // (真机上的绝大多数快点)只有 6px,从来就不是一个能用上的技能位。
+    // 想恢复可变跳高就调小这里,但请先在 input-check 的高度单调断言上想清楚怎么不劈。
+    // 只影响人类输入:AI 与喂球机直连 inp.jumpHeld(drill.ts 靠按到顶点喂高球),不受牵连。
+    tapCommitFrames: 19,
     landSquash: 0.72,
     jumpStretch: 1.16,
     runPhaseK: 0.06,     // 步频相位随水平位移累积(rad/px):慢走小碎步、冲刺大步频
@@ -247,15 +257,20 @@ export const CFG = {
     zoneFullSpeed: 11,   // 来球速度 ≤ 此值给完整判定区
     zoneTightenSpan: 11, // 到 zoneFullSpeed+此值 收到最小
     zoneFastMul: 0.62,   // 快球判定区最小只剩这么多(重杀必须对上时机)
-    recoverSpeedMul: 0.45, // recovery 期限速,挥拍是有代价的承诺
-    recoverBrake: 0.6,     // 期限速的刹车感:每步衰减「超出上限部分」的比例,替代一帧硬切
-    recoverAccelMul: 0.5,  // 挥拍中持续按键的加速打折,配合刹车让稳速收敛在上限附近
     blendIn: 3,          // 起拍:待机姿势 → 挥拍弧线的混合帧数(纯视觉,判定窗不动)
     blendOut: 6,         // 收拍:弧线终点 → 待机回摆的混合帧数
     wristOvershoot: 7,   // 随挥段腕部过冲角(度):判定窗关闭后甩腕,零手感风险
     swingBurst: [0.12, 0.72], // 挥拍节奏:发力时间窗(引拍缓起 → 窗内匀速爆发 → 随挥缓收)
     doubleHitLock: 12, // 同一个人连续击球的最短间隔(帧)
   },
+
+  // 按拍预告(触屏反馈):球临近判定区心时击球两键渐亮,到最佳按拍帧闪一下金环。
+  // rampFrames = 亮度 0→1→0 三角波的半宽(帧);arriveRadius = 预测「到达」用判定区半径的比例;
+  // horizonFrames = 预测积分的前瞻上限。最佳按拍帧由 swing 参数导出(player.PRESS_LEAD_FRAMES)。
+  // 同一级辉光镜像到羽毛球本体(注意力在球上时按钮辉光看不见):
+  // shuttleGlowR = 外晕基准半径(px);shuttleGlowMax = 峰值亮度上限;
+  // 阈值 0.9 对应 |fc-lead| ≤ 1 帧(ramp 14 时约 3 帧 ≈ 50ms)的「就是现在」白环闪烁。
+  swingCue: { rampFrames: 14, arriveRadius: 0.5, horizonFrames: 40, shuttleGlowR: 20, shuttleGlowMax: 0.9 },
 
   // 甜蜜点:命中时刻在 active 窗口中的位置
   // coreRatio 换算成手感 = ±(active/2 × coreRatio) 帧的起手容错(见 Player.qualityAt):
@@ -345,19 +360,15 @@ export const CFG = {
   },
 
   fx: {
-    // 慢动作总闸。false 时下列四组变速旋钮全部不生效:fx.slowmoFrames / fx.scoreSlowmo(Frames)、
-    // scoring.matchPointSlowmo,以及主循环里赛点常驻的 0.9 微慢放 —— 世界恒速。
-    // 用户反馈「重击卡住不好操控」后决定整条慢放关掉,只保留 hitstop 顿帧本身;
-    // 想恢复赛点演出,把这里改回 true 即可,其余接线都还在。
-    slowmoEnabled: false,
-    // 完美重扣即时回放总闸。false 时彻底不播:主循环既不再每步写快照(replay.push),
-    // 也不再排队触发(replayDelay),于是 RALLY 期间不产生「每步 new 一个快照 + map 全体球员」
-    // 的分配,全屏 replayBlocker 也永不打开。
-    // 关它的理由不是性能而是操控:回放段 Rules.step 整段不跑(BUF_SIZE=90 → 1.5 秒),
-    // 且 blocker 刻意垫在虚拟按键之下,玩家本能狂按跳/深球/短球时一个都不响应,
-    // 只有点屏幕空白才跳得过 —— 用户判定「回放太影响体验了」,整条关掉。
-    // 完美重扣的奖励感改由飘字/白闪/震屏/触觉承担;想恢复复述镜头把这里改回 true。
-    replayEnabled: false,
+    // 慢动作总闸。true 时下列四组变速旋钮全部生效:fx.slowmoFrames / fx.scoreSlowmo(Frames)、
+    // scoring.matchPointSlowmo,以及主循环里赛点常驻的 0.9 微慢放。
+    // 曾因用户反馈「重击卡住不好操控」关过一段时间;操纵问题已由 hitstop 期间
+    // 保留输入边沿(keepEdges)解决,重新打开赛点演出与扣杀庆祝慢放。
+    slowmoEnabled: true,
+    // 精彩即时回放总闸:已重构成零 GC 预分配环形缓冲,且仅在死球/得分结算阶段播放(绝不对打中倒带);
+    // 回放期间轻触屏幕任意处或按键均可即刻跳过。
+    // 运行时真值统一由 Settings.replayMode 控制("off" | "matchpoint" | "all")。
+    replayEnabled: true,
     // hitstop 定格帧数 = 真实帧数(主循环在定格段不乘慢放系数),换算 ms ≈ 帧数 × 16.7。
     // 顶档压在 7 帧:够读出「啪」的一下,又不会把手指按下去的那段时间整段吃掉。
     hitstopCap: 7,          // 定格帧总闸:任何来源(六档/发球/擦网/挥空)都不许超过
@@ -493,8 +504,28 @@ export const CFG = {
     edgePad: 12,           // 圆心到屏边最小间隙:6 太贴边,拇指容易蹭到系统手势区
   },
 
+  // ===== 摇杆上推代跳(仅 joystick 模式;数值是底圈半径的比例,与设备 scale 无关) =====
+  // 摇杆原来只把水平分量 dx 交给 pad.moveAxis,垂直分量画完小球就丢了 —— 彻底的死输入。
+  // 现在把它当跳跃意图:跳是「往上」的动作,住在左手的模拟量上比挤在右手四键里自然得多。
+  stickJump: {
+    upHi: 0.72,   // 上推到半径这个比例 → 起跳并保持(推得越满、停得越久 = 跳得越满)
+    upLo: 0.55,   // 退回这个比例以下才算松手。留 0.17 迟滞带:拇指停在边界时
+                  // press/release 会以 60Hz 抖动,而抖动落在上升段就是反复 jumpCut,跳不高
+  },
+
+  // ===== 滑轨移动与手势参数(仅 slider 模式) =====
+  sliderControl: {
+    jumpSwipeUpY: 26,     // 向上滑动起跳阈值(像素)
+    jumpSwipeUpLoY: 14,   // 向上滑动起跳释放滞后阈值(像素)
+    doubleTapWindowMs: 280, // 双击起跳时间窗口(毫秒)
+    doubleTapMaxDist: 36, // 双击判定最大像素距离(防大幅滑动中误判)
+    arriveEps: 1.5,       // 定点平滑刹停吸附精度(像素)
+    slowDownDist: 22,     // 减速缓冲区间(像素):进入此区间按比例减速,平滑定点不冲过头
+  },
+
   // 键位表(桌面端按 e.code 绑定,跨布局稳定;每项可给多个候选)
-  // 击球键自带落点:swingFar = 远球压底线,swingNear = 短球放网前。
+  // 击球键自带落点:J(swingFar)=右滑深球压底线,K(swingNear)=左滑短球放网前。
+  // 触屏合并为单个击球键 + 滑动手势;键盘仍保留两键(桌面不缺键位)。
   // 移动只占用方向键,跨步是独立一键(lunge):方向由输入层按「最近的方向键」解出。
   // 旧的「双击方向键跨步」已删 —— 对拉时快速换向会稳定凑成双击,误触代价是一次带恢复期的爆发位移。
   // 触屏端的虚拟按键在输入适配层映射到同一套语义,不另立第二张表
@@ -513,17 +544,28 @@ export const CFG = {
     },
   },
 
-  // 跨步救球:朝「最近的方向键」那一侧爆发一段距离,判定区扩大,结束后有恢复期
+  // 跨步救球:朝「最近的方向键」那一侧爆发一段距离,判定区扩大。
+  // 位移 = speed × duration;原 12×14=168px 占半场近 1/3 落点难控,缩到 15×6=90px。
+  // speed 必须明显高于 player.vmax(9.2):跨步是「爆发」位移,慢了不如自己跑过去。
+  // 爆发结束后不再有慢速恢复期(旧 35% 钳制会瞬间急刹,移动中跨步比干跑还慢),
+  // 只用 cooldownFrames 限制连点:连点跨步的平均位移速度(90/(6+10)≈8.4px/帧)
+  // 略低于全速跑,单次爆发则远快于跑 —— 激励「时机爆发」而非「永动冲刺」。
+  // 跨步后短时间内击球可触发力度强化(shotWindow/shotBoost/shotPowerDeg)。
   lunge: {
-    speed: 12,              // 跨步爆发速度(px/帧)
-    duration: 14,           // 跨步持续帧数
+    speed: 15,              // 跨步爆发速度(px/帧,约为 vmax 的 1.6 倍)
+    duration: 6,            // 跨步持续帧数
     reachMul: 1.55,         // 判定区半径倍率
-    recoveryFrames: 18,     // 恢复期帧数
-    recoverySpeedMul: 0.35, // 恢复期速度倍率
+    cooldownFrames: 10,     // 爆发结束后再次跨步的冷却(期间移动完全正常)
+    shotWindow: 60,         // 跨步后特殊击球窗口(帧,1 秒,从跨步触发起算)
+    shotBoost: 2.5,         // 窗口内击球初速上限加成(≈ perfectBoost 的八成)
+    shotPowerDeg: 6,        // 窗口内额外压弧度(度,介于 sweet 5 / perfect 9 之间)
   },
 
-  // AI 拦截高度带:站立够球上限 / 跳起够球上限(px 离地)
-  aiReach: { stand: 140, attack: 182, jump: 236 },
+  // AI 拦截高度带:站立够球上限 / 跳起够球上限 / 低位接球截面(px 离地)。
+  // contact/contactDrift:球从「第一次降到可击高度」的点滑行到落点的水平距离
+  // 超过 drift(平飘球,常见于网前短球/平抽)时,改等球下落穿过 contact 截面
+  // 再接 —— 按过截面点站位,球会落在身后死角;陡坠球滑行小,维持原截点。
+  aiReach: { stand: 140, attack: 182, jump: 236, contact: 72, contactDrift: 48 },
 
   // AI 难度:全部走同一套挥拍机制,只是时机更不准、反应更慢
   diffs: {
@@ -595,7 +637,7 @@ export const MENU: MenuEntry[] = [
 // feed.depth / feed.jumpLead 不是手拍的:由 tools/drill-check --pick 在
 // (depth × jumpLead) 网格上穷举「本关判据能达成的接触点占比」挑出来的。
 // 注意分工:feed.* 只描述喂球机(落点多深、第几帧放球),wantKey 才是要求**玩家**按的键
-// (far=「深球」/ near=「短球」,只驱动引导文案与时机条)。这两个字段曾被混用成一回事,
+// (far=「右滑」深球 / near=「左滑」短球,只驱动引导文案与时机条)。这两个字段曾被混用成一回事,
 // 结果游戏里喂出的球和标定结果完全不符 —— 名字拆开就是为了不再踩第二次。
 // 改了 shuttle / loftByHeight / classify 之后跑训练场校验脚本会告诉你哪关串味了。
 // ============================================================
@@ -608,11 +650,11 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.70, jumpLead: 0 },
     wantKey: "far",
     contactX: 300, demoH: 150,
-    cue: "起跳,在最高点按「深球」",
+    cue: "起跳,在最高点右滑击球",
     points: [
       "球要跳到高过网带才压得动 —— 站着够只能挑",
       "起跳后别急着按,等球落到头顶",
-      "「深球」压得下去;「短球」会收成网前点杀",
+      "右滑压得下去;左滑会收成网前点杀",
     ],
     pose: { style: "over", jump: true },
   },
@@ -622,7 +664,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.42, jumpLead: 11 },
     wantKey: "far",
     contactX: 262, demoH: 122,
-    cue: "站定,举过头顶按「深球」",
+    cue: "站定,举过头顶右滑击球",
     points: [
       "高远球是防守的根:球要又高又深,才换得到回位时间",
       "击球点举过头顶,身体正对球网",
@@ -636,7 +678,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.70, jumpLead: 0 },
     wantKey: "near",
     contactX: 330, demoH: 132,
-    cue: "同样的高球,改按「短球」收着打",
+    cue: "同样的高球,改左滑收着打",
     points: [
       "和重杀同一个来球,只是收力:拍面立一点、不挥满",
       "腕部向前下压,球落在前场就赢",
@@ -650,11 +692,11 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.42, jumpLead: 11 },
     wantKey: "near",
     contactX: 424, demoH: 72,
-    cue: "球到网前低处,轻按「短球」",
+    cue: "球到网前低处,左滑轻放",
     points: [
       "越贴网越低,只能向上送,不能压",
       "上网弓步,手要伸到球的前下方",
-      "「短球」放得近;「深球」会挑成高远球",
+      "左滑放得近;右滑会挑成高远球",
     ],
     pose: { style: "under", jump: false, lunge: 26 },
   },
@@ -664,7 +706,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.85, jumpLead: 14 },
     wantKey: "far",
     contactX: 380, demoH: 116,
-    cue: "早出手,球还没落到头顶就按「深球」",
+    cue: "早出手,球还没落到头顶就右滑击球",
     points: [
       "平抽拼的是出手早晚:等球落到肩高就只剩挑球",
       "拍面近乎水平向前送,不求高只求快",
@@ -678,7 +720,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.05, jumpLead: 8 },
     wantKey: "near",
     contactX: 402, demoH: 46,
-    cue: "等球落到脚下,晚一点按「短球」",
+    cue: "等球落到脚下,晚一点左滑击球",
     points: [
       "球已经贴地了,只能向上铲,别想着压",
       "出手要晚:让球落到拍面下方再抬",

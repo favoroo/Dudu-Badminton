@@ -96,8 +96,7 @@ function trace(x0: number, y0: number, vx: number, vy: number, maxSteps = 260): 
 }
 
 // 「能过网」不能只看是否撞上球网:二分解出的是**临界角**,不夹余量就正好贴着网带擦过去,
-// 这就是轻击容易擦网的原因(实测 39% 的短球过网余量 <5px,球头已经在视觉上蹭到网带)。
-// 所以安全解要求球心比网带高出一个余量;netY 为空(球没越过网平面就落地)也一律算没过网。
+// 这就是轻击容易擦网的原因(实测 39% 的短球过网余量 <5px,球头已经在视觉上蹭到网带)。// 所以安全解要求球心比网带高出一个余量;netY 为空(球没越过网平面就落地)也一律算没过网。
 const MARGIN = C.shot.netClearMargin;
 const clears = (t: TraceResult): boolean =>
   !t.hitNet && t.netY !== null && t.netY <= NET_HIT_Y - MARGIN;
@@ -358,6 +357,22 @@ function checkNet(b: BallLike): NetHit | null {
   const yn = yAtNet(b.px, b.py, b.x, b.y);
   if (yn === null) return null;
   return yn > NET_HIT_Y ? { y: yn } : null;
+}
+
+/**
+ * 预测:球按真实单步积分(重力 + 二次阻力)再飞多少帧后,首次进入以 (tx,ty) 为心、
+ * r 为半径的圆;horizon 帧内到不了(出界/落地)返回 null。
+ * 拷贝入参积分,绝不改原球 —— 只供 UI 做「按拍预告」,不参与任何判定。
+ */
+export function flightFramesTo(ball: BallLike, tx: number, ty: number, r: number, horizon: number): number | null {
+  const b: BallLike = { x: ball.x, y: ball.y, px: ball.px, py: ball.py, vx: ball.vx, vy: ball.vy };
+  const r2 = r * r;
+  for (let i = 0; i <= horizon; i++) {
+    const dx = b.x - tx, dy = b.y - ty;
+    if (dx * dx + dy * dy <= r2) return i;
+    step(b);
+  }
+  return null;
 }
 
 export const Physics = {

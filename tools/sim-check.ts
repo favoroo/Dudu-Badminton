@@ -50,7 +50,10 @@ console.log("=== Part A:1p · 普通 AI 对 AI 完整一局 ===");
 {
   Rules.newMatch("1p", "normal");
   makeAllAI();
-  const MAX_STEPS = 60 * 60 * 6;   // 上限 6 个模拟分钟,11 分制打不完就是有问题
+  // 上限 15 个模拟分钟,11 分制打不完就是有问题。
+  // (原 6 分钟;ai.ts 接球截面修复后 AI 对平飘球不再白送站位失误,
+  //  AI vs AI 回合整体变长 —— 实测 11 分约需 5-6 模拟分钟,留足余量)
+  const MAX_STEPS = 60 * 60 * 15;
   let steps = 0, totalHits = 0, serves = 0, scores = 0;
   while (steps < MAX_STEPS && Rules.R.state !== "OVER") {
     const R = Rules.R;

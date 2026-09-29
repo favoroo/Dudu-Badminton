@@ -13,7 +13,6 @@ export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
 export const inv = (a: number, b: number, v: number): number => (b === a ? 0 : clamp((v - a) / (b - a), 0, 1));
 export const rand = (a = 1, b?: number): number => (b === undefined ? Math.random() * a : a + Math.random() * (b - a));
 export const randi = (a: number, b?: number): number => Math.floor(rand(a, b === undefined ? a : b));
-export const pick = <T,>(arr: T[]): T => arr[(Math.random() * arr.length) | 0];
 export const approach = (v: number, target: number, step: number): number =>
   v < target ? Math.min(v + step, target) : Math.max(v - step, target);
 

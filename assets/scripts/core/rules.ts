@@ -131,10 +131,10 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
     R.players.push(mk("left", i, n, {
       theme: C.colors.red,
       label: dbl ? (i === 0 ? ((R.humans as number) === 1 ? "你" : "P1") : ((R.humans as number) === 1 ? "搭档" : "P2"))
-                 : (mode === "1p" ? "你" : "P1"),
+                 : (mode === "1p" || mode === "endless" ? "你" : "P1"),
       isAI: !human,
       aiDiff: human ? null : R.diff,
-      teamLabel: dbl ? "你方" : (mode === "1p" ? "你" : "红方"),
+      teamLabel: dbl ? "你方" : (mode === "1p" || mode === "endless" ? "你" : "红方"),
     }));
   }
   // 右队:双打全是 CPU;同屏双人(2p)时是真人 P2
@@ -142,10 +142,10 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   for (let i = 0; i < n; i++) {
     R.players.push(mk("right", i, n, {
       theme: C.colors.blue,
-      label: dbl ? "AI" : (mode === "1p" ? "AI" : "P2"),
+      label: dbl ? "AI" : (mode === "1p" || mode === "endless" ? "AI" : "P2"),
       isAI: !rightHuman,
       aiDiff: rightHuman ? null : R.diff,
-      teamLabel: dbl ? "AI方" : (mode === "1p" ? "AI" : "蓝方"),
+      teamLabel: dbl ? "AI方" : (mode === "1p" || mode === "endless" ? "AI" : "蓝方"),
     }));
   }
   const D = C.diffs[R.diff];
@@ -184,8 +184,12 @@ function beginPoint(): void {
   emit("point-start", { server: R.server });
 }
 
-const handX = (p: Player): number => p.x + p.facing * 24;
-const handY = (p: Player): number => p.y - C.player.h * 0.46;
+// 持球位置:非持拍手(持拍臂对侧)自然后摆的手心 —— 球在身体后侧,与体前的拍明显
+// 分开,一眼读出「一手拍、一手球」。数值与 sprites.ts 远臂托球姿势同源:远肩(-9,-72)
+// + 悬挂角(206/250)反解 → 手在 x-28、0.515H 处。发球释放点=这里,solveShot 按新触球点
+// 重新瞄准,弹道自洽。用 p.y 而非 CO.groundY:跳起发球时球跟着人走,不会留在地面高度。
+const handX = (p: Player): number => p.x - p.facing * 28;
+const handY = (p: Player): number => p.y - C.player.h * 0.515;
 
 // ---------- 击球落地 ----------
 function applyShot(ball: Ball, shot: ShotLike): void {
@@ -202,7 +206,7 @@ function applyShot(ball: Ball, shot: ShotLike): void {
     perfect: shot.perfect, timingHint: shot.timingHint || null,
     x: shot.contactX, y: shot.contactY, power: shot.power,
     landX: shot.landX, steps: shot.steps, intoNet: shot.intoNet, rally: R.rally,
-    vx: shot.vx, vy: shot.vy, heat: shot.hitter.heat,
+    vx: shot.vx, vy: shot.vy, heat: shot.hitter.heat, lungeShot: !!shot.lungeShot,
   });
 }
 
@@ -372,6 +376,13 @@ function score(scorerSide: TeamSide, reason: string): void {
   R.timer = C.scoring.pointPause;
   R.reason = reason;
   R.msg = `${labelOf(scorerSide)} 得分 · ${reason}`;
+
+  // 无限模式:不判赛点与终局,比分正常累加,倒计时结束后继续发球
+  if (R.mode === "endless") {
+    emit("score", { side: scorerSide, reason, matchOver: false, score: R.scores.slice() });
+    return;
+  }
+
   // 平分延长:双方都到 winScore-1(如 10-10)后需领先 deuceMinLead 才获胜
   const si = teamIdx(scorerSide), oi = teamIdx(other(scorerSide));
   const s = R.scores[si], o = R.scores[oi];
@@ -418,11 +429,12 @@ function isPlaying(state: MatchState = R.state): boolean {
   return state === "SERVE" || state === "RALLY" || state === "POINT";
 }
 
-// 赛点
+// 赛点判定:任一方距获胜只差 1 分(供 BGM/HUD/镜头切紧张模式)
 function isMatchPoint(): boolean {
+  if (R.mode === "drill" || R.mode === "endless") return false;
   const w = C.scoring.winScore;
   const s0 = R.scores[0], s1 = R.scores[1];
-  // 平分期间:领先一方且领先 ≥ 1 分即为赛点
+  // 平分期间:领先 1 分即赛点(下一分可能赢)
   if (R.deuce) return Math.abs(s0 - s1) >= 1 && Math.max(s0, s1) >= w - 1;
   // 常规:任一方到 winScore-1
   return s0 === w - 1 || s1 === w - 1;
@@ -430,6 +442,7 @@ function isMatchPoint(): boolean {
 
 // 赛点归属信息
 function matchPointInfo(): { active: boolean; side: TeamSide | "both" | null; label: string } {
+  if (R.mode === "drill" || R.mode === "endless") return { active: false, side: null, label: "" };
   const w = C.scoring.winScore;
   const s0 = R.scores[0], s1 = R.scores[1];
   if (R.deuce) {

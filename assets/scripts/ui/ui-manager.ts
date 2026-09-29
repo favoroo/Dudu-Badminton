@@ -23,6 +23,7 @@ import {
 } from "cc";
 import { CFG, DRILLS } from "../core/config";
 import { Settings } from "../core/settings";
+import { replay } from "../core/replay";
 import { installStorageBackend } from "../game/host";
 import { Rules } from "../core/rules";
 import { Career } from "../core/career";
@@ -35,6 +36,7 @@ import { courtRenderer, CourtThemeItem } from "../render/court";
 import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawVeil, drawVignette, textW, TOUCH_MIN } from "./ui-arcade";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
+import { BootIntro } from "./boot-intro";
 import { Hud } from "./hud";
 import { PausePanel } from "./pause-panel";
 import { SettleBadge, SettlePanel, SettlePayload, SettleStat } from "./settle-panel";
@@ -43,6 +45,7 @@ import { DrillPanel } from "./drill-panel";
 import { SettingsPanel } from "./settings-panel";
 import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
+import { EndlessDialog } from "./endless-dialog";
 import type { UpdateInfo } from "../core/update-service";
 
 const { ccclass } = _decorator;
@@ -254,11 +257,13 @@ export interface UiKit {
   toggleMute(): boolean;
   readonly muted: boolean;
   startMatch(diff: DiffKey): void;
+  startEndlessMatch(diff: DiffKey): void;
   startDrill(id: string): void;
   restartCurrent(): void;
   quitToMenu(): void;
   openCareer(): void;
   openDrills(): void;
+  openEndlessDialog(): void;
   /** 设置页(主菜单与暂停页都进得来;从暂停页进,关完回暂停页) */
   openSettings(): void;
   cycleCourtTheme(): string;
@@ -290,18 +295,25 @@ export class UIManager extends Component {
   private pausePanel!: PausePanel;
   private settlePanel!: SettlePanel;
   private updateDialog!: UpdateDialog;
+  private endlessDialog!: EndlessDialog;
   private careerPanel: CareerPanel | null = null;
   private drillPanel: DrillPanel | null = null;
   private settingsPanel: SettingsPanel | null = null;
   private capture: SettleCapture | null = null;
   private prevSt = "";
+  private overWaitingReplay = false;
   private toastNode: Node | null = null;
   private toastLabel: Label | null = null;
   private toastOp: UIOpacity | null = null;
+  /** 开机演出只播一次的闸(冷启动判定见 start 的 coldBoot) */
+  private bootIntroPlayed = false;
+  /** 一次性旗标:下次 onState("MENU") 是演出交棒,菜单走免黑罩入场 */
+  private introHandoff = false;
 
   start(): void {
     // 阶段 2 的 game-root 直开一局「单人·普通」;UI 层接管后本次启动必须先落菜单
-    if (!booted) {
+    const coldBoot = !booted;
+    if (coldBoot) {
       booted = true;
       Rules.R.state = "MENU";
     }
@@ -314,7 +326,6 @@ export class UIManager extends Component {
     // 两处各调一次,installStorageBackend 与 Settings.init 都是幂等的。
     installStorageBackend();
     Settings.init();
-    this.sfx.load(this.node);          // UI 音复用同一批烘焙 WAV(resources 缓存共享)
 
     this.buildKit();
     const root = uiRoot(this.node, "ui-root");
@@ -324,7 +335,26 @@ export class UIManager extends Component {
     this.pausePanel = new PausePanel(root, this.kit);
     this.settlePanel = new SettlePanel(root, this.kit);
     this.updateDialog = new UpdateDialog(root, this.kit);
+    this.endlessDialog = new EndlessDialog(root, this.kit);
     this.bridgeCareerSettle();
+
+    // UI 音复用同一批烘焙 WAV(resources 缓存共享)。冷启动把开机演出挂在
+    // 音效就绪回调上 —— 演出的关键帧音效才一定出声;done 无论成败必调,不会卡住开场。
+    // 演出期间用 prevSt 闸住状态轮询:菜单的 onState("MENU") 等演出交棒后再放行,
+    // 菜单的 rise 入场正好压在演出淡出的残影背后,两层动画一次看完。
+    // 只 load 这一次:重复调用会往节点上再挂一个 AudioSource。
+    this.sfx.load(this.node, coldBoot ? () => this.playBootIntro() : undefined);
+  }
+
+  /** 冷启动开机演出(每次场景启动至多一次):结束后放行状态轮询进主菜单 */
+  private playBootIntro(): void {
+    if (this.bootIntroPlayed) return;
+    this.bootIntroPlayed = true;
+    this.prevSt = "MENU";                          // 闸:轮询看到「无变化」
+    BootIntro.play(this.node, this.sfx, () => {
+      this.introHandoff = true;
+      this.prevSt = "";                            // 放行:下一帧 onState("MENU") → menu.show
+    });
   }
 
   // ---------- 对外统一接口(正式契约) ----------
@@ -418,8 +448,18 @@ export class UIManager extends Component {
   update(dt: number): void {
     const R = Rules.R;
     if (R.state !== this.prevSt) {
-      this.onState(R.state);
-      this.prevSt = R.state;
+      if (R.state === "OVER" && replay.isPending()) {
+        this.overWaitingReplay = true;
+      } else {
+        this.overWaitingReplay = false;
+        this.onState(R.state);
+        this.prevSt = R.state;
+      }
+    }
+    if (this.overWaitingReplay && !replay.isPending()) {
+      this.overWaitingReplay = false;
+      this.onState("OVER");
+      this.prevSt = "OVER";
     }
     this.hud.sync(R);
     this.settlePanel.tick(dt);
@@ -433,13 +473,17 @@ export class UIManager extends Component {
     // 连同编辑器那份预览按键一起叠在球场上。
     // openSettings() 期间状态不变,所以这里不会把刚打开的面板自己关掉。
     this.settingsPanel?.hide();
+    this.endlessDialog?.hide();
     switch (st) {
-      case "MENU":
+      case "MENU": {
+        const fromIntro = this.introHandoff;
+        this.introHandoff = false;
         this.pausePanel.hide();
         this.settlePanel.hide();
-        this.menu.show();
+        this.menu.show(fromIntro);
         this.hud.setPlaying(false);
         break;
+      }
       case "PAUSED":
         this.menu.hide();
         this.careerPanel?.hide();
@@ -510,6 +554,12 @@ export class UIManager extends Component {
     this.sfx.play("whistle");
   }
 
+  private doStartEndlessMatch(diff: DiffKey): void {
+    Rules.newMatch("endless", diff);
+    Career.applyToMatch();
+    this.sfx.play("whistle");
+  }
+
   private doStartDrill(id: string): void {
     Rules.newMatch("drill", "normal");
     Drill.begin(id);                     // 发球权焊死在喂球机一侧
@@ -520,6 +570,8 @@ export class UIManager extends Component {
     this.sfx.play("ui");
     if (Rules.R.mode === "drill") {
       this.doStartDrill(Drill.cur()?.id || DRILLS[0].id);
+    } else if (Rules.R.mode === "endless") {
+      this.doStartEndlessMatch(Rules.R.diff);
     } else {
       Rules.restart();
       Career.applyToMatch();
@@ -685,11 +737,13 @@ export class UIManager extends Component {
       toggleMute: () => this.toggleMute(),
       get muted() { return Settings.allMuted; },
       startMatch: (d) => this.doStartMatch(d),
+      startEndlessMatch: (d) => this.doStartEndlessMatch(d),
       startDrill: (id) => this.doStartDrill(id),
       restartCurrent: () => this.doRestart(),
       quitToMenu: () => this.doQuit(),
       openCareer: () => this.openCareer(),
       openDrills: () => this.openDrills(),
+      openEndlessDialog: () => this.endlessDialog.show(),
       openSettings: () => this.openSettings(),
       cycleCourtTheme: () => this.cycleCourtTheme(),
       courtThemes: () => this.courtThemes(),

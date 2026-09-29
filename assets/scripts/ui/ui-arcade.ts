@@ -36,8 +36,6 @@ export const ARCADE = {
 
 /** 触控目标最小高度(世界单位):1 单位 ≈ 0.15mm,44 ≈ 6.6mm,是拇指点准的下限 */
 export const TOUCH_MIN = 44;
-/** 相邻可点目标的最小间隙:低于它就到了「想按 A 按成 B」的误触区 */
-export const TOUCH_GAP = 14;
 /** 关停类小按钮(返回 ✕ 等)的命中区边长:视觉小、命中大 */
 export const ICON_HIT = 56;
 

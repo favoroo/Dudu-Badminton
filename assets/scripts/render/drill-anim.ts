@@ -538,9 +538,9 @@ function drawKeyPromptOverlay(g: Graphics, rig: DrillRig, f: number, w: number, 
   const bx = w / 2 - 46;
   const by = h / 2 - 38;
 
-  // 1. 击球按键卡片 (深球 / 短球)
+  // 1. 击球按键卡片 (右滑深球 / 左滑短球)
   const shotKeyColor = isNear ? "#7dff9e" : "#ffe14d";
-  const shotKeyName = isNear ? "短球" : "深球";
+  const shotKeyName = isNear ? "左滑" : "右滑";
   const shotBtnR = isHitActive ? 18 : 20;
 
   // 按键阴影
@@ -703,6 +703,3 @@ export function draw(g: Graphics, rig: DrillRig, ms: number, w?: number, h?: num
   meter(g, -w / 2 + 16, h / 2 - h + 30, w - 130, u, { h: 15 });
 }
 
-export function shotLabel(wantKey: "far" | "near"): string {
-  return wantKey === "near" ? "短球" : "深球";
-}

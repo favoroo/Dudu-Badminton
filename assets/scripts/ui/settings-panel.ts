@@ -20,10 +20,10 @@
 // 版面按设计分辨率 960×540 排;内容收在 ±380 内(可见宽最窄就是 16:9 的 960),
 // 卡片顶边 201 低于 HUD 记分牌底边 203,从暂停页打开时不会挡住身后的比分。
 // ============================================================
-import { _decorator, Button, Color, Component, Label, Node, UITransform, Vec2 } from "cc";
-import { Settings, PAD_LIMIT, JOYSTICK_LIMIT } from "../core/settings";
+import { _decorator, Button, Color, Component, Graphics, Label, Layers, Node, UITransform, Vec2 } from "cc";
+import { Settings, PAD_LIMIT, JOYSTICK_LIMIT, SLIDER_LIMIT, type MoveMode, type ReplayMode } from "../core/settings";
 import type { UiKit } from "./ui-manager";
-import { fadeOutHide, riseIn, safePad, slamIn } from "./ui-arcade";
+import { ac, drawArcadeButton, drawHardShadow, fadeOutHide, riseIn, safePad, slamIn } from "./ui-arcade";
 import type { Slider, Toggle } from "./widgets";
 import { newPad } from "../input/pad";
 import { buildTouchPad, type PadSlot, type TouchPadHandle } from "../input/touchpad";
@@ -32,6 +32,18 @@ const { ccclass } = _decorator;
 
 const PW = 760, PH = 424;      // 卡片尺寸(比旧版高 28:开关行距放宽到 46+,加一行震动开关)
 const CARD_Y = -11;            // 卡片中心下移:顶边 201 仍低于 HUD 记分牌底边 203
+
+const MODES: Array<{ mode: MoveMode; label: string; tip: string }> = [
+  { mode: "joystick", label: "摇杆", tip: "虚拟摇杆模拟走位 · 向上推摇杆即起跳" },
+  { mode: "slider", label: "滑轨", tip: "滑动精准定点定位 · 向上滑或双击起跳" },
+  { mode: "buttons", label: "按键", tip: "经典左右两键全速 · 左手独立按键跳跃" },
+];
+
+const REPLAY_MODES: Array<{ mode: ReplayMode; label: string }> = [
+  { mode: "off", label: "关闭" },
+  { mode: "matchpoint", label: "赛点" },
+  { mode: "all", label: "全开" },
+];
 
 @ccclass("SettingsPanel")
 export class SettingsPanel extends Component {
@@ -45,6 +57,9 @@ export class SettingsPanel extends Component {
   private alphaSlider: Slider | null = null;
   private selected: PadSlot | null = "left";
   private sizeLabel: Label | null = null;
+  private modeTipLabel: Label | null = null;
+  private modeBtns: Array<{ mode: MoveMode; node: Node; g: Graphics; label: Label }> = [];
+  private replayBtns: Array<{ mode: ReplayMode; node: Node; g: Graphics; label: Label }> = [];
   private toggles: Toggle[] = [];
   private sliders: Slider[] = [];
   private offChange: (() => void) | null = null;
@@ -56,7 +71,8 @@ export class SettingsPanel extends Component {
   show(parent: Node, kit: UiKit, onClose: () => void): void {
     this.kit = kit;
     this.onCloseCb = onClose;
-    this.selected = Settings.moveMode === "joystick" ? "joystick" : "left";
+    const m = Settings.moveMode;
+    this.selected = m === "joystick" ? "joystick" : m === "slider" ? "slider" : "left";
     this.buildList(parent);
     if (this.card) slamIn(this.card);
     // 任何地方改了设置(菜单徽章 / KeyM / 编辑器拖动)都回到这里重画一遍
@@ -71,6 +87,9 @@ export class SettingsPanel extends Component {
     this.padHandle = null;
     this.toggles.length = 0;
     this.sliders.length = 0;
+    this.modeBtns.length = 0;
+    this.replayBtns.length = 0;
+    this.modeTipLabel = null;
     this.sizeSlider = null;
     this.alphaSlider = null;
     this.onCloseCb = null;
@@ -114,31 +133,57 @@ export class SettingsPanel extends Component {
 
     // ---------- 左列:按键布局 ----------
     this.txt(this.card, "按键布局", 15, P.accent, -PW / 2 + 20, 130, 200);
-    this.txt(this.card, "开关打开用摇杆,关掉切回左右两键。",
-      12, P.dim, -PW / 2 + 20, 106, 340);
+    this.txt(this.card, "选择移动控制方式与手势",
+      12, P.dim, -PW / 2 + 20, 104, 340);
 
-    // 移动方式开关:开 = 摇杆(模拟量),关 = 左右按键(离散)。
-    // 单一开关、文案一眼懂,不搞 segmented —— 触屏上两个钮贴一起容易按错。
-    const modeTog = this.kit.toggle(this.card, "摇杆移动", 220, {
-      get: () => Settings.v.moveMode === "joystick",
-      set: (v) => {
+    // 三档分段选择器: [ 摇杆 ] [ 滑轨 ] [ 按键 ]
+    this.modeBtns = [];
+    const btnW = 94, btnH = 40;
+    const xs = [-300, -200, -100];
+    MODES.forEach((mItem, idx) => {
+      const n = new Node(`mode-btn-${mItem.mode}`);
+      n.layer = Layers.Enum.UI_2D;
+      n.addComponent(UITransform).setContentSize(btnW, btnH);
+      n.setPosition(xs[idx], 66, 0);
+      n.setParent(this.card!);
+      const g = n.addComponent(Graphics);
+
+      const lNode = new Node("text");
+      lNode.layer = Layers.Enum.UI_2D;
+      lNode.addComponent(UITransform).setContentSize(btnW, btnH);
+      lNode.setParent(n);
+      const l = lNode.addComponent(Label);
+      l.string = mItem.label;
+      l.fontSize = 15;
+      l.lineHeight = btnH;
+      l.horizontalAlign = Label.HorizontalAlign.CENTER;
+      l.verticalAlign = Label.VerticalAlign.CENTER;
+
+      const btn = n.addComponent(Button);
+      btn.transition = Button.Transition.SCALE;
+      btn.zoomScale = 0.94;
+      btn.target = n;
+      n.on(Button.EventType.CLICK, () => {
+        if (Settings.moveMode === mItem.mode) return;
         this.kit.sfx.play("ui");
-        Settings.setPart({ moveMode: v ? "joystick" : "buttons" });
-        // 编辑器打开着的话,让左簇立即拆建 —— 句柄 apply() 内部按 moveMode 分派
+        Settings.setPart({ moveMode: mItem.mode });
         this.padHandle?.apply();
-        // 编辑器选中项跟着模式走:切到摇杆时选中摇杆,切回按键时选中「左」
-        this.pick(Settings.moveMode === "joystick" ? "joystick" : "left");
-      },
-    });
-    modeTog.node.setPosition(-PW / 2 + 130, 62, 0);
-    this.toggles.push(modeTog);
+        this.pick(mItem.mode === "joystick" ? "joystick" : mItem.mode === "slider" ? "slider" : "left");
+        this.updateModeSelector();
+      });
 
-    const adjust = this.kit.button(this.card, "调整位置", 220, 48, { style: "primary", size: 18 });
-    adjust.setPosition(-PW / 2 + 130, 0, 0);
+      this.modeBtns.push({ mode: mItem.mode, node: n, g, label: l });
+    });
+
+    this.modeTipLabel = this.txt(this.card, "", 12, P.dim, -PW / 2 + 20, 28, 350);
+    this.updateModeSelector();
+
+    const adjust = this.kit.button(this.card, "调整位置", 240, 46, { style: "primary", size: 17 });
+    adjust.setPosition(-200, -16, 0);
     adjust.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.openEditor(); });
 
-    const reset = this.kit.button(this.card, "重置默认", 220, 44, { size: 15 });
-    reset.setPosition(-PW / 2 + 130, -60, 0);
+    const reset = this.kit.button(this.card, "重置默认", 240, 42, { size: 15 });
+    reset.setPosition(-200, -66, 0);
     reset.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("ui");
       Settings.resetPad();
@@ -146,10 +191,10 @@ export class SettingsPanel extends Component {
       this.kit.toast("操作按钮已回到默认位子");
     });
 
-    this.txt(this.card, "拖动按钮 = 移动位置 · 选中后用滑杆 = 改大小和透明度",
-      12, "#6f7ca6", -PW / 2 + 20, -114, 340);
+    this.txt(this.card, "拖动控件 = 调整位置 · 选中后用滑杆 = 改大小透明度",
+      12, "#6f7ca6", -PW / 2 + 20, -114, 350);
     this.txt(this.card, "存的是相对屏幕角落的位子,换手机不会被刘海挤歪",
-      12, "#6f7ca6", -PW / 2 + 20, -138, 340);
+      12, "#6f7ca6", -PW / 2 + 20, -138, 350);
 
     // ---------- 右列:声音 + 震动 ----------
     // 列内几何都按「不越过卡片右缘 ±380」排:开关 150 + 滑杆 140 + 中间留 5
@@ -161,22 +206,22 @@ export class SettingsPanel extends Component {
       get: () => Settings.v.sfxOn,
       set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ sfxOn: v }); },
     });
-    sfxTog.node.setPosition(rx + 75, 80, 0);
+    sfxTog.node.setPosition(rx + 75, 82, 0);
     this.toggles.push(sfxTog);
 
     const sfxSl = this.kit.slider(this.card, 140, { min: 0, max: 1, step: 0.05, value: Settings.v.sfxVol });
-    sfxSl.node.setPosition(rx + 225, 80, 0);
+    sfxSl.node.setPosition(rx + 225, 82, 0);
     this.wireVolume(sfxSl, "sfxVol", "sfxOn");
 
     const bgmTog = this.kit.toggle(this.card, "音乐", 150, {
       get: () => Settings.v.bgmOn,
       set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ bgmOn: v }); },
     });
-    bgmTog.node.setPosition(rx + 75, 32, 0);
+    bgmTog.node.setPosition(rx + 75, 36, 0);
     this.toggles.push(bgmTog);
 
     const bgmSl = this.kit.slider(this.card, 140, { min: 0, max: 1, step: 0.05, value: Settings.v.bgmVol });
-    bgmSl.node.setPosition(rx + 225, 32, 0);
+    bgmSl.node.setPosition(rx + 225, 36, 0);
     this.wireVolume(bgmSl, "bgmVol", "bgmOn");
 
     // 震动反馈:按键/击球/得分的触觉短震(移动端才有体感,Web 是空操作)
@@ -184,11 +229,50 @@ export class SettingsPanel extends Component {
       get: () => Settings.v.hapticOn,
       set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ hapticOn: v }); },
     });
-    hapticTog.node.setPosition(rx + 75, -16, 0);
+    hapticTog.node.setPosition(rx + 75, -10, 0);
     this.toggles.push(hapticTog);
 
-    // ---------- 右列:画面提示 ----------
-    this.txt(this.card, "画面提示", 15, P.accent, rx, -62, rw);
+    // ---------- 右列:画面与回放 ----------
+    this.txt(this.card, "画面与回放", 15, P.accent, rx, -52, rw);
+
+    // 精彩回放:三档选择器 [关闭] [赛点] [全开]
+    this.txt(this.card, "精彩回放", 14, P.text, rx + 14, -86, 70);
+    this.replayBtns = [];
+    const rBtnW = 62, rBtnH = 30;
+    const rXs = [rx + 104, rx + 172, rx + 240];
+    REPLAY_MODES.forEach((item, idx) => {
+      const n = new Node(`replay-btn-${item.mode}`);
+      n.layer = Layers.Enum.UI_2D;
+      n.addComponent(UITransform).setContentSize(rBtnW, rBtnH);
+      n.setPosition(rXs[idx], -86, 0);
+      n.setParent(this.card!);
+      const g = n.addComponent(Graphics);
+
+      const lNode = new Node("text");
+      lNode.layer = Layers.Enum.UI_2D;
+      lNode.addComponent(UITransform).setContentSize(rBtnW, rBtnH);
+      lNode.setParent(n);
+      const l = lNode.addComponent(Label);
+      l.string = item.label;
+      l.fontSize = 13;
+      l.lineHeight = rBtnH;
+      l.horizontalAlign = Label.HorizontalAlign.CENTER;
+      l.verticalAlign = Label.VerticalAlign.CENTER;
+
+      const btn = n.addComponent(Button);
+      btn.transition = Button.Transition.SCALE;
+      btn.zoomScale = 0.94;
+      btn.target = n;
+      n.on(Button.EventType.CLICK, () => {
+        if (Settings.replayMode === item.mode) return;
+        this.kit.sfx.play("ui");
+        Settings.setPart({ replayMode: item.mode });
+        this.updateReplaySelector();
+      });
+
+      this.replayBtns.push({ mode: item.mode, node: n, g, label: l });
+    });
+    this.updateReplaySelector();
 
     const mkHint = (text: string, key: "hintLanding" | "hintShake" | "hintFloat", y: number): void => {
       const cardNode = this.card!;      // 闭包里 this.card 的窄化会丢,捕获一次
@@ -199,9 +283,9 @@ export class SettingsPanel extends Component {
       t.node.setPosition(rx + 140, y, 0);
       this.toggles.push(t);
     };
-    mkHint("落点预测圈", "hintLanding", -106);
-    mkHint("屏幕震动", "hintShake", -152);
-    mkHint("飘字提示", "hintFloat", -198);
+    mkHint("落点预测圈", "hintLanding", -124);
+    mkHint("屏幕震动", "hintShake", -162);
+    mkHint("飘字提示", "hintFloat", -200);
 
     this.repaint();
   }
@@ -216,7 +300,38 @@ export class SettingsPanel extends Component {
     sl.onCommit(() => { Settings.flush(); this.repaint(); });
   }
 
+  private updateModeSelector(): void {
+    const cur = Settings.moveMode;
+    const P = this.kit.pal;
+    const btnW = 94, btnH = 40;
+    for (const b of this.modeBtns) {
+      const active = b.mode === cur;
+      drawHardShadow(b.g, btnW, btnH, 8, 3, 3, 0.4);
+      drawArcadeButton(b.g, btnW, btnH, active ? "primary" : "ghost", 8);
+      b.label.color = ac(active ? "#14100a" : P.text);
+    }
+    const item = MODES.find((m) => m.mode === cur);
+    if (this.modeTipLabel && item) {
+      this.modeTipLabel.string = item.tip;
+    }
+  }
+
+  private updateReplaySelector(): void {
+    const cur = Settings.replayMode;
+    const P = this.kit.pal;
+    const btnW = 62, btnH = 30;
+    for (const b of this.replayBtns) {
+      const active = b.mode === cur;
+      drawHardShadow(b.g, btnW, btnH, 6, 2, 2, 0.35);
+      drawArcadeButton(b.g, btnW, btnH, active ? "primary" : "ghost", 6);
+      b.label.color = ac(active ? "#14100a" : P.text);
+      b.label.isBold = active;
+    }
+  }
+
   private repaint(): void {
+    this.updateModeSelector();
+    this.updateReplaySelector();
     for (const t of this.toggles) if (t.node && t.node.isValid) t.paint();
     // 滑杆的值可能被别处(键盘/其它面板)改动,单向同步;不触发它们的 onChange
     const s = Settings.v;
@@ -225,6 +340,7 @@ export class SettingsPanel extends Component {
     if (this.sizeSlider) {
       const a = this.selected;
       if (a === "joystick") this.sizeSlider.set(s.joystick.r);
+      else if (a === "slider") this.sizeSlider.set(s.slider.r);
       else if (a) this.sizeSlider.set(s.pad[a].r);
     }
     if (this.alphaSlider && this.alphaSlider.get() !== Settings.padAlpha) {
@@ -232,7 +348,7 @@ export class SettingsPanel extends Component {
     }
     if (this.sizeLabel) {
       // 「大小」标签跟着选中槽位变,提示玩家当前拖的是谁
-      this.sizeLabel.string = this.selected === "joystick" ? "摇杆" : "大小";
+      this.sizeLabel.string = this.selected === "joystick" ? "摇杆" : this.selected === "slider" ? "滑轨" : "大小";
     }
   }
 
@@ -263,13 +379,13 @@ export class SettingsPanel extends Component {
     const g = this.kit.panel(strip, PW, 64, { r: 12, alpha: 0.88 });
     g.node.setPosition(0, 0, 0);
 
-    this.sizeLabel = this.txt(strip, Settings.moveMode === "joystick" ? "摇杆" : "大小", 14, P.text, -PW / 2 + 26, 0, 60);
-    // 半径滑杆区间取两档的并集:按钮 [26..72]、摇杆 [46..96]。
-    // 具体到当前选中的槽位由 setPad / setJoystick 各自夹一次,越界值会被回抽,
-    // repaint 再把滑杆拉到实际存下的值,拖过头看不到「超出」的错觉。
+    const curM = Settings.moveMode;
+    const modeName = curM === "joystick" ? "摇杆" : curM === "slider" ? "滑轨" : "大小";
+    this.sizeLabel = this.txt(strip, modeName, 14, P.text, -PW / 2 + 26, 0, 60);
+    // 半径滑杆区间取按钮、摇杆与滑轨的并集。
     this.sizeSlider = this.kit.slider(strip, 180, {
-      min: Math.min(PAD_LIMIT.rMin, JOYSTICK_LIMIT.rMin),
-      max: Math.max(PAD_LIMIT.rMax, JOYSTICK_LIMIT.rMax),
+      min: Math.min(PAD_LIMIT.rMin, JOYSTICK_LIMIT.rMin, SLIDER_LIMIT.rMin),
+      max: Math.max(PAD_LIMIT.rMax, JOYSTICK_LIMIT.rMax, SLIDER_LIMIT.rMax),
       step: 1,
       value: this.sizeOfSelected(),
     });
@@ -279,6 +395,7 @@ export class SettingsPanel extends Component {
       if (!a) return;
       // 半径变化不夹位置,内存改完 apply 自动跟上
       if (a === "joystick") Settings.setJoystick({ r: v }, false);
+      else if (a === "slider") Settings.setSlider({ r: v }, false);
       else Settings.setPad(a, { r: v }, false);
     });
     this.sizeSlider.onCommit(() => Settings.flush());
@@ -309,15 +426,15 @@ export class SettingsPanel extends Component {
     eDone.setPosition(PW / 2 - 100, 0, 0);
     eDone.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.closeEditor(); });
 
-    const hint = this.kit.label(this.editView,
-      Settings.moveMode === "joystick"
-        ? "拖动摇杆底圈或右侧按键调整位子 · 上方滑杆改大小和透明度"
-        : "拖动按钮移动 · 上方滑杆改大小和透明度",
-      13, "#dfe6ff", { outline: "#05070f", outlineW: 2 });
+    const hintText = Settings.moveMode === "joystick"
+      ? "往上推摇杆就是起跳 · 拖底圈或右侧按键调整位子 · 上方滑杆改大小和透明度"
+      : Settings.moveMode === "slider"
+      ? "上滑或双击即起跳 · 拖动滑轨或按键调整位子 · 上方滑杆改大小和透明度"
+      : "拖动按钮移动 · 上方滑杆改大小和透明度";
+    const hint = this.kit.label(this.editView, hintText, 13, "#dfe6ff", { outline: "#05070f", outlineW: 2 });
     hint.node.setPosition(0, stripY - 58, 0);
 
-    // 第二个按键实例:挂在一个临时 Pad 上,edit 模式又跳过 press/release,
-    // 双保险保证这里怎么拖都不会打出一个球、也不会往玩家 pad 上写跨步/移动状态。
+    // 第二个按键实例:挂在一个临时 Pad 上,edit 模式又跳过 press/release
     this.padHandle = buildTouchPad(this.editView, newPad(), {
       edit: true,
       onPick: (a) => this.pick(a),
@@ -326,17 +443,18 @@ export class SettingsPanel extends Component {
         const clamped = this.padHandle.clampDelta(slot, dx, dy);
         // 拖动中不落盘(原生 localStorage 是同步 IO,跟手指 60Hz 写盘会卡)
         if (slot === "joystick") Settings.setJoystick(clamped, false);
+        else if (slot === "slider") Settings.setSlider(clamped, false);
         else Settings.setPad(slot, clamped, false);
       },
       onDragEnd: () => Settings.flush(),
     });
     // 建层时 Widget 还没给全屏容器定尺寸,首帧的夹取用的是兜底宽度;补一次
     this.padHandle.apply();
-    this.pick(this.selected ?? (Settings.moveMode === "joystick" ? "joystick" : "left"));
+    const defPick = Settings.moveMode === "joystick" ? "joystick" : Settings.moveMode === "slider" ? "slider" : "left";
+    this.pick(this.selected ?? defPick);
 
     this.listView!.active = false;
-    // 入场动画只动顶部操作条和说明,不动整层:editView 是 Widget 全屏容器,
-    // 位置归 Widget 管;而这一层里装着按钮本体 —— 调位子时最不该自己先飘起来。
+    // 入场动画只动顶部操作条和说明,不动整层
     riseIn(strip, 0);
     riseIn(hint.node, 0.06);
   }
@@ -345,13 +463,14 @@ export class SettingsPanel extends Component {
     this.selected = slot;
     this.padHandle?.select(slot);
     this.sizeSlider?.set(this.sizeOfSelected());
-    if (this.sizeLabel) this.sizeLabel.string = slot === "joystick" ? "摇杆" : "大小";
+    if (this.sizeLabel) this.sizeLabel.string = slot === "joystick" ? "摇杆" : slot === "slider" ? "滑轨" : "大小";
   }
 
-  /** 当前选中槽位对应的半径(摇杆与按钮各自一份存档) */
+  /** 当前选中槽位对应的半径(摇杆、滑轨与按钮各自一份存档) */
   private sizeOfSelected(): number {
     const s = this.selected;
     if (s === "joystick") return Settings.joystick.r;
+    if (s === "slider") return Settings.slider.r;
     if (s) return Settings.padOf(s).r;
     return Settings.padOf("left").r;
   }

@@ -2173,11 +2173,7 @@ export class CourtRenderer {
 }
 
 // ------------------------------------------------------------
-// 单例与向后兼容导出
+// 单例导出
 // ------------------------------------------------------------
 export const courtRenderer = new CourtRenderer();
 
-/** 向后兼容的纯函数绘制接口 */
-export function drawCourt(g: Graphics, vp: Viewport, rallyCount = 0): void {
-  courtRenderer.draw(g, vp, rallyCount);
-}

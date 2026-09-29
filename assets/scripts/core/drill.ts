@@ -144,38 +144,38 @@ function diagnoseFail(d: DrillDef | null, e: DrillEndFact | null): string {
   switch (d.id) {
     case "smash":
       if (s.contactH != null && s.contactH < 105) return "高度不足！需起跳在最高点扣杀";
-      if (kind === "clear") return "打成了高远球！在最高点按「深球」下压";
+      if (kind === "clear") return "打成了高远球！在最高点右滑下压";
       if (kind === "drive" || kind === "slash") return "下压不足！起跳在最高点大力下压";
       if (kind === "lob") return "打成了挑球！需起跳在空中迎击";
-      return "未形成扣杀！起跳在最高点按「深球」";
+      return "未形成扣杀！起跳在最高点右滑击球";
 
     case "clear":
       if (d.minLandX != null && s.landX != null && s.landX < d.minLandX) return "落点偏浅！需发力抽到对方底线";
-      if (kind === "lob") return "打成了挑球！后场站稳迎击按「深球」";
+      if (kind === "lob") return "打成了挑球！后场站稳迎击右滑击球";
       if (kind === "drive") return "弧度偏低！需向上抽向后场底线";
-      return "落点需压过后场横线！按「深球」发力";
+      return "落点需压过后场横线！右滑发力";
 
     case "slash":
-      if (s.contactH != null && s.contactH < 90) return "出手点过低！高点按「短球」切前场";
-      if (kind === "smash") return "用力过猛！改按「短球」收力点杀";
+      if (s.contactH != null && s.contactH < 90) return "出手点过低！高点左滑切前场";
+      if (kind === "smash") return "用力过猛！改左滑收力点杀";
       if (kind === "netshot") return "出手偏低！高位下切到前场";
-      return "未切到前场！高点按「短球」收力";
+      return "未切到前场！高点左滑收力";
 
     case "netshot":
-      if (kind === "lob") return "用力过猛挑高了！网前轻按「短球」放网";
-      if (kind === "clear" || kind === "drive") return "打得太深！网前轻点「短球」放网";
-      return "未放成短球！上网轻按「短球」";
+      if (kind === "lob") return "用力过猛挑高了！网前左滑轻放";
+      if (kind === "clear" || kind === "drive") return "打得太深！网前左滑轻放";
+      return "未放成短球！上网左滑轻放";
 
     case "drive":
       if (d.maxSteps != null && s.steps != null && s.steps > d.maxSteps) return "球速过慢！需平抽快速推击";
       if (d.minDepth != null && s.depth != null && s.depth < d.minDepth) return "深度不足！需发力平抽推深";
-      if (kind !== "drive" && kind !== "slash") return "弧度不合！中场不跳按「深球」平抽";
-      return "平抽需快而深！不跳按「深球」";
+      if (kind !== "drive" && kind !== "slash") return "弧度不合！中场不跳右滑平抽";
+      return "平抽需快而深！不跳右滑击球";
 
     case "lob":
       if (s.contactH != null && s.contactH > 52) return "出手过早！等球落到脚下低点再挑";
-      if (kind !== "lob") return "未形成挑高！等球落到低位按「短球」铲起";
-      return "挑球需等球落低！轻按「短球」向上铲";
+      if (kind !== "lob") return "未形成挑高！等球落到低位左滑铲起";
+      return "挑球需等球落低！左滑向上铲";
   }
 
   // 2. 通用兜底检查
@@ -231,9 +231,9 @@ function goalText(): string {
   const p = prog();
   const s = starsOf(p);
   const starsStr = s > 0 ? "★".repeat(s) + "☆".repeat(3 - s) : "☆☆☆";
-  const shotKey = def.wantKey === "near" ? "短球" : "深球";
+  const shotKey = def.wantKey === "near" ? "左滑" : "右滑";
   const jumpStr = def.pose?.jump ? "+起跳" : "";
-  return `${def.label} [${starsStr}] ${Math.min(p.valid, g)}/${g} · 按「${shotKey}」${jumpStr} · ${def.cue}`;
+  return `${def.label} [${starsStr}] ${Math.min(p.valid, g)}/${g} · ${shotKey}${jumpStr} · ${def.cue}`;
 }
 
 // 结算面板要的整份账(奖励由 Career.settleDrill 按「是否首次」决定,这里只交事实)

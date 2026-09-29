@@ -1,11 +1,11 @@
 // ============================================================
-// 对战 HUD:顶部比分大牌 + 发球权指示 + 连击大字 + 暂停按钮。
+// 对战 HUD:顶部比分大牌 + 发球权指示 + 连击徽章 + 暂停按钮。
 // 触屏避让(决策②):常驻元素全部在 y >= 0 的上部空间;虚拟按键
-// 占 y ∈ [-190, -274] 的底部两角,连击大字置于球网正上方(y≈+25,
-// 网顶在 -70)的开阔区,与两侧控制簇错开。
+// 占 y ∈ [-190, -274] 的底部两角。连击徽章贴右上角(暂停键正下方,
+// Widget 右上对齐):老版大字压在球网正上方,对拉时正好糊在角色身上。
 // 同步策略与老 DD.UI.sync(R) 一致:由 UIManager 每帧喂入 R,UI 只读。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3, Widget } from "cc";
+import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3, view, Widget } from "cc";
 import { CFG } from "../core/config";
 import { Rules } from "../core/rules";
 import { Drill } from "../core/drill";
@@ -35,9 +35,15 @@ export class Hud {
   private modeTag: Label;
   private modeTagNode: Node;
   private lastModeTag = "";
-  // 连击大字
+  // 连击徽章(右上角小牌:大数字 + 「连击」小字 + 档位进度条)
   private combo: Node;
-  private comboLabel: Label;
+  private comboBgG: Graphics;
+  private comboNum: Label;
+  private comboSub: Label;
+  private comboW = 0;
+  // 安全区缓存(构造算一次,连击徽章手动定位与顶部簇共用)
+  private safeTop = 0;
+  private safeRight = 14;
   // 发球指示
   private serveFlag: Node;
   // 暂停按钮
@@ -62,6 +68,8 @@ export class Hud {
     // 换算与 cap 规则收编进 ui-arcade.safePad():世界单位出尺,不再本地手算
     const sp = safePad();
     const safeTop = sp.top, safeLeft = sp.left, safeRight = sp.right;
+    this.safeTop = sp.top;
+    this.safeRight = sp.right;
 
     // 顶部整簇(比分牌 / 中缝徽章 / 状态行 / 训练进度 / 发球指示)一起让开安全区
     const top = new Node("top-bar");
@@ -163,14 +171,22 @@ export class Hud {
     tagNode.setParent(this.root);
     this.modeTagNode = tagNode;
 
-    // ---------- 连击大字(球网正上方,老 #flash 的大字海报风) ----------
+    // ---------- 连击徽章(右上角,暂停键正下方;底块+进度条随档位变色) ----------
+    // 不用 Widget 右对齐:边缘对齐对「锚点≠0.5 + 宽度动态」的节点补偿不可靠,
+    // 实测徽章溢出屏幕右缘。节点保持默认中心锚,sync 每帧按可视区右缘手动收边。
     this.combo = new Node("combo");
     this.combo.layer = this.root.layer;
-    this.combo.setPosition(0, 25, 0);
-    this.comboLabel = kit.label(this.combo, "", 44, P.accent, { outline: P.ink, outlineW: 2 });
-    this.comboLabel.enableShadow = true;
-    this.comboLabel.shadowColor = new Color(255, 225, 77, 70);   // acid 辉光(老 text-shadow 0 0 40px)
-    this.comboLabel.shadowOffset = new Vec2(0, -5);
+    this.combo.addComponent(UITransform);
+    const comboBg = new Node("combo-bg");
+    comboBg.layer = this.root.layer;
+    comboBg.addComponent(UITransform);
+    this.comboBgG = comboBg.addComponent(Graphics);
+    comboBg.setParent(this.combo);
+    this.comboNum = kit.label(this.combo, "", 30, P.accent, { outline: P.ink, outlineW: 2 });
+    this.comboNum.enableShadow = true;
+    this.comboNum.shadowColor = new Color(0, 0, 0, 130);
+    this.comboNum.shadowOffset = new Vec2(0, -3);
+    this.comboSub = kit.label(this.combo, "连击", 12, P.dim, { outline: P.ink, outlineW: 2 });
     this.combo.setParent(this.root);
     this.combo.active = false;
 
@@ -240,11 +256,55 @@ export class Hud {
     drawMenuCard(g, w, 24, 7, { edge: 0, bar: 0, alpha: 0.86 });
   }
 
+  /**
+   * 连击徽章底块:宽度跟数字位数走,描边与进度条染当前档位色(黄→橙→红)。
+   * 全部走中心锚排版([pad][数字][6][连击][pad]),不依赖锚点补偿;
+   * 宽度记进 comboW,sync 每帧按它把右缘收进可视区。
+   */
+  private paintComboPlate(r: number, hex: string): void {
+    const g = this.comboBgG;
+    if (!g) return;
+    const subW = textW("连击", 12);
+    const numW = textW(`${r}`, 30);
+    const w = numW + subW + 30;
+    const h = 48;
+    this.comboW = w;
+    g.node.getComponent(UITransform)!.setContentSize(w, h);
+    this.comboNum.node.setPosition(-w / 2 + 12 + numW / 2, 5, 0);
+    this.comboSub.node.setPosition(-w / 2 + 12 + numW + 6 + subW / 2, -3, 0);
+    g.clear();
+    drawHardShadow(g, w, h, 11, 3, 3, 0.42);
+    drawArcadePanel(g, w, h, 11, 0.88);
+    g.strokeColor = col(hex, 0.9);          // 档位色描边盖掉面板默认描边
+    g.lineWidth = 1.5;
+    g.roundRect(-w / 2, -h / 2, w, h, 11);
+    g.stroke();
+    // 进度槽:5 拍起显、15 拍(epic)拉满 —— 徽章小,涨到哪一眼可见
+    const trackW = w - 20;
+    g.fillColor = col("#ffffff", 0.1);
+    g.roundRect(-trackW / 2, -h / 2 + 5, trackW, 3, 1.5);
+    g.fill();
+    const p = Math.min(1, Math.max(0, (r - 5) / 10));
+    if (p > 0) {
+      g.fillColor = col(hex, 0.95);
+      g.roundRect(-trackW / 2, -h / 2 + 5, Math.max(3, trackW * p), 3, 1.5);
+      g.fill();
+    }
+  }
+
+  /** 徽章起势小弹:1.28 → 回弹(徽章小,popScore 的 1.7 砸得太猛) */
+  private popCombo(): void {
+    Tween.stopAllByTarget(this.combo);
+    this.combo.setScale(1.28, 1.28, 1);
+    tween(this.combo).to(0.16, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+  }
+
   /** 每帧由 UIManager 调用;只读 R,不推进任何游戏状态 */
   sync(R: RulesState): void {
     if (!this.root.active) return;
     this.frameT++;
     const drill = R.mode === "drill";
+    const endless = R.mode === "endless";
     const playing = Rules.isPlaying(R.state);   // 与虚拟按键的显隐共用同一判据
     this.pauseBtn.active = playing;
     this.pills.active = !drill;
@@ -258,6 +318,8 @@ export class Hud {
     // ---- 局别标签(老 #modeTag):打的是什么档,一眼能看到 ----
     const tag = drill
       ? `TRAINING · ${(Drill.cur()?.tag ?? "")}`
+      : endless
+      ? `ENDLESS · ${(CFG.diffs[R.diff]?.label) ?? R.diff ?? ""}`
       : `SOLO · ${(CFG.diffs[R.diff]?.label) ?? R.diff ?? ""}`;
     if (tag !== this.lastModeTag) {
       this.modeTag.string = tag;
@@ -282,6 +344,7 @@ export class Hud {
       }
       this.teamL.string = Rules.labelOf("left");
       this.teamR.string = Rules.labelOf("right");
+      this.centerBadge.string = endless ? "PRACTICE" : `TO ${CFG.scoring.winScore}`;
     }
 
     // ---- 状态行:只管「现在该干什么」 ----
@@ -315,20 +378,30 @@ export class Hud {
       this.serveFlag.setPosition(x, 232 + Math.sin(this.frameT * 0.12) * 4, 0);
     }
 
-    // ---- 连击大字:RALLY 且 ≥5 拍;≥10 换橙色,≥15 换红且脉动更猛 ----
+    // ---- 连击徽章:RALLY 且 ≥5 拍;≥10 换橙色,≥15 换红且脉动更猛 ----
     const showCombo = !drill && R.state === "RALLY" && R.rally >= 5;
     this.combo.active = showCombo;
     if (showCombo) {
+      // 手动收边:FIXED_HEIGHT 下可视区宽随屏幕比例涨,右缘按可视宽实时算,
+      // 贴暂停键正下方。中心锚:y = 可视顶 - 88(键底 76 + 12 间隙) - 半高 24,
+      // 少减半高会把徽章顶进按钮底下(上一版被遮的根因)。
+      const vs = view.getVisibleSize();
+      const k = vs.height > 0 ? CFG.world.h / vs.height : 1;
+      const rightEdge = (vs.width * k) / 2 - (4 + this.safeRight);
+      const topY = CFG.world.h / 2 - (88 + this.safeTop) - 24;
+      this.combo.setPosition(rightEdge - this.comboW / 2, topY, 0);
       const r = R.rally;
       const epic = r >= 15;
       const hotC = r >= 10;
       if (r !== this.lastCombo) {
-        this.comboLabel.string = `x${r} 连击`;
-        this.comboLabel.color = col(epic ? this.kit.pal.danger : hotC ? "#ff9f1c" : this.kit.pal.accent);
+        const hex = epic ? this.kit.pal.danger : hotC ? "#ff9f1c" : this.kit.pal.accent;
+        this.comboNum.string = `${r}`;
+        this.comboNum.color = col(hex);
+        this.paintComboPlate(r, hex);
         this.lastCombo = r;
-        if (!hotC) popScore(this.combo);   // 起势时砸一下;hot/epic 有持续脉动就不再抢戏
+        if (!hotC) this.popCombo();   // 起势时砸一下;hot/epic 有持续脉动就不再抢戏
       }
-      const s = epic ? 1 + Math.sin(this.frameT * 0.3) * 0.08 : hotC ? 1 + Math.sin(this.frameT * 0.22) * 0.06 : 1;
+      const s = epic ? 1 + Math.sin(this.frameT * 0.3) * 0.06 : hotC ? 1 + Math.sin(this.frameT * 0.22) * 0.045 : 1;
       this.combo.setScale(s, s, 1);
     } else {
       this.lastCombo = -1;
