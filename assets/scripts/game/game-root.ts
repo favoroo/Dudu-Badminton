@@ -7,7 +7,8 @@
 // ============================================================
 import { _decorator, Color, Component, Label, Layers, Node, ResolutionPolicy, UITransform, profiler, view } from "cc";
 import { CFG } from "../core/config";
-import { load, save } from "../core/utils";
+import { Settings } from "../core/settings";
+import { installStorageBackend } from "./host";
 import { Rules } from "../core/rules";
 import { AI } from "../core/ai";
 import { Drill } from "../core/drill";
@@ -16,7 +17,7 @@ import { Ball, FaceKind, PlayerInput } from "../core/types";
 import { WorldView } from "../render/world";
 import { newPad, clearEdges, buildIntent, emptyIntent, Pad } from "../input/pad";
 import { bindKeyboard } from "../input/keyboard";
-import { buildTouchPad } from "../input/touchpad";
+import { touchPad } from "../input/touchpad";
 import { Sfx } from "./sfx";
 import { BgmManager } from "./bgm";
 
@@ -36,6 +37,11 @@ export class GameRoot extends Component {
   private stopFrames = 0;      // hitstop:世界定格的剩余步数(老 FX.stop 的精简版)
 
   onLoad(): void {
+    // 存储后端与设置读盘:必须排在任何 load() 之前。
+    // (render/court 的模块级单例原本在构造函数里就读档,那处已改成懒确保,
+    //  所以「谁先 import」不再决定存档能不能落盘。)
+    installStorageBackend();
+    Settings.init();
     // 强制固定高度 540，宽度自适应扩展，保证上下视野和按钮在任何长宽比屏幕上都不被裁剪
     view.setDesignResolutionSize(C.world.w, C.world.h, ResolutionPolicy.FIXED_HEIGHT);
     // 隐藏 Cocos 左下角性能监控/FPS面板
@@ -50,7 +56,9 @@ export class GameRoot extends Component {
 
     // ---------- 输入 ----------
     bindKeyboard(this.pad, (code) => this.onSystemKey(code));
-    if (C.mobileOnly) buildTouchPad(this.node, this.pad);   // 决策①:虚拟按键(编辑器里鼠标点按同样生效)
+    // 决策①:虚拟按键(编辑器里鼠标点按同样生效)。句柄交给 touchPad 单例存住
+    // —— 老写法把返回的 Node 丢了,于是没有任何地方能隐藏它。
+    if (C.mobileOnly) touchPad.mount(this.node, this.pad);
 
     // ---------- 世界开局 ----------
     Rules.setTrailHook((b) => this.world.pushTrail(b));
@@ -68,10 +76,8 @@ export class GameRoot extends Component {
   private onSystemKey(code: string): void {
     const R = Rules.R;
     if (code === "KeyM") {
-      const m = !this.sfx.isMuted;
-      this.sfx.setMuted(m);
-      this.bgm.setMute(m);
-      save("muted", m);
+      // 一个键管两条总线(音效+音乐),落盘与老 muted 镜像都在 Settings 里做
+      Settings.toggleAllMute();
       return;
     }
     if (R.state === "OVER" && code === "KeyR") { this.sfx.play("ui"); this.startMatch(R.mode as "1p", R.diff); return; }
@@ -85,6 +91,9 @@ export class GameRoot extends Component {
   // ---------- 固定步长主循环 ----------
   update(dt: number): void {
     const R = Rules.R;
+    // 虚拟按键只在真正对局(SERVE/RALLY/POINT)时出现:菜单、暂停、结算、
+    // 生涯/训练面板都不露;隐藏时顺带清按下状态,见 input/touchpad 控制器注释。
+    touchPad.setPlaying(Rules.isPlaying());
     this.frameT++;
     this.acc += Math.min(dt, 0.25);          // 切后台回来不追帧
 

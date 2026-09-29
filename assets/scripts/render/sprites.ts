@@ -178,8 +178,12 @@ function lineSeg(g: Graphics, f: Frame, x0: number, y0: number, x1: number, y1: 
 /** 变换帧里的实心矩形:canvas fillRect 向 +x/+y 延伸,经镜像/翻转后归一成数学最小角 */
 function fillRectTr(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number, color: Color): void {
   const a = f.pt(lx, ly), b = f.pt(lx + w, ly + h);
+  const minX = Math.round(Math.min(a.x, b.x));
+  const minY = Math.round(Math.min(a.y, b.y));
+  const rw = Math.round(Math.abs(b.x - a.x));
+  const rh = Math.round(Math.abs(b.y - a.y));
   g.fillColor = color;
-  g.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+  g.rect(minX, minY, rw, rh);
   g.fill();
 }
 
@@ -213,6 +217,38 @@ interface Pose {
   hand: number[];
   ang: number;
   len: number;
+}
+
+// ---------- 远臂(非持拍侧)的两段 FK ----------
+// 旧版把远臂写成三个硬点,手位随动作改、肘位却是定值,结果两段长度忽长忽短(实测
+// 11.2~21.1)、肘折角忽大忽小(0°~68.6°)、末端还没有手 —— 三件事叠在一起,屏幕上
+// 就是一根钉在背后的棍子。改成「上臂角 + 前臂角」两段之后:两段恒等长(不可能缩成
+// 短棍),肘折角 = |ef-ea| 可以直接控,而且角度线性插值不绕圈 → 状态切换天然平滑。
+// 两段比持拍臂(实测 15.0 / 16.2)各收一档:远侧透视,绝不允许长过近侧。
+const FAR_UA = 16, FAR_FA = 14.5;
+
+/** 远臂姿势:肩帧下的 [肩(0,0), 肘] 与手位(不含拍,所以不复用 Pose 的 ang/len) */
+interface FarPose { pts: number[][]; hand: number[] }
+
+/** 远臂两段 FK。ea=上臂角,ef=前臂角(度,canvas 约定:0=朝网,正=向上,与 Pose.ang 同语义) */
+function farPose(ea: number, ef: number): FarPose {
+  const r1 = ea * D2R, r2 = ef * D2R;
+  const ex = Math.cos(r1) * FAR_UA, ey = -Math.sin(r1) * FAR_UA;
+  return {
+    pts: [[0, 0], [ex, ey]],
+    hand: [ex + Math.cos(r2) * FAR_FA, ey - Math.sin(r2) * FAR_FA],
+  };
+}
+
+/** 挥拍中远臂的两段角:与持拍臂反相。u=0 两臂同举(引拍框架位,真实高远球就是双手都抬),
+ *  u=1 远臂整条下落收拢(转体夹臂)。前臂始终落后上臂 45~50°(bend = -45-5u),所以**挥拍全程**
+ *  肘折都看得见,不会像旧版那样挥到一半 deflection 掉到 1.3° 突然变棍子。
+ *  注:挥拍结束 → 待机的收拍段会经过伸直(手从身后垂处抬到头后,前臂必须绕肘翻折方向),
+ *  那是真实手臂的样子;此时仍靠「两段等长 + 肤色分段 + 手盘」三条不变量保证读作手臂。 */
+function farSwingAngles(style: SwingStyle, u: number): [number, number] {
+  return style === "under"
+    ? [lerp(158, 224, u), lerp(110, 176, u)]
+    : [lerp(150, 214, u), lerp(105, 164, u)];
 }
 
 /**
@@ -375,16 +411,69 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     + lungeLean * lungeDirRel               // 跨步救球:身体沿跨步方向大幅倾斜
     + emotionLean;                            // CPU 情绪:庆祝后仰/沮丧前倾
 
-  // ---------- 远臂:画在躯干后层的远侧手臂(景深),垂在体侧偏后 ----------
-  const fsy = SW.pivotY + bob + 2;
-  let fhx = -25, fhy = fsy + 24;                        // 手探出躯干背缘,露出一截才读作手臂
-  fhx += -cycRaw * 5 * runAmt;                          // 跑动时与前腿反相摆(权重渐变)
-  if (airborne) fhx -= 3;
-  if (swinging && sp) fhx += -Math.cos(sp.ang * D2R) * 6;   // 挥拍时反向后拉,平衡臂
-  if (lunging) fhx -= lungeLegExt * 10 * lungeDirRel;   // 跨步时远臂伸出平衡
-  if (celebrating) { fhx -= 8; fhy -= 18 * Math.sin(celebrateU * Math.PI); }  // 庆祝:远臂上举
-  if (frustrated) { fhy += 5 * Math.sin(frustrateU * Math.PI); }              // 沮丧:远臂下垂
-  arm(g, F, th.dark, [[-4, fsy], [-17, fsy + 13], [fhx, fhy]], 5, 0.7);
+  // ---------- 远臂:躯干后层的远侧手臂(景深)。两段 FK + 肤色小臂 + 手,跟着动作反相 ----------
+  // 画在腿/躯干/头之前 → 内侧被躯干盖住是刻意的景深。不要在这里"对称地"补一颗肩关节圆:
+  // 远肩距躯干背缘只有 5.8,画了会被整个抹掉(近侧那颗有效是因为它画在躯干之后)。
+  const bsx = -9 + (lean - 2) * 0.9;             // 远侧肩:与近侧 A 相距 10.5 = 3/4 视角的肩宽透视;
+  const bsy = SW.pivotY + bob - 2;               //   离转体轴更远所以 lean 系数 0.9 > 近侧的 0.8
+  const B = offsetFrame(F, bsx, bsy);            //   比近侧肩高 2:斜侧视角远肩略抬,肘更容易露出背缘
+
+  // 基准 = 待机放松挂位(肘朝后外翻、前臂垂在后下),跑动/空中/跨步/情绪逐层覆盖
+  let fea = 206, fef = 250;
+  // 对侧步态:远侧臂与近侧(前)腿同相。旧版写的是 -cycRaw,与前腿反相 = 顺拐
+  fea += cycRaw * 14 * runAmt; fef += cycRaw * 18 * runAmt;
+  if (airborne) { fea = lerp(fea, 178, 1 - runAmt); fef = lerp(fef, 128, 1 - runAmt); }
+  if (lunging) {
+    // 上网救球:远臂朝后上猛甩(走钢丝式平衡);退防跨步:整条下压后摆
+    const k = lungeLegExt;
+    const la = lungeDirRel > 0 ? 168 : 196, lf = lungeDirRel > 0 ? 118 : 250;
+    fea = lerp(fea, la, k); fef = lerp(fef, lf, k);
+  }
+  if (celebrating) {                             // 挥拳:手举到头顶后缘外
+    const s = Math.sin(celebrateU * Math.PI);
+    fea = lerp(fea, 150, s) - 10 * s; fef = lerp(fef, 95, s);
+  }
+  if (frustrated) {                              // 耷拉:偏转角刻意收到 30 = limp,但手盘和肤色段还在
+    const s = Math.sin(frustrateU * Math.PI);
+    fea = lerp(fea, 230, s); fef = lerp(fef, 260, s);
+  }
+  fea += (p.hitRecoil || 0) * 0.6;
+
+  // 收拍 → 挥拍:与持拍臂共用 recK / blendIn 两条窗。**顺序不可调换** —— 缓冲衔接的连拍
+  // 在起拍时 recoverT 还没走完,远臂要从回摆中途接过去(对应持拍臂的 poseLerp(recoverPose…))
+  let cea = fea, cef = fef;
+  if (!swinging && p.recoverT > 0) {
+    const e = farSwingAngles(pp.lastSwingStyle ?? p.swingStyle, 1);   // u=1 与挥拍末帧无缝
+    cea = lerp(e[0], fea, recK); cef = lerp(e[1], fef, recK);
+  }
+  if (swinging && sp) {
+    const t = farSwingAngles(p.swingStyle, clamp(poseU, 0, 1));
+    const k = swT < SW.blendIn ? 1 - (1 - clamp(swT / SW.blendIn, 0, 1)) ** 2 : 1;
+    fea = lerp(cea, t[0], k); fef = lerp(cef, t[1], k);
+    fef -= Math.cos(sp.ang * D2R) * 6;           // 反相锁:持拍臂越朝网,远臂越朝后
+  } else {
+    fea = cea; fef = cef;
+  }
+
+  // 手指向来球:只在远臂已抬起(fea<195)且球在肩以上时轻推,±12° 封顶。绝不做全 IK ——
+  // 手一往前上就撞进后脑的遮挡圆,往回缩就没过躯干背缘,两头都坏事
+  if (ball && fea < 195) {
+    const bdx = (ball.x - x) * p.facing, bdy = ball.y - (y + SW.pivotY);
+    if (bdy < -6) {
+      let d = Math.atan2(-bdy, bdx) / D2R - fef;
+      while (d > 180) d -= 360;
+      while (d < -180) d += 360;
+      fef += clamp(d, -12, 12);
+    }
+  }
+
+  // 三段两色,一档比近侧(5.5 / 5.5 / r3.6)细、压得更狠 → 远侧更细更远。
+  // 这里的 alpha 是真透明度(withAlpha 把 a 叠进颜色),不是 drawPlayer 第 4 参那个帧间插值系数。
+  // 深袖 + 肤色小臂的分段是「读作手臂」的关键:整条同色会在球衣上读成斜挎的带子。
+  const fp = farPose(fea, fef);
+  arm(g, B, th.dark, fp.pts, 5.0, 0.68);
+  arm(g, B, SKIN, [fp.pts[1], fp.hand], 4.4, 0.62);
+  drawHand(g, B, fp.hand[0], fp.hand[1], 3.3, 0.66);   // 有手 = 是手臂,不是棍子
 
   // ---------- 腿:跑姿(幅度随速度)与空中姿势(升收腿/落展腿)按权重混合 ----------
   const hipY = -H * 0.34 + bob;
@@ -544,11 +633,17 @@ function drawPlayerTag(g: Graphics, vp: Viewport, p: Player, x: number, y: numbe
   if (isMainUser) {
     const bob = Math.sin((t || 0) * 0.14) * 2.2;
     const arrowY = tagY - 14 + bob;
+    // 顶点坐标取整，且保持倒三角完全对称
+    const tipX = Math.round(vp.x(x));
+    const tipY = Math.round(vp.y(arrowY + 5));
+    const topY = Math.round(vp.y(arrowY));
+    const halfW = Math.round(4.5 * Math.abs(vp.x(1) - vp.x(0)));
+
     g.fillColor = pal(p.side === "left" ? "#ffe14d" : "#3ea8ff");
     polyPath(g, [
-      { x: vp.x(x), y: vp.y(arrowY + 5) },
-      { x: vp.x(x - 4.5), y: vp.y(arrowY) },
-      { x: vp.x(x + 4.5), y: vp.y(arrowY) },
+      { x: tipX, y: tipY },
+      { x: tipX - halfW, y: topY },
+      { x: tipX + halfW, y: topY },
     ], true);
     g.fill();
   }
@@ -562,6 +657,9 @@ function drawPlayerTag(g: Graphics, vp: Viewport, p: Player, x: number, y: numbe
   const ly = tagY - ph / 2;
   const r = ph / 2;
 
+  const rectX = Math.round(vp.x(lx));
+  const rectY = Math.round(vp.y(ly + ph));
+
   // 深色胶囊底衬 (任何球场背景下均清晰醒目)
   g.fillColor = pal(isMainUser
     ? "rgba(10, 14, 28, 0.78)"
@@ -569,7 +667,7 @@ function drawPlayerTag(g: Graphics, vp: Viewport, p: Player, x: number, y: numbe
     ? "rgba(10, 26, 34, 0.75)"
     : "rgba(12, 14, 22, 0.58)");
   // canvas 用四段 arcTo 圆角;胶囊半径恰为半高,roundRect 等价(y 翻转后取数学最小角)
-  g.roundRect(vp.x(lx), vp.y(ly + ph), pw, ph, r);
+  g.roundRect(rectX, rectY, pw, ph, r);
   g.fill();
 
   // 胶囊描边
@@ -581,6 +679,7 @@ function drawPlayerTag(g: Graphics, vp: Viewport, p: Player, x: number, y: numbe
     : isP2
     ? "rgba(62, 168, 255, 0.75)"
     : "rgba(255, 255, 255, 0.25)");
+  g.roundRect(rectX, rectY, pw, ph, r);
   g.stroke();
 
   // 文字:【移植限制】原为 fillText(tagText, x, tagY+0.5),800 9.5px 居中/垂直居中,
@@ -846,11 +945,14 @@ function arm(g: Graphics, f: Frame, color: string, pts: number[][], lw = 5.5, al
 }
 
 // 握拍的手:最后叠画在拍柄上,才是「拿着」而不是「粘着」
-function drawHand(g: Graphics, f: Frame, hx: number, hy: number): void {
-  g.fillColor = pal(SKIN);
-  g.strokeColor = pal(SKIN_LINE);
+// r/alpha 给远侧手用(远侧更小更暗才读得出景深);默认值 = 原持拍手,那一路输出逐字节不变。
+// 【注意】withAlpha 是「覆盖」alpha 而不是叠乘(palette.ts 里 new Color(r,g,b,k*255)),
+// 而 SKIN_LINE 自带 0.55 —— 所以描边必须写 0.55 * alpha,直接套 alpha 会把持拍手变成黑边。
+function drawHand(g: Graphics, f: Frame, hx: number, hy: number, r = 3.6, alpha = 1): void {
+  g.fillColor = withAlpha(pal(SKIN), alpha);
+  g.strokeColor = withAlpha(pal(SKIN_LINE), 0.55 * alpha);
   g.lineWidth = f.lw(1.2);
-  circleAA(g, f, hx, hy, 3.6);
+  circleAA(g, f, hx, hy, r);
   g.fill();
   g.stroke();
 }

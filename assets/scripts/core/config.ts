@@ -231,7 +231,8 @@ export const CFG = {
   // 双打一边两个人若也用同一套,双方都漏不掉球,回合能打到上百拍。
   doubles: { deepGuard: 132, aggrBonus: 0.24, aiZone: 0.78 },
 
-  // 方向键即瞄准,取屏幕直觉:朝网按 = 落点往对面推(深球),背网按 = 落点收在网前(短球)
+  // 落点跟着击球键走:深球键 = 落点往对面推(压底线),短球键 = 落点收在网前。
+  // 方向键只管跑动,不参与瞄准。
   aimDepth: { near: 0.12, mid: 0.5, deep: 0.92 },
 
   // 落点误差(px):打不准才会下网/出界
@@ -477,7 +478,7 @@ export const MENU: MenuEntry[] = [
 // feed.depth / feed.jumpLead 不是手拍的:由 tools/drill-check --pick 在
 // (depth × jumpLead) 网格上穷举「本关判据能达成的接触点占比」挑出来的。
 // 注意分工:feed.* 只描述喂球机(落点多深、第几帧放球),wantKey 才是要求**玩家**按的键
-// (far=J 深球 / near=K 短球,只驱动引导文案与时机条)。这两个字段曾被混用成一回事,
+// (far=「深球」/ near=「短球」,只驱动引导文案与时机条)。这两个字段曾被混用成一回事,
 // 结果游戏里喂出的球和标定结果完全不符 —— 名字拆开就是为了不再踩第二次。
 // 改了 shuttle / loftByHeight / classify 之后跑训练场校验脚本会告诉你哪关串味了。
 // ============================================================
@@ -490,11 +491,11 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.70, jumpLead: 0 },
     wantKey: "far",
     contactX: 300, demoH: 150,
-    cue: "起跳,在最高点按 J",
+    cue: "起跳,在最高点按「深球」",
     points: [
       "球要跳到高过网带才压得动 —— 站着够只能挑",
       "起跳后别急着按,等球落到头顶",
-      "按 J 压深球;按 K 会收成网前点杀",
+      "「深球」压得下去;「短球」会收成网前点杀",
     ],
     pose: { style: "over", jump: true },
   },
@@ -504,7 +505,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.42, jumpLead: 11 },
     wantKey: "far",
     contactX: 262, demoH: 122,
-    cue: "站定,举过头顶按 J",
+    cue: "站定,举过头顶按「深球」",
     points: [
       "高远球是防守的根:球要又高又深,才换得到回位时间",
       "击球点举过头顶,身体正对球网",
@@ -518,7 +519,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.70, jumpLead: 0 },
     wantKey: "near",
     contactX: 330, demoH: 132,
-    cue: "同样的高球,改按 K 收着打",
+    cue: "同样的高球,改按「短球」收着打",
     points: [
       "和重杀同一个来球,只是收力:拍面立一点、不挥满",
       "腕部向前下压,球落在前场就赢",
@@ -532,11 +533,11 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.42, jumpLead: 11 },
     wantKey: "near",
     contactX: 424, demoH: 72,
-    cue: "球到网前低处,轻按 K",
+    cue: "球到网前低处,轻按「短球」",
     points: [
       "越贴网越低,只能向上送,不能压",
       "上网弓步,手要伸到球的前下方",
-      "按 K 放短;按 J 会挑成高远球",
+      "「短球」放得近;「深球」会挑成高远球",
     ],
     pose: { style: "under", jump: false, lunge: 26 },
   },
@@ -546,7 +547,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.85, jumpLead: 14 },
     wantKey: "far",
     contactX: 380, demoH: 116,
-    cue: "早出手,球还没落到头顶就按 J",
+    cue: "早出手,球还没落到头顶就按「深球」",
     points: [
       "平抽拼的是出手早晚:等球落到肩高就只剩挑球",
       "拍面近乎水平向前送,不求高只求快",
@@ -560,7 +561,7 @@ export const DRILLS: DrillDef[] = [
     feed: { depth: 0.05, jumpLead: 8 },
     wantKey: "near",
     contactX: 402, demoH: 46,
-    cue: "等球落到脚下,晚一点按 K",
+    cue: "等球落到脚下,晚一点按「短球」",
     points: [
       "球已经贴地了,只能向上铲,别想着压",
       "出手要晚:让球落到拍面下方再抬",

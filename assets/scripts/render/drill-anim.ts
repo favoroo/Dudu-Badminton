@@ -305,7 +305,7 @@ const BANDS = {
  * a = 整体透明度乘数(场上头顶条用:非挥拍时压暗)
  */
 export function meter(g: Graphics, x: number, y: number, w: number, u: number | null,
-  keyLabel: string, opt?: { h?: number; a?: number }): void {
+  opt?: { h?: number; a?: number }): void {
   const h = opt?.h ?? 14;
   const a = opt?.a ?? 1;
   // 背景
@@ -336,7 +336,7 @@ export function meter(g: Graphics, x: number, y: number, w: number, u: number | 
     g.stroke();
   }
 
-  // 游标 + 键名
+  // 游标
   if (u != null) {
     const cx = x + w * clamp(u, 0, 1);
     g.strokeColor = withAlpha(pal("#ffffff"), a);
@@ -346,8 +346,8 @@ export function meter(g: Graphics, x: number, y: number, w: number, u: number | 
     g.stroke();
   }
 
-  // 键名标签(Graphics 无法 fillText,用位置暗示)
-  // 在游标/条上方画一个小标记表示按键位置
+  // 出手位置暗示(Graphics 无法 fillText,用游标上方的小三角代替文字)
+  // 三角在甜蜜带内变黄:一眼看出此刻按得准不准
   if (u != null) {
     const cx = x + w * clamp(u, 0, 1);
     const inSweet = u >= BANDS.sweet[0] && u <= BANDS.sweet[1];
@@ -391,18 +391,15 @@ export function draw(g: Graphics, rig: DrillRig, ms: number, w?: number, h?: num
   drawDemoBall(g, vp, rig, f, ms);
 
   // 时机条(屏幕空间,直接用 Graphics 坐标)
-  const key = keyLabel(rig.def.wantKey === "near" ? "swingNear" : "swingFar");
   const u = (f >= HOLD && f <= HOLD + SWING_FRAMES) ? winU(f - HOLD) : null;
   // 位置:左下角(canvas 16, h-30 → Graphics -w/2+16, h/2-(h-30))
-  meter(g, -w / 2 + 16, h / 2 - h + 30, w - 130, u, key, { h: 15 });
+  meter(g, -w / 2 + 16, h / 2 - h + 30, w - 130, u, { h: 15 });
 }
 
 // ============================================================
-// 键名标签:从键位表反查,换键位后引导文案自己跟着变
+// 落点键名:wantKey → 触屏上那颗击球键的文字,引导文案跟着按键标签走
 // ============================================================
 
-export function keyLabel(action: string): string {
-  const codes = (C.keys.p1 && (C.keys.p1 as Record<string, string[]>)[action]) || [];
-  const code = codes[0] || "";
-  return String(code).replace(/^Key/, "").replace(/^Arrow/, "").replace(/^Digit/, "") || "?";
+export function shotLabel(wantKey: "far" | "near"): string {
+  return wantKey === "near" ? "短球" : "深球";
 }

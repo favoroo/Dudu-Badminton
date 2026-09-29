@@ -82,15 +82,20 @@ export function drawVeil(g: Graphics, w: number, h: number, centerA: number, edg
 /**
  * 半透明「毛玻璃」底:深色压住背景保证对比度 + 白描边 + 顶边高光。
  * 用于菜单卡片/列表项这类要贴在球场上展示的表面。
+ * 两层底:近黑层压对比,再叠一层 navy-2 蓝灰「色底」—— 深色球馆背景上
+ * 纯近黑半透明看不出卡片的形状,蓝灰层让按钮在任何背景下都显出底色。
  */
 export function drawGlassCard(g: Graphics, w: number, h: number, r = 10, darkA = 0.42, accentHex?: string): void {
   g.fillColor = ac(ARCADE.ink, darkA);
   g.roundRect(-w / 2, -h / 2, w, h, r);
   g.fill();
+  g.fillColor = ac(ARCADE.navy2, darkA * 0.6);
+  g.roundRect(-w / 2, -h / 2, w, h, r);
+  g.fill();
   g.fillColor = ac("#ffffff", 0.06);
   g.roundRect(-w / 2, h / 2 - h * 0.5, w, h * 0.5, r);
   g.fill();
-  g.strokeColor = ac(accentHex ?? ARCADE.paper, accentHex ? 0.75 : 0.18);
+  g.strokeColor = ac(accentHex ?? ARCADE.paper, accentHex ? 0.75 : 0.3);
   g.lineWidth = accentHex ? 2 : 1.5;
   g.roundRect(-w / 2, -h / 2, w, h, r);
   g.stroke();

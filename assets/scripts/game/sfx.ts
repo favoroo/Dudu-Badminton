@@ -7,6 +7,7 @@
 //   cheer → 大小 0.4/0.7/1.0 三档取最近
 // ============================================================
 import { AudioClip, AudioSource, Node, resources } from "cc";
+import { Settings } from "../core/settings";
 
 const NAMES = [
   "swing", "whiff",
@@ -25,7 +26,6 @@ const nearest = (v: number, opts: number[]): number =>
 export class Sfx {
   private src: AudioSource | null = null;
   private clips = new Map<string, AudioClip>();
-  private muted = false;
 
   /** 异步加载;未就绪时 play 静默丢弃(音效不该弄挂游戏) */
   load(node: Node, done?: () => void): void {
@@ -38,14 +38,15 @@ export class Sfx {
 
   get ready(): boolean { return this.clips.size > 0; }
 
+  /**
+   * 开关与音量都读 Settings:GameRoot 和 UIManager 各持一份 Sfx 实例,
+   * 谁也不该有自己的静音状态(以前各自一个 muted 字段,菜单切了比赛照响)。
+   */
   play(name: string, volume = 1): void {
-    if (this.muted) return;
+    if (!Settings.sfxOn) return;
     const clip = this.clips.get(name);
-    if (clip && this.src) this.src.playOneShot(clip, volume);
+    if (clip && this.src) this.src.playOneShot(clip, volume * Settings.sfxVol);
   }
-
-  setMuted(m: boolean): void { this.muted = m; }
-  get isMuted(): boolean { return this.muted; }
 
   // ---------- 语义化入口(与老 game.js 的 Audio.play 调用点一一对应) ----------
 

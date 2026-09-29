@@ -319,6 +319,8 @@ interface DojoLantern {
 // ============================================================
 export class CourtRenderer {
   private currentTheme: CourtThemeId = "arena";
+  /** 存档读取推迟到首次访问(见 ensureTheme);模块级单例构造太早 */
+  private themeEnsured = false;
 
   // 物理与时间状态
   private time = 0;
@@ -354,14 +356,23 @@ export class CourtRenderer {
   private dojoLanterns: DojoLantern[] = [];
 
   constructor() {
-    this.currentTheme = load<CourtThemeId>("court_theme", "arena");
-    if (!C.courts.some((c) => c.id === this.currentTheme)) {
-      this.currentTheme = "arena";
-    }
+    // 这里原本在构造函数里 load("court_theme") —— 但本类是模块级单例
+    // (`export const courtRenderer = new CourtRenderer()`),构造发生在 import 求值期,
+    // 早于 GameRoot.onLoad 注入存储后端,读到的永远是内存兜底里的默认值。
+    // 存档读取改到 ensureTheme() 懒做;buildAll 不依赖主题,留在构造期。
     this.buildAll();
   }
 
+  /** 首次真正用到主题时读档(此时宿主后端已注入);档里 id 失效则回退黄昏馆 */
+  private ensureTheme(): void {
+    if (this.themeEnsured) return;
+    this.themeEnsured = true;
+    const saved = load<CourtThemeId>("court_theme", "arena");
+    this.currentTheme = C.courts.some((c) => c.id === saved) ? saved : "arena";
+  }
+
   get currentThemeId(): CourtThemeId {
+    this.ensureTheme();
     return this.currentTheme;
   }
 
@@ -586,6 +597,7 @@ export class CourtRenderer {
   // 对外接口契约
   // ------------------------------------------------------------
   setTheme(themeId: string): boolean {
+    this.ensureTheme();
     if (C.courts.some((c) => c.id === themeId)) {
       this.currentTheme = themeId as CourtThemeId;
       save("court_theme", themeId);
@@ -596,10 +608,12 @@ export class CourtRenderer {
   }
 
   getTheme(): CourtThemeItem {
+    this.ensureTheme();
     return (C.courts.find((c) => c.id === this.currentTheme) || C.courts[0]) as CourtThemeItem;
   }
 
   cycleTheme(): CourtThemeItem {
+    this.ensureTheme();
     const list = C.courts;
     const idx = list.findIndex((c) => c.id === this.currentTheme);
     const next = list[(idx + 1) % list.length];
@@ -629,6 +643,7 @@ export class CourtRenderer {
   // 全量绘制总调度
   // ------------------------------------------------------------
   draw(g: Graphics, vp: Viewport, rallyCount = 0): void {
+    this.ensureTheme();
     const glow = clamp(rallyCount / 18, 0, 1);
     const t = this.time;
 
@@ -1601,6 +1616,7 @@ export class CourtRenderer {
   // 球网受力物理系统 (Net Jiggle & Wave Dynamics)
   // ============================================================
   drawNet(g: Graphics, vp: Viewport, shake?: number): void {
+    this.ensureTheme();
     const top = CO.netTopY;
     const gy = CO.groundY;
     const x = CO.netX;

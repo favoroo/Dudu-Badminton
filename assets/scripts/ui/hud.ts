@@ -25,8 +25,6 @@ export class Hud {
   private teamR: Label;
   private centerBadge: Label;
   private badgeNode: Node;
-  private badgeGfx: Graphics;
-  private badgeHot = false;
   private statusLine: Label;
   private statusOp: UIOpacity;
   private drillInfo: Label;
@@ -118,7 +116,7 @@ export class Hud {
       s.shadowColor = new Color(0, 0, 0, 128);
       s.shadowOffset = new Vec2(0, -3);
     }
-    // 中缝小徽章:平时显示赛制,赛点时变「赛点」(老 .tag 的 acid 芯片)
+    // 中缝小徽章:常驻显示赛制(赛点由 hud-overlay 的顶部霓虹旗标提示,这里不抢戏)
     const bd = new Node("badge");
     bd.layer = this.root.layer;
     bd.addComponent(UITransform).setContentSize(84, 24);
@@ -131,10 +129,9 @@ export class Hud {
     bd.setPosition(0, 232, 0);
     bd.setParent(top);
     this.badgeNode = bd;
-    this.badgeGfx = bdg;
     this.centerBadge = kit.label(bd, `TO ${CFG.scoring.winScore}`, 12, "#0a0e1c");
 
-    // ---------- 状态行(发球/赛点提示) ----------
+    // ---------- 状态行(发球 / 平分提示) ----------
     this.statusLine = kit.label(top, "", 15, P.text);
     this.statusLine.node.setPosition(0, 190, 0);
     this.statusOp = this.statusLine.node.addComponent(UIOpacity);
@@ -209,7 +206,7 @@ export class Hud {
     if (!this.root.active) return;
     this.frameT++;
     const drill = R.mode === "drill";
-    const playing = R.state === "SERVE" || R.state === "RALLY" || R.state === "POINT";
+    const playing = Rules.isPlaying(R.state);   // 与虚拟按键的显隐共用同一判据
     this.pauseBtn.active = playing;
     this.pills.active = !drill;
     this.badgeNode.active = !drill;
@@ -228,7 +225,7 @@ export class Hud {
 
     // ---- 比分 / 训练进度 ----
     if (drill) {
-      // 训练不计分:直接喂 goalText()(「后场重杀 · 有效 1/3 · 提示」)
+      // 训练不计分:直接喂 goalText()(「后场重杀 1/3 · 起跳,在最高点按「深球」」)
       this.drillInfo.string = Drill.goalText();
     } else {
       const key = `${R.scores[0]}-${R.scores[1]}`;
@@ -245,40 +242,17 @@ export class Hud {
       this.teamR.string = Rules.labelOf("right");
     }
 
-    // ---- 中缝徽章:赛点 / 赛制(acid 芯片 ↔ 红色芯片) ----
-    const mp = Rules.matchPointInfo();
-    if (!drill) {
-      const hot = mp.active;
-      if (hot !== this.badgeHot) {
-        this.badgeHot = hot;
-        const g = this.badgeGfx;
-        g.clear();
-        g.strokeColor = new Color(0, 0, 0, 90);
-        g.lineWidth = 1;
-        drawChip(g, 84, 24, hot ? ARCADE.red : ARCADE.acid, 4);
-        g.roundRect(-42, -12, 84, 24, 4);
-        g.stroke();
-        this.centerBadge.color = col(hot ? "#fff5f5" : "#0a0e1c");
-      }
-      this.centerBadge.string = mp.active ? "赛点" : `TO ${CFG.scoring.winScore}`;
-    }
-
-    // ---- 状态行 ----
+    // ---- 状态行:只管「现在该干什么」 ----
+    // 拍数交给连击大字,赛点交给顶部霓虹旗标 —— 同一件事不在三处念
     let txt = "";
     let hot = false;
     if (playing) {
       if (R.state === "SERVE" && R.serverPlayer) {
         const mine = !R.serverPlayer.isAI;
-        txt = mine ? "轮到你发球 · 深球压底线 / 短球放网前" : "AI 发球";
+        txt = mine ? "你发球 · 深球压底线,短球放网前" : "AI 发球";
         hot = mine;
-      } else if (R.state === "RALLY") {
-        txt = `回合 ${R.rally} 拍`;
-      }
-      if (mp.active) {
-        txt = mp.label;
-        hot = true;
       } else if (R.deuce) {
-        txt = `平分 · 需领先 ${CFG.scoring.deuceMinLead} 分`;
+        txt = `平分 · 净胜 ${CFG.scoring.deuceMinLead} 分`;
         hot = true;
       }
     }
@@ -287,7 +261,7 @@ export class Hud {
       this.lastStatus = txt;
     }
     this.statusLine.color = hot ? this.cHot : this.cPlain;
-    // 赛点/发球提示轻微呼吸,不抢比分牌的注意力
+    // 发球/平分提示轻微呼吸,不抢比分牌的注意力
     this.statusOp.opacity = hot ? 205 + Math.round(Math.sin(this.frameT * 0.2) * 50) : 255;
 
     // ---- 发球指示:只在 SERVE 态出现,悬在发球方外侧并上下浮动 ----

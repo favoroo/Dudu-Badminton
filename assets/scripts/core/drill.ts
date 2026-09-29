@@ -166,12 +166,12 @@ function starsOf(a: DrillAcc | null): number {
 const prog = (): DrillAcc => acc || newAcc();
 const stars = (): number => starsOf(acc);
 
-// 计分条/状态行用的一句话
+// HUD 训练态那一句:关卡名 + 还差几拍 + 这一关的时机提示
 function goalText(): string {
   if (!def) return "";
   const g = def.goal || C.drill.defaultGoal;
   const p = prog();
-  return `${def.label} · 有效 ${Math.min(p.valid, g)}/${g} · ${def.cue}`;
+  return `${def.label} ${Math.min(p.valid, g)}/${g} · ${def.cue}`;
 }
 
 // 结算面板要的整份账(奖励由 Career.settleDrill 按「是否首次」决定,这里只交事实)

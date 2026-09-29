@@ -17,12 +17,13 @@
 // 直连后可整体删除 bridgeCareerSettle()。
 // ============================================================
 import {
-  AudioSource, BlockInputEvents, Button, Color, Component, director, Director,
+  BlockInputEvents, Button, Color, Component, director, Director,
   Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Widget,
   view, _decorator,
 } from "cc";
 import { CFG, DRILLS } from "../core/config";
-import { load, save } from "../core/utils";
+import { Settings } from "../core/settings";
+import { installStorageBackend } from "../game/host";
 import { Rules } from "../core/rules";
 import { Career } from "../core/career";
 import { Drill } from "../core/drill";
@@ -39,6 +40,8 @@ import { PausePanel } from "./pause-panel";
 import { SettleBadge, SettlePanel, SettlePayload, SettleStat } from "./settle-panel";
 import { CareerPanel } from "./career-panel";
 import { DrillPanel } from "./drill-panel";
+import { SettingsPanel } from "./settings-panel";
+import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
 import type { UpdateInfo } from "../core/update-service";
 
@@ -233,6 +236,10 @@ export interface UiKit {
   root: typeof uiRoot;
   /** 扫描线 + 暗角氛围层(整屏弹窗用) */
   atmosphere: typeof uiAtmosphere;
+  /** 水平滑杆(音量、按键大小) */
+  slider: typeof uiSlider;
+  /** 一行式开关(整行即按钮) */
+  toggle: typeof uiToggle;
   toast(msg: string): void;
   toggleMute(): boolean;
   readonly muted: boolean;
@@ -242,6 +249,8 @@ export interface UiKit {
   quitToMenu(): void;
   openCareer(): void;
   openDrills(): void;
+  /** 设置页(主菜单与暂停页都进得来;从暂停页进,关完回暂停页) */
+  openSettings(): void;
   cycleCourtTheme(): string;
   /** 球馆清单(老 ui.js courtPicker 的数据源) */
   courtThemes(): readonly CourtThemeItem[];
@@ -273,6 +282,7 @@ export class UIManager extends Component {
   private updateDialog!: UpdateDialog;
   private careerPanel: CareerPanel | null = null;
   private drillPanel: DrillPanel | null = null;
+  private settingsPanel: SettingsPanel | null = null;
   private capture: SettleCapture | null = null;
   private prevSt = "";
   private toastNode: Node | null = null;
@@ -290,8 +300,11 @@ export class UIManager extends Component {
       if (c.name.indexOf("hud-") === 0) c.active = false;
     }
 
+    // 存档后端与设置读盘:UIManager 可能晚于 GameRoot 挂载(编辑器直挂/热重载),
+    // 两处各调一次,installStorageBackend 与 Settings.init 都是幂等的。
+    installStorageBackend();
+    Settings.init();
     this.sfx.load(this.node);          // UI 音复用同一批烘焙 WAV(resources 缓存共享)
-    this.applyMute(load("muted", false));
 
     this.buildKit();
     const root = uiRoot(this.node, "ui-root");
@@ -405,6 +418,11 @@ export class UIManager extends Component {
   }
 
   private onState(st: string): void {
+    // 状态一变就先收设置页:它不属于任何状态(是浮在状态上的临时面板),
+    // 逐个分支去 hide 迟早漏一个 —— 漏了的后果是面板浮在实时对局上,
+    // 连同编辑器那份预览按键一起叠在球场上。
+    // openSettings() 期间状态不变,所以这里不会把刚打开的面板自己关掉。
+    this.settingsPanel?.hide();
     switch (st) {
       case "MENU":
         this.pausePanel.root.active = false;
@@ -504,19 +522,16 @@ export class UIManager extends Component {
     Rules.R.state = "MENU";              // frozen 态,世界自动停;老 game 同款直改
   }
 
-  // ---------- 音效开关:UI 音 + game-root 的比赛音一起静才叫全局开关 ----------
-
-  private applyMute(v: boolean): void {
-    save("muted", v);
-    this.sfx.setMuted(v);
-    // game-root 的 Sfx 把 AudioSource 加在 Canvas(本节点)上;两份实例一起切
-    for (const src of this.node.getComponents(AudioSource)) src.mute = v;
-  }
+  // ---------- 全局静音:一个钮管音效/音乐两条总线,真值只在 Settings ----------
+  //
+  // 这里原本是 `this.node.getComponents(AudioSource)` 逐个 set mute ——
+  // 那个写法是非递归的,而 BGM 的 6 个 stem 是 BgmManager 挂在**子节点**上的,
+  // 结果菜单/暂停页的「音效」开关从来没静音过背景音乐(只有 KeyM 走 bgm.setMute 才行)。
+  // 现在音效/音乐各自读 Settings 的总线开关(Sfx / BgmManager 内部判定),
+  // UI 不再伸手进音频节点树 —— 别把 getComponents 扫描加回来。
 
   private toggleMute(): boolean {
-    const v = !load("muted", false);
-    this.applyMute(v);
-    return v;
+    return Settings.toggleAllMute();
   }
 
   // ---------- 结算桥(见文件头注释) ----------
@@ -609,6 +624,25 @@ export class UIManager extends Component {
     );
   }
 
+  /**
+   * 设置页。从暂停页进来时关完要回暂停页,不能漏进主菜单 ——
+   * onState 只在状态**变化沿**触发,而 PAUSED → (开着设置) → PAUSED 根本没有变化沿,
+   * 所以恢复只能命令式做,和 openCareer 同一个套路。
+   */
+  private openSettings(): void {
+    if (!this.settingsPanel) {
+      this.settingsPanel = this.node.addComponent(SettingsPanel);
+    }
+    const fromPause = Rules.R.state === "PAUSED";
+    if (!fromPause) this.menu.hide();
+    else this.pausePanel.root.active = false;
+    this.settingsPanel.show(this.node, this.kit, () => {
+      this.settingsPanel?.hide();
+      if (fromPause) this.pausePanel.show();
+      else this.menu.show();
+    });
+  }
+
   private cycleCourtTheme(): string {
     const next = courtRenderer.cycleTheme();
     return next.name;
@@ -638,15 +672,18 @@ export class UIManager extends Component {
       dim: uiDim,
       root: uiRoot,
       atmosphere: uiAtmosphere,
+      slider: uiSlider,
+      toggle: uiToggle,
       toast: (m) => this.toast(m),
       toggleMute: () => this.toggleMute(),
-      get muted() { return !!load("muted", false); },
+      get muted() { return Settings.allMuted; },
       startMatch: (d) => this.doStartMatch(d),
       startDrill: (id) => this.doStartDrill(id),
       restartCurrent: () => this.doRestart(),
       quitToMenu: () => this.doQuit(),
       openCareer: () => this.openCareer(),
       openDrills: () => this.openDrills(),
+      openSettings: () => this.openSettings(),
       cycleCourtTheme: () => this.cycleCourtTheme(),
       courtThemes: () => this.courtThemes(),
       setCourtTheme: (id) => this.setCourtTheme(id),

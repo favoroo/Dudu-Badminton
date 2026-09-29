@@ -107,6 +107,27 @@ export function release(pad: Pad, action: "left" | "right" | "jump" | "lunge"): 
   }
 }
 
+/**
+ * 清空所有按下状态。虚拟按键层被隐藏(离开对局态)时必须调一次:
+ * 节点 inactive 之后 TOUCH_END 不会再送到按钮,手指抬起这件事就"丢"了,
+ * pad.left 会一直卡在 true,双击跨步的计时字段也会留下半截状态。
+ * 计时清零 + _Released 置回 true,恢复后的第一次点击不会被凑成"双击"。
+ */
+export function resetPadHolds(pad: Pad): void {
+  release(pad, "left");
+  release(pad, "right");
+  release(pad, "jump");
+  release(pad, "lunge");
+  pad.lungePressed = false;
+  pad.lungeDir = 0;
+  pad.swingFarPressed = false;
+  pad.swingNearPressed = false;
+  pad._lastLeftPressTime = 0;
+  pad._lastRightPressTime = 0;
+  pad._leftReleased = true;
+  pad._rightReleased = true;
+}
+
 /** 老仓库 humanIntent 的等价物:把 Pad 翻成 PlayerInput(含反馈钩子) */
 export function buildIntent(pad: Pad, hooks: Partial<PlayerInput>): PlayerInput {
   return {

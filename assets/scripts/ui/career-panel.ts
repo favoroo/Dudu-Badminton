@@ -591,11 +591,11 @@ export class CareerPanel extends Component {
 
     const cards = [
       { num: `${winRate}%`, label: "生涯胜率", sub: `${wins} 胜 / ${matches} 战`, color: COL.gold },
-      { num: `${st.smashes}`, label: "扣杀终结", sub: "记重炮暴击", color: COL.hot },
-      { num: `${st.perfects}`, label: "完美击球", sub: "顶级时机", color: COL.cyan },
-      { num: `${st.sweets}`, label: "甜区命中", sub: "扎实好球", color: COL.gold },
-      { num: `${st.maxRally} 拍`, label: "最长相持", sub: "极限拉锯回合", color: COL.white },
-      { num: `${totalStars} / ${DRILL_STARS_MAX} ★`, label: "训练评级", sub: "基本功扎实度", color: COL.cyan },
+      { num: `${st.smashes}`, label: "扣杀终结", sub: "", color: COL.hot },
+      { num: `${st.perfects}`, label: "完美击球", sub: "", color: COL.cyan },
+      { num: `${st.sweets}`, label: "甜区命中", sub: "", color: COL.gold },
+      { num: `${st.maxRally} 拍`, label: "最长相持", sub: "", color: COL.white },
+      { num: `${totalStars} / ${DRILL_STARS_MAX} ★`, label: "训练评级", sub: "", color: COL.cyan },
     ];
 
     const cw = 268, ch = 120, cgap = 16, cols = 3;
@@ -615,8 +615,8 @@ export class CareerPanel extends Component {
       mkLabel(node, "num", c.num, 30, c.color, { y: 24, w: cw - 16, align: 1 });
       // 标题
       mkLabel(node, "label", c.label, 15, COL.white, { y: -12, w: cw - 16, align: 1 });
-      // 副标题
-      mkLabel(node, "sub", c.sub, 12, COL.dimGray, { y: -36, w: cw - 16, align: 1 });
+      // 副标题:只有真数据才占位(装饰性口号已删)
+      if (c.sub) mkLabel(node, "sub", c.sub, 12, COL.dimGray, { y: -36, w: cw - 16, align: 1 });
     });
   }
 
@@ -734,18 +734,14 @@ export class CareerPanel extends Component {
       if (this._previewArea) this._previewArea.active = false;
       this._buildStatsPage();
       if (this._statsNode) this._statsNode.active = true;
-      this._hintLabel.string = "长期生涯数据累积 · 见证你的每一次变强";
+      this._hintLabel.string = "";   // 履历页全是数据,不需要一句口号压在下头
     } else {
       if (this._statsNode) this._statsNode.active = false;
       if (this._gridNode) this._gridNode.active = true;
       if (this._previewArea) this._previewArea.active = true;
       this._buildGrid();
-      const hints: Record<string, string> = {
-        player: "用金币装扮你的球员,选件帅气的战袍",
-        racket: "更换趁手球拍,挥出专属手感",
-        shuttle: "换上特色羽毛球,全场公共生效",
-      };
-      this._hintLabel.string = hints[this._kind] ?? "";
+      // 只留一条真有信息量的:换球是全场生效的,其余标签页看名字就懂
+      this._hintLabel.string = this._kind === "shuttle" ? "换球后全场生效" : "";
     }
 
     // 预览

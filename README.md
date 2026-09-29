@@ -25,6 +25,8 @@ tools/                  node 回归(编译产物在 .tools-build/,已 gitignore)
   probe.ts              弹道矩阵 + 左右镜像对称校验
   drill-check.ts        训练场六关喂球自洽断言(--pick 搜参数 / --sweep 看趋势)
   sim-check.ts          AI 对 AI 完整一局 + 训练场喂球循环的整机冒烟
+  pose-preview.ts       角色姿势 dump 成 SVG + 远臂几何断言(不启动 Cocos,见下)
+  cc-stub.ts            pose-preview 用的运行时 cc 替身(记录型 Graphics)
   bake-audio.ts         音效离线烘焙(WebAudio 合成 → WAV)
 ```
 
@@ -36,6 +38,23 @@ node .tools-build/tools/probe.js         # 镜像对称必须全 ✓
 node .tools-build/tools/drill-check.js   # 六关全部自洽(exit 0)
 node .tools-build/tools/sim-check.js     # 整机自洽(exit 0)
 ```
+
+## 改角色姿势必跑:姿势预览
+
+角色是纯 `cc.Graphics` 折线/圆(零图片零骨骼),所以可以用记录型 Graphics 替身把
+`drawPlayer` 直接 dump 成 SVG —— 不必启动编辑器,也不用跑 30s 构建(构建产物在内置
+浏览器里会永久 hang,见 HANDOFF.md)。
+
+```bash
+npx tsc -p tools/tsconfig.json
+node .tools-build/tools/pose-preview.js --out .tools-build/pose-preview
+open .tools-build/pose-preview/index.html    # 15 个姿势 × 暗/亮两种球场底
+```
+
+exit 0 = 断言全绿。断言口径:远侧手臂的肘与手必须露在躯干背缘外(x ≤ -9.5)、
+持续姿势的肘折角 ≥28°(过渡姿势伸直是真实手臂,不设地板)、两段恒等长、必须有手盘;
+连续性用相对口径「远臂单帧跳变不超过持拍臂」—— blendIn 只有 3 帧,持拍臂本来就要甩
+50~90°,绝对阈值怎么设都是错。
 
 ## 与老仓库的对应关系
 

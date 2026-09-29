@@ -1,5 +1,6 @@
 // ============================================================
-// 训练场面板:关卡列表 → 动作引导(嵌入 DrillAnim) → 训练 → 结算
+// 训练场面板:关卡列表 → 动作引导(嵌入 DrillAnim) → 开始训练
+// 结算不在这里:训练结束统一走 settle-panel(ui-manager 桥接 settleDrill)
 // 纯代码构建 UI 节点,复刻老项目 src/ui-drill.js 的完整交互。
 // 依赖:DrillAnim(演示动画)、Career(存档)、DRILLS(关卡配置)
 // ============================================================
@@ -10,7 +11,6 @@ import {
 import { Career } from "../core/career";
 import { CFG, DRILLS } from "../core/config";
 import { DrillDef } from "../core/types";
-import { DrillResult } from "../core/drill";
 import * as DrillAnim from "../render/drill-anim";
 import { drawHardShadow, drawVeil, slamIn } from "./ui-arcade";
 
@@ -157,26 +157,11 @@ export class DrillPanel extends Component {
     if (this._panelNode) slamIn(this._panelNode);   // 老 .panel slam 砸落
   }
 
-  /** 切换到结算页 */
-  showResult(result: DrillResult, onRetry: () => void, onNext: () => void, onQuit: () => void) {
-    this._onRetry = onRetry;
-    this._onNext = onNext;
-    this._onQuitResult = onQuit;
-    this._page = "result";
-    this._buildResultPage(result);
-    this._listPage.active = false;
-    this._briefPage.active = false;
-    this._resultPage.active = true;
-  }
-
   /** 销毁面板 */
   hide() {
     input.off(Input.EventType.KEY_DOWN, this._onKey, this);
     this._onSelectDrill = null;
     this._onBack = null;
-    this._onRetry = null;
-    this._onNext = null;
-    this._onQuitResult = null;
     // 复位动画状态,防止 update() 对已销毁 Graphics 继续绘制报错
     this._page = "list";
     this._rig = null;
@@ -200,20 +185,15 @@ export class DrillPanel extends Component {
   private _panelNode: Node | null = null;
   private _onSelectDrill: ((drill: DrillDef) => void) | null = null;
   private _onBack: (() => void) | null = null;
-  private _onRetry: (() => void) | null = null;
-  private _onNext: (() => void) | null = null;
-  private _onQuitResult: (() => void) | null = null;
 
-  private _page: "list" | "brief" | "result" = "list";
+  private _page: "list" | "brief" = "list";
   private _sel = 0;
 
   // 缓存节点
   private _listPage!: Node;
   private _briefPage!: Node;
-  private _resultPage!: Node;
   private _gridNode!: Node;
   private _headInfo!: Label;
-  private _hintLabel!: Label;
 
   // 引导页
   private _animGfx: Graphics | null = null;
@@ -266,17 +246,8 @@ export class DrillPanel extends Component {
     this._briefPage.setPosition(0, -20, 0);
     this._briefPage.active = false;
 
-    this._resultPage = mkNode("resultPage", panel, PW - 20, PH - 60);
-    this._resultPage.setPosition(0, -20, 0);
-    this._resultPage.active = false;
-
     // 列表页内容
     this._buildListPage();
-
-    // 底部提示
-    this._hintLabel = mkLabel(panel, "hint", "", 13, COL.dimGray, {
-      y: -PH / 2 + 18, w: PW - 40, align: 1,
-    });
 
     // 键盘
     input.on(Input.EventType.KEY_DOWN, this._onKey, this);
@@ -435,8 +406,8 @@ export class DrillPanel extends Component {
     });
 
     // 底部说明
-    const key = DrillAnim.keyLabel(def.wantKey === "near" ? "swingNear" : "swingFar");
-    mkLabel(infoArea, "caption", `第 ${DrillAnim.contactFrame().toFixed(0)} 帧出手最甜 · 按 ${key}`,
+    const shot = DrillAnim.shotLabel(def.wantKey);
+    mkLabel(infoArea, "caption", `按「${shot}」· 第 ${DrillAnim.contactFrame().toFixed(0)} 帧出手最甜`,
       11, COL.dimGray, { y: -ANIM_H / 2 + 50, w: INFO_W - 20, align: 1 });
 
     // 按钮区
@@ -461,8 +432,6 @@ export class DrillPanel extends Component {
     btnBack.on(Node.EventType.TOUCH_END, () => {
       this._showList();
     });
-
-    this._hintLabel.string = "Enter 开始 · Esc 回列表 · Q 回菜单";
   }
 
   private _showList() {
@@ -470,121 +439,8 @@ export class DrillPanel extends Component {
     this._rig = null;
     this._animGfx = null;
     this._briefPage.active = false;
-    this._resultPage.active = false;
     this._listPage.active = true;
     this._buildCards();
-    this._hintLabel.string = "W/S 选项目 · Enter 看动作引导 · Esc 回菜单";
-  }
-
-  // ========== 结算页 ==========
-
-  private _buildResultPage(res: DrillResult) {
-    this._resultPage.removeAllChildren();
-    this._resultPage.active = true;
-
-    const cw = this._resultPage.getComponent(UITransform)!.contentSize.width;
-    const ch = this._resultPage.getComponent(UITransform)!.contentSize.height;
-
-    // 判定语
-    const verdict = res.stars >= 3 ? "手感在线" : res.stars >= 1 ? "练成了" : "还没练满";
-    const verdictColor = res.stars >= 3 ? COL.gold : res.stars >= 1 ? COL.green : COL.hot;
-    mkLabel(this._resultPage, "verdict", verdict, 28, verdictColor, {
-      y: ch / 2 - 30, w: cw - 40, align: 1,
-    });
-
-    // 星级
-    const starNode = mkNode("stars", this._resultPage, 100, 30);
-    starNode.setPosition(0, ch / 2 - 65, 0);
-    const sg = starNode.addComponent(Graphics);
-    drawStars(sg, 0, 0, res.stars, 22);
-
-    // 统计行
-    const stats = [
-      { val: `${Math.min(res.valid, res.goal)}/${res.goal}`, label: "有效球" },
-      { val: `${res.sweet}`, label: "甜蜜点击球" },
-      { val: `${res.perfect}`, label: "完美击球" },
-      { val: res.attempts ? `${Math.round(100 * res.valid / res.attempts)}%` : "—", label: "出手命中率" },
-      { val: res.avgQ ? res.avgQ.toFixed(2) : "—", label: "平均质量" },
-    ];
-
-    const rowW = 130, rowH = 56, rowGap = 8;
-    const statsTotalW = stats.length * rowW + (stats.length - 1) * rowGap;
-    const statsStartX = -statsTotalW / 2 + rowW / 2;
-    const statsY = ch / 2 - 120;
-
-    stats.forEach((s, i) => {
-      const x = statsStartX + i * (rowW + rowGap);
-      const node = mkNode(`stat-${i}`, this._resultPage, rowW, rowH);
-      node.setPosition(x, statsY, 0);
-      const g = node.addComponent(Graphics);
-      drawRR(g, rowW, rowH, 8, new Color(25, 30, 45, 200), new Color(50, 60, 80, 80), 1);
-      mkLabel(node, "val", s.val, 20, COL.white, { y: 8, w: rowW - 10, align: 1 });
-      mkLabel(node, "label", s.label, 11, COL.dimGray, { y: -14, w: rowW - 10, align: 1 });
-    });
-
-    // 奖励区
-    const rewardY = statsY - rowH / 2 - 40;
-    const prev = recOf(res.def?.id || "");
-    // settleDrill 在 showResult 之前已被调用,clears 已自增
-    // clears === 1 表示刚刚首次通关
-    const isFirstClear = prev && prev.clears === 1 && res.stars >= 1;
-
-    if (isFirstClear && res.def) {
-      const cd = CFG.career.drill;
-      const coin = cd.firstClear.coin + res.stars * cd.perStar.coin;
-      const exp = cd.firstClear.exp + res.stars * cd.perStar.exp;
-      mkLabel(this._resultPage, "reward",
-        `首次通关 金币 +${coin} · EXP +${exp}`,
-        16, COL.gold, { y: rewardY, w: cw - 40, align: 1 });
-    } else {
-      const clears = prev ? prev.clears : 0;
-      let text = `这一关已练成 ${clears} 次 · 奖励只在首次通关发`;
-      // 星级提升提示
-      if (prev && clears > 1 && res.stars > 0) {
-        // 无法精确得知之前的星级,只提示当前星级
-        text += ` · 本次 ${res.stars}★`;
-      }
-      mkLabel(this._resultPage, "reward", text, 13, COL.dimGray, {
-        y: rewardY, w: cw - 40, align: 1,
-      });
-    }
-
-    // 按钮区
-    const btnY = -ch / 2 + 40;
-
-    // 再来一次
-    const btnRetry = mkNode("btnRetry", this._resultPage, 130, 36);
-    btnRetry.setPosition(-160, btnY, 0);
-    const rG = btnRetry.addComponent(Graphics);
-    drawRR(rG, 130, 36, 8, COL.btnPrimary);
-    mkLabel(btnRetry, "text", "再来一次", 15, DARK_FG, { align: 1, w: 130 });
-    btnRetry.on(Node.EventType.TOUCH_END, () => {
-      this._onRetry?.();
-    });
-
-    // 换个项目
-    const btnNext = mkNode("btnNext", this._resultPage, 130, 36);
-    btnNext.setPosition(0, btnY, 0);
-    const nG = btnNext.addComponent(Graphics);
-    drawRR(nG, 130, 36, 8, COL.btnGhost);
-    mkLabel(btnNext, "text", "换个项目", 15, COL.dimWhite, { align: 1, w: 130 });
-    btnNext.on(Node.EventType.TOUCH_END, () => {
-      this._onNext?.();
-      this._showList();
-    });
-
-    // 返回菜单
-    const btnQuit = mkNode("btnQuit", this._resultPage, 120, 36);
-    btnQuit.setPosition(160, btnY, 0);
-    const qG = btnQuit.addComponent(Graphics);
-    drawRR(qG, 120, 36, 8, COL.btnDanger);
-    mkLabel(btnQuit, "text", "返回菜单", 15, COL.white, { align: 1, w: 120 });
-    btnQuit.on(Node.EventType.TOUCH_END, () => {
-      this._onQuitResult?.();
-      this.hide();
-    });
-
-    this._hintLabel.string = "Enter 再来一次 · Esc 换个项目 · Q 回菜单";
   }
 
   // ========== 键盘 ==========
@@ -600,22 +456,6 @@ export class DrillPanel extends Component {
     const isDown = kc === KeyCode.ARROW_DOWN || kc === KeyCode.KEY_S || code === "ArrowDown" || code === "KeyS";
     const isLeft = kc === KeyCode.ARROW_LEFT || kc === KeyCode.KEY_A || code === "ArrowLeft" || code === "KeyA";
     const isRight = kc === KeyCode.ARROW_RIGHT || kc === KeyCode.KEY_D || code === "ArrowRight" || code === "KeyD";
-
-    if (this._page === "result") {
-      if (isEnter) {
-        this._onRetry?.(); return;
-      }
-      if (isEsc) {
-        this._onNext?.();
-        this._showList();
-        return;
-      }
-      if (isQ) {
-        this._onQuitResult?.();
-        this.hide();
-      }
-      return;
-    }
 
     if (this._page === "brief") {
       if (isEnter) {

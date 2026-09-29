@@ -37,6 +37,7 @@ description: Dudu Badminton 应用的 Git 提交存档、双平台推送与版�
 | APK 命名 | `dudu-badminton-v<version>-arm64-v8a.apk`（如 `dudu-badminton-v0.0.1-arm64-v8a.apk`），**两端文件名完全一致** |
 | 产物目录 | `build/` |
 | Tag 命名 | `v<version>`（如 `v0.0.1`），使用 annotated tag |
+| 版本号递增 | **每次发布/打包 APK，版本号必须递增 +1**（如 `v0.0.2` -> `v0.0.3`），禁止同版本覆盖发布 |
 | 版本来源 | `package.json` 的 `version` 与 `assets/scripts/core/version.ts` 的 `APP_VERSION` 保持严格一致 |
 | 两端一致性 | GitHub 与 Gitee 必须使用相同 Tag、相同 APK 文件名、同为正式 Release（非 draft / prerelease） |
 | 更新服务 | `assets/scripts/core/update-service.ts` 优先读 Gitee `/releases/latest`，备选 GitHub，并配合国内加速代理 |

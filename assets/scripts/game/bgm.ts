@@ -9,6 +9,7 @@
 // ============================================================
 import { AudioClip, AudioSource, Node, resources } from "cc";
 import { CFG } from "../core/config";
+import { Settings } from "../core/settings";
 
 const BPM = CFG.bgm.bpm;
 const STEP = 15 / BPM;                 // 16 分音符时长(秒)
@@ -38,7 +39,7 @@ export class BgmManager {
   private cur: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
   private target: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
 
-  private muted = false;
+  // 音乐总线开关/音量读 Settings(见 applyTargets 与 shot),本类不再有私有状态
   private ducked = false;
   private scene: "menu" | "game" | "over" = "menu";
   private prevScene = "";
@@ -50,7 +51,6 @@ export class BgmManager {
   private prevNow = 0;
 
   get ready(): boolean { return this.clips.size > 0; }
-  get isMuted(): boolean { return this.muted; }
 
   /** 异步加载:建子节点树(AudioSource 一节点一个),装载 bgm 目录全部 clip */
   load(node: Node, done?: () => void): void {
@@ -119,9 +119,11 @@ export class BgmManager {
     this.cur[k] = 0;
   }
 
-  /** 目标层音量 = 想要的强度 × 总线(menu/game/over + mute/duck) */
+  /** 目标层音量 = 想要的强度 × 总线(总线 = 设置里的音乐开关与音量) */
   private applyTargets(): void {
-    const bus = this.muted ? 0 : this.ducked ? CFG.bgm.volume * 0.25 : CFG.bgm.volume;
+    // 静音仍走 lerpVolumes 的平滑淡出(保留 stem 相位),不要改成 stop()
+    const vol = Settings.bgmOn ? CFG.bgm.volume * Settings.bgmVol : 0;
+    const bus = this.ducked ? vol * 0.25 : vol;
     const g = this.scene === "game";
     const w: Record<StemKey, number> = {
       menu: this.scene === "menu" ? 1 : 0,
@@ -147,7 +149,7 @@ export class BgmManager {
 
   /** 击球 → 五声音阶爬升的拨弦(rally 越长音越高),量化到最近网格 */
   onHit(e: HitInfo): void {
-    if (!this.ready || this.muted || this.scene !== "game") return;
+    if (!this.ready || !Settings.bgmOn || this.scene !== "game") return;
     const now = performance.now();
     let n = Math.round((now - this.t0) / STEP_MS);
     if (this.t0 + n * STEP_MS < now + 20) n++;        // 离得太近顺延一拍,保证可调度
@@ -164,7 +166,7 @@ export class BgmManager {
 
   /** 得分 → 和弦重音落回网格 */
   onScore(): void {
-    if (!this.ready || this.muted || this.scene !== "game") return;
+    if (!this.ready || !Settings.bgmOn || this.scene !== "game") return;
     const now = performance.now();
     const n = Math.ceil((now + 20 - this.t0) / STEP_MS);
     const delay = Math.max(0, this.t0 + n * STEP_MS - now);
@@ -173,22 +175,20 @@ export class BgmManager {
 
   /** 平分 → 上行紧张三连音(不量化,立即触发) */
   onDeuce(): void {
-    if (!this.ready || this.muted) return;
+    if (!this.ready || !Settings.bgmOn) return;
     this.shot("deuce_sting", CFG.bgm.accentVol);
   }
 
   /** 终局 → 胜利 A 大调上行 / 失败下行叹息 */
   onMatchOver(won: boolean): void {
-    if (!this.ready || this.muted) return;
+    if (!this.ready || !Settings.bgmOn) return;
     this.shot(won ? "win_jingle" : "lose_jingle", CFG.bgm.accentVol * 1.2);
   }
 
   private shot(name: string, vol: number): void {
-    if (this.muted) return;
+    if (!Settings.bgmOn) return;
     const clip = this.clips.get(name);
-    if (clip && this.sfxBus) this.sfxBus.playOneShot(clip, vol);
+    // 事件音型也挂在音乐总线的音量上,不然关了音量还能听见拨弦
+    if (clip && this.sfxBus) this.sfxBus.playOneShot(clip, vol * Settings.bgmVol);
   }
-
-  // ---------- 静音(不停 stem,靠 target=0 平滑淡出,保留相位) ----------
-  setMute(m: boolean): void { this.muted = m; }
 }

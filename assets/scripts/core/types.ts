@@ -237,7 +237,7 @@ export interface DrillDef {
   want: ShotKind[];
   /** 喂球机旋钮:只描述喂球(落点深浅/第几帧放球),和要求玩家按的键无关 */
   feed: { depth: number; jumpLead: number };
-  /** 要求玩家按的键:far=J 深球 / near=K 短球,只驱动引导文案与时机条 */
+  /** 要求玩家按的击球键:far=「深球」/ near=「短球」,只驱动引导文案与时机条 */
   wantKey: "far" | "near";
   contactX: number;
   demoH: number;

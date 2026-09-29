@@ -55,19 +55,20 @@ export class MainMenu {
     // 扫描线 + 暗角:老 #scan / .grain 的街机厅氛围(轻量,不能再糊一层)
     kit.atmosphere(this.root);
 
-    // ---------- 顶部条:等级(左) / 金币 + 音效(右) ----------
-    // 三块都收在 ±448 内:16:9 屏(FIXED_HEIGHT 下可见宽正好 960)也不贴到边。
+    // ---------- 顶部条:等级(左) / 金币 + 声音 + 设置(右) ----------
+    // 四块都收在 ±448 内:16:9 屏(FIXED_HEIGHT 下可见宽正好 960)也不贴到边。
     const lvBadge = this.badge(-380, 246, 118, "primary");
     this.lvLabel = kit.label(lvBadge, "Lv.1", 16, "#14100a");
     this.lvLabel.node.setPosition(0, -3, 0);
 
-    const coinBadge = this.badge(286, 246, 148, "ghost");
-    makeCoinIcon(coinBadge, -52, -2, 9);   // Graphics 金币(替代 🪙 emoji,原生平台无彩色 emoji 字体)
+    const coinBadge = this.badge(236, 246, 128, "ghost");
+    makeCoinIcon(coinBadge, -42, -2, 9);   // Graphics 金币(替代 🪙 emoji,原生平台无彩色 emoji 字体)
     this.coinLabel = kit.label(coinBadge, "0", 16, P.accent);
-    this.coinLabel.node.setPosition(12, -2, 0);
+    this.coinLabel.node.setPosition(6, -2, 0);
 
-    const soundBadge = this.badge(400, 246, 88, "ghost");
-    this.soundLabel = kit.label(soundBadge, "音效", 13, P.dim);
+    // 「声音」= 音效 + 音乐两条总线一起切(单独的开关在设置页里)
+    const soundBadge = this.badge(341, 246, 66, "ghost");
+    this.soundLabel = kit.label(soundBadge, "声音", 13, P.dim);
     const sndBtn = soundBadge.addComponent(Button);
     sndBtn.transition = Button.Transition.SCALE;
     sndBtn.zoomScale = 0.94;
@@ -78,8 +79,20 @@ export class MainMenu {
       this.paintSound();
     });
 
+    const setBadge = this.badge(414, 246, 64, "ghost");
+    kit.label(setBadge, "设置", 13, ARCADE.acid);
+    const setBtn = setBadge.addComponent(Button);
+    setBtn.transition = Button.Transition.SCALE;
+    setBtn.zoomScale = 0.94;
+    setBtn.target = setBadge;
+    setBadge.on(Button.EventType.CLICK, () => {
+      kit.sfx.play("ui");
+      kit.openSettings();
+    });
+
     this.riseNodes.push(
-      { node: lvBadge, delay: 0.0 }, { node: coinBadge, delay: 0.04 }, { node: soundBadge, delay: 0.08 },
+      { node: lvBadge, delay: 0.0 }, { node: coinBadge, delay: 0.04 },
+      { node: soundBadge, delay: 0.08 }, { node: setBadge, delay: 0.12 },
     );
 
     // ---------- 球馆铭牌(老 .hero-kicker:跟着当前球馆走) ----------
@@ -182,9 +195,7 @@ export class MainMenu {
     shop.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openCareer(); });
     this.riseNodes.push({ node: career.node, delay: 0.58 }, { node: shop.node, delay: 0.63 });
 
-    // ---------- 玩法提示(老 #legend 里那一句) ----------
-    this.txt(this.root, "按的时机决定质量 · 击球键决定落点:朝网按 = 深球,背网按 = 短球",
-      12, DIM_FAINT, -340, -190, 680, 1, P.ink).horizontalAlign = Label.HorizontalAlign.CENTER;
+    // ---------- 玩法提示:落点教学只在发球那一次说(hud.ts 状态行),首页不再复述 ----------
 
     // ---------- 底部版本号与更新检查入口 ----------
     const verBtn = kit.button(this.root, `${APP_VERSION_NAME} 检查更新`, 200, 30, { size: 13, fg: P.dim });
@@ -268,15 +279,15 @@ export class MainMenu {
       const active = t.id === curId;
       t.g.clear();
       drawHardShadow(t.g, 200, 48, 10, 4, 4, active ? 0.45 : 0.3);
-      drawGlassCard(t.g, 200, 48, 10, active ? 0.52 : 0.28, active ? t.accent : undefined);
+      drawGlassCard(t.g, 200, 48, 10, active ? 0.56 : 0.42, active ? t.accent : undefined);
       t.name.color = col(active ? ARCADE.paper : "#9fb0d8");
       t.flag.active = active;
     }
   }
 
   private paintSound(): void {
-    const muted = this.kit.muted;
-    this.soundLabel.string = muted ? "音效关" : "音效开";
+    const muted = this.kit.muted;      // 两条总线都关才算「声音关」,与设置页的独立开关不冲突
+    this.soundLabel.string = muted ? "声音关" : "声音开";
     this.soundLabel.color = col(muted ? "#626f96" : ARCADE.acid);
   }
 

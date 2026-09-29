@@ -409,6 +409,15 @@ function restart(): void {
   newMatch(R.mode, R.diff, R.humans);
 }
 
+// 「正在打球」:发球准备 / 相持 / 得分停顿三态。
+// HUD 的显隐和触屏虚拟按键的显隐是同一个判据 —— 之前 hud.ts 自己抄了一份
+// 三态比较,现在两边都读这一条,加对局态只改一处。
+// 可传 state(默认读 R.state):HUD 的 sync 是外部喂进来的 R,让它显式传参更诚实。
+// 注意训练场的 SERVE/RALLY/POINT 也算(CAREER/DRILLS 那些面板态不算)。
+function isPlaying(state: MatchState = R.state): boolean {
+  return state === "SERVE" || state === "RALLY" || state === "POINT";
+}
+
 // 赛点
 function isMatchPoint(): boolean {
   const w = C.scoring.winScore;
@@ -457,6 +466,6 @@ const statsOf = (s: TeamSide): TeamStats => {
 };
 
 export const Rules = {
-  R, newMatch, step, restart, pause, resume, isMatchPoint, matchPointInfo, beginPoint,
+  R, newMatch, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint,
   teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf, setTrailHook,
 };

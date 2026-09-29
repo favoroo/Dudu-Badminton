@@ -6,6 +6,7 @@
 // ============================================================
 import { Color, Graphics, Label, Layers, Node, UIOpacity, UITransform } from "cc";
 import { CFG } from "../core/config";
+import { Settings } from "../core/settings";
 import { lerp, clamp } from "../core/utils";
 import { Ball, GameEvent, Player, SkinDef } from "../core/types";
 import { drawPlayer, drawShuttle } from "./sprites";
@@ -130,7 +131,7 @@ export class WorldView {
       const isPartner = label === "搭档";
       const isP2 = label === "P2";
       pair.tag.node.active = true;
-      pair.tag.node.setPosition(this.vp.x(rxs[k]), this.vp.y(rys[k] - C.player.h - 18 + 0.5), 0);
+      pair.tag.node.setPosition(Math.round(this.vp.x(rxs[k])), Math.round(this.vp.y(rys[k] - C.player.h - 18 + 0.5)), 0);
       pair.tag.string = name;
       pair.tag.color = isMainUser
         ? new Color().fromHEX(p.side === "left" ? "#ffe14d" : "#3ea8ff")
@@ -139,7 +140,7 @@ export class WorldView {
         : new Color(255, 255, 255, 173);
       // 球衣号:胸前局部 (1, -0.568H) ≈ 世界 (x+1, y-0.568H)(sprites.ts#L417-420 注释)
       pair.jersey.node.active = true;
-      pair.jersey.node.setPosition(this.vp.x(rxs[k] + 1), this.vp.y(rys[k] - C.player.h * 0.568), 0);
+      pair.jersey.node.setPosition(Math.round(this.vp.x(rxs[k] + 1)), Math.round(this.vp.y(rys[k] - C.player.h * 0.568)), 0);
       pair.jersey.string = p.jersey;
       pair.jersey.color = new Color(255, 255, 255, 204);
     }
@@ -181,12 +182,19 @@ export class WorldView {
     this.trail.push({ x: b.x, y: b.y, life: sweet ? C.fx.trailSweetLen : C.fx.trailLen, sweet });
   }
 
+  /** 震屏总量:调用方只管「这次多狠」,是否生效由设置里的开关决定 */
   shake(amt: number): void {
+    if (!Settings.hintShake) return;
     this.shakeAmt = Math.max(this.shakeAmt, amt);
   }
 
-  /** 事件驱动的飘字(老 FX.float 的精简版:上浮 + 淡出) */
+  /**
+   * 事件驱动的飘字(老 FX.float 的精简版:上浮 + 淡出)
+   * 「飘字提示」开关掐在这个唯一入口 —— 关掉时「下网/出界/擦网/平分/训练有效+1」
+   * 这些文字提示也一并没了(要的就是干净画面;想只关击球飘字得给本函数加分类参数)。
+   */
   float(wx: number, wy: number, text: string, color: string, size: number, life: number, vy = -1): void {
+    if (!Settings.hintFloat) return;
     const node = new Node("float");
     node.layer = Layers.Enum.UI_2D;
     node.addComponent(UITransform);

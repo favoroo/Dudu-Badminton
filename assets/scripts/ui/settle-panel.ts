@@ -315,7 +315,8 @@ export class SettlePanel {
     const parts: string[] = [`基础 ${res.baseCoin}`];
     if (res.perf > 0) parts.push(`表现 +${res.perf}`);
     if (res.streakBonus > 0) parts.push(`连胜 ×${(1 + res.streakBonus).toFixed(2).replace(/0$/, "")}(${res.streak} 连胜)`);
-    this.bonusLine.string = res.exp > 0 ? parts.join(" · ") : "本次没有经验入账";
+    // 明细恒在:没经验时也照样把「基础/表现/连胜」摊开,不用另写一句"本次没有经验入账"
+    this.bonusLine.string = parts.join(" · ");
 
     const news: string[] = [];
     if (res.levelUps.length > 0) {

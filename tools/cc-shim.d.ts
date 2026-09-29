@@ -34,6 +34,20 @@ declare module "cc" {
   export interface Vec2 { x: number; y: number }
   export const Vec2: { new(x?: number, y?: number): Vec2 };
 
+  export function v3(x?: number, y?: number, z?: number): Vec3;
+  export function v3(out: Vec3, x?: number, y?: number, z?: number): Vec3;
+
+  /** 触摸事件:getUILocation 是设计分辨率下的 UI 坐标(与节点坐标同一单位) */
+  export interface EventTouch {
+    getID(): number;
+    getUILocation(out?: Vec2): Vec2;
+    getLocation(out?: Vec2): Vec2;
+    getTarget(): Node;
+    getCurrentTarget(): Node;
+    preventDefault(): void;
+  }
+  export const EventTouch: { new(): EventTouch };
+
   export class Graphics extends Component {
     static LineCap: typeof LineCap;
     static LineJoin: typeof LineJoin;
@@ -66,6 +80,10 @@ declare module "cc" {
     readonly width: number;
     readonly height: number;
     anchorPoint: { x: number; y: number };
+    /** 世界(UI)坐标 → 本节点锚点相对局部坐标;虚拟按键拖动用 */
+    convertToNodeSpaceAR(worldPoint: Vec3, out?: Vec3): Vec3;
+    /** 反向:局部 → 世界 */
+    convertToWorldSpaceAR(localPoint: Vec3, out?: Vec3): Vec3;
   }
   export class Widget extends Component {
     isAlignTop: boolean; top: number;
@@ -137,7 +155,12 @@ declare module "cc" {
     addComponent<T>(type: { new(): T }): T;
     getComponent<T>(type: { new(): T }): T | null;
     getComponents<T>(type: { new(): T }): T[];
-    on(type: string, cb: (...args: never[]) => void): void;
+    /**
+     * 事件回调参数放宽成 any[]:真实 cc 类型里 TOUCH_START/MOVE 等回调是 EventTouch,
+     * 写成 never[] 会让 handler 里的 e.getUILocation() 报 TS2339(编辑器外检查与引擎不符)。
+     */
+    on(type: string, cb: (...args: any[]) => void, target?: unknown): void;
+    off(type: string, cb?: (...args: any[]) => void, target?: unknown): void;
     /** 按名字找直接子节点 */
     getChildByName(name: string): Node | null;
     removeFromParent(): void;
@@ -157,6 +180,7 @@ declare module "cc" {
   export namespace Node {
     export const EventType: {
       TOUCH_START: string;
+      TOUCH_MOVE: string;
       TOUCH_END: string;
       TOUCH_CANCEL: string;
     };
