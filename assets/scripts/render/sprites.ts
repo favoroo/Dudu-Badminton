@@ -19,7 +19,7 @@
 // ============================================================
 import { Color, Graphics } from "cc";
 import { CFG } from "../core/config";
-import { Player, Ball, SkinDef, SwingStyle, Theme } from "../core/types";
+import { Player, Ball, FaceKind, SkinDef, SwingStyle, Theme } from "../core/types";
 import { Physics } from "../core/physics";
 import { lerp, clamp, TAU, D2R } from "../core/utils";
 import { pal, withAlpha } from "./palette";
@@ -55,12 +55,15 @@ interface Frame {
 
 /** 人物帧:老代码 translate(x,y) + scale(facing*sx, sy) 的等价展开 */
 function playerFrame(vp: Viewport, wx: number, wy: number, facing: number, sx: number, sy: number): Frame {
-  const k = Math.sqrt(Math.abs(facing * sx * sy));
+  const vsx = Math.abs(vp.x(1) - vp.x(0));
+  const vsy = Math.abs(vp.y(1) - vp.y(0));
+  const vs = Math.sqrt(vsx * vsy) || 1;
+  const k = Math.sqrt(Math.abs(facing * sx * sy)) * vs;
   return {
     pt: (lx, ly) => ({ x: vp.x(wx + facing * sx * lx), y: vp.y(wy + sy * ly) }),
     lw: (v) => v * k,
-    kx: sx,
-    ky: sy,
+    kx: sx * vsx,
+    ky: sy * vsy,
   };
 }
 
@@ -69,6 +72,16 @@ function offsetFrame(parent: Frame, ox: number, oy: number): Frame {
   return {
     pt: (lx, ly) => parent.pt(ox + lx, oy + ly),
     lw: (v) => parent.lw(v),
+    kx: parent.kx,
+    ky: parent.ky,
+  };
+}
+
+/** 缩放子帧:以锚点为原点缩放局部单位(表情贴纸的 pop-in 弹出用) */
+function scaledFrame(parent: Frame, ox: number, oy: number, s: number): Frame {
+  return {
+    pt: (lx, ly) => parent.pt(ox + lx * s, oy + ly * s),
+    lw: (v) => parent.lw(v * s),
     kx: parent.kx,
     ky: parent.ky,
   };
@@ -87,7 +100,10 @@ function rotateFrame(parent: Frame, ox: number, oy: number, rot: number): Frame 
 /** 羽毛球帧:老代码 translate(bx,by) + rotate(ang) + scale(sqX,sqY) 的等价展开(先缩放再旋转再平移) */
 function shuttleFrame(vp: Viewport, wx: number, wy: number, ang: number, sqX: number, sqY: number): Frame {
   const cos = Math.cos(ang), sin = Math.sin(ang);
-  const k = Math.sqrt(Math.abs(sqX * sqY));
+  const vsx = Math.abs(vp.x(1) - vp.x(0));
+  const vsy = Math.abs(vp.y(1) - vp.y(0));
+  const vs = Math.sqrt(vsx * vsy) || 1;
+  const k = Math.sqrt(Math.abs(sqX * sqY)) * vs;
   return {
     pt: (lx, ly) => {
       const rx = lx * sqX, ry = ly * sqY;
@@ -135,21 +151,21 @@ function ellipsePts(f: Frame, cx: number, cy: number, rx: number, ry: number): P
   return pts;
 }
 
-/** 轴对齐帧里的整椭圆:圆心经变换、半径按各向异性缩放(cc 的 ellipse 参数就是半径)。只可在未旋转帧用 */
-function ellipseAA(g: Graphics, f: Frame, cx: number, cy: number, rx: number, ry: number): void {
-  const c = f.pt(cx, cy);
-  g.ellipse(c.x, c.y, rx * f.kx, ry * f.ky);
-}
-
-function circleAA(g: Graphics, f: Frame, cx: number, cy: number, r: number): void {
-  ellipseAA(g, f, cx, cy, r, r);
-}
-
 /** 折线路径(隐式起笔画);closed 时补 close() */
 function polyPath(g: Graphics, pts: Pt[], closed: boolean): void {
   g.moveTo(pts[0].x, pts[0].y);
   for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
   if (closed) g.close();
+}
+
+/** 椭圆采样为折线路径:经由 f.pt 变换,与 arcPts / fillRectTr 完全一致,彻底规避 Viewport 缩放/镜像导致比例失调 */
+function ellipseAA(g: Graphics, f: Frame, cx: number, cy: number, rx: number, ry: number): void {
+  const pts = ellipsePts(f, cx, cy, rx, ry);
+  polyPath(g, pts, true);
+}
+
+function circleAA(g: Graphics, f: Frame, cx: number, cy: number, r: number): void {
+  ellipseAA(g, f, cx, cy, r, r);
 }
 
 /** 局部线段(不 stroke,由调用方攒路径后一次性 stroke,与 canvas 同构) */
@@ -173,9 +189,10 @@ function px(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number,
   fillRectTr(g, f, x0, y0, Math.ceil(w), Math.ceil(h), pal(color));
 }
 
-// 头部固定配色:皮肤与手同色;头发/描边沿用球鞋的深色调,队色只上发带
+// 头部固定配色(重设计):一整颗黑脸圆 + 白色线条五官,队色只上发带 ——
+// 黑脸上唯一的彩色,红蓝阵营识别靠它。SKIN/SKIN_LINE 仍用于手臂与手。
 const SKIN = "#f2c491", SKIN_LINE = "rgba(10,13,24,0.55)";
-const HAIR = "#382718", INK = "rgba(8,10,20,0.85)", EYE = "#1b1f2e";
+const HEAD = "#0a0e18", HEAD_LINE = "rgba(235,240,255,0.5)", FACE = "#ffffff";
 
 // 皮肤默认值(与 config.skins 对应项同色):没装备皮肤或旧调用方没传时兜回原配色,
 // 皮肤只换颜色不改形状,判定半径与手感完全不受影响
@@ -292,9 +309,12 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   g.lineJoin = LineJoin.ROUND;
 
   // 影子
-  const air = clamp((CO.groundY - y) / 140, 0, 1);
+  const groundY = p.groundY ?? CO.groundY;
+  const air = clamp((groundY - y) / 140, 0, 1);
+  const vsx = Math.abs(vp.x(1) - vp.x(0));
+  const vsy = Math.abs(vp.y(1) - vp.y(0));
   g.fillColor = withAlpha("#000000", 0.38 - air * 0.22);
-  g.ellipse(vp.x(x), vp.y(CO.groundY + 3), W * 0.62 * (1 - air * 0.3), 5 * (1 - air * 0.35));
+  g.ellipse(vp.x(x), vp.y(groundY + 3), W * 0.62 * (1 - air * 0.3) * vsx, 5 * (1 - air * 0.35) * vsy);
   g.fill();
 
   // 唯一的坐标系:脚底原点 + facing 镜像 + squash。躯干/腿/双臂/头同场绘制,
@@ -425,9 +445,9 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     lookX = ldx / ld * 1.3; lookY = ldy / ld * 1.3;
   }
   const blink = ((t + (p.blinkSeed ?? 0)) % 220) < 5;
-  px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, SKIN);
+  px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, HEAD);
   drawHead(g, F, th, H * 0.21, 2 + (lean - 2) * 0.6, bodyTop - H * 0.21 * 1.12 + headDy,
-    { lookX, lookY, blink });
+    { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD });
 
   // ---------- 持拍臂:一条姿势管线,挥拍弧线 ↔ 待机收拍全程连续 ----------
   const A = offsetFrame(F, 1.5 + (lean - 2) * 0.8, SW.pivotY + bob);   // 肩点在躯干上段内,随拧转前移
@@ -504,14 +524,16 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   g.fill();
 
   // 角色头顶名牌与操控指示标
-  drawPlayerTag(g, vp, p, x, y, t);
+  if (!p.hideTag) {
+    drawPlayerTag(g, vp, p, x, y, t);
+  }
 }
 
 // ---------- 角色头顶名牌: 区分 YOU / P1 / P2 / 搭档 / CPU ----------
 // 【移植限制】canvas 的 measureText/fillText 无 Graphics 对应:胶囊与光标照画,
 // 文字宽度按字数估算(半角≈6.4px / 全角≈9.5px @ 800 9.5px),文字本身交表现层 Label。
 function drawPlayerTag(g: Graphics, vp: Viewport, p: Player, x: number, y: number, t: number): void {
-  const label = p.label || (p.isAI ? "CPU" : "YOU");
+  const label = p.label || (p.isAI ? "AI" : "YOU");
   const isMainUser = (!p.isAI && (label === "你" || label === "P1" || label === "YOU"));
   const isPartner = label === "搭档";
   const isP2 = label === "P2";
@@ -573,73 +595,239 @@ function estTextWidth(s: string): number {
   return w;
 }
 
-// ---------- 头:后脑发圆 → 脸 → 远侧耳 → 刘海 → 队色发带 → 五官 → 轮廓 ----------
-// 局部 +x = 朝球网:近侧眼大、远侧眼小,瞳位随 opt.look 追球,和斜侧身体同一个视角
-function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number, opt: { lookX?: number; lookY?: number; blink?: boolean } = {}): void {
+// ---------- 头:一整颗黑脸圆 + 白色线条五官 + 队色发带(重设计) ----------
+// 肤色/刘海/耳朵全部去掉,表情全靠白色线条(face 种类见 types.FaceKind),
+// 局部 +x = 朝球网:近侧眼大、远侧眼小,瞳位随 opt.look 追球,和斜侧身体同一个视角。
+// 注意 cc.Graphics 的 fill()/stroke() 会消费当前路径(弧光双描边处靠重建路径证实),
+// 所以「填充 + 描边」同一形状必须重建路径,攒路径后一次性 stroke 与 canvas 同构。
+function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
+  opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number } = {}): void {
   const lx = opt.lookX || 0, ly = opt.lookY || 0;
-  const fx = cx + 1.5, fy = cy + 2.5, fr = hr * 0.82;   // 脸圆;发圆略大偏后包住它
+  const face: FaceKind = (opt.faceT ?? 0) > 0 ? (opt.face ?? "normal") : "normal";
 
-  // 后脑(发) + 脸
-  g.fillColor = pal(HAIR);
-  circleAA(g, f, cx - 1.5, cy - 1, hr);
+  // 黑脸圆:近黑填充 + 淡白描边,暗色球馆里勾出轮廓
+  g.fillColor = pal(HEAD);
+  circleAA(g, f, cx, cy, hr);
   g.fill();
-  g.fillColor = pal(SKIN);
-  circleAA(g, f, fx, fy, fr);
-  g.fill();
-  g.strokeColor = pal(INK); g.lineWidth = f.lw(2); g.stroke();   // 同路径描边(脸圆)
+  g.strokeColor = pal(HEAD_LINE);
+  circleAA(g, f, cx, cy, hr);
+  g.lineWidth = f.lw(1.6);
+  g.stroke();
 
-  // 远侧耳朵(贴背缘,只露一只 = 侧身信号)
-  g.fillColor = pal(SKIN); g.strokeColor = pal(SKIN_LINE); g.lineWidth = f.lw(1.2);
-  circleAA(g, f, fx - fr * 0.62, fy + 2, 3.4);
-  g.fill(); g.stroke();
+  // 头顶高光:一道极淡反光弧,黑脸不至于闷成纯色块
+  g.strokeColor = withAlpha(pal(FACE), 0.15);
+  g.lineWidth = f.lw(2.5);
+  polyPath(g, arcPts(f, cx, cy, hr * 0.76, Math.PI * 1.12, Math.PI * 1.42, false), false);
+  g.stroke();
 
-  // 刘海:盖住上半张脸的发帘,三个发圆 scallop 出弧形分缝,偏向网侧
-  g.fillColor = pal(HAIR);
-  polyPath(g, arcPts(f, fx, fy, fr + 0.8, Math.PI, 0, false), true);
+  // 队色发带:压在头顶,黑脸上的红蓝识别靠它
+  g.strokeColor = pal(th.main);
+  g.lineWidth = f.lw(4);
+  polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.14, Math.PI * 1.86, false), false);
+  g.stroke();
+
+  // ---------- 五官基线:眼距沿用 3/4 透视(网侧大、背侧小) ----------
+  const exN = cx + hr * 0.40, exF = cx - hr * 0.16;   // 近/远眼 x
+  const eyN = cy + hr * 0.10, eyF = cy + hr * 0.14;   // 近/远眼 y(远眼略低)
+  const mx = cx + hr * 0.17, my = cy + hr * 0.34;     // 嘴基点(偏网侧)
+  g.fillColor = pal(FACE);
+  g.strokeColor = pal(FACE);
+
+  switch (face) {
+    case "fierce": {
+      // 斜怒眉(内端压向鼻梁)+ 紧咬直线嘴 + 圆点眼
+      g.lineWidth = f.lw(1.5);
+      lineSeg(g, f, exN + 2.0, eyN - 4.8, exN - 1.8, eyN - 2.6);
+      lineSeg(g, f, exF + 1.7, eyF - 3.0, exF - 1.7, eyF - 4.8);
+      lineSeg(g, f, mx - 1.5, my + 0.2, mx + 4.5, my - 0.4);
+      g.stroke();
+      dotEyes(g, f, exN, eyN, exF, eyF, lx, ly);
+      break;
+    }
+    case "star": {
+      // ✦ 十字星眼 + 笑弧
+      g.lineWidth = f.lw(1.3);
+      sparkle(g, f, exN + lx, eyN + ly, 2.5);
+      sparkle(g, f, exF + lx * 0.7, eyF + ly, 1.9);
+      g.stroke();
+      smileArc(g, f, mx + 0.5, my - 1.2, 3.2);
+      break;
+    }
+    case "wow":
+    case "oops": {
+      // 大圆眼 + 惊 o 嘴(wow)/波浪嘴(oops)
+      circleAA(g, f, exN + lx, eyN + ly, 2.6);
+      g.fill();
+      circleAA(g, f, exF + lx * 0.7, eyF + ly, 2.0);
+      g.fill();
+      if (face === "wow") {
+        g.lineWidth = f.lw(1.3);
+        circleAA(g, f, mx + 1.2, my + 0.6, 1.7);
+        g.stroke();
+      } else {
+        wavyMouth(g, f, mx, my);
+      }
+      break;
+    }
+    case "happy":
+    case "cheer": {
+      // ∩∩ 笑眼;大笑弧(happy)/白色半圆张嘴(cheer)
+      g.lineWidth = f.lw(1.5);
+      polyPath(g, arcPts(f, exN + lx, eyN + 0.8, 2.1, Math.PI, 0, false), false);
+      polyPath(g, arcPts(f, exF + lx * 0.7, eyF + 0.8, 1.6, Math.PI, 0, false), false);
+      g.stroke();
+      if (face === "cheer") {
+        g.fillColor = pal(FACE);
+        polyPath(g, arcPts(f, mx + 1, my - 1.4, 3.3, Math.PI * 0.06, Math.PI * 0.94, false), true);
+        g.fill();
+      } else {
+        smileArc(g, f, mx + 0.5, my - 1.4, 3.4);
+      }
+      break;
+    }
+    case "sad": {
+      // 无力眼线(外端下垂)+ 倒弧嘴
+      g.lineWidth = f.lw(1.4);
+      lineSeg(g, f, exN - 1.6, eyN - 0.6, exN + 1.7, eyN + 0.6);
+      lineSeg(g, f, exF + 1.6, eyF - 0.4, exF - 1.7, eyF + 0.6);
+      g.stroke();
+      g.lineWidth = f.lw(1.3);
+      polyPath(g, arcPts(f, mx + 1.5, my + 1.6, 2.5, Math.PI * 1.12, Math.PI * 1.88, false), false);
+      g.stroke();
+      break;
+    }
+    case "ko": {
+      // XX 眼 + 波浪嘴
+      g.lineWidth = f.lw(1.4);
+      crossEye(g, f, exN, eyN, 1.8);
+      crossEye(g, f, exF, eyF, 1.4);
+      g.stroke();
+      wavyMouth(g, f, mx, my);
+      break;
+    }
+    default: {
+      // normal:白点眼(追球)+ 眨眼横线 + 短平线嘴
+      if (opt.blink) {
+        g.lineWidth = f.lw(1.4);
+        lineSeg(g, f, exN - 1.8 + lx, eyN, exN + 1.8 + lx, eyN);
+        lineSeg(g, f, exF - 1.3 + lx * 0.7, eyF, exF + 1.3 + lx * 0.7, eyF);
+        g.stroke();
+      } else {
+        dotEyes(g, f, exN, eyN, exF, eyF, lx, ly);
+      }
+      g.lineWidth = f.lw(1.3);
+      lineSeg(g, f, mx - 0.5, my, mx + 3.8, my + 0.4);
+      g.stroke();
+      break;
+    }
+  }
+
+  drawFaceSticker(g, f, opt.t ?? 0, face, opt.faceT ?? 0, opt.faceD ?? 1, cx, cy, hr);
+}
+
+// ---------- 表情五官零件(全部白色线条,由 drawHead 按种类取用) ----------
+
+// 白点眼:normal/fierce 共用;瞳位随球偏移(look 已是局部单位向量 × 1.3)
+function dotEyes(g: Graphics, f: Frame, exN: number, eyN: number, exF: number, eyF: number, lx: number, ly: number): void {
+  g.fillColor = pal(FACE);
+  ellipseAA(g, f, exN + lx, eyN + ly, 1.9, 2.6);
   g.fill();
-  const scallops: number[][] = [[fr * 0.52, -fr * 0.22, fr * 0.30], [-fr * 0.05, -fr * 0.10, fr * 0.32], [-fr * 0.52, -fr * 0.28, fr * 0.26]];
-  for (const [bx, by, br] of scallops) {
-    circleAA(g, f, fx + bx, fy + by, br);
+  ellipseAA(g, f, exF + lx * 0.7, eyF + ly, 1.4, 2.1);
+  g.fill();
+}
+
+// 笑弧:canvas y 向下,0.1π..0.9π 是向下鼓的弧 = 微笑
+function smileArc(g: Graphics, f: Frame, cx: number, cy: number, r: number): void {
+  g.lineWidth = f.lw(1.4);
+  polyPath(g, arcPts(f, cx, cy, r, Math.PI * 0.12, Math.PI * 0.88, false), false);
+  g.stroke();
+}
+
+// 波浪嘴:三段小折线,失误/倒地时那股「完了」的劲儿
+function wavyMouth(g: Graphics, f: Frame, mx: number, my: number): void {
+  g.lineWidth = f.lw(1.3);
+  polyPath(g, [
+    f.pt(mx - 0.5, my + 0.4), f.pt(mx + 1.2, my - 0.8),
+    f.pt(mx + 2.9, my + 0.6), f.pt(mx + 4.6, my - 0.5),
+  ], false);
+  g.stroke();
+}
+
+// ✦ 星星眼:竖长横短的四芒十字
+function sparkle(g: Graphics, f: Frame, x: number, y: number, r: number): void {
+  lineSeg(g, f, x, y - r, x, y + r);
+  lineSeg(g, f, x - r * 0.75, y, x + r * 0.75, y);
+}
+
+// XX 眼:两根交叉短线
+function crossEye(g: Graphics, f: Frame, x: number, y: number, r: number): void {
+  lineSeg(g, f, x - r, y - r, x + r, y + r);
+  lineSeg(g, f, x - r, y + r, x + r, y - r);
+}
+
+// ---------- 表情贴纸:头侧的小图标(矢量画的 emoji,原生平台不受字体限制) ----------
+// pop-in(easeOutBack 弹出)+ 轻微浮动,末段上浮淡出;时长由 faceD/faceT 驱动
+const STICKERS: Partial<Record<FaceKind, "drop" | "bubble" | "star" | "heart">> = {
+  star: "star", wow: "bubble", oops: "drop", sad: "drop", cheer: "heart",
+};
+
+function drawFaceSticker(g: Graphics, f: Frame, t: number, face: FaceKind, faceT: number, faceD: number,
+  cx: number, cy: number, hr: number): void {
+  const kind = STICKERS[face];
+  if (!kind || faceT <= 0) return;
+  // 定格表情(胜负时的超大 faceT):OVER 冻结态 faceT 不衰减,pop-in 按「已弹完」算,
+  // 不做淡出;浮动一律用世界时钟,冻结时爱心/星星照样轻轻飘
+  const pinned = faceT > 600;
+  const elapsed = pinned ? 8 : Math.max(0, faceD - faceT);
+  const k = clamp(elapsed / 8, 0, 1);                  // pop-in 进度
+  const c1 = 1.70158, c3 = c1 + 1;
+  const pop = 1 + c3 * ((k - 1) ** 3) + c1 * ((k - 1) ** 2);
+  const out = pinned ? 1 : clamp(faceT / 18, 0, 1);    // 末段淡出权重
+  const rise = pinned ? 0 : (1 - out) * 7;
+  const bob = Math.sin(t * 0.12) * 1.4;
+  const sf = scaledFrame(f, cx + hr * 1.12, cy - hr * 0.72 - rise + bob, Math.max(0.05, pop));
+  const alpha = out;
+
+  if (kind === "drop") {
+    // 汗滴:上尖下圆,悬在额角
+    g.fillColor = withAlpha(pal("#8fd0ff"), alpha);
+    circleAA(g, sf, 0, 1.6, 3.0);
+    g.fill();
+    polyPath(g, [sf.pt(0, -4.6), sf.pt(-2.5, -0.2), sf.pt(2.5, -0.2)], true);
+    g.fill();
+  } else if (kind === "bubble") {
+    // 感叹号气泡:白底泡 + 深色「!」+ 朝头的小尾巴
+    g.fillColor = withAlpha(pal(FACE), alpha);
+    ellipseAA(g, sf, 0, -0.6, 4.6, 4.2);
+    g.fill();
+    polyPath(g, [sf.pt(-2.6, 2.8), sf.pt(-4.6, 6.2), sf.pt(-0.8, 3.6)], true);
+    g.fill();
+    g.strokeColor = withAlpha(pal(HEAD), alpha);
+    g.lineWidth = sf.lw(1.5);
+    lineSeg(g, sf, 0, -2.4, 0, 0.6);
+    circleAA(g, sf, 0, 2.2, 0.75);
+    g.stroke();
+  } else if (kind === "star") {
+    // 四芒星:外尖内收的 8 点多边形
+    const pts: Pt[] = [];
+    for (let i = 0; i < 8; i++) {
+      const ang = -Math.PI / 2 + (i * Math.PI) / 4;
+      const r = i % 2 === 0 ? 5 : 1.5;
+      pts.push(sf.pt(Math.cos(ang) * r, Math.sin(ang) * r));
+    }
+    g.fillColor = withAlpha(pal("#ffe14d"), alpha);
+    polyPath(g, pts, true);
+    g.fill();
+  } else {
+    // 爱心:两圆一三角同色叠出轮廓
+    g.fillColor = withAlpha(pal("#ff7bac"), alpha);
+    circleAA(g, sf, -1.7, -1.2, 2.0);
+    g.fill();
+    circleAA(g, sf, 1.7, -1.2, 2.0);
+    g.fill();
+    polyPath(g, [sf.pt(-3.55, -0.4), sf.pt(3.55, -0.4), sf.pt(0, 4.6)], true);
     g.fill();
   }
-
-  // 队色发带:接替旧头像圆环的红蓝识别,压在发帘和额头交界
-  g.strokeColor = pal(th.main); g.lineWidth = f.lw(4);
-  polyPath(g, arcPts(f, fx, fy, fr * 0.94, Math.PI * 1.18, Math.PI * 1.86, false), false);
-  g.stroke();
-
-  // 发丝高光
-  g.strokeColor = withAlpha(pal("#ffffff"), 0.12); g.lineWidth = f.lw(2.5);
-  polyPath(g, arcPts(f, cx - 1.5, cy - 1, hr * 0.72, Math.PI * 1.15, Math.PI * 1.5, false), false);
-  g.stroke();
-
-  // 双眼:网侧大、背侧小(3/4 透视);瞳位随球偏移;眨眼时收成两条短横线
-  if (opt.blink) {
-    g.strokeColor = pal(EYE); g.lineWidth = f.lw(1.4);
-    lineSeg(g, f, fx + fr * 0.40 - 1.8 + lx, fy + 1.5, fx + fr * 0.40 + 1.8 + lx, fy + 1.5);
-    lineSeg(g, f, fx - fr * 0.28 - 1.3 + lx * 0.7, fy + 2, fx - fr * 0.28 + 1.3 + lx * 0.7, fy + 2);
-    g.stroke();
-  } else {
-    g.fillColor = pal(EYE);
-    ellipseAA(g, f, fx + fr * 0.40 + lx, fy + 1.5 + ly, 1.9, 2.7); g.fill();
-    ellipseAA(g, f, fx - fr * 0.28 + lx * 0.7, fy + 2 + ly, 1.4, 2.2); g.fill();
-    g.fillColor = pal("rgba(255,255,255,0.85)");
-    circleAA(g, f, fx + fr * 0.40 + lx - 0.5, fy - 0.2 + ly, 0.7); g.fill();
-    circleAA(g, f, fx - fr * 0.28 + lx * 0.7 - 0.4, fy + 0.4 + ly, 0.6); g.fill();
-  }
-
-  // 腮红 + 微笑
-  g.fillColor = pal("rgba(235,120,100,0.35)");
-  ellipseAA(g, f, fx + fr * 0.52, fy + 6.5, 2.6, 1.5);
-  g.fill();
-  g.strokeColor = pal("#b06548"); g.lineWidth = f.lw(1.3);
-  polyPath(g, arcPts(f, fx + 2, fy + 5.5, 2.8, Math.PI * 0.15, Math.PI * 0.85, false), false);
-  g.stroke();
-
-  // 外轮廓最后勾,把发圆的边缘收干净
-  g.strokeColor = pal(INK); g.lineWidth = f.lw(2);
-  circleAA(g, f, cx - 1.5, cy - 1, hr);
-  g.stroke();
 }
 
 // 手臂折线:圆头描边;alpha 用于压暗远侧肢(canvas globalAlpha → 叠进颜色)
@@ -743,6 +931,17 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   for (let i = -2; i <= 2; i++) lineSeg(g, R, i * 3, -10, i * 3, 10);
   for (let i = -3; i <= 3; i++) lineSeg(g, R, -8, i * 3, 8, i * 3);
   g.stroke();
+}
+
+/**
+ * 静态球拍(商店缩略图/预览):以世界坐标 (wx,wy) 为握点、拍头朝上竖放的
+ * 完整 drawRacket —— 与上场同一套绘制,皮肤换了它跟着换。
+ * p 用 career-panel 的 dummyPlayer 携带 racketSkin;glow 字段全 0 即普通拍。
+ */
+export function drawRacketStill(g: Graphics, vp: Viewport, wx: number, wy: number, scale: number, p: Player): void {
+  const f = playerFrame(vp, wx, wy, 1, scale, scale);
+  const theme: Theme = p.theme ?? { name: "default", main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a" };
+  drawRacket(g, f, 0, 0, 90, 40, theme, p);
 }
 
 // shadowBlur 的 Graphics 近似:同一路径先加宽一道低透明度描边当辉光,再叠正式描边

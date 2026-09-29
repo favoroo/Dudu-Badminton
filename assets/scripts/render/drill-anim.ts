@@ -166,10 +166,11 @@ function pose(rig: DrillRig, f: number): void {
 
 const VIEW_S = 0.62;
 
-function demoVp(w: number, h: number): Viewport {
+/** 与原版 cam() 一致:相机跟随接触点(玩家固定在画面 30% 处),地面固定在距顶 268px */
+function demoVp(contactX: number, w: number, h: number): Viewport {
   const s = VIEW_S * (w / C.drill.canvas.w);
-  const camX = -w * 0.30 / s;
-  const camY = CO.groundY - (h * 0.5 - 268 * (h / C.drill.canvas.h)) / s;
+  const camX = contactX - w * 0.30 / s;
+  const camY = CO.groundY - 268 / s + 8;
   return {
     x: (wx: number) => (wx - camX) * s - w / 2,
     y: (wy: number) => -(wy - camY) * s + h / 2,
@@ -181,21 +182,19 @@ function demoVp(w: number, h: number): Viewport {
 // ============================================================
 
 // ---------- 小球场:地面、界线、网 ----------
-function drawCourt(g: Graphics, vp: Viewport): void {
+function drawCourt(g: Graphics, vp: Viewport, w: number, h: number): void {
   const X = (x: number) => vp.x(x);
   const Y = (y: number) => vp.y(y);
-  const cw = C.drill.canvas.w, ch = C.drill.canvas.h;
 
-  // 背景
+  // 背景(全画布,屏幕空间,同原版 fillRect(0,0,w,h))
   g.fillColor = withAlpha(pal("#0c101e"), 0.55);
-  const x0 = X(0), y1 = Y(cw > 0 ? ch : 0);
-  g.rect(x0, y1, cw * VIEW_S, ch * VIEW_S);
+  g.rect(-w / 2, -h / 2, w, h);
   g.fill();
 
-  // 地板
+  // 地板:地面线到底边(同原版 fillRect(0, Y(groundY), w, h-Y(groundY)))
   const groundScreenY = Y(CO.groundY);
   g.fillColor = withAlpha(pal("#c8703a"), 0.30);
-  g.rect(x0, -ch * VIEW_S / 2, cw * VIEW_S, groundScreenY - (-ch * VIEW_S / 2));
+  g.rect(-w / 2, -h / 2, w, groundScreenY + h / 2);
   g.fill();
 
   // 地面线
@@ -291,7 +290,8 @@ function drawDemoBall(g: Graphics, vp: Viewport, rig: DrillRig, f: number, t: nu
 // 引导里教的「什么时候按」和场上判的「打得好不好」永不跑偏
 // ============================================================
 
-const winU = (elapsed: number): number =>
+/** 挥拍窗口游标位置(0..1):elapsed = swingT 模拟帧;场上头顶条与引导页共用 */
+export const winU = (elapsed: number): number =>
   clamp((elapsed - SW.windup - 0.5) / (SW.active - 1), 0, 1);
 
 const BANDS = {
@@ -302,22 +302,24 @@ const BANDS = {
 /**
  * 时机条(屏幕坐标,不随相机缩放)
  * u = 游标位置(0..1),null = 不在窗口内
+ * a = 整体透明度乘数(场上头顶条用:非挥拍时压暗)
  */
-function meter(g: Graphics, x: number, y: number, w: number, u: number | null,
-  keyLabel: string, opt?: { h?: number }): void {
+export function meter(g: Graphics, x: number, y: number, w: number, u: number | null,
+  keyLabel: string, opt?: { h?: number; a?: number }): void {
   const h = opt?.h ?? 14;
+  const a = opt?.a ?? 1;
   // 背景
-  g.fillColor = withAlpha(pal("#080b16"), 0.72);
+  g.fillColor = withAlpha(pal("#080b16"), 0.72 * a);
   g.rect(x, y, w, h);
   g.fill();
-  g.strokeColor = withAlpha(pal("#ffffff"), 0.18);
+  g.strokeColor = withAlpha(pal("#ffffff"), 0.18 * a);
   g.lineWidth = 1;
   g.rect(x, y, w, h);
   g.stroke();
 
   // 色带
   const band = (rng: number[], col: string) => {
-    g.fillColor = withAlpha(pal(col), rng === BANDS.sweet ? 0.5 : 0.9);
+    g.fillColor = withAlpha(pal(col), (rng === BANDS.sweet ? 0.5 : 0.9) * a);
     g.rect(x + w * rng[0], y + 1, w * (rng[1] - rng[0]), h - 2);
     g.fill();
   };
@@ -325,7 +327,7 @@ function meter(g: Graphics, x: number, y: number, w: number, u: number | null,
   band(BANDS.perfect, "#ffffff");
 
   // 刻度
-  g.strokeColor = withAlpha(pal("#ffffff"), 0.14);
+  g.strokeColor = withAlpha(pal("#ffffff"), 0.14 * a);
   g.lineWidth = 1;
   for (let i = 1; i < 8; i++) {
     const cx = Math.round(x + w * i / 8);
@@ -337,7 +339,7 @@ function meter(g: Graphics, x: number, y: number, w: number, u: number | null,
   // 游标 + 键名
   if (u != null) {
     const cx = x + w * clamp(u, 0, 1);
-    g.strokeColor = pal("#ffffff");
+    g.strokeColor = withAlpha(pal("#ffffff"), a);
     g.lineWidth = 2;
     g.moveTo(cx, y - 3);
     g.lineTo(cx, y + h + 3);
@@ -350,7 +352,7 @@ function meter(g: Graphics, x: number, y: number, w: number, u: number | null,
     const cx = x + w * clamp(u, 0, 1);
     const inSweet = u >= BANDS.sweet[0] && u <= BANDS.sweet[1];
     // 小三角指示
-    g.fillColor = inSweet ? withAlpha(pal("#ffe14d"), 0.9) : withAlpha(pal("#ffffff"), 0.4);
+    g.fillColor = inSweet ? withAlpha(pal("#ffe14d"), 0.9 * a) : withAlpha(pal("#ffffff"), 0.4 * a);
     g.moveTo(cx - 4, y - 5);
     g.lineTo(cx + 4, y - 5);
     g.lineTo(cx, y - 1);
@@ -374,14 +376,14 @@ function meter(g: Graphics, x: number, y: number, w: number, u: number | null,
 export function draw(g: Graphics, rig: DrillRig, ms: number, w?: number, h?: number): void {
   w = w ?? C.drill.canvas.w;
   h = h ?? C.drill.canvas.h;
-  const vp = demoVp(w, h);
+  const vp = demoVp(rig.def.contactX, w, h);
   const f = (ms % LOOP_MS) / LOOP_MS * CYCLE;
   pose(rig, f);
 
   g.clear();
 
   // 球场底 + 弹道(屏幕空间,经 vp 变换)
-  drawCourt(g, vp);
+  drawCourt(g, vp, w, h);
   drawPath(g, vp, rig);
 
   // 假人 + 演示球(世界空间,经 vp 变换)

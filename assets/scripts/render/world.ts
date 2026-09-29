@@ -11,6 +11,7 @@ import { Ball, GameEvent, Player, SkinDef } from "../core/types";
 import { drawPlayer, drawShuttle } from "./sprites";
 import { courtRenderer, CourtThemeItem } from "./court";
 import { FXSystem } from "./fx";
+import { HudOverlay } from "./hud-overlay";
 
 const C = CFG;
 
@@ -37,15 +38,22 @@ interface FloatText {
 
 interface TrailDot { x: number; y: number; life: number; sweet: boolean }
 
+/** 一个角色的表现层文字:头顶名牌(YOU/CPU/搭档…)+ 球衣号(sprites.ts【移植限制】补字) */
+interface TagText { tag: Label; jersey: Label }
+
 export class WorldView {
   readonly root: Node;          // 受震屏/镜头冲击影响的容器
   private courtGfx: Graphics;
   private g: Graphics;
   private vp: Viewport;
   private floatLayer: Node;
+  private tagLayer: Node;
   private floats: FloatText[] = [];
+  private tags: TagText[] = [];
   private trail: TrailDot[] = [];
   readonly fx = new FXSystem(); // 完整打击特效与粒子系统
+  /** 画布内世界提示层(老 hud.js:落点圈/训练时机条/拍数徽标/赛点旗标) */
+  readonly hudOverlay: HudOverlay;
   shakeX = 0;
   private shakeAmt = 0;
   frameT = 0;
@@ -73,11 +81,72 @@ export class WorldView {
     dyn.setParent(this.root);
     this.g = dyn.addComponent(Graphics);
 
+    // 画布内世界提示层(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
+    this.hudOverlay = new HudOverlay(this.root, this.vp);
+
+    // 角色名牌/球衣号文字层(sprites 画不了字,Label 补)
+    this.tagLayer = new Node("tags");
+    this.tagLayer.layer = Layers.Enum.UI_2D;
+    this.tagLayer.addComponent(UITransform);
+    this.tagLayer.setParent(this.root);
+
     // 飘字层:位于最上,不参与 clear
     this.floatLayer = new Node("floats");
     this.floatLayer.layer = Layers.Enum.UI_2D;
     this.floatLayer.addComponent(UITransform);
     this.floatLayer.setParent(this.root);
+  }
+
+  /** 名牌/球衣号文字池:按需增长,标签样式对齐 sprites.ts 的 fillText 约定 */
+  private ensureTags(count: number): void {
+    while (this.tags.length < count) {
+      const mk = (name: string, size: number, bold: boolean): Label => {
+        const n = new Node(name);
+        n.layer = Layers.Enum.UI_2D;
+        n.addComponent(UITransform);
+        n.setParent(this.tagLayer);
+        const l = n.addComponent(Label);
+        l.fontSize = size;
+        l.lineHeight = Math.round(size * 1.2);
+        l.isBold = bold;
+        l.horizontalAlign = Label.HorizontalAlign.CENTER;
+        return l;
+      };
+      this.tags.push({ tag: mk("tag", 10, true), jersey: mk("jersey", Math.round(C.player.h * 0.115), true) });
+    }
+  }
+
+  /** 每帧同步名牌与球衣号(颜色/文字规则 = sprites.ts drawPlayerTag 注释) */
+  private syncTags(players: Player[], rxs: number[], rys: number[]): void {
+    let i = 0;
+    for (let k = 0; k < players.length; k++) {
+      const p = players[k];
+      if (p.hideTag) continue;
+      this.ensureTags(i + 1);
+      const pair = this.tags[i++];
+      const label = p.label || (p.isAI ? "AI" : "YOU");
+      const name = label === "你" ? "YOU" : label;
+      const isMainUser = !p.isAI && (label === "你" || label === "P1" || label === "YOU");
+      const isPartner = label === "搭档";
+      const isP2 = label === "P2";
+      pair.tag.node.active = true;
+      pair.tag.node.setPosition(this.vp.x(rxs[k]), this.vp.y(rys[k] - C.player.h - 18 + 0.5), 0);
+      pair.tag.string = name;
+      pair.tag.color = isMainUser
+        ? new Color().fromHEX(p.side === "left" ? "#ffe14d" : "#3ea8ff")
+        : isPartner ? new Color().fromHEX("#6ee7b7")
+        : isP2 ? new Color().fromHEX("#7fd0ff")
+        : new Color(255, 255, 255, 173);
+      // 球衣号:胸前局部 (1, -0.568H) ≈ 世界 (x+1, y-0.568H)(sprites.ts#L417-420 注释)
+      pair.jersey.node.active = true;
+      pair.jersey.node.setPosition(this.vp.x(rxs[k] + 1), this.vp.y(rys[k] - C.player.h * 0.568), 0);
+      pair.jersey.string = p.jersey;
+      pair.jersey.color = new Color(255, 255, 255, 204);
+    }
+    for (let k = i; k < this.tags.length; k++) {
+      this.tags[k].tag.node.active = false;
+      this.tags[k].jersey.node.active = false;
+    }
   }
 
   // ---------- 球场主题与触网物理 ----------
@@ -163,11 +232,15 @@ export class WorldView {
     // 插值:120Hz 屏也不见阶梯;离网远的先画,近网压前(与老 render 同序)
     const order = players.slice().sort(
       (a, b) => Math.abs(C.court.netX - b.x) - Math.abs(C.court.netX - a.x));
+    const rxs: number[] = [], rys: number[] = [];
     for (const p of order) {
       const rx = lerp(p.px, p.x, alpha);
       const ry = lerp(p.py, p.y, alpha);
+      rxs.push(rx); rys.push(ry);
       drawPlayer(g, this.vp, { ...p, x: rx, y: ry }, animT, alpha, ball);
     }
+    // 名牌文字与球衣号(与角色同层叠加)
+    this.syncTags(order, rxs, rys);
 
     // 羽毛球 + 拖尾(甜蜜/完美更长更亮)
     if (ball && (ball.live || ball.held)) {

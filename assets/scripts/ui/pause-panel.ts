@@ -20,18 +20,18 @@ export class PausePanel {
     this.root = kit.root(parent, "pause-panel");
     this.root.active = false;
 
-    kit.dim(this.root, 0.62);
+    kit.dim(this.root, 0.25, 0.5);
     kit.atmosphere(this.root);
 
-    const card = kit.panel(this.root, 380, 340, { r: 16 });
+    const card = kit.panel(this.root, 380, 344, { r: 16, alpha: 0.9 });
     this.card = card.node;
-    card.node.setPosition(0, 6, 0);
-    const title = kit.label(card.node, "已暂停", 26, P.accent);
-    title.node.setPosition(0, 118, 0);
+    card.node.setPosition(0, 4, 0);
+    const title = kit.label(card.node, "已暂停", 28, P.accent);
+    title.node.setPosition(0, 128, 0);
     title.enableShadow = true;
     title.shadowColor = new Color(0, 0, 0, 130);
     title.shadowOffset = new Vec2(0, -4);
-    kit.label(card.node, "P A U S E D", 12, P.dim).node.setPosition(0, 92, 0);
+    kit.label(card.node, "P A U S E D", 11, P.dim).node.setPosition(0, 100, 0);
 
     const mk = (text: string, y: number, accent: boolean): Node => {
       const b = kit.button(card.node, text, 300, 50, accent
@@ -41,14 +41,14 @@ export class PausePanel {
       return b;
     };
 
-    mk("继续比赛", 52, true).on(Button.EventType.CLICK, () => {
+    mk("继续比赛", 58, true).on(Button.EventType.CLICK, () => {
       kit.sfx.play("ui");
       Rules.resume();
     });
-    mk("重新开始", -8, false).on(Button.EventType.CLICK, () => kit.restartCurrent());
-    mk("返回主菜单", -68, false).on(Button.EventType.CLICK, () => kit.quitToMenu());
+    mk("重新开始", -2, false).on(Button.EventType.CLICK, () => kit.restartCurrent());
+    mk("返回主菜单", -62, false).on(Button.EventType.CLICK, () => kit.quitToMenu());
     // 音效开关:全局静音(UI 音 + 比赛音一起切,见 UIManager.applyMute)
-    const snd = mk("", -128, false);
+    const snd = mk("", -122, false);
     this.soundLabel = snd.children[0].getComponent(Label)!;
     snd.on(Button.EventType.CLICK, () => {
       const muted = kit.toggleMute();

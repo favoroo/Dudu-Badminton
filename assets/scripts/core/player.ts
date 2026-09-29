@@ -30,6 +30,7 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     recoverT: 0,                  // 收拍回摆计时:挥拍结束后从弧线终点摆回待机
     runPhase: 0, runAmt: 0, runStep: 0, // 步频相位(随位移累积)/跑姿权重/落脚计数
     blinkSeed: Math.random() * 220,     // 眨眼周期相位,各角色错开
+    face: "normal", faceT: 0,           // 表情状态:game 层事件设置,这里只负责衰减
     swingT: -1, swingStyle: "over", swingHit: false, swingQ: 0,
     swingBuf: 0, swingBufAim: null, swingAim: "mid",
     swingRadius: SW.radiusBase,
@@ -187,6 +188,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   if (p.smashGlow > 0) p.smashGlow--;
   if (p.sweetGlow > 0) p.sweetGlow--;
   if (p.perfectGlow > 0) p.perfectGlow--;
+  if ((p.faceT ?? 0) > 0) p.faceT = (p.faceT as number) - 1;
 
   p.racketPrev = p.racket;
   p.racket = Physics.racketHead(p, p.swingT >= 0 ? p.swingT : 0, p.swingRadius);

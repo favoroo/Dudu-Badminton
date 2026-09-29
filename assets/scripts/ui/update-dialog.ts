@@ -31,7 +31,7 @@ export class UpdateDialog {
     this.root.active = false;
 
     // 半透明全屏暗底
-    kit.dim(this.root, 0.75);
+    kit.dim(this.root, 0.4, 0.74);
 
     // 居中卡片
     this.card = kit.panel(this.root, 480, 360, {

@@ -30,6 +30,9 @@ export class Hud {
   private statusLine: Label;
   private statusOp: UIOpacity;
   private drillInfo: Label;
+  private modeTag: Label;
+  private modeTagNode: Node;
+  private lastModeTag = "";
   // 连击大字
   private combo: Node;
   private comboLabel: Label;
@@ -53,19 +56,43 @@ export class Hud {
     this.cHot.fromHEX(P.accent);   // 老 .status.hot:提示变荧光黄
     this.cPlain.fromHEX(P.text);
 
+    // ---------- 安全区避让:刘海/圆角把顶部压掉多少,整条记分牌就往下挪多少 ----------
+    // 与老 DOM 层的 #marquee 定位等价:设计高度固定 540,把像素内缩换算成世界单位。
+    let safeTop = 0, safeLeft = 14, safeRight = 14;
+    try {
+      const vs = view.getVisibleSize();
+      const sr = sys.getSafeAreaRect();
+      if (vs.height > 0 && sr) {
+        const topPx = vs.height - (sr.y + sr.height);
+        const leftPx = sr.x;
+        const rightPx = vs.width - (sr.x + sr.width);
+        const scale = CFG.world.h / vs.height;
+        if (topPx > 0) safeTop = Math.min(48, topPx * scale);
+        if (leftPx > 0) safeLeft = Math.max(safeLeft, leftPx * scale + 8);
+        if (rightPx > 0) safeRight = Math.max(safeRight, rightPx * scale + 8);
+      }
+    } catch {}
+
+    // 顶部整簇(比分牌 / 中缝徽章 / 状态行 / 训练进度 / 发球指示)一起让开安全区
+    const top = new Node("top-bar");
+    top.layer = this.root.layer;
+    top.addComponent(UITransform);
+    top.setPosition(0, -safeTop, 0);
+    top.setParent(this.root);
+
     // ---------- 顶部比分大牌(老 .board:渐变底 + 硬阴影 + 斜切数字) ----------
     this.pills = new Node("score-bar");
     this.pills.layer = this.root.layer;
     this.pills.addComponent(UITransform);
-    this.pills.setParent(this.root);
+    this.pills.setParent(top);
 
     const mkPill = (x: number, name: string, strokeHex: string): Node => {
       const n = new Node(name);
       n.layer = this.root.layer;
       n.setPosition(x, 232, 0);
       const g = n.addComponent(Graphics);
-      drawHardShadow(g, 170, 58, 10, 5, 5, 0.55);
-      drawArcadePanel(g, 170, 58, 10);
+      drawHardShadow(g, 170, 58, 10, 5, 5, 0.45);
+      drawArcadePanel(g, 170, 58, 10, 0.9);
       // 队伍色点题:左/右各一道竖色条(老 .team .dot 的贴纸色)
       g.fillColor = col(strokeHex, 0.9);
       g.roundRect(-82, -22, 5, 44, 2.5);
@@ -78,7 +105,7 @@ export class Hud {
     // 队名/比分必须挂在胶囊下:训练模式整体隐藏 pills,比分区要跟着消失
     this.teamL = kit.label(pillL, "你", 12, P.red);
     this.teamL.node.setPosition(6, 14, 0);
-    this.teamR = kit.label(pillR, "CPU", 12, P.blue);
+    this.teamR = kit.label(pillR, "AI", 12, P.blue);
     this.teamR.node.setPosition(6, 14, 0);
     this.scoreL = kit.label(pillL, "0", 30, P.text);
     this.scoreL.node.setPosition(4, -8, 0);
@@ -102,21 +129,33 @@ export class Hud {
     bdg.roundRect(-42, -12, 84, 24, 4);
     bdg.stroke();
     bd.setPosition(0, 232, 0);
-    bd.setParent(this.root);
+    bd.setParent(top);
     this.badgeNode = bd;
     this.badgeGfx = bdg;
     this.centerBadge = kit.label(bd, `TO ${CFG.scoring.winScore}`, 12, "#0a0e1c");
 
     // ---------- 状态行(发球/赛点提示) ----------
-    this.statusLine = kit.label(this.root, "", 15, P.text);
+    this.statusLine = kit.label(top, "", 15, P.text);
     this.statusLine.node.setPosition(0, 190, 0);
-    const op = this.statusLine.node.addComponent(UIOpacity);
-    this.statusOp = op;
+    this.statusOp = this.statusLine.node.addComponent(UIOpacity);
 
     // ---------- 训练模式:比分区替换为关卡进度 ----------
-    this.drillInfo = kit.label(this.root, "", 17, P.accent, { outline: P.ink, outlineW: 2 });
+    this.drillInfo = kit.label(top, "", 17, P.accent, { outline: P.ink, outlineW: 2 });
     this.drillInfo.node.setPosition(0, 232, 0);
     this.drillInfo.node.active = false;
+
+    // ---------- 局别标签(老 .modeTag:左上角告诉你现在在打什么档) ----------
+    const tagNode = new Node("mode-tag");
+    tagNode.layer = this.root.layer;
+    tagNode.addComponent(UITransform).setContentSize(190, 24);
+    this.modeTag = kit.label(tagNode, "", 12, P.dim, { align: 0 });
+    this.modeTag.node.setPosition(0, 0, 0);
+    const tagWd = tagNode.addComponent(Widget);
+    tagWd.isAlignLeft = true; tagWd.left = safeLeft;
+    tagWd.isAlignTop = true; tagWd.top = 20 + safeTop;
+    tagWd.updateAlignment();
+    tagNode.setParent(this.root);
+    this.modeTagNode = tagNode;
 
     // ---------- 连击大字(球网正上方,老 #flash 的大字海报风) ----------
     this.combo = new Node("combo");
@@ -140,22 +179,13 @@ export class Hud {
     sg.close();
     sg.fill();
     kit.label(this.serveFlag, "发球", 11, P.good).node.setPosition(0, -20, 0);
-    this.serveFlag.setParent(this.root);
+    this.serveFlag.setParent(top);
     this.serveFlag.active = false;
 
     // ---------- 暂停按钮(右上角,Widget 对齐真机拉宽后的边缘并避让安全区) ----------
     this.pauseBtn = kit.button(this.root, "II", 56, 56, { bg: P.panel, size: 22, stroke: P.line, strokeAlpha: 0.35 });
-    let safeRight = 14;
-    try {
-      const safeRect = sys.getSafeAreaRect();
-      const visSize = view.getVisibleSize();
-      if (safeRect && visSize.width > 0) {
-        const rightMargin = visSize.width - (safeRect.x + safeRect.width);
-        if (rightMargin > 0) safeRight = Math.max(safeRight, rightMargin + 8);
-      }
-    } catch {}
     const wd = this.pauseBtn.addComponent(Widget);
-    wd.isAlignTop = true; wd.top = 12;
+    wd.isAlignTop = true; wd.top = 12 + safeTop;
     wd.isAlignRight = true; wd.right = safeRight;
     wd.updateAlignment();
     this.pauseBtn.on(Button.EventType.CLICK, () => {
@@ -169,6 +199,7 @@ export class Hud {
       // 离开比赛态:清同步缓存,下一局比分变化才不会被误判
       this.lastScore = "";
       this.lastStatus = "";
+      this.lastModeTag = "";
     }
     this.root.active = on;
   }
@@ -185,6 +216,15 @@ export class Hud {
     this.statusLine.node.active = playing;
     this.drillInfo.node.active = drill;
     if (!R.players.length) return;
+
+    // ---- 局别标签(老 #modeTag):打的是什么档,一眼能看到 ----
+    const tag = drill
+      ? `TRAINING · ${(Drill.cur()?.tag ?? "")}`
+      : `SOLO · ${(CFG.diffs[R.diff]?.label) ?? R.diff ?? ""}`;
+    if (tag !== this.lastModeTag) {
+      this.modeTag.string = tag;
+      this.lastModeTag = tag;
+    }
 
     // ---- 比分 / 训练进度 ----
     if (drill) {
@@ -229,7 +269,7 @@ export class Hud {
     if (playing) {
       if (R.state === "SERVE" && R.serverPlayer) {
         const mine = !R.serverPlayer.isAI;
-        txt = mine ? "轮到你发球 · 深球压底线 / 短球放网前" : "CPU 发球";
+        txt = mine ? "轮到你发球 · 深球压底线 / 短球放网前" : "AI 发球";
         hot = mine;
       } else if (R.state === "RALLY") {
         txt = `回合 ${R.rally} 拍`;
@@ -258,7 +298,7 @@ export class Hud {
       this.serveFlag.setPosition(x, 232 + Math.sin(this.frameT * 0.12) * 4, 0);
     }
 
-    // ---- 连击大字:RALLY 且 ≥5 拍;≥10 换橙色加 ⚡,≥15 换红加 🔥 且脉动更猛 ----
+    // ---- 连击大字:RALLY 且 ≥5 拍;≥10 换橙色,≥15 换红且脉动更猛 ----
     const showCombo = !drill && R.state === "RALLY" && R.rally >= 5;
     this.combo.active = showCombo;
     if (showCombo) {
@@ -266,7 +306,7 @@ export class Hud {
       const epic = r >= 15;
       const hotC = r >= 10;
       if (r !== this.lastCombo) {
-        this.comboLabel.string = epic ? `🔥 x${r} 连击` : hotC ? `⚡ x${r} 连击` : `x${r} 连击`;
+        this.comboLabel.string = `x${r} 连击`;
         this.comboLabel.color = col(epic ? this.kit.pal.danger : hotC ? "#ff9f1c" : this.kit.pal.accent);
         this.lastCombo = r;
         if (!hotC) popScore(this.combo);   // 起势时砸一下;hot/epic 有持续脉动就不再抢戏

@@ -5,13 +5,20 @@
 // 经验条:从结算前快照滚到结算后档位,跨级时分段填充并逐级闪「Lv.X」;
 // 满级静态显示 MAX(经济曲线只有一份,动画只负责演)。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, Vec2, Vec3 } from "cc";
+import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3 } from "cc";
 import { CFG } from "../core/config";
 import { Career } from "../core/career";
 import type { SettleResult } from "../core/career";
 import type { DrillResult } from "../core/drill";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
+import { drawGlassCard } from "./ui-arcade";
+
+/** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
+export interface SettleBadge { title: string; color: string }
+
+/** 结算统计格(老 .stats 的 .stat:大数 + 小标签 + 点缀色) */
+export interface SettleStat { v: string; k: string; tone?: "gold" | "hot" | "cyan" | "plain" }
 
 export interface SettlePayload {
   kind: "match" | "drill";
@@ -21,14 +28,24 @@ export interface SettlePayload {
   before: { level: number; exp: number } | null;
   scores: [number, number];
   won: boolean;
+  /** 比赛模式的荣誉称号(训练模式为 null) */
+  badge: SettleBadge | null;
+  /** 六格战报:比赛看全场数据,训练看这一份账 */
+  stats: SettleStat[];
 }
 
 /** 经验条动画:分段 = 每级一段(可能跨级连升) */
 interface ExpSeg { lv: number; from: number; to: number; need: number }
 interface ExpAnim { segs: ExpSeg[]; total: number; elapsed: number; done: boolean; shownSeg: number }
 
-const BAR_W = 300;
+const BAR_W = 320;
 const DUR = 1.25; // 经验条整体滚动时长(s),段数多时按比例加快由 tick 内兜底
+
+/** 卡片尺寸:统计六格 + 奖励区 + 双按钮都塞得下,四周又还留得住球场(老 .panel.result) */
+const CW = 560, CH = 490;
+const CELL_W = 168, CELL_H = 48, CELL_GAP = 8;
+/** 战报两行的纵坐标(卡片中心为原点) */
+const STAT_Y = 76;
 
 const stars = (n: number): string => "★".repeat(n) + "☆".repeat(Math.max(0, 3 - n));
 
@@ -40,15 +57,17 @@ export class SettlePanel {
   private verdict: Label;
   private sub: Label;
   private score: Label;
+  private titleBadge: Label;
+  private badgeBg: Graphics;
+  private statLayer: Node;
   private coinLine: Label;
   private bonusLine: Label;
-  private expLine: Label;
   private lvLabel: Label;
   private barBg: Graphics;
   private barFill: Graphics;
   private barWrap: Node;
-  private upLine: Label;
-  private unlockLine: Label;
+  private newsLine: Label;
+  private againLabel: Label | null;
   private anim: ExpAnim | null = null;
   private payload: SettlePayload | null = null;
   private cMax = new Color();
@@ -60,44 +79,58 @@ export class SettlePanel {
     this.root.active = false;
     this.cMax.fromHEX(P.dim);
 
-    kit.dim(this.root, 0.78);
+    kit.dim(this.root, 0.28, 0.55);
     kit.atmosphere(this.root);
 
-    const card = kit.panel(this.root, 540, 436, { r: 18 });
+    const card = kit.panel(this.root, CW, CH, { r: 18, alpha: 0.91 });
     this.card = card.node;
     this.card.setPosition(0, 2, 0);
     this.cardOp = this.card.addComponent(UIOpacity);
 
-    this.verdict = kit.label(this.card, "", 48, P.accent, { outline: P.ink, outlineW: 3 });
-    this.verdict.node.setPosition(0, 158, 0);
+    this.verdict = kit.label(this.card, "", 38, P.accent, { outline: P.ink, outlineW: 3 });
+    this.verdict.node.setPosition(0, 198, 0);
     this.verdict.enableShadow = true;
     this.verdict.shadowColor = new Color(0, 0, 0, 140);
-    this.verdict.shadowOffset = new Vec2(0, -6);
-    this.sub = kit.label(this.card, "", 17, P.text);
-    this.sub.node.setPosition(0, 118, 0);
-    this.score = kit.label(this.card, "", 36, P.text);
-    this.score.node.setPosition(0, 74, 0);
+    this.verdict.shadowOffset = new Vec2(0, -5);
+    // 比分(比赛)与关卡名(训练)共用同一个位置,同屏只亮一个
+    this.sub = kit.label(this.card, "", 15, P.text);
+    this.sub.node.setPosition(0, 158, 0);
+    this.score = kit.label(this.card, "", 30, P.text);
+    this.score.node.setPosition(0, 158, 0);
     this.score.node.angle = 7;   // 老 .final 的斜切数字
     this.score.enableShadow = true;
     this.score.shadowColor = new Color(0, 0, 0, 128);
-    this.score.shadowOffset = new Vec2(0, -4);
+    this.score.shadowOffset = new Vec2(0, -3);
 
-    // ---------- 奖励结算卡 ----------
-    this.coinLine = kit.label(this.card, "", 19, P.accent);
-    this.coinLine.node.setPosition(0, 32, 0);
-    this.bonusLine = kit.label(this.card, "", 13, P.dim);
-    this.bonusLine.node.setPosition(0, 6, 0);
-    this.expLine = kit.label(this.card, "", 16, P.cyan);
-    this.expLine.node.setPosition(0, -22, 0);
+    // 荣誉称号胶囊(老 .match-badge:比分下方的圆角小条,颜色随战绩变化)
+    const badgeWrap = new Node("badge-pill");
+    badgeWrap.layer = this.card.layer;
+    badgeWrap.addComponent(UITransform).setContentSize(CW - 60, 26);
+    badgeWrap.setParent(this.card);
+    badgeWrap.setPosition(0, 124, 0);
+    this.badgeBg = badgeWrap.addComponent(Graphics);
+    this.titleBadge = kit.label(badgeWrap, "", 13, P.accent, { outline: P.ink, outlineW: 1 });
+
+    // 六格战报(老 .stats:grid-template-columns:repeat(3,1fr))
+    this.statLayer = new Node("stats");
+    this.statLayer.layer = this.card.layer;
+    this.statLayer.addComponent(UITransform);
+    this.statLayer.setParent(this.card);
+
+    // ---------- 奖励:一行大数 + 一行明细 ----------
+    this.coinLine = kit.label(this.card, "", 17, P.accent);
+    this.coinLine.node.setPosition(0, -34, 0);
+    this.bonusLine = kit.label(this.card, "", 12, P.dim);
+    this.bonusLine.node.setPosition(0, -56, 0);
 
     // 经验条:Lv 左标 + 底槽 + 填充(填充逐帧重绘)
     this.lvLabel = kit.label(this.card, "", 14, P.text);
-    this.lvLabel.node.setPosition(-238, -50, 0);
+    this.lvLabel.node.setPosition(-CW / 2 + 44, -82, 0);
     this.barWrap = new Node("exp-bar");
     this.barWrap.layer = this.card.layer;
-    this.barWrap.setPosition(18, -50, 0);
+    this.barWrap.setPosition(24, -82, 0);
     this.barBg = this.barWrap.addComponent(Graphics);
-    this.barBg.fillColor = col(P.panelLight, 1);
+    this.barBg.fillColor = col(P.panelLight, 0.85);
     this.barBg.strokeColor = col(P.line, 0.2);
     this.barBg.lineWidth = 2;
     this.barBg.roundRect(-BAR_W / 2, -7, BAR_W, 14, 7);
@@ -110,26 +143,80 @@ export class SettlePanel {
     this.barFill = fillN.addComponent(Graphics);
     this.barWrap.setParent(this.card);
 
-    this.upLine = kit.label(this.card, "", 16, P.accent, { outline: P.ink, outlineW: 1 });
-    this.upLine.node.setPosition(0, -92, 0);
-    this.unlockLine = kit.label(this.card, "", 14, P.cyan);
-    this.unlockLine.node.setPosition(0, -124, 0);
+    // 升级 / 商店上新:合到一行两格高,免得某一帧突然把按钮顶下去
+    this.newsLine = kit.label(this.card, "", 14, P.accent, { outline: P.ink, outlineW: 1 });
+    this.newsLine.node.setPosition(0, -118, 0);
+    this.newsLine.node.getComponent(UITransform)!.setContentSize(CW - 60, 44);
+    this.newsLine.overflow = Label.Overflow.SHRINK;
+    this.newsLine.lineHeight = 20;
 
     // ---------- 按钮 ----------
-    const again = kit.button(this.card, "", 230, 54, { bg: P.accent, fg: P.ink, size: 18 });
-    again.setPosition(-128, -172, 0);
+    const again = kit.button(this.card, "", 240, 52, { bg: P.accent, fg: P.ink, size: 18 });
+    again.setPosition(-128, -190, 0);
+    // 文案随模式在 show() 里设置(老 index.html:「再来一局」/「再练一次」)
+    this.againLabel = again.getChildByName("label")?.getComponent(Label) ?? null;
     again.on(Button.EventType.CLICK, () => {
       kit.sfx.play("ui");
       this.hide();
       kit.restartCurrent();
     });
-    const toMenu = kit.button(this.card, "返回主菜单", 230, 54, { size: 17 });
-    toMenu.setPosition(128, -172, 0);
+    const toMenu = kit.button(this.card, "返回主菜单", 240, 52, { size: 17 });
+    toMenu.setPosition(128, -190, 0);
     toMenu.on(Button.EventType.CLICK, () => {
       kit.sfx.play("back");
       this.hide();
       kit.quitToMenu();
     });
+  }
+
+  /** 战报六格:格数固定 6,节点复用,只换文案与颜色 */
+  private renderStats(rows: SettleStat[]): void {
+    const P = this.kit.pal;
+    const TONE: Record<string, string> = { gold: P.accent, hot: "#ff6a1f", cyan: P.cyan, plain: P.text };
+    const cells = this.statLayer.children;
+    for (let i = 0; i < 6; i++) {
+      let cell = cells[i];
+      if (!cell) {
+        cell = new Node(`stat-${i}`);
+        cell.layer = this.card.layer;
+        cell.addComponent(UITransform).setContentSize(CELL_W, CELL_H);
+        const g = cell.addComponent(Graphics);
+        drawGlassCard(g, CELL_W, CELL_H, 9, 0.34);
+        this.kit.label(cell, "", 20, P.text).node.setPosition(0, 8, 0);   // 大数
+        this.kit.label(cell, "", 11, P.dim).node.setPosition(0, -13, 0);  // 标签
+        cell.setParent(this.statLayer);
+      }
+      const r = rows[i];
+      cell.active = !!r;
+      if (!r) continue;
+      const col2 = i % 3, row = Math.floor(i / 3);
+      cell.setPosition((col2 - 1) * (CELL_W + CELL_GAP), STAT_Y - row * (CELL_H + CELL_GAP), 0);
+      const big = cell.children[0].getComponent(Label)!;
+      const cap = cell.children[1].getComponent(Label)!;
+      big.string = r.v;
+      big.color = col(TONE[r.tone ?? "plain"]);
+      cap.string = r.k;
+    }
+  }
+
+  /** 荣誉胶囊:底块宽度跟着字数走(老 .match-badge 的 fit-content) */
+  private renderBadge(b: SettleBadge | null): void {
+    this.badgeBg.node.active = !!b;
+    if (!b) return;
+    let cw = 0;
+    for (let i = 0; i < b.title.length; i++) cw += b.title.charCodeAt(i) > 255 ? 1 : 0.6;
+    const w = Math.min(CW - 60, Math.round(cw * 13 + 34));
+    const g = this.badgeBg;
+    g.clear();
+    g.fillColor = col("#ffffff", 0.06);
+    g.roundRect(-w / 2, -13, w, 26, 13);
+    g.fill();
+    g.strokeColor = col(b.color, 0.4);
+    g.lineWidth = 1.5;
+    g.roundRect(-w / 2, -13, w, 26, 13);
+    g.stroke();
+    this.titleBadge.string = b.title;
+    this.titleBadge.color = col(b.color);
   }
 
   show(p: SettlePayload): void {
@@ -142,11 +229,15 @@ export class SettlePanel {
     // 大标语:胜金败灰;训练用中文,语气也不同(老 .verdict / .verdict.lose)
     this.verdict.string = match ? (won ? "VICTORY!" : "DEFEAT") : (won ? "训练完成!" : "再接再厉");
     this.verdict.color = col(won ? P.accent : P.dim);
-    this.sub.string = match
-      ? (won ? "你赢了" : "CPU 获胜")
-      : (p.drill ? `${p.drill.def ? p.drill.def.label : ""} ${stars(p.drill.stars)}` : "");
     this.score.node.active = match;
+    this.sub.node.active = !match;
     this.score.string = `${p.scores[0]} : ${p.scores[1]}`;
+    this.sub.string = p.drill ? `${p.drill.def ? p.drill.def.label : ""} ${stars(p.drill.stars)}` : "";
+    // 主行动按钮文案:比赛「再来一局」,训练「再练一次」(老 btnAgain/btnDrillAgain)
+    if (this.againLabel) this.againLabel.string = match ? "再来一局" : "再练一次";
+    // 荣誉称号:比赛模式才显示(老 .matchBadge)
+    this.renderBadge(match ? p.badge : null);
+    this.renderStats(p.stats);
 
     this.fillRewards(p);
     this.anim = this.buildExpAnim(p);
@@ -210,9 +301,7 @@ export class SettlePanel {
       // 理论上手机版不会走到这(2p 友谊赛不发奖励):只留标语和比分
       this.coinLine.string = "";
       this.bonusLine.string = "";
-      this.expLine.string = "";
-      this.upLine.string = "";
-      this.unlockLine.string = "";
+      this.newsLine.string = "";
       this.lvLabel.string = "";
       this.barWrap.active = false;
       return;
@@ -220,26 +309,23 @@ export class SettlePanel {
     this.barWrap.active = true;
     const drillNotFirst = p.kind === "drill" && res.first === false;
     this.coinLine.string = res.coin > 0
-      ? `${p.kind === "drill" ? "首次通关" : "比赛奖励"} · 🪙 金币 +${res.coin}`
-      : (drillNotFirst ? "已通关 · 重打不重复发奖励" : "🪙 金币 +0");
+      ? `${p.kind === "drill" ? "首次通关" : "比赛奖励"} 金币 +${res.coin} · 经验 +${res.exp}`
+      : (drillNotFirst ? "已通关 · 重打不重复发奖励" : "金币 +0");
     // 明细行:基础金币(按难度)+ 表现加成 + 连胜系数
     const parts: string[] = [`基础 ${res.baseCoin}`];
     if (res.perf > 0) parts.push(`表现 +${res.perf}`);
     if (res.streakBonus > 0) parts.push(`连胜 ×${(1 + res.streakBonus).toFixed(2).replace(/0$/, "")}(${res.streak} 连胜)`);
-    this.bonusLine.string = parts.join(" · ");
-    this.expLine.string = res.exp > 0 ? `EXP +${res.exp}` : "本次没有经验入账";
-    // 升级行:可能连升,合并成一行
+    this.bonusLine.string = res.exp > 0 ? parts.join(" · ") : "本次没有经验入账";
+
+    const news: string[] = [];
     if (res.levelUps.length > 0) {
       const coinSum = res.levelUps.reduce((s, lv) => s + Career.levelCoin(lv), 0);
-      this.upLine.string = res.levelUps.length > 1
-        ? `⬆ 连升 ${res.levelUps.length} 级 → Lv.${res.levelUps[res.levelUps.length - 1]} · 奖励 🪙 +${coinSum}`
-        : `⬆ 升级 Lv.${res.levelUps[0]} · 奖励 🪙 +${coinSum}`;
-    } else {
-      this.upLine.string = "";
+      news.push(res.levelUps.length > 1
+        ? `↑ 连升 ${res.levelUps.length} 级 → Lv.${res.levelUps[res.levelUps.length - 1]} · 奖励金币 +${coinSum}`
+        : `↑ 升级 Lv.${res.levelUps[0]} · 奖励金币 +${coinSum}`);
     }
-    this.unlockLine.string = res.unlocked.length > 0
-      ? `🎁 新皮肤已上架商店:${res.unlocked.join(" · ")}`
-      : "";
+    if (res.unlocked.length > 0) news.push(`新品上架:${res.unlocked.join(" · ")}`);
+    this.newsLine.string = news.join("\n");
   }
 
   /** 经验条分段:从结算前快照走到结算后档位;满级返回 null(静态 MAX) */

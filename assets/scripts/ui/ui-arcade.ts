@@ -49,16 +49,68 @@ export function drawHardShadow(g: Graphics, w: number, h: number, r: number, dx 
 
 // ---------- 面板:渐变模拟 + 描边 + 内高光 ----------
 
-/** 街机面板底:上亮下暗的竖向渐变(用半透明叠层模拟)+ 2px 描边 + 顶边高光线 */
-export function drawArcadePanel(g: Graphics, w: number, h: number, r = 14): void {
-  // 渐变模拟:底部整块 navy,再叠 3 段向上变亮的横带(半透明,肉眼平滑)
-  g.fillColor = ac(ARCADE.panelTop);            // 顶端最亮 #16203c
+// ---------- 遮罩:老 .screen 的 radial-gradient(中心透、四周暗) ----------
+
+/**
+ * 分层暗遮罩:模拟 `radial-gradient(... rgba(.centerA) ... rgba(.edgeA))`。
+ * 画法是从内到外一圈圈「矩形环」,每环再切成上/下/左/右 4 块互不重叠的填充,
+ * 所以不会像嵌套整块填充那样把中心越叠越黑 —— 中心正好是 centerA。
+ * 菜单/面板背后要看得见球场,centerA 就是那个「看得见」的量。
+ */
+export function drawVeil(g: Graphics, w: number, h: number, centerA: number, edgeA: number, bands = 8, hex = ARCADE.ink): void {
+  const hw = w / 2, hh = h / 2;
+  const smooth = (t: number): number => t * t * (3 - 2 * t);
+  for (let i = 0; i < bands; i++) {
+    const u = i / bands, v = (i + 1) / bands;
+    const a = centerA + (edgeA - centerA) * smooth((u + v) / 2);
+    if (a <= 0.001) continue;
+    g.fillColor = ac(hex, a);
+    const x0 = hw * u, x1 = hw * v;   // 环的内外边界(半宽方向)
+    const y0 = hh * u, y1 = hh * v;
+    g.rect(-x1, y0, x1 * 2, y1 - y0);         // 上
+    g.rect(-x1, -y1, x1 * 2, y1 - y0);        // 下
+    if (y0 > 0) {
+      g.rect(-x1, -y0, x1 - x0, y0 * 2);      // 左
+      g.rect(x0, -y0, x1 - x0, y0 * 2);       // 右
+    }
+    g.fill();
+  }
+}
+
+// ---------- 玻璃卡:球场透得过,字还站得住 ----------
+
+/**
+ * 半透明「毛玻璃」底:深色压住背景保证对比度 + 白描边 + 顶边高光。
+ * 用于菜单卡片/列表项这类要贴在球场上展示的表面。
+ */
+export function drawGlassCard(g: Graphics, w: number, h: number, r = 10, darkA = 0.42, accentHex?: string): void {
+  g.fillColor = ac(ARCADE.ink, darkA);
   g.roundRect(-w / 2, -h / 2, w, h, r);
   g.fill();
-  g.fillColor = ac(ARCADE.navy, 0.55);          // 中段压暗
+  g.fillColor = ac("#ffffff", 0.06);
+  g.roundRect(-w / 2, h / 2 - h * 0.5, w, h * 0.5, r);
+  g.fill();
+  g.strokeColor = ac(accentHex ?? ARCADE.paper, accentHex ? 0.75 : 0.18);
+  g.lineWidth = accentHex ? 2 : 1.5;
+  g.roundRect(-w / 2, -h / 2, w, h, r);
+  g.stroke();
+  // 顶缘高光:老 kbd / 面板 border 上沿提亮
+  g.strokeColor = ac("#ffffff", 0.1);
+  g.lineWidth = 1;
+  g.roundRect(-w / 2 + 3, -h / 2 + 3, w - 6, h - 6, Math.max(2, r - 3));
+  g.stroke();
+}
+
+/** 街机面板底:上亮下暗的竖向渐变(用半透明叠层模拟)+ 2px 描边 + 顶边高光线 */
+export function drawArcadePanel(g: Graphics, w: number, h: number, r = 14, alpha = 1): void {
+  // 渐变模拟:底部整块 navy,再叠 3 段向上变亮的横带(半透明,肉眼平滑)
+  g.fillColor = ac(ARCADE.panelTop, alpha);          // 顶端最亮 #16203c
+  g.roundRect(-w / 2, -h / 2, w, h, r);
+  g.fill();
+  g.fillColor = ac(ARCADE.navy, 0.55 * alpha);       // 中段压暗
   g.roundRect(-w / 2, -h / 2, w, h * 0.62, r);
   g.fill();
-  g.fillColor = ac(ARCADE.ink, 0.5);            // 底端最深 #0b1020
+  g.fillColor = ac(ARCADE.ink, 0.5 * alpha);         // 底端最深 #0b1020
   g.roundRect(-w / 2, -h / 2, w, h * 0.34, r);
   g.fill();
   // 描边
@@ -115,6 +167,10 @@ export function drawArcadeButton(g: Graphics, w: number, h: number, style: BtnSt
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.stroke();
   } else {
+    // 烟玻璃底:深色垫一层保证字对比,再叠白 7% 提亮(球场仍透得过)
+    g.fillColor = ac(ARCADE.ink, 0.4);
+    g.roundRect(-w / 2, -h / 2, w, h, r);
+    g.fill();
     g.fillColor = ac("#ffffff", 0.07);
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.fill();
@@ -165,15 +221,60 @@ export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid,
   n.layer = parent.layer;
   n.addComponent(UITransform);
   const g = n.addComponent(Graphics);
-  const w = text.length * size * 0.62 + 12;
-  drawChip(g, w, size + 7, bg);
-  const l = n.addComponent(Label);
+
+  // 计算字符显示宽度(全角汉字按 1.05, 半角按 0.62)
+  let charW = 0;
+  for (let i = 0; i < text.length; i++) {
+    charW += text.charCodeAt(i) > 255 ? 1.05 : 0.62;
+  }
+  const w = Math.max(size * 2 + 16, Math.round(charW * size + 16));
+  const h = Math.round(size + 10);
+  drawChip(g, w, h, bg);
+
+  const lNode = new Node("chip-text");
+  lNode.layer = parent.layer;
+  lNode.addComponent(UITransform).setContentSize(w, h);
+  lNode.setParent(n);
+  const l = lNode.addComponent(Label);
   l.string = text;
   l.fontSize = size;
-  l.lineHeight = size + 3;
+  l.lineHeight = h;
   l.horizontalAlign = Label.HorizontalAlign.CENTER;
   l.verticalAlign = Label.VerticalAlign.CENTER;
   l.color = ac(fg);
+
+  n.setParent(parent);
+  return n;
+}
+
+/**
+ * 金币图标:Graphics 画的双层圆(替代 🪙 emoji —— 原生平台 FreeType
+ * 无彩色 emoji 字体,会渲染成方框)。返回节点直径约 18px,可与数字 Label 组合。
+ */
+export function makeCoinIcon(parent: Node, x = 0, y = 0, r = 9): Node {
+  const n = new Node("coin-icon");
+  n.layer = parent.layer;
+  n.addComponent(UITransform);
+  n.setPosition(x, y, 0);
+  const g = n.addComponent(Graphics);
+  // 金底 + 深金描边
+  g.fillColor = ac("#ffd34d");
+  g.circle(0, 0, r);
+  g.fill();
+  g.strokeColor = ac("#b79b12");
+  g.lineWidth = 1.5;
+  g.circle(0, 0, r);
+  g.stroke();
+  // 内圈(铸币感)
+  g.strokeColor = ac("#c79a1e", 0.9);
+  g.lineWidth = 1;
+  g.circle(0, 0, r * 0.62);
+  g.stroke();
+  // 高光弧
+  g.strokeColor = ac("#fff2b8", 0.95);
+  g.lineWidth = 1.6;
+  g.arc(0, 0, r * 0.72, 130, 205, false);
+  g.stroke();
   n.setParent(parent);
   return n;
 }

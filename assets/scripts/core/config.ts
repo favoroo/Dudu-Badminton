@@ -459,8 +459,8 @@ export const MENU: MenuEntry[] = [
   { id: "1p-easy",   label: "单人 · 简单", tag: "EASY",   desc: "AI 反应慢、常打飞,适合热身", mode: "1p", diff: "easy" },
   { id: "1p-normal", label: "单人 · 普通", tag: "NORMAL", desc: "有来有回,会抓你的空当", mode: "1p", diff: "normal" },
   { id: "1p-hard",   label: "单人 · 困难", tag: "HARD",   desc: "跳起就扣杀,落点很刁", mode: "1p", diff: "hard" },
-  { id: "2v2", label: "双打 · 两人组队",   tag: "CO-OP 2P", desc: "你 + 队友 打两个 CPU",       mode: "2v2", diff: "normal", humans: 2 },
-  { id: "1v2", label: "双打 · 带电脑搭档", tag: "CO-OP 1P", desc: "你 + CPU 搭档 打两个 CPU",   mode: "2v2", diff: "normal", humans: 1 },
+  { id: "2v2", label: "双打 · 两人组队",   tag: "CO-OP 2P", desc: "你 + 队友 打两个 AI",       mode: "2v2", diff: "normal", humans: 2 },
+  { id: "1v2", label: "双打 · 带AI搭档", tag: "CO-OP 1P", desc: "你 + AI 搭档 打两个 AI",   mode: "2v2", diff: "normal", humans: 1 },
 ];
 
 // ============================================================

@@ -2,7 +2,7 @@
 // 应用版本定义与语义化版本比较工具
 // ============================================================
 
-export const APP_VERSION = "0.0.1";
+export const APP_VERSION = "0.0.2";
 export const APP_VERSION_NAME = `v${APP_VERSION}`;
 
 export const REPO_CONFIG = {

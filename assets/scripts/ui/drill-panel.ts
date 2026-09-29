@@ -4,7 +4,7 @@
 // 依赖:DrillAnim(演示动画)、Career(存档)、DRILLS(关卡配置)
 // ============================================================
 import {
-  Color, Component, EventKeyboard, Graphics, Input, input, KeyCode, Label, Layers, Node,
+  BlockInputEvents, Color, Component, EventKeyboard, Graphics, Input, input, KeyCode, Label, Layers, Node,
   UITransform, Widget, _decorator,
 } from "cc";
 import { Career } from "../core/career";
@@ -12,15 +12,16 @@ import { CFG, DRILLS } from "../core/config";
 import { DrillDef } from "../core/types";
 import { DrillResult } from "../core/drill";
 import * as DrillAnim from "../render/drill-anim";
-import { drawHardShadow, slamIn } from "./ui-arcade";
+import { drawHardShadow, drawVeil, slamIn } from "./ui-arcade";
 
 // ---------- 布局(设计分辨率 960×540) ----------
 
 const PW = 880, PH = 470;
 
-// 列表页:2 列 × 3 行
-const CARD_W = 260, CARD_H = 120, CARD_GAP = 12;
-const GRID_COLS = 2;
+// 列表页:3 列 × 2 行(六关正好铺满面板宽,不再中间一坨、两边空一大片)
+const CARD_W = 272, CARD_H = 150, CARD_GAP = 14;
+const GRID_COLS = 3;
+const GRID_ROWS = Math.ceil(DRILLS.length / GRID_COLS);
 
 // 引导页:左动画 + 右信息
 const ANIM_W = 470, ANIM_H = 300;
@@ -28,10 +29,10 @@ const INFO_W = PW - ANIM_W - 40;
 
 // 配色(与 career-panel 同源:对齐老 base.css 街机令牌)
 const COL = {
-  panelBg: new Color(14, 20, 40, 246),        // --navy
-  cardBg: new Color(24, 33, 66, 235),         // --navy-2
+  panelBg: new Color(14, 20, 40, 228),        // --navy:半透,身后球场还看得见
+  cardBg: new Color(24, 33, 66, 208),         // --navy-2
   cardSel: new Color(255, 225, 77, 255),      // --acid
-  cardDone: new Color(21, 56, 42, 235),
+  cardDone: new Color(21, 56, 42, 208),
   accent: new Color(255, 225, 77, 255),
   gold: new Color(255, 225, 77, 255),
   hot: new Color(255, 106, 31, 255),
@@ -40,7 +41,7 @@ const COL = {
   white: new Color(245, 239, 225, 255),       // --paper
   dimWhite: new Color(159, 176, 216, 200),
   dimGray: new Color(111, 124, 166, 190),
-  overlay: new Color(5, 7, 15, 175),          // --ink
+  overlay: new Color(5, 7, 15, 102),          // --ink 遮罩基准(渐变由 drawVeil 补)
   starOn: new Color(255, 225, 77, 255),
   starOff: new Color(255, 255, 255, 46),
   btnPrimary: new Color(255, 225, 77, 255),   // acid 厚底主按钮
@@ -64,12 +65,13 @@ function mkNode(name: string, parent: Node, w: number, h: number): Node {
 function mkLabel(
   parent: Node, name: string, text: string,
   size: number, color: Color = COL.white,
-  opts?: { x?: number; y?: number; w?: number; align?: number },
+  opts?: { x?: number; y?: number; w?: number; align?: number; lines?: number },
 ): Label {
   const o = opts ?? {};
   const n = new Node(name);
   n.layer = Layers.Enum.UI_2D;
-  n.addComponent(UITransform).setContentSize(o.w ?? 200, size * 1.4);
+  // 多行文本按行数撑高节点,否则 Overflow.CLAMP 会把后续行裁掉
+  n.addComponent(UITransform).setContentSize(o.w ?? 200, size * 1.4 * (o.lines ?? 1));
   if (o.x !== undefined || o.y !== undefined) n.setPosition(o.x ?? 0, o.y ?? 0, 0);
   n.setParent(parent);
   const l = n.addComponent(Label);
@@ -175,6 +177,11 @@ export class DrillPanel extends Component {
     this._onRetry = null;
     this._onNext = null;
     this._onQuitResult = null;
+    // 复位动画状态,防止 update() 对已销毁 Graphics 继续绘制报错
+    this._page = "list";
+    this._rig = null;
+    this._animGfx = null;
+    this._animMs = 0;
     if (this.root && this.root.isValid) this.root.destroy();
     this.root = null!;
     this._panelNode = null;
@@ -231,12 +238,14 @@ export class DrillPanel extends Component {
     wg.isAlignTop = wg.isAlignBottom = wg.isAlignLeft = wg.isAlignRight = true;
     wg.top = wg.bottom = wg.left = wg.right = 0;
 
-    // 遮罩
+    // 遮罩:中心 0.4、四周 0.72 的渐变(老 .screen),再挡住往世界漏的点击
     const overlay = mkNode("overlay", this.root, 960, 540);
     const og = overlay.addComponent(Graphics);
     og.fillColor = COL.overlay;
     og.rect(-480, -270, 960, 540);
     og.fill();
+    drawVeil(og, 960, 540, 0, 0.53);   // 四周最终收到 ~0.72
+    overlay.addComponent(BlockInputEvents);
 
     // 面板背景(硬偏移阴影 + navy 底)
     const panel = mkNode("panel", this.root, PW, PH);
@@ -292,10 +301,7 @@ export class DrillPanel extends Component {
     bg.circle(0, 0, 16); bg.fill();
     bg.strokeColor = new Color(255, 120, 120, 200);
     bg.lineWidth = 1.5; bg.circle(0, 0, 16); bg.stroke();
-    const bl = back.addComponent(Label);
-    bl.string = "✕"; bl.fontSize = 14; bl.lineHeight = 18;
-    bl.horizontalAlign = 1; bl.verticalAlign = 1;
-    bl.color = COL.white;
+    mkLabel(back, "icon", "✕", 15, COL.white, { x: 0, y: 0, w: 36, align: 1 });
     back.on(Node.EventType.TOUCH_END, () => {
       this._onBack?.();
       this.hide();
@@ -307,9 +313,9 @@ export class DrillPanel extends Component {
   private _buildListPage() {
     // 网格容器
     const totalW = GRID_COLS * CARD_W + (GRID_COLS - 1) * CARD_GAP;
-    const totalH = 3 * CARD_H + 2 * CARD_GAP;
+    const totalH = GRID_ROWS * CARD_H + (GRID_ROWS - 1) * CARD_GAP;
     this._gridNode = mkNode("grid", this._listPage, totalW, totalH);
-    this._gridNode.setPosition(0, 10, 0);
+    this._gridNode.setPosition(0, 6, 0);
 
     this._buildCards();
   }
@@ -317,11 +323,12 @@ export class DrillPanel extends Component {
   private _buildCards() {
     this._gridNode.removeAllChildren();
     const totalW = GRID_COLS * CARD_W + (GRID_COLS - 1) * CARD_GAP;
+    const totalH = GRID_ROWS * CARD_H + (GRID_ROWS - 1) * CARD_GAP;
 
     DRILLS.forEach((d, i) => {
       const col = i % GRID_COLS, row = Math.floor(i / GRID_COLS);
       const x = -totalW / 2 + col * (CARD_W + CARD_GAP) + CARD_W / 2;
-      const y = (3 * CARD_H + 2 * CARD_GAP) / 2 - row * (CARD_H + CARD_GAP) - CARD_H / 2;
+      const y = totalH / 2 - row * (CARD_H + CARD_GAP) - CARD_H / 2;
 
       const rec = recOf(d.id);
       const stars = starsOf(d.id);
@@ -337,33 +344,31 @@ export class DrillPanel extends Component {
         : cleared ? COL.green
           : new Color(50, 58, 78, 140);
       const bgCol = cleared ? COL.cardDone : COL.cardBg;
-      if (sel) drawHardShadow(g, CARD_W, CARD_H, 10, 4, 4, 0.5);   // 选中卡浮起
+      if (sel) drawHardShadow(g, CARD_W, CARD_H, 10, 4, 4, 0.45);   // 选中卡浮起
       drawRR(g, CARD_W, CARD_H, 10, bgCol, borderCol, sel ? 2.5 : 1.5);
 
-      // tag 标签
-      mkLabel(card, "tag", d.tag, 11, COL.cyan, { x: -CARD_W / 2 + 32, y: CARD_H / 2 - 16, w: 50 });
+      // tag 标签(左上)+ 星级(右上,一眼看到练到什么程度)
+      mkLabel(card, "tag", d.tag, 12, COL.cyan, { x: -CARD_W / 2 + 34, y: CARD_H / 2 - 18, w: 60 });
+      const starNode = mkNode("stars", card, 72, 18);
+      starNode.setPosition(CARD_W / 2 - 46, CARD_H / 2 - 18, 0);
+      const sg = starNode.addComponent(Graphics);
+      drawStars(sg, 0, 0, stars, 15);
 
       // 名称
-      mkLabel(card, "name", d.label, 17, COL.white, { x: 10, y: CARD_H / 2 - 16, w: CARD_W - 70, align: 0 });
+      mkLabel(card, "name", d.label, 19, COL.white, { x: 0, y: CARD_H / 2 - 48, w: CARD_W - 24, align: 1 });
 
       // 描述
-      mkLabel(card, "desc", d.desc, 12, COL.dimWhite, { x: 0, y: CARD_H / 2 - 38, w: CARD_W - 20, align: 1 });
+      mkLabel(card, "desc", d.desc, 12, COL.dimWhite, { x: 0, y: CARD_H / 2 - 74, w: CARD_W - 28, align: 1 });
 
-      // 星级
-      const starNode = mkNode("stars", card, 60, 16);
-      starNode.setPosition(0, CARD_H / 2 - 58, 0);
-      const sg = starNode.addComponent(Graphics);
-      drawStars(sg, 0, 0, stars, 14);
+      // 达标拍数
+      mkLabel(card, "goal", `目标 ${goalOf(d)} 拍有效球`, 12, COL.dimGray, { y: -CARD_H / 2 + 36, w: CARD_W - 20, align: 1 });
 
       // 底部信息
       const footText = cleared
-        ? `已练成 ${rec!.clears} 次`
-        : `首通 🪙${p.coin} · EXP${p.exp}`;
+        ? `已练成 ${rec!.clears} 次 · 首通 金币${p.coin}`
+        : `首通奖励 金币${p.coin} · EXP${p.exp}`;
       const footColor = cleared ? COL.green : COL.gold;
-      mkLabel(card, "foot", footText, 11, footColor, { y: -CARD_H / 2 + 14, w: CARD_W - 20, align: 1 });
-
-      // 达标拍数
-      mkLabel(card, "goal", `有效 ${goalOf(d)} 拍`, 10, COL.dimGray, { y: -CARD_H / 2 + 30, w: CARD_W - 20, align: 1 });
+      mkLabel(card, "foot", footText, 12, footColor, { y: -CARD_H / 2 + 16, w: CARD_W - 20, align: 1 });
 
       // 点击
       const idx = i;
@@ -426,7 +431,7 @@ export class DrillPanel extends Component {
     // 要点列表
     const pointsText = def.points.map((t, i) => `${i + 1}. ${t}`).join("\n");
     mkLabel(infoArea, "points", pointsText, 12, COL.dimWhite, {
-      y: -10, w: INFO_W - 24, align: 0,
+      y: -10, w: INFO_W - 24, align: 0, lines: def.points.length,
     });
 
     // 底部说明
@@ -442,9 +447,7 @@ export class DrillPanel extends Component {
     btnGo.setPosition(0, btnY, 0);
     const goG = btnGo.addComponent(Graphics);
     drawRR(goG, 140, 36, 8, COL.btnPrimary);
-    const goL = btnGo.addComponent(Label);
-    goL.string = "开始训练"; goL.fontSize = 15; goL.lineHeight = 20;
-    goL.horizontalAlign = 1; goL.verticalAlign = 1; goL.color = DARK_FG;   // acid 底配深字(老 .btn.primary)
+    mkLabel(btnGo, "text", "开始训练", 15, DARK_FG, { align: 1, w: 140 });
     btnGo.on(Node.EventType.TOUCH_END, () => {
       this._onSelectDrill?.(def);
     });
@@ -454,9 +457,7 @@ export class DrillPanel extends Component {
     btnBack.setPosition(0, btnY - 42, 0);
     const bkG = btnBack.addComponent(Graphics);
     drawRR(bkG, 120, 32, 8, COL.btnGhost);
-    const bkL = btnBack.addComponent(Label);
-    bkL.string = "换个项目"; bkL.fontSize = 13; bkL.lineHeight = 18;
-    bkL.horizontalAlign = 1; bkL.verticalAlign = 1; bkL.color = COL.dimWhite;
+    mkLabel(btnBack, "text", "换个项目", 13, COL.dimWhite, { align: 1, w: 120 });
     btnBack.on(Node.EventType.TOUCH_END, () => {
       this._showList();
     });
@@ -533,7 +534,7 @@ export class DrillPanel extends Component {
       const coin = cd.firstClear.coin + res.stars * cd.perStar.coin;
       const exp = cd.firstClear.exp + res.stars * cd.perStar.exp;
       mkLabel(this._resultPage, "reward",
-        `首次通关 🪙 +${coin} · EXP +${exp}`,
+        `首次通关 金币 +${coin} · EXP +${exp}`,
         16, COL.gold, { y: rewardY, w: cw - 40, align: 1 });
     } else {
       const clears = prev ? prev.clears : 0;
@@ -556,9 +557,7 @@ export class DrillPanel extends Component {
     btnRetry.setPosition(-160, btnY, 0);
     const rG = btnRetry.addComponent(Graphics);
     drawRR(rG, 130, 36, 8, COL.btnPrimary);
-    const rL = btnRetry.addComponent(Label);
-    rL.string = "再来一次"; rL.fontSize = 15; rL.lineHeight = 20;
-    rL.horizontalAlign = 1; rL.verticalAlign = 1; rL.color = DARK_FG;   // acid 底配深字
+    mkLabel(btnRetry, "text", "再来一次", 15, DARK_FG, { align: 1, w: 130 });
     btnRetry.on(Node.EventType.TOUCH_END, () => {
       this._onRetry?.();
     });
@@ -568,9 +567,7 @@ export class DrillPanel extends Component {
     btnNext.setPosition(0, btnY, 0);
     const nG = btnNext.addComponent(Graphics);
     drawRR(nG, 130, 36, 8, COL.btnGhost);
-    const nL = btnNext.addComponent(Label);
-    nL.string = "换个项目"; nL.fontSize = 15; nL.lineHeight = 20;
-    nL.horizontalAlign = 1; nL.verticalAlign = 1; nL.color = COL.dimWhite;
+    mkLabel(btnNext, "text", "换个项目", 15, COL.dimWhite, { align: 1, w: 130 });
     btnNext.on(Node.EventType.TOUCH_END, () => {
       this._onNext?.();
       this._showList();
@@ -581,9 +578,7 @@ export class DrillPanel extends Component {
     btnQuit.setPosition(160, btnY, 0);
     const qG = btnQuit.addComponent(Graphics);
     drawRR(qG, 120, 36, 8, COL.btnDanger);
-    const qL = btnQuit.addComponent(Label);
-    qL.string = "返回菜单"; qL.fontSize = 15; qL.lineHeight = 20;
-    qL.horizontalAlign = 1; qL.verticalAlign = 1; qL.color = COL.white;
+    mkLabel(btnQuit, "text", "返回菜单", 15, COL.white, { align: 1, w: 120 });
     btnQuit.on(Node.EventType.TOUCH_END, () => {
       this._onQuitResult?.();
       this.hide();

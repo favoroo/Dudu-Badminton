@@ -4,16 +4,16 @@
 // 依赖:Career(逻辑层)、CFG.skins(配置)、Sprites.drawPlayer/drawShuttle(渲染)
 // ============================================================
 import {
-  _decorator, Color, Component, EventKeyboard, Graphics, Input, input, Label, Layers, Node,
+  _decorator, BlockInputEvents, Color, Component, EventKeyboard, Graphics, Input, input, Label, Layers, Node,
   UITransform, UIOpacity, Widget, KeyCode,
 } from "cc";
 import { Career } from "../core/career";
-import { CFG } from "../core/config";
+import { CFG, DRILLS } from "../core/config";
 import { Ball, Player, SkinDef, SkinKind, Theme } from "../core/types";
-import { drawPlayer, drawShuttle, Viewport } from "../render/sprites";
+import { drawPlayer, drawRacketStill, drawShuttle, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
-import { drawHardShadow, slamIn } from "./ui-arcade";
+import { drawHardShadow, drawVeil, makeCoinIcon, slamIn } from "./ui-arcade";
 
 const { ccclass } = _decorator;
 
@@ -40,15 +40,18 @@ function gridCols(n: number): number {
 const PW = 880, PH = 470;
 const CARD_W = 96, CARD_H = 130, GAP = 8;
 const GRID_W = 520, PREVIEW_W = 320, CONTENT_H = 330;
+/** 训练评级满分:六关各三星(原来是硬编码的 18) */
+const DRILL_STARS_MAX = DRILLS.length * 3;
 
 // 配色(对齐老 base.css 的街机令牌:acid 荧光黄 + 暖纸白 + navy)
 const COL = {
-  panelBg: new Color(14, 20, 40, 246),        // --navy
-  cardBg: new Color(24, 33, 66, 235),         // --navy-2
+  overlay: new Color(5, 7, 15, 110),          // --ink 遮罩基准(渐变由 drawVeil 补)
+  panelBg: new Color(14, 20, 40, 228),        // --navy:半透,身后球场还看得见
+  cardBg: new Color(24, 33, 66, 208),         // --navy-2
   cardSel: new Color(255, 225, 77, 255),      // --acid 选中描边
   cardSelBg: new Color(255, 225, 77, 26),     // 选中卡内的 acid 薄染
-  cardEquip: new Color(21, 56, 42, 235),
-  cardLock: new Color(16, 19, 30, 190),
+  cardEquip: new Color(21, 56, 42, 208),
+  cardLock: new Color(16, 19, 30, 170),
   tabBg: new Color(255, 255, 255, 13),        // 白 5%
   tabSel: new Color(255, 225, 77, 255),       // acid 芯片
   accent: new Color(255, 225, 77, 255),
@@ -59,7 +62,6 @@ const COL = {
   white: new Color(245, 239, 225, 255),       // --paper 暖纸白
   dimWhite: new Color(159, 176, 216, 200),
   dimGray: new Color(111, 124, 166, 190),
-  overlay: new Color(5, 7, 15, 175),          // --ink
   expBg: new Color(255, 255, 255, 23),
   expFill: new Color(184, 255, 94, 255),      // 老 .exp-bar 的青柠→acid 渐变主色
 };
@@ -77,12 +79,13 @@ function mkNode(name: string, parent: Node, w: number, h: number): Node {
 function mkLabel(
   parent: Node, name: string, text: string,
   size: number, color: Color = COL.white,
-  opts?: { x?: number; y?: number; w?: number; align?: number },
+  opts?: { x?: number; y?: number; w?: number; align?: number; lines?: number },
 ): Label {
   const o = opts ?? {};
   const n = new Node(name);
   n.layer = Layers.Enum.UI_2D;
-  n.addComponent(UITransform).setContentSize(o.w ?? 200, size * 1.4);
+  // 多行文本按行数撑高节点,否则 Overflow.CLAMP 会把后续行裁掉
+  n.addComponent(UITransform).setContentSize(o.w ?? 200, size * 1.4 * (o.lines ?? 1));
   if (o.x !== undefined || o.y !== undefined) n.setPosition(o.x ?? 0, o.y ?? 0, 0);
   n.setParent(parent);
   const l = n.addComponent(Label);
@@ -93,6 +96,16 @@ function mkLabel(
   l.verticalAlign = 1;
   l.color = color;
   return l;
+}
+
+/** 解析 CSS 颜色:支持 #hex 与 rgb()/rgba()(Cocos 的 fromHEX 不认 rgba 字符串) */
+function parseColor(s: string, fallback: Color): Color {
+  const m = /^\s*rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*(?:[, /]\s*([\d.]+))?\s*\)\s*$/.exec(s);
+  if (m) {
+    const a = m[4] !== undefined ? Math.round(parseFloat(m[4]) * 255) : 255;
+    return new Color(+m[1], +m[2], +m[3], a);
+  }
+  try { return new Color().fromHEX(s); } catch { return fallback; }
 }
 
 /** Graphics 画圆角矩形(填充+描边) */
@@ -132,7 +145,10 @@ function dummyPlayer(theme: Theme, racketSkin: SkinDef, ov: Partial<Player> = {}
     zoneScale: 1, score: 0, smashGlow: 0, sweetGlow: 0, perfectGlow: 0,
     hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeRecovery: 0,
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
-    racketSkin, ...ov,
+    racketSkin,
+    hideTag: true,
+    groundY: 0,
+    ...ov,
   };
 }
 
@@ -176,10 +192,26 @@ export class CareerPanel extends Component {
   hide() {
     this._onCloseCb = null;
     this._panelNode = null;
-    // 简单隐藏:将 root 节点从父节点移除
-    if (this.root) {
-      this.root.removeFromParent();
-    }
+    input.off(Input.EventType.KEY_DOWN, this._onKey, this);
+    // 整树销毁并清空缓存引用,避免每次 show() 重建时旧节点泄漏
+    if (this.root && this.root.isValid) this.root.destroy();
+    this.root = null;
+    this._lvLabel = null;
+    this._lvNameLabel = null;
+    this._expLabel = null;
+    this._expFill = null;
+    this._coinsLabel = null;
+    this._hintLabel = null;
+    this._previewGfx = null;
+    this._previewName = null;
+    this._gridNode = null;
+    this._statsNode = null;
+    this._previewArea = null;
+    this._tabGraphics = [];
+    this._toastNode = null;
+    this._toastLabel = null;
+    this._toastOpacity = null;
+    this._toastTimer = 0;
   }
 
   /** 外部触发数据刷新 */
@@ -224,6 +256,7 @@ export class CareerPanel extends Component {
   private _previewName: Label | null = null;
   private _gridNode: Node | null = null;
   private _statsNode: Node | null = null;
+  private _previewArea: Node | null = null;
   private _tabGraphics: Array<{ g: Graphics; l: Label; ut: UITransform }> = [];
   private _toastNode: Node | null = null;
   private _toastLabel: Label | null = null;
@@ -241,12 +274,16 @@ export class CareerPanel extends Component {
     wg.top = wg.bottom = wg.left = wg.right = 0;
     this.root.setParent(parent);
 
-    // 遮罩
+    // 遮罩:中心只压 0.4,四周收到 0.72(老 .screen 的 radial 渐变)——
+    // 商店是「浮在球场上的玻璃柜」,不是一块贴满屏幕的黑纸。
     const overlay = mkNode("overlay", this.root, 960, 540);
     const og = overlay.addComponent(Graphics);
     og.fillColor = COL.overlay;
     og.rect(-480, -270, 960, 540);
     og.fill();
+    drawVeil(og, 960, 540, 0, 0.51);   // 增量按剩余不透明度折算:四周最终收到 ~0.72
+    // 商店打开时不要让点击漏到下面的虚拟按键上(菜单的遮罩此时已隐藏)
+    overlay.addComponent(BlockInputEvents);
 
     // 面板背景(硬偏移阴影 + navy 底:老 .panel 的贴纸感)
     const panel = mkNode("panel", this.root, PW, PH);
@@ -265,12 +302,14 @@ export class CareerPanel extends Component {
     this._toastNode = mkNode("toast", this.root, 400, 36);
     this._toastNode.setPosition(0, -PH / 2 + 20, 0);
     this._toastLabel = this._toastNode.addComponent(Label);
+    this._toastLabel.string = "";
     this._toastLabel.fontSize = 16;
     this._toastLabel.lineHeight = 22;
     this._toastLabel.horizontalAlign = 1;
     this._toastLabel.verticalAlign = 1;
     this._toastLabel.color = COL.gold;
     this._toastOpacity = this._toastNode.addComponent(UIOpacity);
+    this._toastOpacity.opacity = 0;
   }
 
   // ----- 顶部状态栏 -----
@@ -300,9 +339,10 @@ export class CareerPanel extends Component {
       x: -PW / 2 + 310, y: -10, w: 200, align: 1,
     });
 
-    // 金币
-    this._coinsLabel = mkLabel(bar, "coins", "🪙 50", 18, COL.gold, {
-      x: PW / 2 - 100, y: 6, w: 120, align: 2,
+    // 金币(Graphics 图标 + 数字,替代 🪙 emoji)
+    makeCoinIcon(bar, PW / 2 - 152, 6, 9);
+    this._coinsLabel = mkLabel(bar, "coins", "50", 18, COL.gold, {
+      x: PW / 2 - 140, y: 6, w: 100, align: 0,
     });
 
     // 返回按钮
@@ -313,10 +353,7 @@ export class CareerPanel extends Component {
     bg.circle(0, 0, 16); bg.fill();
     bg.strokeColor = new Color(255, 120, 120, 200);
     bg.lineWidth = 1.5; bg.circle(0, 0, 16); bg.stroke();
-    const bl = back.addComponent(Label);
-    bl.string = "✕"; bl.fontSize = 14; bl.lineHeight = 18;
-    bl.horizontalAlign = 1; bl.verticalAlign = 1;
-    bl.color = COL.white;
+    mkLabel(back, "icon", "✕", 15, COL.white, { x: 0, y: 0, w: 36, align: 1 });
     back.on(Node.EventType.TOUCH_END, () => {
       this._onCloseCb?.();
       this.hide();
@@ -335,14 +372,12 @@ export class CareerPanel extends Component {
       tab.setPosition(-((PW - 20) / 2) + tw * i + tw / 2, 0, 0);
 
       const g = tab.addComponent(Graphics);
-      const l = tab.addComponent(Label);
       const ut = tab.getComponent(UITransform)!;
 
       drawRR(g, tw - 4, 32, 8, COL.tabBg);
-      l.string = KIND_LABEL[k];
-      l.fontSize = 15; l.lineHeight = 20;
-      l.horizontalAlign = 1; l.verticalAlign = 1;
-      l.color = COL.dimWhite;
+      const l = mkLabel(tab, `tabLabel-${k}`, KIND_LABEL[k], 15, COL.dimWhite, {
+        x: 0, y: 0, w: tw - 8, align: 1,
+      });
 
       tab.on(Node.EventType.TOUCH_END, () => {
         if (this._kind === k) return;
@@ -365,6 +400,7 @@ export class CareerPanel extends Component {
     // 右:预览
     const right = mkNode("previewArea", panel, PREVIEW_W, CONTENT_H);
     right.setPosition(((PW - 20) / 2) - PREVIEW_W / 2 - 5, cy, 0);
+    this._previewArea = right;
 
     const prevBg = right.addComponent(Graphics);
     drawRR(prevBg, PREVIEW_W, CONTENT_H, 12, new Color(15, 18, 28, 220),
@@ -440,23 +476,25 @@ export class CareerPanel extends Component {
 
       // 状态行
       let statusText: string, statusColor: Color;
-      if (equipped) { statusText = "✔ 装备中"; statusColor = COL.green; }
+      if (equipped) { statusText = "✓ 装备中"; statusColor = COL.green; }
       else if (owned) { statusText = "已拥有"; statusColor = COL.dimWhite; }
-      else if (locked) { statusText = `🔒 Lv.${s.unlockLevel}`; statusColor = COL.dimGray; }
-      else { statusText = `🪙 ${s.price}`; statusColor = broke ? COL.dimGray : COL.gold; }
+      else if (locked) { statusText = `Lv.${s.unlockLevel} 解锁`; statusColor = COL.dimGray; }
+      else { statusText = `金币 ${s.price}`; statusColor = broke ? COL.dimGray : COL.gold; }
       mkLabel(card, "status", statusText, 11, statusColor, {
         y: -28, w: CARD_W - 8, align: 1,
       });
 
-      // 锁定遮罩
+      // 锁定遮罩(独立子节点:一个节点只能挂一个 renderable,card 已有背景 Graphics)
       if (locked) {
-        const ov = card.addComponent(Graphics);
+        const ovNode = mkNode("lock-mask", card, CARD_W, CARD_H);
+        const ov = ovNode.addComponent(Graphics);
         ov.fillColor = new Color(0, 0, 0, 80);
         ov.roundRect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H, 8);
         ov.fill();
       }
       if (broke && !owned) {
-        const ov = card.addComponent(Graphics);
+        const ovNode = mkNode("broke-mask", card, CARD_W, CARD_H);
+        const ov = ovNode.addComponent(Graphics);
         ov.fillColor = new Color(0, 0, 0, 50);
         ov.roundRect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H, 8);
         ov.fill();
@@ -475,71 +513,19 @@ export class CareerPanel extends Component {
     const kind = this._kind;
 
     if (kind === "player") {
-      // 缩小版 drawPlayer 静态像
-      const vp = previewVp(0.38, 0, -10);
+      // 缩小版 drawPlayer 静态像(对齐原版 scale 0.6:100px 的人物画成 60px 高)
+      const vp = previewVp(0.60, 0, -30);
       const th = themeOf(s);
       const curRacket = Career.skinOf("racket");
       const p = dummyPlayer(th, curRacket);
       drawPlayer(g, vp, p, 0, 1, null);
     } else if (kind === "racket") {
-      // 简化球拍图标:椭圆拍面 + 拍柄
-      const frameCol = s.frame
-        ? new Color().fromHEX(s.frame as string)
-        : new Color().fromHEX("#888");
-      const gripCol = new Color().fromHEX(s.grip ?? "#333");
-      const shaftCol = new Color().fromHEX(s.shaft ?? "#aaa");
-
-      // 拍柄
-      g.strokeColor = gripCol;
-      g.lineWidth = 5;
-      g.moveTo(-2, -30); g.lineTo(-2, -6);
-      g.stroke();
-      // 拍杆
-      g.strokeColor = shaftCol;
-      g.lineWidth = 3;
-      g.moveTo(-2, -6); g.lineTo(-2, 10);
-      g.stroke();
-      // 拍面
-      g.strokeColor = frameCol;
-      g.lineWidth = 2.5;
-      g.ellipse(-2, 24, 16, 20);
-      g.stroke();
-      // 弦
-      g.strokeColor = new Color(200, 200, 200, 80);
-      g.lineWidth = 0.8;
-      for (let dy = -12; dy <= 12; dy += 6) {
-        g.moveTo(-14, 24 + dy); g.lineTo(10, 24 + dy);
-      }
-      for (let dx = -10; dx <= 6; dx += 5) {
-        g.moveTo(-2 + dx, 8); g.lineTo(-2 + dx, 40);
-      }
-      g.stroke();
+      // 真球拍(与上场同一套 drawRacket,拍头朝上竖放;皮肤来自卡片本身)
+      const p = dummyPlayer(themeOf(CFG.skins.player[0] ?? s), s);
+      drawRacketStill(g, previewVp(1.30, 0, -26), 0, 0, 1, p);
     } else if (kind === "shuttle") {
-      // 简化羽毛球图标
-      const capCol = new Color().fromHEX(s.cap ?? "#f0e8d8");
-      const skirtCol = new Color().fromHEX(s.skirt ?? "#faf8f2");
-      const bandCol = new Color().fromHEX(s.band ?? "#ff4d4d");
-
-      // 裙羽(梯形)
-      g.fillColor = skirtCol;
-      g.moveTo(-14, -4); g.lineTo(-8, -22);
-      g.lineTo(8, -22); g.lineTo(14, -4);
-      g.close(); g.fill();
-      // 羽毛纹理
-      g.strokeColor = new Color().fromHEX(s.vein ?? "rgba(150,150,150,0.5)");
-      g.lineWidth = 0.8;
-      for (let i = -10; i <= 10; i += 5) {
-        g.moveTo(i, -4); g.lineTo(i * 0.5, -20);
-      }
-      g.stroke();
-      // 球头
-      g.fillColor = capCol;
-      g.circle(0, 4, 8); g.fill();
-      // 装饰带
-      g.strokeColor = bandCol;
-      g.lineWidth = 2.5;
-      g.arc(0, 4, 8, 200, 340, false);
-      g.stroke();
+      // 真羽毛球(与上场同一套 drawShuttle,放大 2.05 对齐原版)
+      drawShuttle(g, previewVp(2.05, 0, 4), dummyBall(), s);
     }
   }
 
@@ -584,11 +570,10 @@ export class CareerPanel extends Component {
   private _buildStatsPage() {
     if (!this._gridNode) return;
 
-    // 创建统计节点(如果不存在)
+    // 履历页没有商店预览可看,统计卡直接铺满面板宽(老 .career-stats-page 也是整页网格)
     if (!this._statsNode) {
-      this._statsNode = mkNode("statsPage", this._gridNode.parent!, GRID_W, CONTENT_H);
-      const gp = this._gridNode.getPosition();
-      this._statsNode.setPosition(gp.x, gp.y, gp.z);
+      this._statsNode = mkNode("statsPage", this._gridNode.parent!, PW - 40, CONTENT_H);
+      this._statsNode.setPosition(0, PH / 2 - 94 - CONTENT_H / 2, 0);
     }
 
     // 清空旧统计卡片
@@ -610,10 +595,10 @@ export class CareerPanel extends Component {
       { num: `${st.perfects}`, label: "完美击球", sub: "顶级时机", color: COL.cyan },
       { num: `${st.sweets}`, label: "甜区命中", sub: "扎实好球", color: COL.gold },
       { num: `${st.maxRally} 拍`, label: "最长相持", sub: "极限拉锯回合", color: COL.white },
-      { num: `${totalStars} / 18 ★`, label: "训练评级", sub: "基本功扎实度", color: COL.cyan },
+      { num: `${totalStars} / ${DRILL_STARS_MAX} ★`, label: "训练评级", sub: "基本功扎实度", color: COL.cyan },
     ];
 
-    const cw = 155, ch = 120, cgap = 12, cols = 3;
+    const cw = 268, ch = 120, cgap = 16, cols = 3;
     const totalW = cols * cw + (cols - 1) * cgap;
 
     cards.forEach((c, i) => {
@@ -624,14 +609,14 @@ export class CareerPanel extends Component {
       const node = mkNode(`stat-${i}`, this._statsNode!, cw, ch);
       node.setPosition(x, y, 0);
       const g = node.addComponent(Graphics);
-      drawRR(g, cw, ch, 10, new Color(25, 30, 45, 220), c.color, 1.5);
+      drawRR(g, cw, ch, 12, new Color(25, 30, 45, 200), c.color, 1.5);
 
       // 数值
-      mkLabel(node, "num", c.num, 26, c.color, { y: 22, w: cw - 16, align: 1 });
+      mkLabel(node, "num", c.num, 30, c.color, { y: 24, w: cw - 16, align: 1 });
       // 标题
-      mkLabel(node, "label", c.label, 14, COL.white, { y: -8, w: cw - 16, align: 1 });
+      mkLabel(node, "label", c.label, 15, COL.white, { y: -12, w: cw - 16, align: 1 });
       // 副标题
-      mkLabel(node, "sub", c.sub, 11, COL.dimGray, { y: -28, w: cw - 16, align: 1 });
+      mkLabel(node, "sub", c.sub, 12, COL.dimGray, { y: -36, w: cw - 16, align: 1 });
     });
   }
 
@@ -666,7 +651,7 @@ export class CareerPanel extends Component {
     }
 
     // --- player / racket:画完整小人 ---
-    const vp = previewVp(1.5, 0, -20);
+    const vp = previewVp(1.5, 0, -45);
 
     // 动画状态(复刻老项目 2200ms 循环)
     let swingT = -1, recoverT = 0;
@@ -732,7 +717,7 @@ export class CareerPanel extends Component {
     }
 
     // 金币
-    this._coinsLabel.string = `🪙 ${p.coins}`;
+    this._coinsLabel.string = `${p.coins}`;
 
     // Tab 高亮(acid 芯片 + 深字:老 .shop-tab.sel)
     this._tabGraphics.forEach((tab, i) => {
@@ -744,9 +729,16 @@ export class CareerPanel extends Component {
 
     // 内容区
     if (this._kind === "stats") {
+      if (this._gridNode) this._gridNode.active = false;
+      // 履历页没有可预览的皮肤:右侧试衣间整块让位给统计卡
+      if (this._previewArea) this._previewArea.active = false;
       this._buildStatsPage();
+      if (this._statsNode) this._statsNode.active = true;
       this._hintLabel.string = "长期生涯数据累积 · 见证你的每一次变强";
     } else {
+      if (this._statsNode) this._statsNode.active = false;
+      if (this._gridNode) this._gridNode.active = true;
+      if (this._previewArea) this._previewArea.active = true;
       this._buildGrid();
       const hints: Record<string, string> = {
         player: "用金币装扮你的球员,选件帅气的战袍",

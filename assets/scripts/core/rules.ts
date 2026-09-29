@@ -142,10 +142,10 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   for (let i = 0; i < n; i++) {
     R.players.push(mk("right", i, n, {
       theme: C.colors.blue,
-      label: dbl ? "CPU" : (mode === "1p" ? "CPU" : "P2"),
+      label: dbl ? "AI" : (mode === "1p" ? "AI" : "P2"),
       isAI: !rightHuman,
       aiDiff: rightHuman ? null : R.diff,
-      teamLabel: dbl ? "CPU方" : (mode === "1p" ? "CPU" : "蓝方"),
+      teamLabel: dbl ? "AI方" : (mode === "1p" ? "AI" : "蓝方"),
     }));
   }
   const D = C.diffs[R.diff];
@@ -198,7 +198,7 @@ function applyShot(ball: Ball, shot: ShotLike): void {
   R.rally++;
   R.longestRally = Math.max(R.longestRally, R.rally);
   emit("hit", {
-    side: shot.hitter.side, kind: shot.kind, q: shot.q, sweet: shot.sweet,
+    side: shot.hitter.side, idx: shot.hitter.idx, kind: shot.kind, q: shot.q, sweet: shot.sweet,
     perfect: shot.perfect, timingHint: shot.timingHint || null,
     x: shot.contactX, y: shot.contactY, power: shot.power,
     landX: shot.landX, steps: shot.steps, intoNet: shot.intoNet, rally: R.rally,

@@ -19,7 +19,7 @@
 import {
   AudioSource, BlockInputEvents, Button, Color, Component, director, Director,
   Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Widget,
-  _decorator,
+  view, _decorator,
 } from "cc";
 import { CFG, DRILLS } from "../core/config";
 import { load, save } from "../core/utils";
@@ -30,13 +30,13 @@ import type { DiffKey } from "../core/types";
 import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
-import { courtRenderer } from "../render/court";
-import { drawArcadeButton, drawArcadePanel, drawHardShadow, drawScanlines, drawVignette } from "./ui-arcade";
+import { courtRenderer, CourtThemeItem } from "../render/court";
+import { drawArcadeButton, drawArcadePanel, drawHardShadow, drawScanlines, drawVeil, drawVignette } from "./ui-arcade";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
 import { Hud } from "./hud";
 import { PausePanel } from "./pause-panel";
-import { SettlePanel, SettlePayload } from "./settle-panel";
+import { SettleBadge, SettlePanel, SettlePayload, SettleStat } from "./settle-panel";
 import { CareerPanel } from "./career-panel";
 import { DrillPanel } from "./drill-panel";
 import { UpdateDialog } from "./update-dialog";
@@ -143,6 +143,8 @@ export interface PanelOpts {
   noShadow?: boolean;
   /** 面板上叠扫描线氛围 */
   scan?: boolean;
+  /** 面板整体不透明度:默认 0.93,留一点球场在身后 */
+  alpha?: number;
 }
 
 /** 街机面板:硬偏移阴影 + 渐变底 + 描边 + 内高光(老 .panel 的贴纸感) */
@@ -151,15 +153,19 @@ export function uiPanel(parent: Node, w: number, h: number, opts: PanelOpts = {}
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(w, h);
   const g = n.addComponent(Graphics);
-  if (!opts.noShadow) drawHardShadow(g, w, h, opts.r ?? 14, 6, 6, 0.55);
-  drawArcadePanel(g, w, h, opts.r ?? 14);
-  if (opts.scan) drawScanlines(g, w, h, 0.07);
+  if (!opts.noShadow) drawHardShadow(g, w, h, opts.r ?? 14, 6, 6, 0.45);
+  drawArcadePanel(g, w, h, opts.r ?? 14, opts.alpha ?? 0.93);
+  if (opts.scan) drawScanlines(g, w, h, 0.05);
   n.setParent(parent);
   return g;
 }
 
-/** 全屏暗遮罩 + BlockInputEvents:弹窗层级压过虚拟按键,且触摸不再穿透到世界 */
-export function uiDim(parent: Node, alpha: number): Node {
+/**
+ * 全屏暗遮罩 + BlockInputEvents:弹窗层级压过虚拟按键,且触摸不再穿透到世界。
+ * 两个 alpha = 老 .screen 的 radial-gradient(中心 centerA → 四周 edgeA):
+ * 中心透一点,球场才看得见;外围压暗,居中的字才站得住。
+ */
+export function uiDim(parent: Node, centerA = 0.52, edgeA = 0.82): Node {
   const n = new Node("dim");
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(CFG.world.w, CFG.world.h);
@@ -169,10 +175,14 @@ export function uiDim(parent: Node, alpha: number): Node {
   w.isAlignLeft = true; w.left = 0;
   w.isAlignRight = true; w.right = 0;
   const g = n.addComponent(Graphics);
-  g.fillColor = col(PAL.ink, alpha);
-  // 覆盖足够广阔区域(4000x2000)，确保在超长宽屏/带鱼屏下遮罩毫无死角
+  // 底:整片铺 centerA 的墨蓝(超宽/带鱼屏也不留亮边)
+  g.fillColor = col(PAL.ink, centerA);
   g.rect(-2000, -1000, 4000, 2000);
   g.fill();
+  // 渐变:可见区域内再往四周叠加,叠加完正好收到 edgeA(增量要按「还剩多少不透明」折算)
+  const vs = view.getVisibleSize();
+  drawVeil(g, Math.max(CFG.world.w, vs.width), Math.max(CFG.world.h, vs.height),
+    0, Math.max(0, (edgeA - centerA) / (1 - Math.min(0.999, centerA))));
   n.addComponent(BlockInputEvents);
   n.setParent(parent);
   return n;
@@ -188,9 +198,11 @@ export function uiAtmosphere(parent: Node): Node {
   w.isAlignBottom = true; w.bottom = 0;
   w.isAlignLeft = true; w.left = 0;
   w.isAlignRight = true; w.right = 0;
+  // 这层是「街机厅的味儿」不是「再蒙一层黑」:强度必须远低于遮罩,
+  // 否则菜单背景直接被糊成纯黑(球场切换看不出来)。
   const g = n.addComponent(Graphics);
-  drawScanlines(g, CFG.world.w, CFG.world.h, 0.12);
-  drawVignette(g, CFG.world.w, CFG.world.h, 10, 0.28);
+  drawScanlines(g, CFG.world.w, CFG.world.h, 0.05);
+  drawVignette(g, CFG.world.w, CFG.world.h, 6, 0.09);
   n.setParent(parent);
   return n;
 }
@@ -231,6 +243,12 @@ export interface UiKit {
   openCareer(): void;
   openDrills(): void;
   cycleCourtTheme(): string;
+  /** 球馆清单(老 ui.js courtPicker 的数据源) */
+  courtThemes(): readonly CourtThemeItem[];
+  /** 切换球馆(点击 courtPicker tab) */
+  setCourtTheme(id: string): boolean;
+  /** 当前球馆 */
+  getCourtTheme(): CourtThemeItem;
   showUpdateDialog(info: UpdateInfo): void;
 }
 
@@ -315,7 +333,61 @@ export class UIManager extends Component {
       before: null,
       scores: [R.scores[0], R.scores[1]],
       won: R.winner === "left",
+      badge: this.matchBadge(),
+      stats: this.statRows("match", null),
     });
+  }
+
+  /**
+   * 荣誉称号(老 ui.js evaluateTitle):按终局战绩挑一个头衔。
+   * emoji 换成 BMP 安全符号(原生平台 FreeType 无彩色 emoji 字体)。
+   */
+  private matchBadge(): SettleBadge | null {
+    const R = Rules.R;
+    if (R.mode === "drill") return null;
+    const a = Rules.statsOf("left");
+    const youWon = R.winner === "left";
+    if (R.mode === "2p") {
+      const won = R.winner !== null;
+      if (R.longestRally >= 10) return { title: `∞ 相持之壁 · ${R.longestRally} 拍对轰`, color: "#7fd0ff" };
+      if (won && Math.abs(R.scores[0] - R.scores[1]) >= 6) return { title: "★ 决胜制霸 · 一边倒", color: "#ffe14d" };
+      return { title: "默契对抗 · 友谊第一", color: "#9aa4c7" };
+    }
+    if (youWon && a.whiffs === 0 && a.hits >= 12) return { title: "★ 完美掌控 · 零失误制霸", color: "#ffe14d" };
+    if (a.smashes >= 5) return { title: "重炮轰炸 · 暴力下压", color: "#ff6a1f" };
+    if (a.perfects >= 3) return { title: "✦ 神级时机 · 技惊四座", color: "#00f0ff" };
+    if (a.sweetRate >= 60 && a.hits >= 10) return { title: "◎ 极致精准 · 甜区大师", color: "#ffe14d" };
+    if (R.longestRally >= 10) return { title: `∞ 相持之壁 · ${R.longestRally} 拍对轰`, color: "#7fd0ff" };
+    if (youWon) return { title: "★ 决胜制霸 · 拿下比赛", color: "#ffe14d" };
+    if (a.hits >= 8 && Math.abs(R.scores[0] - R.scores[1]) <= 2) return { title: "顽强拼搏 · 虽败犹荣", color: "#9aa4c7" };
+    return { title: "初出茅庐 · 再战一场", color: "#9aa4c7" };
+  }
+
+  /**
+   * 战报六格(老 ui.js result() 的 rows):比赛看全场,训练看这一份账。
+   * 数字全从 Rules/Drill 的真实统计来,面板只负责摆。
+   */
+  private statRows(kind: "match" | "drill", drill: DrillResult | null): SettleStat[] {
+    const R = Rules.R;
+    if (kind === "drill" && drill) {
+      return [
+        { v: `${drill.valid}/${drill.goal}`, k: "有效拍数", tone: "gold" },
+        { v: `${drill.perfect}`, k: "完美击球", tone: "cyan" },
+        { v: `${drill.sweet}`, k: "甜区命中", tone: "gold" },
+        { v: `${Math.round(drill.avgQ * 100)}%`, k: "平均质量", tone: "hot" },
+        { v: `${drill.attempts}`, k: "喂球回合" },
+        { v: `${drill.plays}`, k: "你的击球" },
+      ];
+    }
+    const a = Rules.statsOf("left"), b = Rules.statsOf("right");
+    return [
+      { v: `${R.longestRally}`, k: "最长回合 · 拍", tone: "gold" },
+      { v: `${a.smashes}`, k: "你的扣杀", tone: "hot" },
+      { v: `${a.sweetRate}%`, k: "甜区命中率", tone: "gold" },
+      { v: `${a.perfects}`, k: "完美击球", tone: "cyan" },
+      { v: `${a.hits + b.hits}`, k: "全场击球" },
+      { v: `${a.whiffs}`, k: "失误挥空" },
+    ];
   }
 
   // ---------- 状态轮询 ----------
@@ -385,6 +457,8 @@ export class UIManager extends Component {
         before: cap ? cap.before : null,
         scores: [R.scores[0], R.scores[1]],
         won: R.winner === "left",
+        badge: this.matchBadge(),
+        stats: this.statRows("match", null),
       };
     }
     const drill = cap && cap.drill ? cap.drill : (Drill.cur() ? Drill.result() : null);
@@ -395,6 +469,8 @@ export class UIManager extends Component {
       before: cap ? cap.before : null,
       scores: [0, 0],
       won: !!drill && drill.stars >= 1,
+      badge: null,
+      stats: this.statRows("drill", drill),
     };
   }
 
@@ -538,6 +614,18 @@ export class UIManager extends Component {
     return next.name;
   }
 
+  private courtThemes(): readonly CourtThemeItem[] {
+    return CFG.courts as CourtThemeItem[];
+  }
+
+  private setCourtTheme(id: string): boolean {
+    return courtRenderer.setTheme(id);
+  }
+
+  private getCourtTheme(): CourtThemeItem {
+    return courtRenderer.getTheme();
+  }
+
   // ---------- 装配 kit ----------
 
   private buildKit(): void {
@@ -560,6 +648,9 @@ export class UIManager extends Component {
       openCareer: () => this.openCareer(),
       openDrills: () => this.openDrills(),
       cycleCourtTheme: () => this.cycleCourtTheme(),
+      courtThemes: () => this.courtThemes(),
+      setCourtTheme: (id) => this.setCourtTheme(id),
+      getCourtTheme: () => this.getCourtTheme(),
       showUpdateDialog: (info) => this.updateDialog.show(info),
     };
   }

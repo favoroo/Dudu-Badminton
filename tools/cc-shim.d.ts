@@ -31,6 +31,9 @@ declare module "cc" {
   export interface Vec3 { x: number; y: number; z: number }
   export const Vec3: { new(x?: number, y?: number, z?: number): Vec3 };
 
+  export interface Vec2 { x: number; y: number }
+  export const Vec2: { new(x?: number, y?: number): Vec2 };
+
   export class Graphics extends Component {
     static LineCap: typeof LineCap;
     static LineJoin: typeof LineJoin;
@@ -82,10 +85,16 @@ declare module "cc" {
     enableOutline: boolean;
     outlineColor: Color;
     outlineWidth: number;
+    /** 阴影(hud/settle/main-menu 大字用) */
+    enableShadow: boolean;
+    shadowColor: Color;
+    shadowOffset: Vec2;
     overflow: number;
   }
   export namespace Label {
     export enum Overflow { NONE = 0, CLAMP = 1, SHRINK = 2, RESIZE_HEIGHT = 3 }
+    export enum HorizontalAlign { LEFT = 0, CENTER = 1, RIGHT = 2 }
+    export enum VerticalAlign { TOP = 0, CENTER = 1, BOTTOM = 2 }
   }
   export class UIOpacity extends Component { opacity: number }
   export class AudioClip { name: string }
@@ -140,6 +149,10 @@ declare module "cc" {
     /** 节点是否有效(未销毁);面板析构时防悬空 */
     readonly isValid: boolean;
     setScale(x: number, y: number, z?: number): void;
+    /** 3.x 保留 API,等价 setParent */
+    addChild(child: Node): void;
+    /** 2D 旋转角(度,settle 面板飘字/徽章用) */
+    angle: number;
   }
   export namespace Node {
     export const EventType: {
@@ -169,6 +182,8 @@ declare module "cc" {
     to(time: number, props: Record<string, number | Vec3>, opts?: { easing?: string }): Tween<T>;
     delay(time: number): Tween<T>;
     call(cb: () => void): Tween<T>;
+    union(): Tween<T>;
+    repeatForever(): Tween<T>;
     start(): Tween<T>;
     stop(): Tween<T>;
     static stopAllByTarget(target: unknown): void;
@@ -215,6 +230,8 @@ declare module "cc" {
 
   export class Component {
     node: Node;
+    /** 对象有效性(CCObject.isValid):tween 回调里防悬空 */
+    isValid: boolean;
     /** 生命周期按需覆写;shim 只声明可选签名供子类覆写 */
     onLoad?(): void;
     start?(): void;

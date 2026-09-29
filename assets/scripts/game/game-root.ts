@@ -12,7 +12,7 @@ import { Rules } from "../core/rules";
 import { AI } from "../core/ai";
 import { Drill } from "../core/drill";
 import { Career } from "../core/career";
-import { Ball, PlayerInput } from "../core/types";
+import { Ball, FaceKind, PlayerInput } from "../core/types";
 import { WorldView } from "../render/world";
 import { newPad, clearEdges, buildIntent, emptyIntent, Pad } from "../input/pad";
 import { bindKeyboard } from "../input/keyboard";
@@ -34,7 +34,6 @@ export class GameRoot extends Component {
   private worldT = 0;
   private frameT = 0;
   private stopFrames = 0;      // hitstop:世界定格的剩余步数(老 FX.stop 的精简版)
-  private prevBgmState = "";
 
   onLoad(): void {
     // 强制固定高度 540，宽度自适应扩展，保证上下视野和按钮在任何长宽比屏幕上都不被裁剪
@@ -47,10 +46,7 @@ export class GameRoot extends Component {
     // ---------- 场景搭建 ----------
     this.world = new WorldView(this.node);
     this.sfx.load(this.node);
-    this.bgm.load(this.node, () => {
-      if (Rules.R.state === "MENU") this.bgm.playMenu();
-      else this.bgm.playGame();
-    });
+    this.bgm.load(this.node, () => this.bgm.update(Rules.R, Rules.isMatchPoint()));
 
     // ---------- 输入 ----------
     bindKeyboard(this.pad, (code) => this.onSystemKey(code));
@@ -92,19 +88,8 @@ export class GameRoot extends Component {
     this.frameT++;
     this.acc += Math.min(dt, 0.25);          // 切后台回来不追帧
 
-    // BGM 状态跟踪
-    if (R.state !== this.prevBgmState) {
-      this.prevBgmState = R.state;
-      if (R.state === "MENU") {
-        this.bgm.setDuck(false);
-        this.bgm.playMenu();
-      } else if (R.state === "PAUSED") {
-        this.bgm.setDuck(true);
-      } else {
-        this.bgm.setDuck(false);
-        this.bgm.playGame();
-      }
-    }
+    // BGM 自适应编排:每帧观察比赛状态(分层强度/场景/赛点/暂停)
+    this.bgm.update(R, Rules.isMatchPoint());
 
     const step = C.sim.step;
     let n = 0;
@@ -127,6 +112,8 @@ export class GameRoot extends Component {
     this.drain();
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"), R.rally);
+    // 画布内世界提示(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
+    this.world.hudOverlay.draw(R, this.world.frameT);
   }
 
   // ---------- 输入 → 意图(与老 buildInputs 同构) ----------
@@ -182,6 +169,7 @@ export class GameRoot extends Component {
             : sweet ? (C.fx.shakeSweet || 6)
             : (C.fx.shakeNormal || 2) + (e.q as number) * 1.5);
           this.sfx.hit(e.q as number, e.kind as string, sweet, perfect);
+          this.bgm.onHit({ rally: R.rally, kind: e.kind as string, q: e.q as number, sweet, perfect, intoNet: !!e.intoNet });
           if (smash) this.sfx.play("smash");
 
           // 打击粒子特效
@@ -197,16 +185,36 @@ export class GameRoot extends Component {
           // 夸奖只给真人:喂球那拍不飘字(判据可信度)
           const praise = !(R.mode === "drill" && e.side === "right");
           if (praise) {
-            if (perfect && smash) this.world.float(e.x as number, (e.y as number) - 32, "⚡ 完美重扣!! ⚡", "#ffe14d", 30, 56);
+            if (perfect && smash) this.world.float(e.x as number, (e.y as number) - 32, "完美重扣!!", "#ffe14d", 30, 56);
             else if (perfect) this.world.float(e.x as number, (e.y as number) - 30, "✦ PERFECT ✦", "#00f0ff", 24, 50);
-            else if (smash && sweet) this.world.float(e.x as number, (e.y as number) - 30, "⚡ 黄金重扣!! ⚡", "#ffe14d", 28, 52);
-            else if (smash) this.world.float(e.x as number, (e.y as number) - 28, "⚡ 扣杀!! ⚡", "#ffe14d", 26, 48);
+            else if (smash && sweet) this.world.float(e.x as number, (e.y as number) - 30, "黄金重扣!!", "#ffe14d", 28, 52);
+            else if (smash) this.world.float(e.x as number, (e.y as number) - 28, "扣杀!!", "#ffe14d", 26, 48);
             else if (sweet) this.world.float(e.x as number, (e.y as number) - 26, "✦ SWEET! ✦", "#ffe14d", 20, 42);
             else if ((e.q as number) > 0.86) this.world.float(e.x as number, (e.y as number) - 24, "好球", "#ffffff", 16, 34);
           }
+          // 放网提示 + 球种标签:非扣杀类技术球一闪即逝的类型提示(老 game.js#L308-313)
+          if (e.kind === "netshot") this.world.float(e.x as number, (e.y as number) - 22, "放网", "#cfe0ff", 13, 28);
+          if (praise && e.kind !== "smash") {
+            const lblMap: Record<string, string> = { drive: "shotLabelDrive", lob: "shotLabelLob", slash: "shotLabelSlash", clear: "shotLabelClear" };
+            const lbl = (C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number }>)[lblMap[e.kind as string] ?? ""];
+            if (lbl) this.world.float(e.x as number, (e.y as number) - 22, lbl.text, lbl.color, lbl.size, lbl.life);
+          }
+          // 多拍相持里程碑爽点反馈(老 game.js#L314-322;emoji 换 BMP 安全符号)
+          if (e.rally === 6) this.world.float(C.world.w / 2, 72, "★ 6 拍激烈相持! ★", "#ffe14d", 18, 38);
+          else if (e.rally === 10) this.world.float(C.world.w / 2, 72, "★ 10 拍巅峰对攻!! ★", "#ff6a1f", 22, 46);
+          else if (e.rally === 15) this.world.float(C.world.w / 2, 72, "★ 15 拍神仙之战!!! ★", "#00f0ff", 24, 52);
           if (e.timingHint) {
             this.world.float(e.x as number, (e.y as number) - 44, e.timingHint === "early" ? "早了!" : "晚了!", "#ff9664", 14, 36);
           }
+          // 表情:扣杀凶相 / 完美星眼 / 下网冒汗(训练场喂球机不做人,不给它表情)
+          const hitterIdx = e.idx as number;
+          if (!(R.mode === "drill" && e.side === "right")) {
+            if (e.intoNet) this.faceOf(hitterIdx, "oops", 50);
+            else if (perfect) this.faceOf(hitterIdx, "star", 55);
+            else if (smash) this.faceOf(hitterIdx, "fierce", 45);
+          }
+          // 被扣的一方吓一跳
+          if (smash) this.faceSide(e.side === "left" ? "right" : "left", "wow", 36);
           break;
         }
         case "serve": {
@@ -224,11 +232,13 @@ export class GameRoot extends Component {
           this.world.hitNet(e.y as number, 1.2);
           this.world.fx.feather(C.court.netX, e.y as number, 3);
           this.world.float(C.court.netX, (e.y as number) - 30, "下网", "#ff8a8a", 20, 46);
+          this.faceSide(e.side as string, "oops", 50);
           break;
         case "let":
           this.sfx.cheer(0.5);
           this.world.hitNet(C.court.netTopY, 0.8);
           this.world.float(C.court.netX, C.court.netTopY - 40, "擦网!", C.colors.accent, 22, 52);
+          this.faceSide(e.side as string, "wow", 40);
           break;
         case "land": {
           this.sfx.floor(e.isSmash ? 1.5 : 0.9);
@@ -249,23 +259,34 @@ export class GameRoot extends Component {
           } else if (p.attempts > 0 && e.lastHitter === "left") {
             this.world.float(e.landX as number, C.court.groundY - 60, e.netted ? "下网了" : e.reason === "出界" ? "出界了" : "不是这一关的球", "#ffaaa0", 15, 38);
           }
+          // 表情:这一球练成了开心,练砸了沮丧(只给左侧练习者,喂球机不变脸)
+          this.faceSide("left", p.valid > before ? "happy" : "sad", 70);
           if (p.done) this.finishDrill();
           break;
         }
         case "score":
           this.sfx.score(true);
+          this.bgm.onScore();
           if ((e.score as number[])[0] + (e.score as number[])[1] > 4) this.sfx.cheer(0.4);
           // CPU 人格化:得分/失分触发情绪动作
           for (const p of R.players) if (p.isAI) AI.onScore(p, p.side === e.side);
+          // 表情:得分方开心、丢分方沮丧(整队同变,90 帧覆盖得分停顿)
+          this.faceSide(e.side as string, "happy", 90);
+          this.faceSide(e.side === "left" ? "right" : "left", "sad", 90);
           break;
         case "deuce":
           this.world.float(C.world.w / 2, C.world.h / 2 - 40, "平分! DEUCE", "#ff6b9d", 32, 90);
           this.sfx.cheer(0.8);
+          this.bgm.onDeuce();
           break;
         case "match-over": {
           const youWon = R.mode === "1p" ? e.winner === "left" : true;
           this.sfx.play(youWon ? "win" : "lose");
           this.sfx.cheer(1);
+          this.bgm.onMatchOver(youWon);
+          // 表情:胜负定格(OVER 冻结 faceT 不衰减,一直挂到结算面板盖上来)
+          this.faceSide(e.winner as string, "cheer", 9999);
+          this.faceSide(e.winner === "left" ? "right" : "left", "ko", 9999);
           if (youWon) {
             this.world.fx.confetti(C.world.w / 2, C.court.groundY - 120);
           }
@@ -289,6 +310,22 @@ export class GameRoot extends Component {
       }
     }
     R.events.length = 0;
+  }
+
+  // ---------- 表情系统:事件 → 球员脸部状态(渲染层 drawHead 消费;真人/CPU 共用) ----------
+  /** 单人设置(hit 事件按 idx 定位击球者,双打也不会挂错人) */
+  private faceOf(idx: number, face: FaceKind, frames: number): void {
+    const p = Rules.R.players[idx];
+    if (!p) return;
+    p.face = face; p.faceT = frames; p.faceD = frames;
+  }
+
+  /** 整队同变(得分/丢分/胜负):双打时队友一起挂表情 */
+  private faceSide(side: string, face: FaceKind, frames: number): void {
+    for (const p of Rules.R.players) {
+      if (p.side !== side) continue;
+      p.face = face; p.faceT = frames; p.faceD = frames;
+    }
   }
 
   // ---------- 训练场通关(老 finishDrill 的精简版) ----------

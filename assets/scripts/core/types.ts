@@ -15,6 +15,21 @@ export type DiffKey = "easy" | "normal" | "hard";
 /** 挥拍样式:over=高球下压,under=低球上挑 */
 export type SwingStyle = "over" | "under";
 
+/**
+ * 表情种类:黑脸白线条,由 drawHead 按种类切换五官画法。
+ * 设置入口统一在 game 层(drain 事件分发),真人/CPU 共用同一字段。
+ */
+export type FaceKind =
+  | "normal"   // 默认:圆点眼 + 平线嘴,眼神追球 + 周期眨眼
+  | "fierce"   // 扣杀:斜怒眉 + 紧咬直线嘴
+  | "star"     // 完美击球:十字星眼 + 笑弧 + 星星贴纸
+  | "wow"      // 惊讶(被扣/擦网):大圆眼 + o 嘴 + 感叹号气泡
+  | "oops"     // 失误(下网):大圆眼 + 波浪嘴 + 汗滴贴纸
+  | "happy"    // 得分:∩∩ 笑眼 + 大笑弧
+  | "sad"      // 丢分:无力眼线 + 倒弧嘴 + 汗滴贴纸
+  | "cheer"    // 赢下比赛:∩∩ 笑眼 + 半圆张嘴 + 爱心贴纸
+  | "ko";      // 输掉比赛:XX 眼 + 波浪嘴
+
 // ---------- 输入 ----------
 
 /**
@@ -96,6 +111,12 @@ export interface Player {
   recoverT: number;
   runPhase: number; runAmt: number; runStep: number;
   blinkSeed: number;
+  /** 当前表情(faceT>0 时生效,否则画 normal);由 game 层事件设置 */
+  face?: FaceKind;
+  /** 表情剩余帧数:Pl.update 每步递减,冻结态(hitstop/暂停/OVER)不衰减 → 表情保持 */
+  faceT?: number;
+  /** 表情总时长(与 faceT 同时设置):贴纸 pop-in 动画据此算已进行帧数 */
+  faceD?: number;
   swingT: number;
   swingStyle: SwingStyle;
   lastSwingStyle?: SwingStyle;
@@ -126,6 +147,8 @@ export interface Player {
   /** rules.step 每步记下的输入快照(调试/回放用) */
   lastInp?: PlayerInput;
   racketSkin?: SkinDef;
+  hideTag?: boolean;
+  groundY?: number;
 }
 
 /** 羽毛球。held 时由持球人手掌位置驱动 */
