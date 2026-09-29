@@ -412,7 +412,9 @@ export class GameRoot extends Component {
             this.world.floatSys(e.landX as number, C.court.groundY - 74, `有效 +1 · ${Math.min(p.valid, g)}/${g}`, C.colors.accent, 22, 52);
             this.sfx.score(true);
           } else if (p.attempts > 0 && e.lastHitter === "left") {
-            this.world.floatSys(e.landX as number, C.court.groundY - 60, e.netted ? "下网了" : e.reason === "出界" ? "出界了" : "不是这一关的球", "#ffaaa0", 15, 38);
+            const failReason = Drill.diagnoseFail(Drill.cur(), e as never);
+            const landX = (e.landX as number) || (C.world.w / 2);
+            this.world.floatSys(landX, C.court.groundY - 64, failReason, "#ffaaa0", 16, 52);
           }
           // 表情:这一球练成了开心,练砸了沮丧(只给左侧练习者,喂球机不变脸)
           this.faceSide("left", p.valid > before ? "happy" : "sad", 70);

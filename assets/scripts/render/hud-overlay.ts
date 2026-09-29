@@ -12,7 +12,7 @@ import { CFG } from "../core/config";
 import { Settings } from "../core/settings";
 import { Rules } from "../core/rules";
 import { Drill } from "../core/drill";
-import { meter, winU } from "./drill-anim";
+import { meter, winU, targetZoneFor } from "./drill-anim";
 import type { Viewport } from "./world";
 import { pal, withAlpha } from "./palette";
 
@@ -77,11 +77,72 @@ export class HudOverlay {
       }
     }
 
-    // ---------- 训练场:把引导页那根时机条搬到球员头顶(hud.js#L174-197) ----------
-    if (R.mode === "drill") this.drillMeter(R);
+    // ---------- 训练场:把引导页那根时机条搬到球员头顶 + 目标落点与迎击位 ----------
+    if (R.mode === "drill") {
+      this.drillFieldGuides(R, t);
+      this.drillMeter(R);
+    }
 
     // ---------- 赛点霓虹旗标 ----------
     this.matchPointFlag(R, t);
+  }
+
+  // ---------- 训练场:目标落点区与接球站位指引 ----------
+  private drillFieldGuides(R: typeof Rules.R, t: number): void {
+    const def = Drill.cur();
+    if (!def) return;
+    const tgt = targetZoneFor(def);
+    const tx1 = this.vp.x(tgt.x1);
+    const tx2 = this.vp.x(tgt.x2);
+    const tw = Math.max(24, tx2 - tx1);
+    const gy = this.vp.y(CO.groundY);
+    const b = R.ball;
+    const isMyBall = b && b.live && b.lastHitter === "left";
+    const isTargeting = isMyBall && b.shot && b.shot.landX >= tgt.x1 && b.shot.landX <= tgt.x2;
+
+    const pulse = 0.5 + 0.5 * Math.sin(t * 0.15);
+    const bgA = isTargeting ? 0.38 + 0.15 * pulse : 0.18 + 0.08 * pulse;
+    const strokeCol = isTargeting ? "#ffe14d" : "#7dff9e";
+
+    // 1. 对方半场目标落点高亮带
+    this.g.fillColor = withAlpha(pal(strokeCol), bgA);
+    this.g.rect(tx1, gy - 8, tw, 10);
+    this.g.fill();
+
+    this.g.strokeColor = withAlpha(pal(strokeCol), isTargeting ? 0.95 : 0.65);
+    this.g.lineWidth = isTargeting ? 2.5 : 1.6;
+    this.g.rect(tx1, gy - 8, tw, 10);
+    this.g.stroke();
+
+    // 中心微型准星
+    const tcx = (tx1 + tx2) / 2;
+    this.g.strokeColor = withAlpha(pal(strokeCol), 0.7);
+    this.g.lineWidth = 1.2;
+    this.g.circle(tcx, gy - 3, 5);
+    this.g.stroke();
+
+    // 2. 玩家半场最佳迎击站位指示
+    const isIncoming = b && b.live && (b.lastHitter === "right" || (b.held && b.owner?.side === "right"));
+    if (isIncoming) {
+      const cx = this.vp.x(def.contactX);
+      const inPulse = 0.5 + 0.5 * Math.sin(t * 0.2);
+      this.g.strokeColor = withAlpha(pal("#00f0ff"), 0.5 + 0.3 * inPulse);
+      this.g.lineWidth = 1.8;
+      this.g.ellipse(cx, gy - 2, 18, 6);
+      this.g.stroke();
+
+      if (def.pose?.jump) {
+        // 向上箭头暗示起跳
+        this.g.strokeColor = withAlpha(pal("#ffe14d"), 0.8 * inPulse);
+        this.g.lineWidth = 2.0;
+        this.g.moveTo(cx, gy + 12);
+        this.g.lineTo(cx, gy + 22);
+        this.g.moveTo(cx - 4, gy + 17);
+        this.g.lineTo(cx, gy + 22);
+        this.g.lineTo(cx + 4, gy + 17);
+        this.g.stroke();
+      }
+    }
   }
 
   // ---------- 训练场:头顶挥拍时机条 ----------

@@ -49,8 +49,11 @@ export type MoveMode = "joystick" | "buttons";
 /** 位移按簇内相对值夹,半径给一个手指可点又不至于糊屏的区间;透明度 0.2~1.0(1.0 = 完全不透明) */
 export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: 240, maxDy: 180, alphaMin: 0.2, alphaMax: 1.0 };
 
-/** 摇杆本体默认:底圈半径 / knob 相对底圈的半径比例 */
-export const JOYSTICK_DEFAULT = { baseR: 68, knobRatio: 0.46 };
+/** 摇杆本体默认:底圈圆心在左簇内的位置(与 PAD_BASE.left 同参考系)+ 底圈半径 */
+export const JOYSTICK_BASE = { x: 78, y: 78, r: 68 };
+
+/** 摇杆半径可调范围,比普通按钮大一档;手指捏得住又不糊左半屏 */
+export const JOYSTICK_LIMIT = { rMin: 46, rMax: 96, maxDx: 200, maxDy: 160 };
 
 export interface PadBtn { dx: number; dy: number; r: number }
 
@@ -68,8 +71,8 @@ export interface GameSettings {
   pad: Record<PadAction, PadBtn>;
   /** 触屏移动方式:摇杆 or 左右按键。老档缺失时 sanitize 走 "buttons"(不打断既成习惯) */
   moveMode: MoveMode;
-  /** 摇杆底圈半径(原始值,渲染时再乘设备自适应 scale) */
-  joystickR: number;
+  /** 摇杆本体的位/大小:dx/dy 相对 JOYSTICK_BASE,r = 底圈半径(渲染时再乘设备 scale) */
+  joystick: PadBtn;
 }
 
 const KEY = "settings";
@@ -86,7 +89,7 @@ function fresh(): GameSettings {
     padAlpha: 0.8,
     pad,
     moveMode: "joystick",
-    joystickR: JOYSTICK_DEFAULT.baseR,
+    joystick: { dx: 0, dy: 0, r: JOYSTICK_BASE.r },
   };
 }
 
@@ -130,7 +133,14 @@ export function sanitize(raw: unknown): GameSettings {
   // 保持他们的「左右按键」体验,不无预警换成摇杆。新装机走 fresh() 的 "joystick"。
   const legacyMode: MoveMode = padSeen ? "buttons" : "joystick";
   s.moveMode = moveModeOf(r.moveMode, legacyMode);
-  s.joystickR = num(r.joystickR, JOYSTICK_DEFAULT.baseR, PAD_LIMIT.rMin, PAD_LIMIT.rMax);
+  const joy = r.joystick as Partial<PadBtn> | null | undefined;
+  if (joy && typeof joy === "object") {
+    s.joystick = {
+      dx: num(joy.dx, 0, -JOYSTICK_LIMIT.maxDx, JOYSTICK_LIMIT.maxDx),
+      dy: num(joy.dy, 0, -JOYSTICK_LIMIT.maxDy, JOYSTICK_LIMIT.maxDy),
+      r: num(joy.r, JOYSTICK_BASE.r, JOYSTICK_LIMIT.rMin, JOYSTICK_LIMIT.rMax),
+    };
+  }
   return s;
 }
 
@@ -178,7 +188,7 @@ export class SettingsStore {
   get hapticOn(): boolean { return this.v.hapticOn; }
   get padAlpha(): number { return this.v.padAlpha; }
   get moveMode(): MoveMode { return this.v.moveMode; }
-  get joystickR(): number { return this.v.joystickR; }
+  get joystick(): PadBtn { return this.v.joystick; }
 
   /** 某个键的当前布局(默认位 + 位移) */
   padOf(a: PadAction): PadBtn { return this.v.pad[a]; }
@@ -196,12 +206,21 @@ export class SettingsStore {
     this.after(persist);
   }
 
+  /** 摇杆本体位/大小(独立于左右键:两种模式各自的存档,切换不会互相污染) */
+  setJoystick(p: Partial<PadBtn>, persist = true): void {
+    const cur = this.v.joystick;
+    if (p.dx !== undefined) cur.dx = clamp(p.dx, -JOYSTICK_LIMIT.maxDx, JOYSTICK_LIMIT.maxDx);
+    if (p.dy !== undefined) cur.dy = clamp(p.dy, -JOYSTICK_LIMIT.maxDy, JOYSTICK_LIMIT.maxDy);
+    if (p.r !== undefined) cur.r = clamp(p.r, JOYSTICK_LIMIT.rMin, JOYSTICK_LIMIT.rMax);
+    this.after(persist);
+  }
+
   /** 批量改布局(重置默认用)。只回位按钮半径,不动移动方式(用户偏好独立于布局) */
   resetPad(): void {
     const s = this.v;
     for (const a of PAD_ACTIONS) s.pad[a] = { dx: 0, dy: 0, r: PAD_BASE[a].r };
     s.padAlpha = 0.8;
-    s.joystickR = JOYSTICK_DEFAULT.baseR;
+    s.joystick = { dx: 0, dy: 0, r: JOYSTICK_BASE.r };
     this.after(true);
   }
 
@@ -210,7 +229,7 @@ export class SettingsStore {
    * persist=false 同 setPad:音量滑杆拖动时逐帧改内存、松手再 flush,
    * 原生 sys.localStorage.setItem 是同步文件 IO,不能跟着手指 60Hz 写盘。
    */
-  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "padAlpha" | "moveMode" | "joystickR">>, persist = true): void {
+  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "padAlpha" | "moveMode">>, persist = true): void {
     const s = this.v;
     if (p.sfxOn !== undefined) s.sfxOn = bool(p.sfxOn, s.sfxOn);
     if (p.sfxVol !== undefined) s.sfxVol = num(p.sfxVol, s.sfxVol, 0, 1);
@@ -222,7 +241,6 @@ export class SettingsStore {
     if (p.hapticOn !== undefined) s.hapticOn = bool(p.hapticOn, s.hapticOn);
     if (p.padAlpha !== undefined) s.padAlpha = num(p.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
     if (p.moveMode !== undefined) s.moveMode = moveModeOf(p.moveMode, s.moveMode);
-    if (p.joystickR !== undefined) s.joystickR = num(p.joystickR, s.joystickR, PAD_LIMIT.rMin, PAD_LIMIT.rMax);
     this.after(persist);
   }
 

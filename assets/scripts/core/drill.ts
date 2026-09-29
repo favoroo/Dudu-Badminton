@@ -127,6 +127,64 @@ function matches(d: DrillDef | null, e: DrillEndFact | null): boolean {
   return true;
 }
 
+/**
+ * 训练失误精准诊断:替换模糊的「不是这一关的球」,告诉玩家为什么没算、下一次怎么调
+ */
+function diagnoseFail(d: DrillDef | null, e: DrillEndFact | null): string {
+  if (!d || !e) return "未击中球";
+  if (e.lastHitter !== "left") return "没有击中球";
+  if (e.netted) return "下网了！注意击球仰角";
+  if (e.reason === "出界" || (e.scorer !== "left" && !e.netted)) return "出界了！注意控制发力";
+  if (!e.crossed) return "球未过网";
+
+  const s = e.shot || {} as NonNullable<DrillEndFact["shot"]>;
+  const kind = e.kind;
+
+  // 1. 各关卡专项诊断
+  switch (d.id) {
+    case "smash":
+      if (s.contactH != null && s.contactH < 105) return "高度不足！需起跳在最高点扣杀";
+      if (kind === "clear") return "打成了高远球！在最高点按「深球」下压";
+      if (kind === "drive" || kind === "slash") return "下压不足！起跳在最高点大力下压";
+      if (kind === "lob") return "打成了挑球！需起跳在空中迎击";
+      return "未形成扣杀！起跳在最高点按「深球」";
+
+    case "clear":
+      if (d.minLandX != null && s.landX != null && s.landX < d.minLandX) return "落点偏浅！需发力抽到对方底线";
+      if (kind === "lob") return "打成了挑球！后场站稳迎击按「深球」";
+      if (kind === "drive") return "弧度偏低！需向上抽向后场底线";
+      return "落点需压过后场横线！按「深球」发力";
+
+    case "slash":
+      if (s.contactH != null && s.contactH < 90) return "出手点过低！高点按「短球」切前场";
+      if (kind === "smash") return "用力过猛！改按「短球」收力点杀";
+      if (kind === "netshot") return "出手偏低！高位下切到前场";
+      return "未切到前场！高点按「短球」收力";
+
+    case "netshot":
+      if (kind === "lob") return "用力过猛挑高了！网前轻按「短球」放网";
+      if (kind === "clear" || kind === "drive") return "打得太深！网前轻点「短球」放网";
+      return "未放成短球！上网轻按「短球」";
+
+    case "drive":
+      if (d.maxSteps != null && s.steps != null && s.steps > d.maxSteps) return "球速过慢！需平抽快速推击";
+      if (d.minDepth != null && s.depth != null && s.depth < d.minDepth) return "深度不足！需发力平抽推深";
+      if (kind !== "drive" && kind !== "slash") return "弧度不合！中场不跳按「深球」平抽";
+      return "平抽需快而深！不跳按「深球」";
+
+    case "lob":
+      if (s.contactH != null && s.contactH > 52) return "出手过早！等球落到脚下低点再挑";
+      if (kind !== "lob") return "未形成挑高！等球落到低位按「短球」铲起";
+      return "挑球需等球落低！轻按「短球」向上铲";
+  }
+
+  // 2. 通用兜底检查
+  if (d.minLandX != null && s.landX != null && s.landX < d.minLandX) return "落点偏短！需推到底线";
+  if (d.minDepth != null && s.depth != null && s.depth < d.minDepth) return "回球太浅！需推向深区";
+  if (d.maxSteps != null && s.steps != null && s.steps > d.maxSteps) return "球速偏慢！动作需干脆";
+  return "击球动作不符本关要求";
+}
+
 // 玩家这一球到底有没有起手(挥空也算,没碰球就不算)
 const swungTotal = (): number => {
   const R = Rules.R;
@@ -166,12 +224,16 @@ function starsOf(a: DrillAcc | null): number {
 const prog = (): DrillAcc => acc || newAcc();
 const stars = (): number => starsOf(acc);
 
-// HUD 训练态那一句:关卡名 + 还差几拍 + 这一关的时机提示
+// HUD 训练态那一句:关卡名 + 星级 + 还差几拍 + 这一关的操作与时机提示
 function goalText(): string {
   if (!def) return "";
   const g = def.goal || C.drill.defaultGoal;
   const p = prog();
-  return `${def.label} ${Math.min(p.valid, g)}/${g} · ${def.cue}`;
+  const s = starsOf(p);
+  const starsStr = s > 0 ? "★".repeat(s) + "☆".repeat(3 - s) : "☆☆☆";
+  const shotKey = def.wantKey === "near" ? "短球" : "深球";
+  const jumpStr = def.pose?.jump ? "+起跳" : "";
+  return `${def.label} [${starsStr}] ${Math.min(p.valid, g)}/${g} · 按「${shotKey}」${jumpStr} · ${def.cue}`;
 }
 
 // 结算面板要的整份账(奖励由 Career.settleDrill 按「是否首次」决定,这里只交事实)
@@ -205,6 +267,6 @@ function result(): DrillResult {
 function reset(): void { def = null; acc = null; t = 0; swungBase = 0; }
 
 export const Drill = {
-  cur, begin, feederInput, matches, onEnd,
+  cur, begin, feederInput, matches, diagnoseFail, onEnd,
   prog, stars, goalText, result, reset,
 };

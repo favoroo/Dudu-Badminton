@@ -136,6 +136,9 @@ export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {
 /** show() 前调:作废在途退场,面板从可见态起步(快速关-开不会被旧动画收走) */
 export function cancelFade(node: Node): void {
   fadeTags.set(node, (fadeTags.get(node) ?? 0) + 1);
+  // 重新显示了就不算「已淡出」:不清掉的话下一次 hide 会在这里短路成空操作,
+  // 面板从此永远挂在屏幕上关不掉(暂停/主菜单/HUD/结算/更新弹窗全中招)。
+  fadedOut.delete(node);
   const op = node.getComponent(UIOpacity);
   if (op) {
     Tween.stopAllByTarget(op);

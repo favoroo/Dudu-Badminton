@@ -139,6 +139,33 @@ function prize(def: DrillDef) {
   };
 }
 
+/** 易懂口诀 */
+function coachTipOf(id: string): string {
+  switch (id) {
+    case "smash":
+      return "起跳至最高点，球在头顶上方时按下「深球」大力下压";
+    case "clear":
+      return "在后场站定，等球到头顶前方时按「深球」抽到底线";
+    case "slash":
+      return "面对后场高球，高点击球但轻按「短球」收力切前场";
+    case "netshot":
+      return "快速上网，等球刚过网口时轻按「短球」轻搓放网";
+    case "drive":
+      return "中场快速迎击，不等球下落迅速按「深球」平抽推深";
+    case "lob":
+      return "快速上网，等球落到脚下低点时轻按「短球」向上铲起";
+    default:
+      return "看准来球轨迹，抓住最佳时机按键击球";
+  }
+}
+
+/** 明确键位指导 */
+function keyPromptOf(def: DrillDef): string {
+  const shotKey = def.wantKey === "near" ? "短球 [K / 左键]" : "深球 [J / 右键]";
+  const jumpKey = def.pose?.jump ? " + 起跳 [W / 向上]" : " (无需起跳)";
+  return `操作按键：${shotKey}${jumpKey}`;
+}
+
 // ============================================================
 
 export class DrillPanel extends Component {
@@ -172,6 +199,9 @@ export class DrillPanel extends Component {
     this._rig = null;
     this._animGfx = null;
     this._animMs = 0;
+    this._stageLabel = null;
+    this._btnPlayLabel = null;
+    this._btnSpeedLabel = null;
     // 退场淡出后再销毁整树;引用立刻置空,防止 update() 摸到已收走的节点
     const r = this.root;
     if (r && r.isValid) fadeOutHide(r, () => { if (r.isValid) r.destroy(); });
@@ -182,8 +212,14 @@ export class DrillPanel extends Component {
   /** 每帧:驱动引导页动画 */
   update(dt: number) {
     if (this._page !== "brief" || !this._rig || !this._animGfx) return;
-    this._animMs += dt * 1000;
+    if (!this._rig.paused) {
+      this._animMs += dt * 1000 * this._rig.speed;
+    }
     DrillAnim.draw(this._animGfx, this._rig, this._animMs, ANIM_W, ANIM_H);
+    if (this._stageLabel && this._rig) {
+      const st = DrillAnim.stageOfFrame(this._rig.currentFrame);
+      this._stageLabel.string = `${st.index + 1}. ${st.name} · ${st.desc}`;
+    }
   }
 
   // ---------- 内部状态 ----------
@@ -206,11 +242,9 @@ export class DrillPanel extends Component {
   private _animGfx: Graphics | null = null;
   private _rig: DrillAnim.DrillRig | null = null;
   private _animMs = 0;
-  private _briefTitle!: Label;
-  private _briefGoal!: Label;
-  private _briefCue!: Label;
-  private _briefPoints!: Label;
-  private _briefCaption!: Label;
+  private _stageLabel: Label | null = null;
+  private _btnPlayLabel: Label | null = null;
+  private _btnSpeedLabel: Label | null = null;
 
   // 结算页
   private _resultContent!: Node;
@@ -370,7 +404,7 @@ export class DrillPanel extends Component {
     // 清空旧内容
     this._briefPage.removeAllChildren();
 
-    // 左侧:动画区
+    // 左侧:动画区 (470×300)
     const animArea = mkNode("animArea", this._briefPage, ANIM_W, ANIM_H);
     animArea.setPosition(-(PW - 20) / 2 + ANIM_W / 2 + 5, 30, 0);
 
@@ -382,46 +416,119 @@ export class DrillPanel extends Component {
     const gfxNode = mkNode("animGfx", animArea, ANIM_W, ANIM_H);
     this._animGfx = gfxNode.addComponent(Graphics);
 
-    // 右侧:信息区
-    const infoX = -(PW - 20) / 2 + ANIM_W + 20 + INFO_W / 2;
-    const infoArea = mkNode("infoArea", this._briefPage, INFO_W, ANIM_H + 60);
-    infoArea.setPosition(infoX, 10, 0);
+    // 左上角角标: 教学演示
+    const tagNode = mkNode("demoTag", animArea, 130, 24);
+    tagNode.setPosition(-ANIM_W / 2 + 75, ANIM_H / 2 - 18, 0);
+    const tagG = tagNode.addComponent(Graphics);
+    drawRR(tagG, 130, 22, 5, new Color(18, 26, 52, 220), new Color(0, 240, 255, 120), 1);
+    mkLabel(tagNode, "tagText", "教学演示 · 循环播放", 11, COL.cyan, { align: 1, w: 120 });
 
-    // 标题 + tag
-    const titleText = `${def.label}`;
-    mkLabel(infoArea, "title", titleText, 20, COL.white, { y: ANIM_H / 2 - 10, w: INFO_W - 20, align: 1 });
+    // ---------- 左侧下方: 演示控制条 (y = -146) ----------
+    const ctrlBar = mkNode("ctrlBar", this._briefPage, ANIM_W, 36);
+    ctrlBar.setPosition(-(PW - 20) / 2 + ANIM_W / 2 + 5, -146, 0);
 
-    // tag 小标签
-    mkLabel(infoArea, "tag", def.tag, 12, COL.cyan, { y: ANIM_H / 2 - 32, w: INFO_W - 20, align: 1 });
-
-    // 达标要求
-    const goalText = `达标 ${goalOf(def)} 拍有效球`;
-    mkLabel(infoArea, "goal", goalText, 14, COL.gold, { y: ANIM_H / 2 - 56, w: INFO_W - 20, align: 1 });
-
-    // 提示语
-    mkLabel(infoArea, "cue", def.cue, 13, COL.dimWhite, { y: ANIM_H / 2 - 78, w: INFO_W - 20, align: 1 });
-
-    // 要点列表
-    const pointsText = def.points.map((t, i) => `${i + 1}. ${t}`).join("\n");
-    mkLabel(infoArea, "points", pointsText, 12, COL.dimWhite, {
-      y: -10, w: INFO_W - 24, align: 0, lines: def.points.length,
+    // 1. 播放/暂停
+    const btnPlay = mkNode("btnPlay", ctrlBar, 74, 32);
+    btnPlay.setPosition(-ANIM_W / 2 + 42, 0, 0);
+    const pg = btnPlay.addComponent(Graphics);
+    drawRR(pg, 74, 32, 6, new Color(24, 33, 66, 240), new Color(159, 176, 216, 110), 1.2);
+    this._btnPlayLabel = mkLabel(btnPlay, "txt", "⏸ 暂停", 12, COL.white, { align: 1, w: 74 });
+    const playBtn = btnPlay.addComponent(Button);
+    playBtn.transition = Button.Transition.SCALE;
+    playBtn.zoomScale = 0.92;
+    playBtn.target = btnPlay;
+    btnPlay.on(Button.EventType.CLICK, () => {
+      if (!this._rig) return;
+      this._rig.paused = !this._rig.paused;
+      if (this._btnPlayLabel) this._btnPlayLabel.string = this._rig.paused ? "▶ 播放" : "⏸ 暂停";
     });
 
-    // 底部说明
-    const shot = DrillAnim.shotLabel(def.wantKey);
-    mkLabel(infoArea, "caption", `按「${shot}」· 第 ${DrillAnim.contactFrame().toFixed(0)} 帧出手最甜`,
-      12, COL.dimGray, { y: -ANIM_H / 2 + 54, w: INFO_W - 20, align: 1 });
+    // 2. 0.5x 慢放
+    const btnSpeed = mkNode("btnSpeed", ctrlBar, 74, 32);
+    btnSpeed.setPosition(-ANIM_W / 2 + 122, 0, 0);
+    const sg = btnSpeed.addComponent(Graphics);
+    drawRR(sg, 74, 32, 6, new Color(24, 33, 66, 240), new Color(159, 176, 216, 110), 1.2);
+    this._btnSpeedLabel = mkLabel(btnSpeed, "txt", "🐢 0.5x", 12, COL.gold, { align: 1, w: 74 });
+    const speedBtn = btnSpeed.addComponent(Button);
+    speedBtn.transition = Button.Transition.SCALE;
+    speedBtn.zoomScale = 0.92;
+    speedBtn.target = btnSpeed;
+    btnSpeed.on(Button.EventType.CLICK, () => {
+      if (!this._rig) return;
+      this._rig.speed = this._rig.speed === 1.0 ? 0.5 : 1.0;
+      if (this._btnSpeedLabel) this._btnSpeedLabel.string = this._rig.speed === 0.5 ? "⚡ 1.0x" : "🐢 0.5x";
+    });
 
-    // 按钮区:主/次并排,52 高够拇指;街机厚底样式与全站按钮同源
-    const btnY = -ANIM_H / 2 + 6;
+    // 3. 重播
+    const btnReplay = mkNode("btnReplay", ctrlBar, 70, 32);
+    btnReplay.setPosition(-ANIM_W / 2 + 200, 0, 0);
+    const rg = btnReplay.addComponent(Graphics);
+    drawRR(rg, 70, 32, 6, new Color(24, 33, 66, 240), new Color(159, 176, 216, 110), 1.2);
+    mkLabel(btnReplay, "txt", "↺ 重播", 12, COL.white, { align: 1, w: 70 });
+    const repBtn = btnReplay.addComponent(Button);
+    repBtn.transition = Button.Transition.SCALE;
+    repBtn.zoomScale = 0.92;
+    repBtn.target = btnReplay;
+    btnReplay.on(Button.EventType.CLICK, () => {
+      this._animMs = 0;
+      if (this._rig) {
+        this._rig.paused = false;
+        if (this._btnPlayLabel) this._btnPlayLabel.string = "⏸ 暂停";
+      }
+    });
 
+    // 4. 当前步骤动态指示卡
+    const stageCard = mkNode("stageCard", ctrlBar, 210, 32);
+    stageCard.setPosition(ANIM_W / 2 - 110, 0, 0);
+    const scg = stageCard.addComponent(Graphics);
+    drawRR(scg, 210, 32, 6, new Color(14, 20, 42, 230), new Color(107, 124, 166, 120), 1.0);
+    this._stageLabel = mkLabel(stageCard, "stTxt", "1. 迎球 · 观察来球", 11, COL.cyan, { align: 1, w: 200 });
+
+    // ---------- 右侧: 信息区 (370×360) ----------
+    const infoX = -(PW - 20) / 2 + ANIM_W + 20 + INFO_W / 2;
+    const infoArea = mkNode("infoArea", this._briefPage, INFO_W, ANIM_H + 60);
+    infoArea.setPosition(infoX, 8, 0);
+
+    // 1. 关卡标题与 Tag
+    mkLabel(infoArea, "title", def.label, 20, COL.white, { y: ANIM_H / 2 - 2, w: INFO_W - 20, align: 1 });
+    mkLabel(infoArea, "tag", def.tag, 11, COL.cyan, { y: ANIM_H / 2 - 24, w: INFO_W - 20, align: 1 });
+
+    // 2. 核心操作指导卡片 (高亮口诀 + 按键)
+    const coachBox = mkNode("coachBox", infoArea, INFO_W - 16, 48);
+    coachBox.setPosition(0, ANIM_H / 2 - 60, 0);
+    const cbg = coachBox.addComponent(Graphics);
+    drawRR(cbg, INFO_W - 16, 48, 8, new Color(21, 30, 60, 240), new Color(255, 225, 77, 160), 1.5);
+    mkLabel(coachBox, "coachTip", coachTipOf(def.id), 12, COL.gold, { y: 8, w: INFO_W - 28, align: 1 });
+    mkLabel(coachBox, "keyPrompt", keyPromptOf(def), 11, COL.white, { y: -12, w: INFO_W - 28, align: 1 });
+
+    // 3. 动作要领
+    const pointsHeader = mkNode("ptHead", infoArea, INFO_W - 20, 20);
+    pointsHeader.setPosition(0, ANIM_H / 2 - 96, 0);
+    mkLabel(pointsHeader, "ptTitle", "【动作要领】", 12, COL.dimWhite, { x: -INFO_W / 2 + 56, y: 0, w: 100 });
+
+    const pointsText = def.points.map((t, i) => `${i + 1}. ${t}`).join("\n");
+    mkLabel(infoArea, "points", pointsText, 11, COL.dimWhite, {
+      y: ANIM_H / 2 - 140, w: INFO_W - 28, align: 0, lines: def.points.length,
+    });
+
+    // 4. 三星通关规则说明卡片
+    const starBox = mkNode("starBox", infoArea, INFO_W - 16, 56);
+    starBox.setPosition(0, -ANIM_H / 2 + 76, 0);
+    const sbg = starBox.addComponent(Graphics);
+    drawRR(sbg, INFO_W - 16, 56, 6, new Color(16, 23, 46, 220), new Color(159, 176, 216, 80), 1.0);
+    mkLabel(starBox, "sHead", "★ 考核指标", 11, COL.gold, { x: -INFO_W / 2 + 56, y: 16, w: 90 });
+    const starDesc = "★ 基础：打出 3 拍有效回球\n★★ 进阶：2 拍击中甜蜜区\n★★★ 炉火纯青：1 次完美击球且综合质量≥78%";
+    mkLabel(starBox, "sDesc", starDesc, 10, COL.dimWhite, { y: -10, w: INFO_W - 32, align: 0, lines: 3 });
+
+    // 5. 底部按钮
+    const btnY = -ANIM_H / 2 + 10;
     // 开始训练
-    const btnGo = mkNode("btnGo", infoArea, 190, 52);
-    btnGo.setPosition(-92, btnY, 0);
+    const btnGo = mkNode("btnGo", infoArea, 180, 48);
+    btnGo.setPosition(-88, btnY, 0);
     const goG = btnGo.addComponent(Graphics);
-    drawHardShadow(goG, 190, 52, 8, 3, 4, 0.45);
-    drawArcadeButton(goG, 190, 52, "primary", 8);
-    mkLabel(btnGo, "text", "开始训练", 16, DARK_FG, { align: 1, w: 190 });
+    drawHardShadow(goG, 180, 48, 8, 3, 4, 0.45);
+    drawArcadeButton(goG, 180, 48, "primary", 8);
+    mkLabel(btnGo, "text", "开始训练", 16, DARK_FG, { align: 1, w: 180 });
     const goBtn = btnGo.addComponent(Button);
     goBtn.transition = Button.Transition.SCALE;
     goBtn.zoomScale = 0.94;
@@ -431,12 +538,12 @@ export class DrillPanel extends Component {
     });
 
     // 换个项目
-    const btnBack = mkNode("btnBack", infoArea, 150, 52);
-    btnBack.setPosition(108, btnY, 0);
+    const btnBack = mkNode("btnBack", infoArea, 136, 48);
+    btnBack.setPosition(102, btnY, 0);
     const bkG = btnBack.addComponent(Graphics);
-    drawHardShadow(bkG, 150, 52, 8, 3, 4, 0.4);
-    drawArcadeButton(bkG, 150, 52, "ghost", 8);
-    mkLabel(btnBack, "text", "换个项目", 15, COL.dimWhite, { align: 1, w: 150 });
+    drawHardShadow(bkG, 136, 48, 8, 3, 4, 0.4);
+    drawArcadeButton(bkG, 136, 48, "ghost", 8);
+    mkLabel(btnBack, "text", "换个项目", 15, COL.dimWhite, { align: 1, w: 136 });
     const backBtn = btnBack.addComponent(Button);
     backBtn.transition = Button.Transition.SCALE;
     backBtn.zoomScale = 0.94;
@@ -450,6 +557,9 @@ export class DrillPanel extends Component {
     this._page = "list";
     this._rig = null;
     this._animGfx = null;
+    this._stageLabel = null;
+    this._btnPlayLabel = null;
+    this._btnSpeedLabel = null;
     this._briefPage.active = false;
     this._listPage.active = true;
     this._buildCards();
@@ -460,7 +570,12 @@ export class DrillPanel extends Component {
   private _onKey(event: EventKeyboard) {
     if (!this.root || !this.root.isValid) return;
     const kc = event.keyCode;
-    const code = event.code;
+    // Cocos 的 EventKeyboard 没有直接的 `code` 字段,只有 keyCode + rawEvent。
+    // Web 预览/构建里 rawEvent 是原生 KeyboardEvent → 取 e.code 得 "KeyA"/"Enter" 之类;
+    // 原生 APK 里 rawEvent 缺 → 回退到用 keyCode 判定的旧写法(kc === KeyCode.KEY_Q 等)。
+    // 与 input/keyboard.ts 的 getCode() 同一套兜底,不新造第二份逻辑。
+    const raw = (event as unknown as { rawEvent?: { code?: string } }).rawEvent;
+    const code = raw && typeof raw.code === "string" ? raw.code : "";
     const isEnter = kc === KeyCode.ENTER || kc === KeyCode.SPACE || code === "Enter" || code === "Space" || code === "NumpadEnter";
     const isEsc = kc === KeyCode.ESCAPE || code === "Escape";
     const isQ = kc === KeyCode.KEY_Q || code === "KeyQ";

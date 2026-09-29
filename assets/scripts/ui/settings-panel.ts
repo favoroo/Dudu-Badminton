@@ -21,12 +21,12 @@
 // 卡片顶边 201 低于 HUD 记分牌底边 203,从暂停页打开时不会挡住身后的比分。
 // ============================================================
 import { _decorator, Button, Color, Component, Label, Node, UITransform, Vec2 } from "cc";
-import { Settings, PAD_LIMIT, type PadAction } from "../core/settings";
+import { Settings, PAD_LIMIT, JOYSTICK_LIMIT } from "../core/settings";
 import type { UiKit } from "./ui-manager";
 import { fadeOutHide, riseIn, safePad, slamIn } from "./ui-arcade";
 import type { Slider, Toggle } from "./widgets";
 import { newPad } from "../input/pad";
-import { buildTouchPad, type TouchPadHandle } from "../input/touchpad";
+import { buildTouchPad, type PadSlot, type TouchPadHandle } from "../input/touchpad";
 
 const { ccclass } = _decorator;
 
@@ -43,7 +43,8 @@ export class SettingsPanel extends Component {
   private padHandle: TouchPadHandle | null = null;
   private sizeSlider: Slider | null = null;
   private alphaSlider: Slider | null = null;
-  private selected: PadAction | null = null;
+  private selected: PadSlot | null = "left";
+  private sizeLabel: Label | null = null;
   private toggles: Toggle[] = [];
   private sliders: Slider[] = [];
   private offChange: (() => void) | null = null;
@@ -55,7 +56,7 @@ export class SettingsPanel extends Component {
   show(parent: Node, kit: UiKit, onClose: () => void): void {
     this.kit = kit;
     this.onCloseCb = onClose;
-    this.selected = "left";
+    this.selected = Settings.moveMode === "joystick" ? "joystick" : "left";
     this.buildList(parent);
     if (this.card) slamIn(this.card);
     // 任何地方改了设置(菜单徽章 / KeyM / 编辑器拖动)都回到这里重画一遍
@@ -113,15 +114,31 @@ export class SettingsPanel extends Component {
 
     // ---------- 左列:按键布局 ----------
     this.txt(this.card, "按键布局", 15, P.accent, -PW / 2 + 20, 130, 200);
-    this.txt(this.card, "操作按钮只在真正打球时出现;这里调成自己最顺手的位子。",
-      12, P.dim, -PW / 2 + 20, 98, 340);
+    this.txt(this.card, "开关打开用摇杆,关掉切回左右两键。",
+      12, P.dim, -PW / 2 + 20, 106, 340);
 
-    const adjust = this.kit.button(this.card, "调整位置", 220, 52, { style: "primary", size: 19 });
-    adjust.setPosition(-PW / 2 + 130, 34, 0);
+    // 移动方式开关:开 = 摇杆(模拟量),关 = 左右按键(离散)。
+    // 单一开关、文案一眼懂,不搞 segmented —— 触屏上两个钮贴一起容易按错。
+    const modeTog = this.kit.toggle(this.card, "摇杆移动", 220, {
+      get: () => Settings.v.moveMode === "joystick",
+      set: (v) => {
+        this.kit.sfx.play("ui");
+        Settings.setPart({ moveMode: v ? "joystick" : "buttons" });
+        // 编辑器打开着的话,让左簇立即拆建 —— 句柄 apply() 内部按 moveMode 分派
+        this.padHandle?.apply();
+        // 编辑器选中项跟着模式走:切到摇杆时选中摇杆,切回按键时选中「左」
+        this.pick(Settings.moveMode === "joystick" ? "joystick" : "left");
+      },
+    });
+    modeTog.node.setPosition(-PW / 2 + 130, 62, 0);
+    this.toggles.push(modeTog);
+
+    const adjust = this.kit.button(this.card, "调整位置", 220, 48, { style: "primary", size: 18 });
+    adjust.setPosition(-PW / 2 + 130, 0, 0);
     adjust.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.openEditor(); });
 
-    const reset = this.kit.button(this.card, "重置默认", 220, 48, { size: 16 });
-    reset.setPosition(-PW / 2 + 130, -38, 0);
+    const reset = this.kit.button(this.card, "重置默认", 220, 44, { size: 15 });
+    reset.setPosition(-PW / 2 + 130, -60, 0);
     reset.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("ui");
       Settings.resetPad();
@@ -130,9 +147,9 @@ export class SettingsPanel extends Component {
     });
 
     this.txt(this.card, "拖动按钮 = 移动位置 · 选中后用滑杆 = 改大小和透明度",
-      12, "#6f7ca6", -PW / 2 + 20, -94, 340);
+      12, "#6f7ca6", -PW / 2 + 20, -114, 340);
     this.txt(this.card, "存的是相对屏幕角落的位子,换手机不会被刘海挤歪",
-      12, "#6f7ca6", -PW / 2 + 20, -120, 340);
+      12, "#6f7ca6", -PW / 2 + 20, -138, 340);
 
     // ---------- 右列:声音 + 震动 ----------
     // 列内几何都按「不越过卡片右缘 ±380」排:开关 150 + 滑杆 140 + 中间留 5
@@ -207,10 +224,15 @@ export class SettingsPanel extends Component {
     if (this.sliders[1] && this.sliders[1].get() !== s.bgmVol) this.sliders[1].set(s.bgmVol);
     if (this.sizeSlider) {
       const a = this.selected;
-      if (a) this.sizeSlider.set(Settings.padOf(a).r);
+      if (a === "joystick") this.sizeSlider.set(s.joystick.r);
+      else if (a) this.sizeSlider.set(s.pad[a].r);
     }
     if (this.alphaSlider && this.alphaSlider.get() !== Settings.padAlpha) {
       this.alphaSlider.set(Settings.padAlpha);
+    }
+    if (this.sizeLabel) {
+      // 「大小」标签跟着选中槽位变,提示玩家当前拖的是谁
+      this.sizeLabel.string = this.selected === "joystick" ? "摇杆" : "大小";
     }
   }
 
@@ -241,16 +263,23 @@ export class SettingsPanel extends Component {
     const g = this.kit.panel(strip, PW, 64, { r: 12, alpha: 0.88 });
     g.node.setPosition(0, 0, 0);
 
-    this.txt(strip, "大小", 14, P.text, -PW / 2 + 26, 0, 60);
+    this.sizeLabel = this.txt(strip, Settings.moveMode === "joystick" ? "摇杆" : "大小", 14, P.text, -PW / 2 + 26, 0, 60);
+    // 半径滑杆区间取两档的并集:按钮 [26..72]、摇杆 [46..96]。
+    // 具体到当前选中的槽位由 setPad / setJoystick 各自夹一次,越界值会被回抽,
+    // repaint 再把滑杆拉到实际存下的值,拖过头看不到「超出」的错觉。
     this.sizeSlider = this.kit.slider(strip, 180, {
-      min: PAD_LIMIT.rMin, max: PAD_LIMIT.rMax, step: 1,
-      value: Settings.padOf(this.selected ?? "left").r,
+      min: Math.min(PAD_LIMIT.rMin, JOYSTICK_LIMIT.rMin),
+      max: Math.max(PAD_LIMIT.rMax, JOYSTICK_LIMIT.rMax),
+      step: 1,
+      value: this.sizeOfSelected(),
     });
     this.sizeSlider.node.setPosition(-PW / 2 + 196, 0, 0);
     this.sizeSlider.onChange((v) => {
       const a = this.selected;
       if (!a) return;
-      Settings.setPad(a, { r: v }, false);      // 半径变化不夹位置,内存改完 apply 自动跟上
+      // 半径变化不夹位置,内存改完 apply 自动跟上
+      if (a === "joystick") Settings.setJoystick({ r: v }, false);
+      else Settings.setPad(a, { r: v }, false);
     });
     this.sizeSlider.onCommit(() => Settings.flush());
 
@@ -272,7 +301,7 @@ export class SettingsPanel extends Component {
       Settings.resetPad();
       Settings.flush();
       this.padHandle?.apply();
-      this.sizeSlider?.set(Settings.padOf(this.selected ?? "left").r);
+      this.sizeSlider?.set(this.sizeOfSelected());
       this.alphaSlider?.set(Settings.padAlpha);
     });
 
@@ -280,7 +309,10 @@ export class SettingsPanel extends Component {
     eDone.setPosition(PW / 2 - 100, 0, 0);
     eDone.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.closeEditor(); });
 
-    const hint = this.kit.label(this.editView, "拖动按钮移动 · 上方滑杆改大小和透明度",
+    const hint = this.kit.label(this.editView,
+      Settings.moveMode === "joystick"
+        ? "拖动摇杆底圈或右侧按键调整位子 · 上方滑杆改大小和透明度"
+        : "拖动按钮移动 · 上方滑杆改大小和透明度",
       13, "#dfe6ff", { outline: "#05070f", outlineW: 2 });
     hint.node.setPosition(0, stripY - 58, 0);
 
@@ -289,16 +321,18 @@ export class SettingsPanel extends Component {
     this.padHandle = buildTouchPad(this.editView, newPad(), {
       edit: true,
       onPick: (a) => this.pick(a),
-      onDrag: (a, dx, dy) => {
+      onDrag: (slot, dx, dy) => {
         if (!this.padHandle) return;
-        const clamped = this.padHandle.clampDelta(a, dx, dy);
-        Settings.setPad(a, clamped, false);      // 拖动中不落盘(原生 localStorage 是同步 IO)
+        const clamped = this.padHandle.clampDelta(slot, dx, dy);
+        // 拖动中不落盘(原生 localStorage 是同步 IO,跟手指 60Hz 写盘会卡)
+        if (slot === "joystick") Settings.setJoystick(clamped, false);
+        else Settings.setPad(slot, clamped, false);
       },
       onDragEnd: () => Settings.flush(),
     });
     // 建层时 Widget 还没给全屏容器定尺寸,首帧的夹取用的是兜底宽度;补一次
     this.padHandle.apply();
-    this.pick(this.selected ?? "left");
+    this.pick(this.selected ?? (Settings.moveMode === "joystick" ? "joystick" : "left"));
 
     this.listView!.active = false;
     // 入场动画只动顶部操作条和说明,不动整层:editView 是 Widget 全屏容器,
@@ -307,10 +341,19 @@ export class SettingsPanel extends Component {
     riseIn(hint.node, 0.06);
   }
 
-  private pick(a: PadAction): void {
-    this.selected = a;
-    this.padHandle?.select(a);
-    this.sizeSlider?.set(Settings.padOf(a).r);
+  private pick(slot: PadSlot): void {
+    this.selected = slot;
+    this.padHandle?.select(slot);
+    this.sizeSlider?.set(this.sizeOfSelected());
+    if (this.sizeLabel) this.sizeLabel.string = slot === "joystick" ? "摇杆" : "大小";
+  }
+
+  /** 当前选中槽位对应的半径(摇杆与按钮各自一份存档) */
+  private sizeOfSelected(): number {
+    const s = this.selected;
+    if (s === "joystick") return Settings.joystick.r;
+    if (s) return Settings.padOf(s).r;
+    return Settings.padOf("left").r;
   }
 
   private closeEditor(): void {

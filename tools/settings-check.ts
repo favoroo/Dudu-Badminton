@@ -13,7 +13,7 @@
 // 用法(先 npx tsc -p tools/tsconfig.json 编译):
 //   node .tools-build/tools/settings-check.js
 import { setStorageBackend, type KVStorage } from "../assets/scripts/core/utils";
-import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, PAD_ACTIONS } from "../assets/scripts/core/settings";
+import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, JOYSTICK_LIMIT, JOYSTICK_BASE, PAD_ACTIONS } from "../assets/scripts/core/settings";
 
 // ---------- 假后端 ----------
 
@@ -198,17 +198,62 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(!kv.m.has("dd02.settings"), "只读盘不写盘:启动不该凭空造档");
 }
 
-// ---------- ⑨ resetPad 同时重置透明度 ----------
+// ---------- ⑨ resetPad 同时重置透明度与摇杆 ----------
 
 {
   freshKV();
   const st = new SettingsStore();
   st.init();
   st.setPad("left", { dx: 50, dy: 30, r: 60 });
+  st.setJoystick({ dx: 40, dy: -20, r: 90 });
   st.setPart({ padAlpha: 0.4 });
   st.resetPad();
   ok(near(st.v.pad.left.dx, 0) && near(st.v.pad.left.r, PAD_BASE.left.r), "resetPad 位移与半径回默认");
   ok(near(st.v.padAlpha, 0.8), "resetPad 透明度也回默认 0.8");
+  ok(near(st.v.joystick.dx, 0) && near(st.v.joystick.r, JOYSTICK_BASE.r), "resetPad 摇杆本体也回默认");
+}
+
+// ---------- ⑩ moveMode 老档默认 buttons / 新档默认 joystick ----------
+
+{
+  // 老档:raw 里带 pad 但没有 moveMode → 判定为摇杆功能上线前装机,保持左右键
+  const old = sanitize({ pad: { left: { dx: 10, dy: 0, r: 44 } } });
+  ok(old.moveMode === "buttons", "老档(有 pad 无 moveMode)默认 buttons,不打断既成习惯");
+  // 新装机:raw = null → sanitize 走 fresh 的 joystick
+  const newInstall = sanitize(null);
+  ok(newInstall.moveMode === "joystick", "新装机默认 joystick,直接体验新玩法");
+  // 显式存过 moveMode 的档,照实读回
+  const explicit = sanitize({ moveMode: "joystick", pad: { left: { dx: 10, dy: 0, r: 44 } } });
+  ok(explicit.moveMode === "joystick", "显式存的 moveMode 优先于「老档 → buttons」的兜底");
+  const explicitBtn = sanitize({ moveMode: "buttons" });
+  ok(explicitBtn.moveMode === "buttons", "显式存 buttons 也照读");
+  // 垃圾值 → 回默认(注意此时 raw 里没 pad → 视作新档,默认 joystick)
+  const junk = sanitize({ moveMode: "nonsense" });
+  ok(junk.moveMode === "joystick", "moveMode 收到垃圾值 → 走默认");
+}
+
+// ---------- ⑪ 摇杆本体字段:消毒与夹取 ----------
+
+{
+  const over = sanitize({ joystick: { dx: 9999, dy: -9999, r: 999 } });
+  ok(over.joystick.dx === JOYSTICK_LIMIT.maxDx, `摇杆 dx 越上限夹到 ${JOYSTICK_LIMIT.maxDx}`);
+  ok(over.joystick.dy === -JOYSTICK_LIMIT.maxDy, `摇杆 dy 越下限夹到 ${-JOYSTICK_LIMIT.maxDy}`);
+  ok(over.joystick.r === JOYSTICK_LIMIT.rMax, `摇杆 r 越上限夹到 ${JOYSTICK_LIMIT.rMax}`);
+  const small = sanitize({ joystick: { r: 1 } });
+  ok(small.joystick.r === JOYSTICK_LIMIT.rMin, `摇杆 r 越下限夹到 ${JOYSTICK_LIMIT.rMin}`);
+  const junk = sanitize({ joystick: "nonsense" });
+  ok(junk.joystick.r === JOYSTICK_BASE.r, "joystick 字段整体是垃圾 → 回默认,不抛");
+
+  freshKV();
+  const st = new SettingsStore();
+  st.init();
+  st.setJoystick({ dx: 999, dy: 0, r: 200 });
+  ok(st.v.joystick.dx === JOYSTICK_LIMIT.maxDx && st.v.joystick.r === JOYSTICK_LIMIT.rMax,
+    "setJoystick 也夹越界值");
+  st.setPart({ moveMode: "buttons" });
+  ok(st.v.moveMode === "buttons", "setPart 能翻 moveMode");
+  st.setPart({ moveMode: "nonsense" as never });
+  ok(st.v.moveMode === "buttons", "moveMode 收到垃圾值 → 保持原值不动");
 }
 
 console.log(`\n${bad === 0 ? "全部通过" : `${bad} 项失败`}`);
