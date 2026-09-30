@@ -8,7 +8,7 @@
 //
 // 口径:左队换成「脚本化真人替身」,右队交给真档位 AI(core/ai 在这里是被测对象,
 // 不是替身的实现依赖)。替身的全部能力都来自**游戏本来就给真人看的东西** ——
-// 落点预测圈(ball.shot.landX)与按拍预告(Physics.flightFramesTo 对
+// 落点预测圈(ball.shot.landX)与按拍预告(Physics.flightFramesToClosest 对
 // player.PRESS_LEAD_FRAMES,与 game-root.updateSwingCue 同式),再叠真人代价:
 // 反应帧、按拍时机抖动、走位死区。
 //
@@ -31,7 +31,7 @@ import { Rules } from "../assets/scripts/core/rules";
 import { AI } from "../assets/scripts/core/ai";
 import { CFG } from "../assets/scripts/core/config";
 import { Player, PRESS_LEAD_FRAMES } from "../assets/scripts/core/player";
-import { flightFramesTo } from "../assets/scripts/core/physics";
+import { flightFramesToClosest } from "../assets/scripts/core/physics";
 import { clamp, rand } from "../assets/scripts/core/utils";
 import { Ball, DiffKey, Player as Pl, PlayerInput } from "../assets/scripts/core/types";
 
@@ -79,6 +79,20 @@ for (const k of Object.keys(TUNE) as DiffKey[]) {
 }
 if (Object.keys(TUNE).length) console.log(`  ⚠ AI_TUNE 生效(仅调参用,不是出货数值):${JSON.stringify(TUNE)}`);
 
+// 固定种子(与 serve-check 同一个):回归门必须确定性 —— 12 局的样本量下,回合均值
+// 的批间波动(±0.4 拍)足以让贴线断言「有时绿有时红」;种子化后同一份代码永远同一
+// 个结果,真值校准靠 25 局加样本跑(AI_CHECK_MATCHES=25),门本身不掷骰子。
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+Math.random = mulberry32(0xD0D0B1D);
+
 const empty = (): PlayerInput => ({
   left: false, right: false, jumpPressed: false, jumpHeld: false, swingAim: null, lungePressed: false,
 });
@@ -86,7 +100,11 @@ const empty = (): PlayerInput => ({
 // ===== 真人替身的代价(单位全是帧,与 reach-check 同一套语言) =====
 const REACT_FRAMES = 10;    // 看到对手击球 → 才开始朝落点跑(反应 + 触屏提交)
 const DEADBAND = 12;        // 离目标这么近就不再微调(人不会逐帧对齐)
-const LEAD_JITTER = 4;      // 按拍时机抖动 ±帧(看了按拍预告也还是会早/晚几帧)
+// 按拍时机抖动:真人跟环按拍不会每拍都踩中,而且触屏反应偏晚 —— 分布向晚按偏斜
+// (早按最多 5 帧,晚按最多 10 帧)。旧版对称 ±4 在新触发系统下正好整个落在 perfect
+// 窗口内(early 侧容错 −12 帧),等于替身每拍完美 —— 那不是人,是第二台 AI。
+const LEAD_EARLY = 5;       // 最多早按 5 帧(多半仍是 perfect)
+const LEAD_LATE = 10;       // 最多晚按 10 帧(落到 sweet / 普通 / 边缘)
 // 落点圈画的是地上的**落点**,真人是迎着球去的(球到落点之前就该打),所以替身朝网口
 // 迎前几 px。不给这一条是系统性冤枉替身 —— 胜率被压低,然后误去把 AI 削过头。
 const MEET_NET = 34;
@@ -114,7 +132,14 @@ const PRESSES_PER_BALL = 2;
 // 注意:回合长度对替身强弱**极敏感**(±20→60 拍,±65→10 拍),所以本工具的绝对值
 // 不是产品指标,**同一替身下"旧数值 vs 新数值"的相对变化**才是。改任何一档数值,
 // 都要连同这几行标定数一起重跑,别单独引用一个 avg 回合数当结论。
-const PROXY_READ = Number(process.env.AI_CHECK_PROXY_READ ?? 32);
+//
+// 【重校准 · 2026-10-01】新触发系统(峰值追踪 + 宽 perfect 窗)落地后,±4 对称抖动
+// 让替身每拍 perfect、AI 三档全被碾压(easy 97% / hard 也有马拉松回合 160+ 拍),
+// 旧标定口径失效。替身按真人重铸:时机抖动改偏晚分布(早 5 / 晚 10,见上)。
+// 走位误差 32 → 45 → 35:±45 高估了走位噪声,替身每局漏接 200+,easy 的
+// 得分率/回合双双贴着断言线下(56% @ 9.9);±35 漏接回到 ~150,三条断言全部
+// 进带(easy 66% @ 10.3,最终三档口径见 config.ts 校准注释)。diffs 据此重新落盘。
+const PROXY_READ = Number(process.env.AI_CHECK_PROXY_READ ?? 35);
 
 /** 真人能站到的区间(与 player.ts 的夹取同源) */
 const STAND = { min: CO.wallL, max: CO.netX - CO.netPad };
@@ -150,7 +175,7 @@ function serveInput(me: Pl, S: HumanState): PlayerInput {
 
 /**
  * 一帧的真人输入:落点圈 → 跑位,按拍预告 → 起手。
- * 全程只用 Player.strikeZone / flightFramesTo / PRESS_LEAD_FRAMES 这三个「UI 本来就在用」
+ * 全程只用 Player.strikeZone / flightFramesToClosest / PRESS_LEAD_FRAMES 这三个「UI 本来就在用」
  * 的公开量,不碰 AI 的私有预测。
  */
 function humanInput(me: Pl, ball: Ball, state: string, S: HumanState): PlayerInput {
@@ -172,7 +197,7 @@ function humanInput(me: Pl, ball: Ball, state: string, S: HumanState): PlayerInp
     S.react = REACT_FRAMES;
     S.presses = 0;
     S.readErr = rand(-PROXY_READ, PROXY_READ);
-    S.lead = PRESS_LEAD_FRAMES + Math.round(rand(-LEAD_JITTER, LEAD_JITTER));
+    S.lead = PRESS_LEAD_FRAMES + Math.round(rand(-LEAD_LATE, LEAD_EARLY));
   }
   if (S.react > 0) { S.react--; return inp; }   // 反应期内不动也不挥
 
@@ -181,10 +206,10 @@ function humanInput(me: Pl, ball: Ball, state: string, S: HumanState): PlayerInp
   const dx = clamp(land + me.facing * MEET_NET + S.readErr, STAND.min, STAND.max) - me.x;
   if (Math.abs(dx) > DEADBAND) { inp.left = dx < 0; inp.right = dx > 0; }
 
-  // —— 起手:与 game-root.updateSwingCue 同式(球到判定区心还剩几帧 vs 最佳提前量) ——
+  // —— 起手:与 game-root.updateSwingCue 同式(球到判定区心最近逼近还剩几帧 vs 最佳提前量) ——
   if (me.swingT < 0 && S.presses < PRESSES_PER_BALL) {
     const z = Player.strikeZone(me, Math.hypot(ball.vx, ball.vy));
-    const fc = flightFramesTo(ball, z.x, z.y, z.r * C.swingCue.arriveRadius, C.swingCue.horizonFrames);
+    const fc = flightFramesToClosest(ball, z.x, z.y, z.r, C.swingCue.horizonFrames);
     if (fc !== null && fc <= S.lead) {
       S.presses++;
       inp.swingAim = S.aimIdx++ % 4 === 3 ? C.aimDepth.near : C.aimDepth.deep;
@@ -241,12 +266,13 @@ function runMatch(diff: DiffKey, st: TierStat): void {
         const why = String(ev.reason ?? "");
         st.rallies.push(rally);
         if (byProxy) st.proxyPoints++; else st.aiPoints++;
-        // 归属要反过来看:reason 描述的是**打最后一拍的人**(失分方),不是得分方。
-        // 「出界/下网/未过网」= 打的人自己失误;「落地/扣杀/擦网」= 打的人打死、接的人漏。
-        // 早先按得分方归类,结果打印成"AI 打飞 0",差点让我以为 shotErr 这条杠杆是死的。
-        const hitterIsAI = !byProxy;              // 得分方是对手 ⇔ 最后拍是 AI 打的
-        if (FAULT.includes(why)) { if (hitterIsAI) st.aiFaulted++; else st.proxyFaulted++; }
-        else if (WINNER.includes(why)) { if (hitterIsAI) st.aiMissed++; else st.proxyMissed++; }
+        // 失分方永远是得分方的对手,桶按**失分方**记:
+        // 「出界/下网/未过网」= 失分方自己打飞的(FAULT);「落地/扣杀/擦网」= 得分方
+        // 打出致胜球、失分方漏接(WINNER)。旧写法 hitterIsAI=!byProxy 对两种 reason
+        // 同用,实际全按得分方归类,四个桶的显示标签正好全部反了 —— 替身打出 84 记
+        // 致胜球会显示成「真人漏接 84」,差点让人把杠杆拧反。
+        if (FAULT.includes(why)) { if (byProxy) st.aiFaulted++; else st.proxyFaulted++; }
+        else if (WINNER.includes(why)) { if (byProxy) st.aiMissed++; else st.proxyMissed++; }
         myServePending = false;
       }
     }
@@ -289,8 +315,8 @@ const rows: Row[] = [];
 
 console.log(`=== 真人替身 vs 档位 AI:每档 ${MATCHES_PER_DIFF} 局(11 分制)===`);
 console.log(`    替身口径:落点圈 + 按拍预告 + 迎前 ${MEET_NET}px + 走位误差 ±${PROXY_READ}px`
-  + ` + 反应 ${REACT_FRAMES} 帧 + 时机抖动 ±${LEAD_JITTER} 帧 + 死区 ${DEADBAND}px + 每球最多补 ${PRESSES_PER_BALL} 拍`
-  + `(触屏玩家还要再多花几帧,见 reach-check §4)`);
+    + ` + 反应 ${REACT_FRAMES} 帧 + 时机抖动 早${LEAD_EARLY}/晚${LEAD_LATE} 帧 + 死区 ${DEADBAND}px + 每球最多补 ${PRESSES_PER_BALL} 拍`
+    + `(触屏玩家还要再多花几帧,见 reach-check §4)`);
 for (const diff of DIFFS) {
   const st = measure(diff, MATCHES_PER_DIFF);
   const total = st.proxyPoints + st.aiPoints;

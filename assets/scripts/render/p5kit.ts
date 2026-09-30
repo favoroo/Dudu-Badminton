@@ -170,12 +170,11 @@ const PLATE_SKEW_DEG = 8;
 const PLATE_INK = "07070d";
 
 /**
- * 飘字底板:
- *  slant = 斜切黑片 + 档位色描边(漫画对话框的地基);
- *  star  = 双层尖刺星芒衬底(外层档位色半透,内层白,错半步相位)。
- * w/h 为文字盒外扩后的底板尺寸;rot 只用于 star 的相位错开;
- * dim 为强度乘数(1=实心原版,<1 整体调淡,由 config.fx.floatPlateDim 下发)——
- * 底板只做衬底,压低 alpha 才不盖过飞行中的球。
+ * 飘字底板(位置由 game 层挂到场边锚点,这里只管画得清楚):
+ *  slant = 斜切墨黑实底 + 档位色描边(漫画对话框的地基);
+ *  star  = 三层尖刺星芒徽章:档位色外圈当描边 → 墨黑实底衬字 → 白芯低强度点缀。
+ * 曾经把底板 alpha 压到半透想「不抢球」,结果黑片在暖色球场上糊成灰、金字看不清 ——
+ * 结论:可读性靠实底,不挡球靠挪位置。dim 保留为 config.fx.floatPlateDim 微调旋钮。
  */
 export function drawFloatPlate(
   g: Graphics, w: number, h: number, style: FloatPlateStyle,
@@ -191,17 +190,18 @@ export function drawFloatPlate(
       g.lineTo(-w / 2 - s, h / 2);
       g.close();
     };
-    g.fillColor = withAlpha(pal_(PLATE_INK), 0.85 * dim);
+    g.fillColor = withAlpha(pal_(PLATE_INK), 0.92 * dim);
     trace();
     g.fill();
-    g.strokeColor = withAlpha(color, 0.9 * dim);
+    g.strokeColor = withAlpha(color, dim);
     g.lineWidth = 2;
     trace();
     g.stroke();
   } else if (style === "star") {
     const r = w / 2;
-    drawStarburst(g, 0, 0, r, r * 0.55, 10, color, 0.42 * dim, rot);
-    drawStarburst(g, 0, 0, r * 0.74, r * 0.38, 10, pal_("ffffff"), 0.30 * dim, rot + Math.PI / 10);
+    drawStarburst(g, 0, 0, r, r * 0.55, 10, color, 0.95 * dim, rot);
+    drawStarburst(g, 0, 0, r * 0.88, r * 0.48, 10, pal_(PLATE_INK), 0.94 * dim, rot);
+    drawStarburst(g, 0, 0, r * 0.42, r * 0.24, 10, pal_("ffffff"), 0.16 * dim, rot + Math.PI / 10);
   }
 }
 

@@ -162,10 +162,14 @@ function applyAiTier(): void {
   });
 }
 
-function newMatch(mode: string, diff: DiffKey, humans?: number): void {
+function resetModifiers(): void {
   R.activeStage = null;
   Physics.setEnvModifier(null);
   Pl.setPlayerModifier(null);
+}
+
+function newMatch(mode: string, diff: DiffKey, humans?: number): void {
+  resetModifiers();
 
   R.mode = mode;
   R.diff = diff || "normal";
@@ -772,7 +776,7 @@ const statsOf = (s: TeamSide): TeamStats => {
 };
 
 export const Rules = {
-  R, newMatch, startCampaign, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint, winTarget,
+  R, newMatch, startCampaign, resetModifiers, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint, winTarget,
   applyAiTier,
   teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf, setTrailHook,
 };

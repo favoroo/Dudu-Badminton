@@ -45,6 +45,8 @@ interface FloatText {
   plateG: Graphics;
   /** 当前底板样式;none = 裸字(系统信息/轻量提示防刷屏) */
   plate: FloatPlateStyle;
+  /** 出生点世界 x:场边底板字靠它记边,同侧后到的字向下错行不叠成一块 */
+  wx: number;
   opacity: UIOpacity;
   life: number;
   maxLife: number;
@@ -398,14 +400,27 @@ export class WorldView {
       const label = labelNode.addComponent(Label);
       labelNode.setParent(node);
       node.setParent(this.floatLayer);
-      item = { node, label, plateG, plate: "none", opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
+      item = { node, label, plateG, plate: "none", wx: 0, opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
     }
     item.life = life;
     item.maxLife = life;
     item.age = 0;
     item.vy = vy || -1;
     item.sys = sys;
-    item.node.setPosition(this.vp.x(wx), this.vp.y(wy), 0);
+    // 场边底板字(评价/技能)同侧堆叠:数一下还活着的同侧底板字,新字向下错行
+    // (行高 size*1.9,封顶两行),连打好球也不会两条 PERFECT 叠成一坨
+    let sy = wy;
+    if (plate !== "none") {
+      const mySide = wx < C.court.netX ? 0 : 1;
+      let n = 0;
+      for (const o of this.floats) {
+        if (o.plate === "none" || !o.node.active) continue;
+        if ((o.wx < C.court.netX ? 0 : 1) === mySide) n++;
+      }
+      sy += Math.min(n, 2) * size * 1.9;
+    }
+    item.wx = wx;
+    item.node.setPosition(this.vp.x(wx), this.vp.y(sy), 0);
     item.node.setScale(1, 1, 0);
     item.label.string = text;
     item.label.fontSize = size;

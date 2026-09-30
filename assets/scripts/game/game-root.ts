@@ -13,7 +13,7 @@ import { Rules } from "../core/rules";
 import { AI } from "../core/ai";
 import { Drill } from "../core/drill";
 import { Career } from "../core/career";
-import { flightFramesTo } from "../core/physics";
+import { flightFramesToClosest } from "../core/physics";
 import { Pace } from "../core/pace";
 import { Gait } from "../core/gait";
 import { Player, PRESS_LEAD_FRAMES } from "../core/player";
@@ -199,8 +199,10 @@ export class GameRoot extends Component {
   }
 
   // ---------- 按拍预告:来球逼近判定区心 → 击球两键渐亮,到最佳按拍帧闪一下 ----------
-  // 最佳按拍时刻 = 球到判定区心「前」PRESS_LEAD_FRAMES 帧(按下后第 9 帧才是质量峰),
-  // 所以亮度峰必须对着「球还没到」的那个时刻,提示的才是「现在按」而不是「球到了」。
+  // 最佳按拍时刻 = 球到判定区心「前」PRESS_LEAD_FRAMES 帧(按下后第 9 帧才是质量峰)。
+  // 但「看到→按下」人要花 reactFrames 帧(≈150ms),所以一切提示(辉光峰/闪环/时机环收满)
+  // 都提前 reactFrames 发出:看到的那一刻按下去,峰刚好落在球过心。提示说「现在按」,
+  // 意思是「这一帧按」,不是「再等等」—— 曾经锚在 lead 上发提示,等于教玩家迟到 10 帧。
   // 预测用 Physics.flightFramesTo 按真实积分推算,只读不写游戏状态,纯表现层。
   private updateSwingCue(): void {
     const R = Rules.R;
@@ -218,10 +220,12 @@ export class GameRoot extends Component {
       return;
     }
     const z = Player.strikeZone(human, Math.hypot(ball.vx, ball.vy));
-    // horizonFrames **故意不随球速档位折算**:它是「距球进入判定区还剩几帧」的剩余帧预算,
+    // horizonFrames **故意不随球速档位折算**:它是「距球到判定区心还剩几帧」的剩余帧预算,
     // 不是总滞空帧数。不折 = 预告在真实时间里同样提前 0.66s 亮起(按拍时机是玩家侧的量,
     // 与档无关);折了反而让慢档的提前量变长,与 swingCue 的设计意图相反。详见 pace.ts 头注释。
-    const fc = flightFramesTo(ball, z.x, z.y, z.r * cue.arriveRadius, cue.horizonFrames);
+    // fc = 最近逼近帧(对走位误差鲁棒):玩家有走位误差,坠落轨迹不穿区心是常态,
+    // 「进入小圆」式锚环要么系统性早按、要么要求精确穿心直接失联 —— 见 config.swingCue 注。
+    const fc = flightFramesToClosest(ball, z.x, z.y, z.r, cue.horizonFrames);
     if (fc === null) {
       this.swingCueArmed = true;
       touchPad.setSwingGlow(0);
@@ -231,22 +235,23 @@ export class GameRoot extends Component {
       return;
     }
     const lead = PRESS_LEAD_FRAMES;
-    const cueLevel = clamp(1 - Math.abs(fc - lead) / cue.rampFrames, 0, 1);
+    const pressAt = lead + cue.reactFrames;     // 提示提前量:给人类反应留帧
+    const cueLevel = clamp(1 - Math.abs(fc - pressAt) / cue.rampFrames, 0, 1);
     touchPad.setSwingGlow(cueLevel);
     // 同一级辉光镜像到羽毛球本体:注意力跟球的玩家看不见按钮,球自己发光当预告
     this.world.setSwingCue(cueLevel);
-    // 到点闪环带迟滞:过了最佳帧后再退出预告线 8 帧才重新武装,一记来球只闪一次
-    if (fc <= lead) {
+    // 到点闪环带迟滞:过了提示帧后再退出预告线 8 帧才重新武装,一记来球只闪一次
+    if (fc <= pressAt) {
       if (this.swingCueArmed) { this.swingCueArmed = false; touchPad.pulseSwing("sweet"); }
-    } else if (fc > lead + 8) {
+    } else if (fc > pressAt + 8) {
       this.swingCueArmed = true;
     }
     // 时机环喂给渲染层:收缩环长在球上(按拍预告的球上版),甜区圈画在判定区心
     const TR = C.timingRing;
     this.world.hudOverlay.setTimingRing({
       zx: z.x, zy: z.y, zr: z.r,
-      progress: clamp(1 - (fc - lead) / TR.spanFrames, 0, 1),
-      locked: fc <= lead,
+      progress: clamp(1 - (fc - pressAt) / TR.spanFrames, 0, 1),
+      locked: fc <= pressAt,
     });
     // 球种预告:按真实求解器预演这一拍,徽标写在击球键上方(挥拍中瞄准还能改,不掐)
     touchPad.setShotPreview(Player.previewKind(human, ball));
@@ -309,7 +314,7 @@ export class GameRoot extends Component {
       this.world.punch(p.x, p.y, C.lunge.castPunch || 1.025);
       this.world.shake(C.lunge.castShake || 3);
       this.world.whiteFlash(C.lunge.castFlash || 0.22, "#38bdf8");
-      this.world.float(p.x, p.y - 48, "疾风突进!", "#38bdf8", 24, 46);
+      this.floatSideLab({ text: "疾风突进!", color: "#38bdf8", size: 24, life: 46 }, p.x);
       this.sfx.play("lunge");
       if (!p.isAI) haptic("light");
     } else if (id === "smash") {
@@ -318,7 +323,7 @@ export class GameRoot extends Component {
       this.world.punch(p.x, p.y, C.skills.smash.castPunch || 1.05);
       this.world.shake(C.skills.smash.castShake || 6);
       this.world.whiteFlash(C.skills.smash.castFlash || 0.55, "#f43f5e");
-      this.world.float(p.x, p.y - 54, "暴烈重扣!!", "#f43f5e", 28, 52);
+      this.floatSideLab({ text: "暴烈重扣!!", color: "#f43f5e", size: 28, life: 52 }, p.x);
       this.sfx.play("smash");
       if (!p.isAI) haptic("score");
     } else if (id === "magnet") {
@@ -327,7 +332,7 @@ export class GameRoot extends Component {
       this.world.punch(ball.x, ball.y, C.skills.magnet.castPunch || 1.045);
       this.world.shake(C.skills.magnet.castShake || 5);
       this.world.whiteFlash(C.skills.magnet.castFlash || 0.45, "#a855f7");
-      this.world.float(ball.x, ball.y - 42, "引力掌控!!", "#a855f7", 26, 48);
+      this.floatSideLab({ text: "引力掌控!!", color: "#a855f7", size: 26, life: 48 }, p.x);
       this.sfx.play("swing", 0.7);
       if (!p.isAI) haptic("light");
     } else if (id === "focus") {
@@ -339,7 +344,7 @@ export class GameRoot extends Component {
       this.world.punch(p.x, p.y, C.skills.focus.castPunch || 1.035);
       this.world.shake(C.skills.focus.castShake || 4);
       this.world.whiteFlash(C.skills.focus.castFlash || 0.40, "#06b6d4");
-      this.world.float(p.x, p.y - 48, "时空领域!!", "#06b6d4", 26, 50);
+      this.floatSideLab({ text: "时空领域!!", color: "#06b6d4", size: 26, life: 50 }, p.x);
       this.sfx.play("whiff", 0.8);
       if (!p.isAI) haptic("score");
     } else if (id === "flash") {
@@ -350,8 +355,7 @@ export class GameRoot extends Component {
       this.world.whiteFlash(F.flashCastFlash || 0.6);
       this.world.shake(F.flashCastShake || 7, 0, Math.atan2(ball.y - p.y, ball.x - p.x));
       this.world.punch(ball.x, ball.y, F.flashCastPunch || 1.05);
-      const lab = F.flashCastFloat;
-      this.world.floatSys(ball.x, ball.y + lab.dy, lab.text, lab.color, lab.size, lab.life, -1, lab.plate as FloatLabel["plate"]);
+      this.floatSideLab(F.flashCastFloat as FloatLabel, p.x, true);
       this.sfx.play("flash");
       if (!p.isAI) haptic("score");
     }
@@ -362,6 +366,16 @@ export class GameRoot extends Component {
   private hitAngOf(e: GameEvent): number {
     const vx = e.vx as number, vy = e.vy as number;
     return Number.isFinite(vx) && Number.isFinite(vy) ? Math.atan2(vy, vx) : 0;
+  }
+
+  /** 场边字锚点(config.fx.floatSide):评价/技能类飘字不贴球,按击球方挂到两侧场边,
+   *  底板再实也不盖住飞行中的球;同侧多条由 world 自动向下错行 */
+  private floatSideLab(lab: FloatLabel, refX: number, sys = false): void {
+    const A = C.fx.floatSide;
+    const x = refX < C.court.netX ? A.padX : C.world.w - A.padX;
+    const pl = lab.plate ?? "none";
+    if (sys) this.world.floatSys(x, A.y, lab.text, lab.color, lab.size, lab.life, -1, pl);
+    else this.world.float(x, A.y, lab.text, lab.color, lab.size, lab.life, -1, pl);
   }
 
   private drain(): void {
@@ -445,14 +459,15 @@ export class GameRoot extends Component {
             touchPad.pulseSwing(perfect ? "perfect" : "sweet");
           }
           // 深浅瞄准的命中确认:右滑深球(重)/左滑短球(轻)飘小字,键盘 J/K 同链路;
-          // mid(没滑直接点)不飘 —— 默认档不打扰。位置在球下方,与上方档位飘字错开
+          // mid(没滑直接点)不飘 —— 默认档不打扰。贴着击球点做空间反馈,不随档位字去场边
           if (praise && !R.players[hitterIdx]?.isAI) {
             const K = C.fx as unknown as Record<string, FloatLabel>;
             const aimLab = e.aim === "deep" ? K.floatAimDeep : e.aim === "near" ? K.floatAimNear : null;
-            if (aimLab) this.world.float(e.x as number, (e.y as number) + aimLab.dy, aimLab.text, aimLab.color, aimLab.size, aimLab.life, -1, aimLab.plate);
+            if (aimLab) this.world.float(e.x as number, (e.y as number) + (aimLab.dy ?? 0), aimLab.text, aimLab.color, aimLab.size, aimLab.life, -1, aimLab.plate);
           }
           if (praise) {
-            // 档位文案/字号/寿命全部来自 config.fx.floatTier*(分级炫技的"文字"那一格)
+            // 档位文案/字号/寿命来自 config.fx.floatTier*;位置挂击球方场边锚点 ——
+            // 评价字贴球会盖住飞行路径,挪开后底板再实也不挡视线
             const K = C.fx as unknown as Record<string, FloatLabel>;
             const lab = (perfect && smash) ? K.floatTierPerfectSmash
               : perfect ? K.floatTierPerfect
@@ -460,7 +475,7 @@ export class GameRoot extends Component {
                   : smash ? K.floatTierSmash
                     : sweet ? K.floatTierSweet
                       : (e.q as number) > 0.86 ? K.floatTierGood : null;
-            if (lab) this.world.float(e.x as number, (e.y as number) + lab.dy, lab.text, lab.color, lab.size, lab.life, -1, lab.plate);
+            if (lab) this.floatSideLab(lab, e.x as number);
           }
           // 技能专属击球飘字与强化特效
           const skillKind = e.skillKind as string | null;
@@ -473,7 +488,7 @@ export class GameRoot extends Component {
               : skillKind === "focus" ? K.floatSkillFocus
               : null;
             if (sLab) {
-              this.world.float(e.x as number, (e.y as number) + sLab.dy - 16, sLab.text, sLab.color, sLab.size, sLab.life, -1, sLab.plate);
+              this.floatSideLab(sLab, e.x as number);
             }
             if (skillKind === "lunge") {
               const ang = hitAng ?? this.hitAngOf(e);
@@ -516,20 +531,19 @@ export class GameRoot extends Component {
               this.world.punch(e.x as number, e.y as number, 1.035);
             }
           } else if (praise && e.lungeShot) {
-            this.world.float(e.x as number, (e.y as number) - 44, "跨步重击!", "#38bdf8", 24, 48);
+            this.floatSideLab({ text: "跨步重击!", color: "#38bdf8", size: 24, life: 48 }, e.x as number);
             const ang = hitAng ?? this.hitAngOf(e);
             this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
           }
           // 连击热手提示:热度首次烧到 fireAt 时飘一次(连打好球的人才看得到)
           if (praise && (e.heat as number) === (C.heat.fireAt || 3)) {
-            this.world.float(e.x as number, (e.y as number) - 38, "手感火热!", "#ff6a1f", 21, 46);
+            this.floatSideLab({ text: "手感火热!", color: "#ff6a1f", size: 21, life: 46 }, e.x as number);
           }
-          // 跳杀:空中高球必然扣杀的专属飘字(dy 更高,与档位字叠开)
+          // 跳杀:空中高球必然扣杀的专属飘字(挂场边,与档位字同侧自动错行)
           // 真人看「跳杀!!」学成因,AI 打出来只当对手的高光,不飘教学字
           if (praise && e.jumpSmash && !R.players[hitterIdx]?.isAI) {
             const K = C.fx as unknown as Record<string, FloatLabel>;
-            const lab = K.floatJumpSmash;
-            this.world.float(e.x as number, (e.y as number) + lab.dy, lab.text, lab.color, lab.size, lab.life, -1, lab.plate);
+            this.floatSideLab(K.floatJumpSmash, e.x as number);
           }
           // 量化时机条:真人每拍命中都在击球点上方画一拍(grade 带符号,早=左 晚=右)
           if (praise && !R.players[hitterIdx]?.isAI && typeof e.timingGrade === "number") {
@@ -660,7 +674,7 @@ export class GameRoot extends Component {
           this.bgm.onDeuce();
           break;
         case "match-over": {
-          const youWon = (R.mode === "1p" || R.mode === "endless") ? e.winner === "left" : true;
+          const youWon = R.mode === "2p" ? true : e.winner === "left";
           this.sfx.play(youWon ? "win" : "lose");
           this.sfx.cheer(1);
           this.bgm.onMatchOver(youWon);

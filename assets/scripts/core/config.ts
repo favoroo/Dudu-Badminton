@@ -128,13 +128,14 @@ export const BODIES: Record<string, { hip: number; torso: number; headMul: numbe
   tall:     { hip: 0.40, torso: 0.32, headMul: 0.90, limbMul: 0.96 },
 };
 
-/** 飘字文案档位(夸奖/技能/瞄准共用):plate 指定 P5 底板样式(缺省 = 无底板) */
+/** 飘字文案档位(夸奖/技能/瞄准共用):plate 指定 P5 底板样式(缺省 = 无底板);
+ * dy 为贴球小字的偏移(现在只剩瞄准确认在用),评价/技能字改挂场边锚点不再用 dy */
 export interface FloatLabel {
   text: string;
   color: string;
   size: number;
   life: number;
-  dy: number;
+  dy?: number;
   plate?: "slant" | "star" | "none";
 }
 
@@ -469,12 +470,23 @@ export const CFG = {
   },
 
   // 按拍预告(触屏反馈):球临近判定区心时击球两键渐亮,到最佳按拍帧闪一下金环。
-  // rampFrames = 亮度 0→1→0 三角波的半宽(帧);arriveRadius = 预测「到达」用判定区半径的比例;
-  // horizonFrames = 预测积分的前瞻上限。最佳按拍帧由 swing 参数导出(player.PRESS_LEAD_FRAMES)。
+  // rampFrames = 亮度 0→1→0 三角波的半宽(帧);horizonFrames = 预测积分的前瞻上限。
+  // 最佳按拍帧由 swing 参数导出(player.PRESS_LEAD_FRAMES)。
   // 同一级辉光镜像到羽毛球本体(注意力在球上时按钮辉光看不见):
   // shuttleGlowR = 外晕基准半径(px);shuttleGlowMax = 峰值亮度上限;
-  // 阈值 0.9 对应 |fc-lead| ≤ 1 帧(ramp 14 时约 3 帧 ≈ 50ms)的「就是现在」白环闪烁。
-  swingCue: { rampFrames: 14, arriveRadius: 0.5, horizonFrames: 40, shuttleGlowR: 20, shuttleGlowMax: 0.9 },
+  // 阈值 0.9 对应 |fc-pressAt| ≤ 1 帧(ramp 14 时约 3 帧 ≈ 50ms)的「就是现在」白环闪烁。
+  //
+  // 【按拍预告的锚点必须与判定锚点同为一个「判定区心」——这是踩过两层坑的】
+  // 第一层:fc 曾经锚在「进入 0.5×半径的内缩小圆」(arriveRadius 0.5),而挥拍质量的结算
+  //   锚在球过区心 —— 环收满时球离区心还有半半径+lead 帧的路,按环收满按 = 系统性早按,
+  //   「明明按着光环来点,就是没触发」的现场 bug。
+  // 第二层:把锚环缩到 0.04 也不行 —— 玩家有走位误差,坠落轨迹距区心差十几 px 是常态,
+  //   小圆要求路径精确穿心,fc 直接恒为 null,预告整个失联(ai-check 替身一局挥不上 3 拍)。
+  // 正解:fc = Physics.flightFramesToClosest 的「最近逼近帧」—— 对路径偏移鲁棒,
+  //   倒数到 0 时球恰在离区心最近的那个帧;超出判定区半径的逼近(根本够不到)仍返回 null。
+  // reactFrames = 人类反应补偿(≈150ms):「白闪=现在按」对人是陷阱,看到再按必晚 9~15 帧;
+  // 预告把这段反应时间算进去 —— 环收满瞬间白闪,玩家自然反应按下,挥拍质量峰恰好对准球过心。
+  swingCue: { rampFrames: 14, horizonFrames: 56, shuttleGlowR: 20, shuttleGlowMax: 0.9, reactFrames: 10 },
 
   // ===== 落点预测提示(数值只住这里,画在 render/hud-overlay.ts)=====
   // 原实现是压在地面亮线上的一只 15×5.5 细圈,亮度还在 0.18~0.42 之间慢呼吸 ——
@@ -566,14 +578,15 @@ export const CFG = {
 
   // ===== 时机环(画在球上,渲染层 render/hud-overlay.ts)=====
   // 按拍预告的「球上版」:按钮辉光在拇指底下,盯球的玩家看不见 —— 收缩环直接长在球上。
-  // 环从 fromMul×球半径 收到贴球,收满 = 该按了(fc ≤ PRESS_LEAD_FRAMES,按后第 9 帧质量峰);
-  // 同时在判定区心画「甜区圈」告诉玩家该把人带到哪儿。数值与 swingCue 同读一处 lead。
+  // 环从 fromMul×球半径 收到贴球,收满白闪 = 建议按拍点(fc ≤ PRESS_LEAD_FRAMES +
+  // swingCue.reactFrames:峰值锚定球心 + 人类反应补偿);按晚一点由挥拍峰值追踪兜成甜蜜。
+  // 同时在判定区心画「甜区圈」告诉玩家该把人带到哪儿。
   timingRing: {
-    spanFrames: 34,     // 收缩行程帧数:fc 从 span+lead 收到贴球,慢球有完整倒数、快球环速自然变快
+    spanFrames: 22,     // 收缩行程帧数:fc 从 span+按拍点 收到贴球(与 swingCue.horizonFrames 对齐,全程有环)
     fromMul: 5.2,       // 起始半径 = 球半径 × 此倍率
     ringW: 2.6,         // 环线宽
     a: 0.85,            // 环峰值不透明度
-    lockA: 0.95,        // 贴球(fc ≤ lead)白闪环不透明度
+    lockA: 0.95,        // 贴球(fc ≤ 按拍点)白闪环不透明度
     lockW: 3.4,         // 贴球白闪环线宽
     zoneA: 0.55,        // 甜区圈描边不透明度(乘时机环进度提亮)
     zoneFillA: 0.08,    // 甜区圈淡填充
@@ -769,7 +782,7 @@ export const CFG = {
     flashCastFlash: 0.6,      // 折跃白闪(比扣杀命中的白闪低一档,把顶闪让给那一下)
     flashCastShake: 7,
     flashCastPunch: 1.05,     // 镜头向落点推近,读作「镜头跟着折跃过去」
-    flashCastFloat: { text: "时停 · 闪现", color: "#eab308", size: 26, life: 44, dy: -46, plate: "slant" },
+    flashCastFloat: { text: "时停 · 闪现", color: "#eab308", size: 26, life: 44, plate: "slant" },
     flashSmashSlowmo: 10,     // 闪现扣杀命中后的短慢放时长(模拟帧)
     // 0.45 而不是更低:整段只有 ~0.37s 真实时间。曾经给到 0.32×14 帧(≈0.73s),
     // 用户已经说过"重击卡住不好操控" —— 时停的爽点由前面那记定格负责,尾巴要短。
@@ -938,31 +951,36 @@ export const CFG = {
     floatPopFrames: 6,         // 弹入用时(模拟步)
     floatRiseEase: 1.8,        // 上浮减速指数(>1 起得快落得缓)
     floatFadeK: 0.5,           // 全程淡出起点(1=一出现就开始淡)
-    // 飘字底板强度:底板只是文字的衬底,dim=1 为实心原版,<1 整体调淡 ——
-    // 压低后斜切黑片/星芒只剩骨架感,不会盖过飞行中的球
-    floatPlateDim: 0.55,       // 底板所有 alpha 的全局乘数
+    // 场边评价字锚点(世界坐标):评价/技能类飘字不贴球,按击球方挂到两侧场边
+    // (padX = 距左右边线的锚点 x;y 取网顶上方的空中区)—— 底板从此不挡飞行中的球
+    floatSide: { padX: 100, y: 318 },
+    // 飘字底板强度:底板已移到场边,恢复实心墨黑保文字可读(dim=1 原版)。
+    // 教训:半透明底板(dim 0.55)在暖色球场上糊成灰,金字反而看不清 ——
+    // 可读性靠实底,不挡球靠挪位置;真机仍嫌抢眼再整体调低
+    floatPlateDim: 1,          // 底板所有 alpha 的全局乘数
     floatPlatePadScale: 0.85,  // 底板外扩尺寸乘数(1=原版,越小底板越紧凑)
     // 夸奖档位的文案/字号/寿命:原先硬编码在 game-root 的 drain 里(六档各一行),
-    // 挪进配置后"这一档给多大的字"与别的特效旋钮一处对齐
-    // plate = P5 飘字底板:star 尖刺星芒衬底(最高两档)/ slant 斜切黑片(次档)/ 无底板
-    floatTierPerfectSmash: { text: "完美重扣!!", color: "#ffe14d", size: 30, life: 56, dy: -32, plate: "star" },
-    floatTierPerfect:      { text: "✦ PERFECT ✦", color: "#00f0ff", size: 24, life: 50, dy: -30, plate: "slant" },
-    floatTierSweetSmash:   { text: "黄金重扣!!", color: "#ffe14d", size: 28, life: 52, dy: -30, plate: "star" },
-    floatTierSmash:        { text: "扣杀!!",     color: "#ffe14d", size: 26, life: 48, dy: -28, plate: "slant" },
-    floatTierSweet:        { text: "✦ SWEET! ✦", color: "#ffe14d", size: 20, life: 42, dy: -26, plate: "slant" },
-    floatTierGood:         { text: "好球",       color: "#ffffff", size: 16, life: 34, dy: -24 },
+    // 挪进配置后"这一档给多大的字"与别的特效旋钮一处对齐;
+    // 位置不跟球 —— game 层按击球方挂到场边锚点 floatSide,底板才不会挡住球
+    // plate = P5 飘字底板:star 尖刺星芒徽章(最高两档)/ slant 斜切黑片(次档)/ 无底板
+    floatTierPerfectSmash: { text: "完美重扣!!", color: "#ffe14d", size: 30, life: 56, plate: "star" },
+    floatTierPerfect:      { text: "✦ PERFECT ✦", color: "#00f0ff", size: 24, life: 50, plate: "slant" },
+    floatTierSweetSmash:   { text: "黄金重扣!!", color: "#ffe14d", size: 28, life: 52, plate: "star" },
+    floatTierSmash:        { text: "扣杀!!",     color: "#ffe14d", size: 26, life: 48, plate: "slant" },
+    floatTierSweet:        { text: "✦ SWEET! ✦", color: "#ffe14d", size: 20, life: 42, plate: "slant" },
+    floatTierGood:         { text: "好球",       color: "#ffffff", size: 16, life: 34 },
     // 瞄准深浅的命中确认(触屏右滑/左滑、键盘 J/K 同链路):比档位字小一号,dy 正值 = 球下方,
-    // 与上方的档位飘字、更下方的跨步飘字都错开;mid(直接点击,没滑)不飘,默认档不打扰
+    // 贴着击球点才有空间反馈,不随档位字去场边;mid(直接点击,没滑)不飘,默认档不打扰
     floatAimDeep:          { text: "深球·重",    color: "#ffe14d", size: 14, life: 30, dy: 26 },
     floatAimNear:          { text: "短球·轻",    color: "#00f0ff", size: 14, life: 30, dy: 26 },
-    // 技能触发与特殊击球飘字
-    floatSkillLunge:       { text: "疾风重击!!", color: "#38bdf8", size: 26, life: 48, dy: -28, plate: "slant" },
-    floatSkillSmash:       { text: "必杀重扣!!", color: "#f43f5e", size: 30, life: 54, dy: -32, plate: "star" },
-    floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, dy: -34, plate: "star" },
-    floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, dy: -30, plate: "slant" },
-    floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, dy: -26, plate: "slant" },
-    // 跳杀(空中高球必然扣杀)专属飘字:dy 更高,叠在扣杀档位字之上不互相盖
-    floatJumpSmash:        { text: "跳杀!!",     color: "#ff8a3d", size: 26, life: 46, dy: -50, plate: "slant" },
+    // 技能触发与特殊击球飘字(同样按施放方挂场边锚点 floatSide,不贴球)
+    floatSkillLunge:       { text: "疾风重击!!", color: "#38bdf8", size: 26, life: 48, plate: "slant" },
+    floatSkillSmash:       { text: "必杀重扣!!", color: "#f43f5e", size: 30, life: 54, plate: "star" },
+    floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, plate: "star" },
+    floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, plate: "slant" },
+    floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, plate: "slant" },
+    // 跳杀(空中高球必然扣杀)专属飘字
+    floatJumpSmash:        { text: "跳杀!!",     color: "#ff8a3d", size: 26, life: 46, plate: "slant" },
   },
 
   // BGM:原版是 WebAudio 现场合成的自适应背景音乐(零音频文件);
@@ -1276,7 +1294,8 @@ export const CFG = {
   // 这里补上:rally 到 startAt 起累积,再走 span 拍满压(P=1),满压时:
   //   readErr 放大 (1+readMul) 倍 · 时机误差 +timingAdd 帧 · 跑位降速 speedMul
   // 不碰物理与判定区几何 —— 「慢球仍能对拉」的性质不变,只是长回合后半段开始漏。
-  // 每档吃多少由 diffs.crush 闸门决定:入门全吃(拖长回合是玩家的回报),
+  // 每档吃多少由 diffs.crush 闸门决定:普通全吃,入门只吃一半(crush 大了 AI 会在长回合
+  // 里自己手抖漏球,把回合截断 —— easy 回合均值被压到 10 拍以下,ai-check 回合 ≥10 过不去),
   // 顶档只沾一点(crush 大了会顶穿 ai-check 的「大师得分率 ≤45%」红线)。
   aiPressure: {
     startAt: 7,        // 回合拍数到这儿开始累积(前 7 拍照常对拉)
@@ -1292,12 +1311,16 @@ export const CFG = {
   // shotErr=出球落点误差(px,进 player.buildShot 的误差预算,会下网/出界)
   // composure=情绪修正闸门(0=落后不会变强;见 ai.ts emotionModifiers)
   // crush=连击压力闸门(0=完全不吃压力;见 ai.ts rallyPressure) · notice=接球反应延迟帧(拟人)
+  // 数值口径:ai-check 的真人替身(走位 ±35px、反应 10 帧、时机早 5/晚 10 帧)打出
+  // easy 60% / normal 46% / hard 32% 的得分率、回合 10.8~19.3 拍(2026-10-01 随新触发系统
+  // 重校准;工具与 serve-check 均已种子化,同代码同结果)。改任何 diffs.* 都要重跑
+  // ai-check 连同替身口径一起看,贴线断言的余量校准用 AI_CHECK_MATCHES=25。
   // 回滚成旧行为(逐项精确复现):read 填回 92/66/20 并把 aiRead 的 readFloor 设 1、
   // zone 全 1、shotErr 全 0、composure 全 1、crush 全 0、notice 全 0 —— 但 read 不抵消这条一改就回不去。
   diffs: {
-    easy:   { label: "简单", tick: 20, speed: 0.74, read: 95, readFloor: 0.22, zone: 0.82, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 1.0, notice: 5 },
-    normal: { label: "普通", tick: 14, speed: 0.88, read: 55, readFloor: 0.40, zone: 0.91, shotErr: 22, timingErr: 6, aggr: 0.40, composure: 0.5, crush: 1.0, notice: 3 },
-    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 20, readFloor: 0.62, zone: 0.98, shotErr: 8,  timingErr: 2, aggr: 0.58, composure: 1, crush: 0.3, notice: 2 },
+    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.93, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5 },
+    normal: { label: "普通", tick: 14, speed: 0.94, read: 35, readFloor: 0.40, zone: 0.94, shotErr: 14, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 1.0, notice: 3 },
+    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 32, readFloor: 0.62, zone: 0.96, shotErr: 12, timingErr: 3, aggr: 0.52, composure: 1, crush: 0.3, notice: 2 },
   },
 
   // ===== 生涯成长:赛后奖励 / 等级 / 皮肤经济(纯数值,逻辑在 career.ts) =====

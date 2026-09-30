@@ -88,7 +88,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "狂暴阵风",
     desc: "强劲侧风把球往旁边推：海面的风丝与椰梢往哪边倒、风向标的黄针就往哪边指，球也被推向哪边。风每隔几秒换一次方向。",
     hint: "黄针是当前风，青针是你出手那一拍的风。顺风收力、逆风发力压深；两针合拢时落点最可控。",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "easy",
     modifiers: {
       physics: { windX: 0.18, windOscillate: true },
@@ -107,7 +107,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "沙地鱼跃",
     desc: "退潮后的深软流沙让双腿沉重如灌铅，但激发出沙滩排球特有的超广角飞扑扑救！",
     hint: "跑动缓慢但扑救范围极广，看准球路提前飞身扑救，享受沙花漫天的手感！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "easy",
     modifiers: {
       player: { accelMul: 0.62, vmaxMul: 0.7, jumpMul: 0.78, reachMul: 1.55 },
@@ -126,7 +126,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "盲区球影",
     desc: "正午顶光刺眼！高空中央区域被金色强光吞噬，羽毛球飞入高空时将短暂隐形！",
     hint: "在球隐形于高空烈日时，低头紧盯地面清晰的球影移动与缩放来预判落点！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       environment: { blindingSun: true },
@@ -145,7 +145,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "昏黄狂沙",
     desc: "漫天黄沙遮天蔽日，空气中高浓度的沙尘带来巨大阻力，球在飞行后程急剧坠落！",
     hint: "狂风沙阻让高远球快速坠地，紧盯羽毛球发光轨迹，多在网前抢点击杀！",
-    targetScore: 4,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       physics: { dragMul: 1.35 },
@@ -165,7 +165,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "热浪浮空",
     desc: "地表升腾的热气流消解了一半重力，双方获得超级滞空！最高制空点扣杀爆发烈焰暴击！",
     hint: "充分利用超长滞空时间在最高点蓄力暴扣，享受太空羽毛球般的二段慢动作！",
-    targetScore: 5,
+    targetScore: 7,
     aiDiff: "normal",
     aiSkill: "smash",
     modifiers: {
@@ -188,7 +188,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "网前水墨雾",
     desc: "山间古刹晨雾弥漫，网前区域被厚重的水墨白雾遮蔽，球穿过网前时完全隐形！",
     hint: "看不清近网放球，尽量多拉深底线高远球，让球越过雾气再做判断！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       environment: { fog: true },
@@ -207,7 +207,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "拔刀反抽",
     desc: "全场球速加快 25%！在球砸入拍面的极限微秒瞬间挥拍，触发剑客居合斩击穿透球场！",
     hint: "不要过早挥拍！等球近身的完美瞬间挥击，触发刀光剑影般的极速直线反抽！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       player: { iaiStrike: true },
@@ -226,7 +226,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "落叶香蕉球",
     desc: "竹叶与落樱被狂风卷成气流旋涡，羽毛球在空中会发生飘忽不定的 S 型弧线漂移！",
     hint: "不要过分依赖直线落点预判，保持小碎步微调站位，防备突然变向的落叶球！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "hard",
     modifiers: {
       physics: { erratic: true },
@@ -246,7 +246,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "水墨子弹时间",
     desc: "摒除杂念，沉着应对。连续打出好球即可进入水墨黑白的子弹时间，乱按空挥则会破功僵直！",
     hint: "拒绝盲目连打挥拍，精准从容命中 2 拍即可进入子弹时间，轻松调动对手！",
-    targetScore: 4,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       player: { zenFocus: true },
@@ -265,7 +265,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "网前禁足区",
     desc: "道场宗师设下八卦阵，网前区域被列为严禁踏入的红色禁区，踏入会触电硬直！",
     hint: "切忌无脑冲网！利用身体长臂极限捞球与挑后场，通过大角度调角逼老道 AI 失误！",
-    targetScore: 4,
+    targetScore: 7,
     aiDiff: "hard",
     aiSkill: "magnet",
     modifiers: {
@@ -287,7 +287,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "断网闪烁",
     desc: "地下黑客释放电磁脉冲，回合进入多拍时屏幕突发 CRT 霓虹闪烁故障，唯有球尾荧光照亮黑暗！",
     hint: "屏幕闪黑期间不要慌乱，球身带有高亮荧光轨迹，跟随发光轨迹走位击球！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       environment: { empGlitch: true },
@@ -306,7 +306,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "真假双球",
     desc: "对手球拍加载了全息欺骗模组，每次击球同时分叉出 1 颗真球与 1 颗紫色全息假球！",
     hint: "假球飞跃网后会数码碎裂，真球具有重力弧线与发光尾羽，在 0.3 秒内辨明真假！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       environment: { hologramDecoy: true },
@@ -325,7 +325,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "贴网电浆球",
     desc: "球网顶端配备高能聚能磁轨，掠过网顶 50px 的近网球瞬间吸收电离能量，化作 1.75 倍速电浆激光重炮！",
     hint: "全力争夺近网掠空权！多打贴网短球触发激光加速轨，瞬间电浆爆射对手底线！",
-    targetScore: 4,
+    targetScore: 7,
     aiDiff: "hard",
     modifiers: {
       physics: { laserRail: true },
@@ -344,7 +344,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "太空漫步",
     desc: "球场反重力发生器开启！重力暴降至 20%，起跳高度暴增 2.2 倍，展开三维空战！",
     hint: "体验高空飞仙般的滞空漫步，在半空中连续二段起跳与凌空拦截！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "hard",
     aiSkill: "flash",
     modifiers: {
@@ -365,7 +365,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "无限特技流",
     desc: "所有硬件解除安全限制，双方所有特技冷却缩短至 1.2 秒！瞬移扣杀、引力吸球、子弹时间无限狂轰！",
     hint: "神仙打架，不要省技能！技能键冷却好了就放，瞬移扣杀与引力吸球连环轰炸！",
-    targetScore: 5,
+    targetScore: 7,
     aiDiff: "hard",
     aiSkill: "flash",
     modifiers: {
@@ -387,7 +387,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "眩目光晕",
     desc: "世界级职业大赛看台座无虚席，多拍缠斗时爆发出密集闪光灯，在球场正中产生白晕残影！",
     hint: "保持肌肉记忆与节奏感，顶住全场闪光灯的视觉压迫，沉着回击！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       environment: { spectatorFlash: true },
@@ -406,7 +406,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "体能博弈",
     desc: "加时赛体能见底！冲刺与起跳极速消耗体力槽，力竭时步履蹒跚；唯有挑高远球原地站立快速回气！",
     hint: "还原羽毛球高远球拉吊真谛！切忌全场盲目冲刺，用高远球调动对手并原地回气，待其疲软一拍绝杀！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "hard",
     modifiers: {
       player: { staminaSystem: true },
@@ -425,7 +425,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "极滑溜冰",
     desc: "地板保养过度打蜡！地面摩擦力骤降 75%，角色如同在光滑冰面上溜冰滑行，急停需反向拉摇杆！",
     hint: "魔性溜冰手感！起跑后利用惯性长距离滑行，松手前提前反向急停刹车，在滑行中帅气起跳击球！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "normal",
     modifiers: {
       player: { frictionMul: 0.25 },
@@ -444,7 +444,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     badge: "蝴蝶诡球",
     desc: "使用了一颗羽毛打裂的破损羽毛球，飞行中高频上下抖动，后半程还会随机失速急坠！",
     hint: "球路不走寻常抛物线，保持双脚敏捷移动，给拍面留出足够的容错余量！",
-    targetScore: 3,
+    targetScore: 7,
     aiDiff: "hard",
     modifiers: {
       physics: { erratic: true },

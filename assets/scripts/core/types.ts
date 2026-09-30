@@ -193,6 +193,11 @@ export interface Player {
   swingStyle: SwingStyle;
   lastSwingStyle?: SwingStyle;
   swingHit: boolean;
+  /**
+   * 挥拍峰值追踪:窗口内「球离判定区心最近」那一帧的结算快照(记账不结算,见 player.tryHit)。
+   * 球离开判定区 / 挥拍窗走完时按这份快照出手。null = 这一拍还没摸到过球。
+   */
+  swingBest?: SwingBestShot | null;
   /** 这一拍是发球起拍(起拍时球还在手上):渲染层用来切换发球专属的远臂松球轨迹 */
   serveSwing?: boolean;
   swingQ: number;
@@ -297,6 +302,19 @@ export interface HitOpt {
   jumpSmash?: boolean;
   /** 发球等场景直接指定落点深度(绕过瞄准表) */
   forced?: { depth: number };
+}
+
+/** 挥拍峰值追踪的结算快照(记账期攒最优帧,球离区/窗走完时按它出手) */
+export interface SwingBestShot {
+  q: number;        // 综合质量(qRaw − 边缘罚),记账期的比较键
+  qRaw: number;     // 挥拍相位质量(窗口正中 = 1)
+  dEdge: number;    // 球离判定区心的边缘比例(0 = 正中;拍头扫掠封顶 0.35,供结算罚用)
+  /** 未封顶的真实边缘比例(拍头扫掠在区外时记 2):只供「球折返远去 → 当场出手」的比较,
+   *  不能拿封顶的 dEdge 比对 —— 那会把正在接近的球误判成正在远去,挥拍峰还没到就出手 */
+  dRaw: number;
+  bx: number; by: number;   // 记账帧的球位(结算弹道从这里起)
+  bpx: number; bpy: number; // 记账帧的球上一帧位(渲染插值/拍头扫掠用)
+  swingT: number;   // 记账帧的挥拍相位(时机教学按它算早/晚)
 }
 
 /** 一次命中的完整结果:player.buildShot 的产物,rules 只负责装进球里 */

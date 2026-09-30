@@ -7,7 +7,7 @@ import { clamp, lerp, approach, sweptHit } from "./utils";
 import { Physics } from "./physics";
 import { Gait } from "./gait";
 import { Skills } from "./skills";
-import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShotResult } from "./types";
+import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShotResult, SwingBestShot } from "./types";
 
 // 本模块导出的 Player(值:移动/挥拍/命中的 API)与 types 的 Player 实体(类型)
 // 同名对外,调用方 `import { Player } from "./player"` 两个语义都拿得到,
@@ -97,6 +97,7 @@ function startSwing(p: PlayerEntity, ball: Ball | null, aim?: string | number | 
   p.swingT = 0;
   p.swingHit = false;
   p.swingQ = 0;
+  p.swingBest = null;   // 峰值追踪记账清零:新一拍从空账开始
   p.swingAim = aim ?? "mid";
   p.swingStyle = ball && CO.groundY - ball.y > 95 ? "over" : "under";
   p.swingRadius = Physics.reachRadius(ball);
@@ -405,7 +406,16 @@ function ballInZone(p: ZoneProbe, ball: Ball): number | null {
   return d <= z.r ? clamp(d / z.r, 0, 1) : null;
 }
 
-// 命中判定:挥拍窗口内 + 球在判定区(或真撞上拍头)
+// 命中判定:挥拍窗口内 + 球在判定区(或真撞上拍头)。
+//
+// 【结算帧 = 窗口内球离判定区心最近的那帧 —— 挥拍峰值追踪,2026-10-01】
+// 旧口径是「球一碰判定区就先到先得」,质量取那一帧的挥拍相位。但球进区比球过心早
+// r/v 帧(慢球约 7 帧),想踩甜蜜就得让「球进区第一帧」恰好落在按下后第 9 帧(质量峰),
+// 而时机环教的按拍点锚在球心 —— 按环收满按 = 系统性早按,先到先得把这点偏差放大成
+// qRaw 崩塌(慢球必出普通球)。玩家「明明按着光环来点,就是没触发」的根因在这。
+// 现在窗口内只记账不结算:球离开判定区(之后距离只增不减)或挥拍窗走完时,按账上
+// 最优帧出手 —— 按拍对准球心 → 结算帧 ≈ 质量峰帧 → qRaw 顶格;早/晚按的偏差直接进
+// qualityAt,不再被进区帧摊薄。闪现保底不走追踪:技能承诺「必中即时」,当场出手。
 function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   if (p.swingT < SW.windup || p.swingT > SW.windup + SW.active) return null;
   if (p.swingHit || p.hitLock > 0) return null;
@@ -413,26 +423,62 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   if (!inOwnCourt(p, ball.x)) return null;                 // 不能越过网去够
   if (ball.lastHitter === p.side) return null;             // 同队一回合只许击球一次
 
-  // 闪现保底:折跃后的那段窗口里这一拍一定把球扣出去。站位虽然已经按判定区圆心反解过,
-  // 但贴墙/贴网的落点会被边界夹取挪走、极高的球又顶到了悬空上限,几何上偶尔差十几 px ——
-  // 技能承诺的是"必中",不该让玩家为夹取买单(旧版就漏在这儿:人闪到球的上方,球永远在
-  // 圆心下方 ~88px,而半径只有 ~80,于是"闪现"稳定变成"闪失")。
   const guar = (p.flashStrikeT ?? 0) > 0;
   const edge = guar ? 0 : ballInZone(p, ball);
   const headR = C.swing.headR + C.shuttle.radius;
   const headHit = guar ? false : sweptHit(p.racketPrev.x, p.racketPrev.y, p.racket.x, p.racket.y,
     ball.px, ball.py, ball.x, ball.y, headR);
-  if (edge === null && !headHit) return null;
+  const atEdge = edge !== null || headHit;
+  const windowEnd = p.swingT >= SW.windup + SW.active;
 
-  const dEdge = headHit ? Math.min(edge ?? 1, 0.35) : edge as number;
-  // 保底那一下按 guaranteedQ 上报质量:踩没踩准不由玩家负责,反馈档级直接给到顶
-  const qRaw = guar
-    ? Math.max(qualityAt(p.swingT), C.skills.flash.guaranteedQ)
-    : qualityAt(p.swingT);
+  if (guar && atEdge) {
+    // 保底那一下按 guaranteedQ 上报质量:踩没踩准不由玩家负责,反馈档级直接给到顶。
+    // strikeHold 把球按在半空等着,再等「更好的帧」违背必中承诺 → 当场出手
+    const gq = Math.max(qualityAt(p.swingT), C.skills.flash.guaranteedQ);
+    return settle(p, ball, {
+      q: gq, qRaw: gq, dEdge: 0, dRaw: 0,
+      bx: ball.x, by: ball.y, bpx: ball.px, bpy: ball.py, swingT: p.swingT,
+    });
+  }
+  if (atEdge) {
+    // 记账:这一帧若是目前最佳接触(综合质量最高)就存下,先不出手
+    const qRaw = qualityAt(p.swingT);
+    const dEdge = headHit ? Math.min(edge ?? 1, 0.35) : edge as number;
+    const q = clamp(qRaw - dEdge * 0.28, 0, 1);
+    if (!p.swingBest || q > p.swingBest.q) {
+      p.swingBest = { q, qRaw, dEdge, dRaw: edge ?? 2, bx: ball.x, by: ball.y, bpx: ball.px, bpy: ball.py, swingT: p.swingT };
+    }
+  } else if (p.swingBest) {
+    return settleBest(p, ball);              // 球已离开判定区 → 账上那帧就是最佳接触
+  }
+  // 球仍在区内但已从最佳接触点折返远去 → 后面只会有更差的帧,当场出手。
+  // 比较用未封顶的 dRaw:拍头扫掠那笔的 dEdge 封在 0.35,拿它比会把正在接近的球
+  // 误判成远去,峰还没到就出手。也不能只等「出区/窗尾」:陡坠的重杀从区顶砸到地
+  // 都出不了圆(圆底在地面以下),等到落地球都死透了 —— 按准了却接不到杀,更冤。
+  if (p.swingBest && edge !== null && edge > p.swingBest.dRaw) {
+    return settleBest(p, ball);
+  }
+  if (windowEnd && p.swingBest) {
+    return settleBest(p, ball);              // 慢球/大判定区:球到窗尾都没出区,按账上最优出手
+  }
+  return null;
+}
+
+function settleBest(p: PlayerEntity, ball: Ball): ShotResult | null {
+  const best = p.swingBest as SwingBestShot | null;
+  return best ? settle(p, ball, best) : null;
+}
+
+// 按峰值追踪的记账快照出手:弹道从「最佳接触帧」的球位起,挥拍相位也取那一帧 ——
+// 结算晚 1~3 帧只影响出手时机,不影响质量口径(质量的账在记账帧已经定死)。
+function settle(p: PlayerEntity, ball: Ball, best: SwingBestShot): ShotResult {
+  const dEdge = best.dEdge;
+  const qRaw = best.qRaw;
   const q = clamp(qRaw - dEdge * 0.28, 0, 1);
   const sweet = qRaw >= 1 - C.sweet.coreRatio;
   const perfect = qRaw >= 1 - C.perfect.coreRatio;
 
+  p.swingBest = null;
   p.swingHit = true;
   p.swingQ = q;
   p.hitLock = SW.doubleHitLock;
@@ -454,8 +500,14 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   p.heat = hot ? Math.min(heatBefore + 1, C.heat.maxStreak) : 0;
 
   const lungeShot = p.lungeShotT > 0;
-  // 跳杀:空中 + 击球点够高 = 必然扣杀并加力(真人与 AI 同一通道;闪现折跃天然满足)
-  const jumpSmash = !p.onGround && (CO.groundY - ball.y) >= C.jumpSmash.minHeight;
+  // 跳杀:空中 + 击球点够高 = 必然扣杀并加力(真人与 AI 同一通道;闪现折跃天然满足)。
+  // 击球点高度取记账帧的球位(结算晚 1~3 帧,球已被打出去,当帧位置不再是击球点)
+  const jumpSmash = !p.onGround && (CO.groundY - best.by) >= C.jumpSmash.minHeight;
+  // 出手瞬间把球钉回记账帧的接触点:结算比记账晚 1~2 帧,球又飞/坠了一段,而弹道是
+  // 按接触点解的 —— 从当帧位置起飞整段偏移(下坠中的慢球尤其明显:低 20px 起飞 = 下网)。
+  // px/py 一并回到记账帧的上一帧位,渲染插值/拍头扫掠看到的仍是「飞向接触点」的那一段。
+  ball.px = best.bpx; ball.py = best.bpy;
+  ball.x = best.bx; ball.y = best.by;
   const shot = buildShot(p, ball, { q, sweet, perfect, dEdge, heat: hot ? heatBefore : 0, lungeShot, jumpSmash });
   // 球体接触瞬间形变:按档位设压扁比
   ball.sqPrev = ball.sq;
@@ -469,10 +521,12 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
     ? (C.fx.recoilSmash || 6)
     : (C.fx.recoilNormal || 3);
   // 时机教学:真人恒上报带符号时机档(0=正中,负=早,正=晚),量化时机条每拍都画;
-  // 没踩进甜蜜窗时再给「早了/晚了」文字提示 —— 踩准了就不打扰
+  // 没踩进甜蜜窗时再给「早了/晚了」文字提示 —— 踩准了就不打扰。
+  // 语义 = 挥拍质量峰(按下后第 PRESS_LEAD_FRAMES 帧)相对结算帧(球过判定区心)的偏差:
+  // 结算帧在峰后 = 按早了(球到心时挥拍已经收力),在峰前 = 按晚了。
   if (!p.isAI) {
     const half = SW.active / 2;
-    shot.timingGrade = clamp(((p.swingT - SW.windup - 0.5) - (SW.active - 1) / 2) / half, -1, 1);
+    shot.timingGrade = clamp((PRESS_LEAD_FRAMES - best.swingT) / half, -1, 1);
     if (!sweet) {
       shot.timingHint = shot.timingGrade < 0 ? "early" : "late";
     }

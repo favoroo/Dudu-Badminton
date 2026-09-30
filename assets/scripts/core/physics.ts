@@ -595,6 +595,28 @@ export function flightFramesTo(ball: BallLike, tx: number, ty: number, r: number
   return null;
 }
 
+/**
+ * 预测:球按真实单步积分再飞多少帧后到达「离 (tx,ty) 最近」的那一帧(最近逼近帧)。
+ * 与 flightFramesTo 的「首次进入圆环」不同:路径不穿过圆心也能给出稳定读数 ——
+ * 玩家有走位误差,坠落轨迹距判定区心差十几 px 是常态,小圆锚环会要求路径精确穿心,
+ * fc 恒为 null(预告整个失联)。closestDist 参数当门槛:最近逼近仍超出判定区半径
+ * (根本够不到的球)返回 null,不给预告。只读不写,纯 UI 前瞻。
+ */
+export function flightFramesToClosest(ball: BallLike, tx: number, ty: number, closestDist: number, horizon: number): number | null {
+  const b: BallLike = { x: ball.x, y: ball.y, px: ball.px, py: ball.py, vx: ball.vx, vy: ball.vy };
+  const cap2 = closestDist * closestDist;
+  let bestD2 = Infinity;
+  let bestI: number | null = null;
+  const phase0 = envPhase();
+  for (let i = 0; i <= horizon; i++) {
+    const dx = b.x - tx, dy = b.y - ty;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) { bestD2 = d2; bestI = i; }
+    integrate(b, "truth", phase0 + i + 1);    // 本地推相位:UI 前瞻不许拨环境时钟
+  }
+  return bestD2 <= cap2 ? bestI : null;
+}
+
 export const Physics = {
   step, trace, solveShot, classify, checkNet, predictPath, future, pathStepsFor,
   loftFor, baseLoft, aimLoft,

@@ -638,6 +638,7 @@ export class UIManager extends Component {
   private doQuit(): void {
     this.sfx.play("back");
     Drill.reset();                       // 训练进行态不跨局泄漏(账本/关卡都清)
+    Rules.resetModifiers();              // 关卡物理与球员修饰不跨局泄漏
     slashWipe(this.node, () => {
       Rules.R.state = "MENU";            // frozen 态,世界自动停;老 game 同款直改
     });

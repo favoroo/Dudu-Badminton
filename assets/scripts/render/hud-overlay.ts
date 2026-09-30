@@ -124,18 +124,15 @@ export class HudOverlay {
     const s = this.ring!;
     const TR = C.timingRing;
     const g = this.g;
-    // ① 甜区圈:判定区心,暗衬 + 金描边 + 淡填充;随收缩进度提亮(越近越要盯)
+    // ① 甜区圈:判定区心,金描边 + 淡金填充;随收缩进度提亮(越近越要盯)
+    // 移除原有的实心黑底填充(withAlpha("#000000", 0.3)),浅色球场上不再呈现突兀黑圈
     const zx = this.vp.x(s.zx);
     const zy = this.vp.y(s.zy);
-    g.fillColor = withAlpha("#000000", 0.3);
-    g.circle(zx, zy, s.zr);
-    g.fill();
-    g.fillColor = withAlpha(pal("#ffe14d"), TR.zoneFillA * (0.5 + 0.5 * s.progress));
-    g.circle(zx, zy, s.zr);
-    g.fill();
+    g.fillColor = withAlpha(pal("#ffe14d"), TR.zoneFillA * (0.6 + 0.4 * s.progress));
     g.strokeColor = withAlpha(pal("#ffe14d"), TR.zoneA * (0.35 + 0.65 * s.progress));
     g.lineWidth = 1.8;
     g.circle(zx, zy, s.zr);
+    g.fill();
     g.stroke();
     // ② 球上收缩环:从 fromMul×球半径收到贴球;收满(fc ≤ lead)换白闪 =「就是现在」
     const cx = this.vp.x(b.x);

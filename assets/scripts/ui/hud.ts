@@ -512,6 +512,7 @@ export class Hud {
     this.frameT++;
     const drill = R.mode === "drill";
     const endless = R.mode === "endless";
+    const campaign = R.mode === "campaign";
     const playing = Rules.isPlaying(R.state);   // 与虚拟按键的显隐共用同一判据
     this.pauseBtn.active = playing;
     this.pills.active = !drill;
@@ -527,6 +528,8 @@ export class Hud {
       ? `TRAINING · ${(Drill.cur()?.tag ?? "")}`
       : endless
       ? `ENDLESS · ${(CFG.diffs[R.diff]?.label) ?? R.diff ?? ""}`
+      : campaign && R.activeStage
+      ? `STAGE ${R.activeStage.stageNo} · ${R.activeStage.title}`
       : `SOLO · ${(CFG.diffs[R.diff]?.label) ?? R.diff ?? ""}`;
     if (tag !== this.lastModeTag) {
       this.modeTag.string = tag;
@@ -554,7 +557,12 @@ export class Hud {
       }
       this.teamL.string = Rules.labelOf("left");
       this.teamR.string = Rules.labelOf("right");
-      this.centerBadge.string = endless ? "PRACTICE" : `TO ${CFG.scoring.winScore}`;
+      const stage = campaign ? R.activeStage : null;
+      this.centerBadge.string = endless
+        ? "PRACTICE"
+        : stage
+        ? (stage.deathmatch ? "1-POINT" : `TO ${stage.targetScore}`)
+        : `TO ${CFG.scoring.winScore}`;
     }
 
     // ---- 状态行:只管「现在该干什么」 ----
