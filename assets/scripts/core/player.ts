@@ -18,6 +18,29 @@ const C = CFG;
 const CO = C.court, PL = C.player, SW = C.swing;
 const SPAN = C.shot.farOffset - C.shot.nearOffset;
 
+export interface PlayerModifier {
+  accelMul?: number;
+  vmaxMul?: number;
+  jumpMul?: number;
+  frictionMul?: number;
+  reachMul?: number;
+  cooldownMul?: number;
+  staminaSystem?: boolean;
+  forbiddenNetZone?: number;
+  iaiStrike?: boolean;
+  zenFocus?: boolean;
+}
+
+let activePlayerModifier: PlayerModifier | null = null;
+
+export function setPlayerModifier(mod: PlayerModifier | null): void {
+  activePlayerModifier = mod;
+}
+
+export function getPlayerModifier(): PlayerModifier | null {
+  return activePlayerModifier;
+}
+
 function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { homeX?: number } = {}): PlayerEntity {
   const homeX = opts.homeX ?? (side === "left" ? CO.netX - 200 : CO.netX + 200);
   return {
@@ -53,6 +76,11 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     flashT: 0,
     focusT: 0,
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
+    stamina: activePlayerModifier?.staminaSystem ? 100 : undefined,
+    isExhausted: false,
+    zenMeter: 0,
+    forbiddenWarn: 0,
+    sliding: 0,
   };
 }
 
@@ -160,23 +188,55 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // 跨步中:覆盖正常移动逻辑(速度已锁定)。
   // 爆发结束没有慢速恢复期 —— 惯性交给正常摩擦/输入接管(旧 35% 硬钳会把 15px/帧
   // 一帧刹到 3.2,移动中跨步比干跑还慢,手感像急刹)。冷却只限制再次跨步。
-  if (p.lungeT >= 0) {
+  const mod = activePlayerModifier;
+  if (p.stamina !== undefined) {
+    if (Math.abs(p.vx) > 0.8) {
+      p.stamina = Math.max(0, p.stamina - 0.16);
+    } else if (p.onGround) {
+      p.stamina = Math.min(100, p.stamina + 0.34);
+    }
+    p.isExhausted = p.stamina < 25;
+  }
+
+  // 禁足区警报与僵直
+  if (p.forbiddenWarn && p.forbiddenWarn > 0) {
+    p.forbiddenWarn--;
+    p.vx = 0;
+  } else if (mod?.forbiddenNetZone && p.side === "left") {
+    const dangerX = CO.netX - mod.forbiddenNetZone;
+    if (p.x >= dangerX) {
+      p.forbiddenWarn = 24;
+      p.vx = -3.5;
+    }
+  }
+
+  if ((p.flashHoldT ?? 0) > 0) {
+    // 闪现悬空:人已经定在球的下风高点,这一拍不接受任何移动输入(摇杆/滑轨的拇指稍一动
+    // 就把人从球底下拽走,那又是"闪到了却打不到"),横向速度一并清零。
+    p.vx = 0;
+  } else if (p.lungeT >= 0) {
     // 跨步中:速度由 lunge 逻辑控制,跳过正常加速
   } else if (isSliderActive && axisCap === 0) {
     // 精准定点刹停达成:vx 已置零,无需摩擦
-  } else {
+  } else if (!p.forbiddenWarn || p.forbiddenWarn <= 0) {
     // 真人侧多乘一层「移速档位」(core/gait.ts),AI 不叠这层 —— 它已经有 diffs.speed 写进
     // p.speedMul,两层叠一起会让难度档和玩家设置互相污染,回归就在测玩家偏好。
     // accel 与 vmax 同比例乘:只提极速不提起步会显得"推起来肉";
     // 跨步冲量与跳跃弹道故意不跟着乘(lunge.speed / jumpV 是另一套手感)。
-    const sm = p.speedMul * (p.isAI ? 1 : Gait.s);
+    const accelMul = mod?.accelMul ?? 1;
+    const vmaxMul = mod?.vmaxMul ?? 1;
+    const staminaMul = p.isExhausted ? 0.65 : 1;
+    const sm = p.speedMul * (p.isAI ? 1 : Gait.s) * vmaxMul * staminaMul;
     const maxV = PL.vmax * sm * axisCap;
-    const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * sm;
+    const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * sm * accelMul;
+    const fMul = mod?.frictionMul ?? 1;
+    const friction = p.onGround ? (fMul < 0.5 ? Math.max(0.94, PL.groundFriction + (1 - fMul) * 0.1) : PL.groundFriction) : PL.airFriction;
     if (mv !== 0) p.vx += mv * accel;
-    else p.vx *= p.onGround ? PL.groundFriction : PL.airFriction;
+    else p.vx *= friction;
     if (mv !== 0) {
       p.vx = clamp(p.vx, -maxV, maxV);
     }
+    p.sliding = fMul < 0.5 && Math.abs(p.vx) > 1.2 && mv === 0 ? p.vx : 0;
   }
   if (Math.abs(p.vx) < 0.04) p.vx = 0;
   // 横向安全钳制:跨步是叠加冲量,跑动中爆发可达 vmax+speed,钳制要留够余量。
@@ -196,23 +256,31 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // ---------- 跳跃:coyote + 输入缓冲 + 松键截断 ----------
   if (p.onGround) p.coyote = PL.coyote; else if (p.coyote > 0) p.coyote--;
   if (inp.jumpPressed) p.jumpBuf = PL.jumpBuffer; else if (p.jumpBuf > 0) p.jumpBuf--;
-  if (p.jumpBuf > 0 && p.coyote > 0) {
-    p.vy = PL.jumpV; p.onGround = false; p.coyote = 0; p.jumpBuf = 0;
+  const jumpMul = (mod?.jumpMul ?? 1) * (p.isExhausted ? 0.55 : 1);
+  if (p.jumpBuf > 0 && p.coyote > 0 && (!p.forbiddenWarn || p.forbiddenWarn <= 0)) {
+    p.vy = PL.jumpV * jumpMul; p.onGround = false; p.coyote = 0; p.jumpBuf = 0;
     p.sq = PL.jumpStretch;
+    if (p.stamina !== undefined) p.stamina = Math.max(0, p.stamina - 12);
     inp.onJump && inp.onJump(p);
   }
   if (!inp.jumpHeld && p.vy < 0 && !p.onGround) p.vy *= PL.jumpCut;
 
-  p.vy += PL.gravity;
-  p.y += p.vy;
-  if (p.y >= CO.groundY) {
-    if (!p.onGround) {
-      // 扣杀落地:比正常落地蹲得更深(渲染层据此增强膝盖弯曲/躯干前倾)
-      const smashLand = p.swingHit && p.swingStyle === "over";
-      p.sq = smashLand ? (C.fx.landSquashSmash || 0.62) : PL.landSquash;
-      inp.onLand && inp.onLand(p, p.vy);
+  if ((p.flashHoldT ?? 0) > 0) {
+    // 闪现蓄力期悬停:不吃重力 —— 主循环那几帧定格 + 这里的人定半空,合起来读作"时停里
+    // 已经把球扣在拍上,只是世界还没放行"。蓄力一结束重力立刻接管,落地姿态照常。
+    p.vy = 0;
+  } else {
+    p.vy += PL.gravity;
+    p.y += p.vy;
+    if (p.y >= CO.groundY) {
+      if (!p.onGround) {
+        // 扣杀落地:比正常落地蹲得更深(渲染层据此增强膝盖弯曲/躯干前倾)
+        const smashLand = p.swingHit && p.swingStyle === "over";
+        p.sq = smashLand ? (C.fx.landSquashSmash || 0.62) : PL.landSquash;
+        inp.onLand && inp.onLand(p, p.vy);
+      }
+      p.y = CO.groundY; p.vy = 0; p.onGround = true;
     }
-    p.y = CO.groundY; p.vy = 0; p.onGround = true;
   }
   p.sq = approach(p.sq, 1, 0.05);
   // 击球后仰恢复:每帧向 0 逼近
@@ -238,13 +306,19 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     p.swingT++;
     const total = Physics.swingTotal() + (p.swingHit ? 0 : SW.whiffExtra);
     if (p.swingT >= total) {
-      if (!p.swingHit) { p.stats.whiffs++; inp.onWhiff && inp.onWhiff(p); }
+      if (!p.swingHit) {
+        p.stats.whiffs++;
+        if (activePlayerModifier?.zenFocus) p.zenMeter = 0;
+        inp.onWhiff && inp.onWhiff(p);
+      }
       p.swingT = -1;
       p.recoverT = SW.blendOut;    // 收拍回摆:渲染端把弧线终点插回待机姿势
       // 收招瞬间消化排队的击球键(挥拍尾声 ~7 帧内按下的就无缝接续下一拍)
       if (p.swingBuf > 0) { startSwing(p, ball, p.swingBufAim); p.swingBuf = 0; }
     }
-  } else if (p.swingBuf > 0) {
+  } else if (p.swingBuf > 0 && (p.flashHoldT ?? 0) <= 0) {
+    // 闪现悬空期不接受手动起拍:那一拍由技能状态机在蓄力结束时发出。
+    // 允许的话就是两次挥拍抢同一条时间线,人还悬在半空,球自然打不到。
     startSwing(p, ball, p.swingBufAim); p.swingBuf = 0;
   }
   // 滑动手势覆盖落点:startSwing 设的初值是 mid,挥拍期间手指横滑提交方向后,
@@ -295,10 +369,12 @@ function strikeZone(p: ZoneProbe, speed: number) {
   const isLunging = (p.lungeT ?? -1) >= 0;
   const lungeMul = isLunging ? C.lunge.reachMul : 1;
   const reachDir = isLunging ? (p.lungeDir || p.facing) : p.facing;
+  const extraReach = activePlayerModifier?.reachMul ?? 1;
+  const off = Physics.strikeOffset(rad, reachDir, lungeMul);
   return {
-    x: p.x + reachDir * rad * 0.34 * lungeMul,
-    y: p.y + SW.pivotY - rad * 0.06,
-    r: (rad * 0.92 + SW.headR) * (p.zoneScale ?? 1) * lerp(1, C.swing.zoneFastMul, fast) * lungeMul,
+    x: p.x + off.dx,
+    y: p.y + off.dy,
+    r: (rad * 0.92 + SW.headR) * (p.zoneScale ?? 1) * lerp(1, C.swing.zoneFastMul, fast) * lungeMul * extraReach,
   };
 }
 
@@ -321,14 +397,22 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   if (!inOwnCourt(p, ball.x)) return null;                 // 不能越过网去够
   if (ball.lastHitter === p.side) return null;             // 同队一回合只许击球一次
 
-  const edge = ballInZone(p, ball);
+  // 闪现保底:折跃后的那段窗口里这一拍一定把球扣出去。站位虽然已经按判定区圆心反解过,
+  // 但贴墙/贴网的落点会被边界夹取挪走、极高的球又顶到了悬空上限,几何上偶尔差十几 px ——
+  // 技能承诺的是"必中",不该让玩家为夹取买单(旧版就漏在这儿:人闪到球的上方,球永远在
+  // 圆心下方 ~88px,而半径只有 ~80,于是"闪现"稳定变成"闪失")。
+  const guar = (p.flashStrikeT ?? 0) > 0;
+  const edge = guar ? 0 : ballInZone(p, ball);
   const headR = C.swing.headR + C.shuttle.radius;
-  const headHit = sweptHit(p.racketPrev.x, p.racketPrev.y, p.racket.x, p.racket.y,
+  const headHit = guar ? false : sweptHit(p.racketPrev.x, p.racketPrev.y, p.racket.x, p.racket.y,
     ball.px, ball.py, ball.x, ball.y, headR);
   if (edge === null && !headHit) return null;
 
   const dEdge = headHit ? Math.min(edge ?? 1, 0.35) : edge as number;
-  const qRaw = qualityAt(p.swingT);
+  // 保底那一下按 guaranteedQ 上报质量:踩没踩准不由玩家负责,反馈档级直接给到顶
+  const qRaw = guar
+    ? Math.max(qualityAt(p.swingT), C.skills.flash.guaranteedQ)
+    : qualityAt(p.swingT);
   const q = clamp(qRaw - dEdge * 0.28, 0, 1);
   const sweet = qRaw >= 1 - C.sweet.coreRatio;
   const perfect = qRaw >= 1 - C.perfect.coreRatio;
@@ -373,6 +457,20 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   }
   if (shot.kind === "smash") {
     p.smashGlow = 10;
+  }
+  if (activePlayerModifier?.iaiStrike && qRaw >= 0.94) {
+    shot.iaiStrike = true;
+    shot.vx *= 1.35;
+    shot.vy *= 0.75;
+  }
+  if (activePlayerModifier?.zenFocus) {
+    if (sweet || perfect) {
+      p.zenMeter = (p.zenMeter ?? 0) + 1;
+      if (p.zenMeter >= 2) {
+        p.focusT = 180;
+        p.zenMeter = 0;
+      }
+    }
   }
   return shot;
 }
@@ -433,4 +531,4 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   };
 }
 
-export const Player = { create, update, tryHit, buildShot, depthOf, strikeZone, ballInZone };
+export const Player = { create, update, tryHit, buildShot, depthOf, strikeZone, ballInZone, setPlayerModifier, getPlayerModifier };

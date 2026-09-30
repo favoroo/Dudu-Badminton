@@ -15,6 +15,9 @@
 //   node .tools-build/tools/pose-preview.js            # 出图 + 断言,有失败则 exit 1
 //   node .tools-build/tools/pose-preview.js --out DIR  # 换输出目录
 //   node .tools-build/tools/pose-preview.js --faces    # 面部款式 × 表情网格(商店脸面配色验收)
+//   node .tools-build/tools/pose-preview.js --chars    # 全人物形象 × 待机/跑动/跨步
+//   node .tools-build/tools/pose-preview.js --skins    # 全人物形象 × overhead 挥拍逐帧(试衣间)
+//   node .tools-build/tools/pose-preview.js --spine-selftest   # 躯干判据的反例(必须判红)
 //
 // 断言为什么能锁定远臂:远臂是 drawPlayer 里**第一个 stroke()**(影子是 fill),笔画
 // 顺序确定。旧代码是一条 3 点折线;新代码是「深袖 2 点 + 肤色小臂 2 点 + 手盘 fill」。
@@ -24,7 +27,7 @@
 // 之后 sprites.ts 里的 require("cc") 才会命中替身。这里用静态 import 而不是动态 require,
 // 因为 tsc 只顺着静态 import 建模块图 —— 动态 require 会让 sprites.ts 根本不参与编译、
 // 不会被 emit 到 .tools-build。
-import { installCc, Graphics as StubGraphics, StubOp, opPoints, opsToSvg } from "./cc-stub";
+import { installCc, Color as StubColor, Graphics as StubGraphics, StubOp, opPoints, opsToSvg } from "./cc-stub";
 import { __resetPoseState, drawHeadStill, drawPlayer, drawRacketStill, Viewport } from "../assets/scripts/render/sprites";
 import { CFG } from "../assets/scripts/core/config";
 import { Ball, FaceKind, Player, SwingStyle } from "../assets/scripts/core/types";
@@ -442,6 +445,69 @@ body{background:#0b0e15;color:#dfe6f3;font:13px/1.5 ui-monospace,Menlo,monospace
   process.exit(0);
 }
 
+// ---- --skins 模式:皮肤 × overhead 挥拍(试衣间那 2.2s 循环的逐帧摊开) ----
+//   node .tools-build/tools/pose-preview.js --skins [--out DIR]
+// 为什么单开一个模式:--chars 只画 idle/run/lunge,而 over-* 那几格走 mkPlayer 默认值、
+// **不挂 playerSkin** —— 「皮肤 × 过头挥拍」这个组合此前没有任何模式渲染过,腰部台阶与
+// 拼色溢出就是这么漏过去的。这里按挥拍帧摊开,亮底专查色块画到背景上、暗底专查接缝。
+if (process.argv.includes("--skins")) {
+  const SK = CFG.skins.player;
+  const total = SW.windup + SW.active + SW.recover;
+  const FRAMES = [0, 3, 6, 9, 14, 19];
+  const VP2: Viewport = { x: (wx: number) => wx - 300, y: (wy: number) => CO.groundY - wy };
+  const skinSvg = (ops: StubOp[], bg: string, title: string): string =>
+    `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="430" viewBox="0 0 300 430">
+<title>${title}</title>
+<rect width="100%" height="100%" fill="${bg}"/>
+<g transform="translate(150, 385) scale(3.0, -3.0)">
+${opsToSvg(ops)}
+</g>
+</svg>`;
+  const cells: string[] = [];
+  for (const sk of SK) {
+    const cols: string[] = [];
+    for (const f of FRAMES) {
+      __resetPoseState();
+      const p = mkPlayer({
+        theme: { main: sk.main ?? "#ff4d4d", dark: sk.dark ?? "#a8202c", glow: sk.glow ?? "#ff8a6a", name: sk.name },
+        playerSkin: sk,
+        faceSkin: { id: "face-auto", kind: "face", name: "auto", price: 0, faceStyle: "auto" },
+        swingT: f, swingStyle: "over", swingHit: false,
+      });
+      const g = new StubGraphics();
+      drawPlayer(g as unknown as Parameters<typeof drawPlayer>[0], VP2, p, 0, 0, null);
+      if (f === 9) {
+        fs.writeFileSync(`${OUT}/swing-${sk.id}.svg`, skinSvg(g.ops, "#12161f", `${sk.name} 发力帧`));
+        fs.writeFileSync(`${OUT}/swing-${sk.id}.light.svg`, skinSvg(g.ops, "#d8ecd2", `${sk.name} 发力帧 亮底`));
+      }
+      cols.push(`<div class="fr"><span>u=${(f / total).toFixed(2)}</span>${
+        skinSvg(g.ops, "#12161f", "")}${skinSvg(g.ops, "#d8ecd2", "")}</div>`);
+    }
+    cells.push(`<div class="c"><b>${sk.name}</b> <span class="tag">${sk.id}${
+      sk.body && sk.body !== "standard" ? " · " + sk.body : ""}${sk.jersey ? " · " + sk.jersey : ""}</span>
+      <div class="frs">${cols.join("")}</div></div>`);
+  }
+  const html = `<!doctype html><meta charset="utf-8"><title>skin swing preview</title>
+<style>
+body{background:#0b0e15;color:#dfe6f3;font:13px/1.5 ui-monospace,Menlo,monospace;margin:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(760px,1fr));gap:16px}
+.c{background:#161b26;border:1px solid #2a3242;border-radius:10px;padding:12px}
+.c b{font-size:15px;color:#fff}
+.tag{font-size:11px;color:#7e8b9b;margin-left:4px}
+.frs{display:flex;gap:6px;justify-content:center;margin-top:8px}
+.fr{text-align:center}
+.fr span{font-size:10px;color:#8ca0b8;display:block}
+.fr svg{width:88px;height:auto;border-radius:6px}
+.fr svg+svg{display:block;margin-top:4px}
+</style>
+<h2>皮肤 × overhead 挥拍(每款 6 帧,左暗底看接缝 / 右亮底看色块溢出)</h2>
+<div class="grid">${cells.join("")}</div>
+`;
+  fs.writeFileSync(`${OUT}/skins.html`, html);
+  console.log(`皮肤挥拍预览: ${OUT}/skins.html(${SK.length} 款 × ${FRAMES.length} 帧 × 暗/亮两底)`);
+  process.exit(0);
+}
+
 const rows: string[] = [];
 let fails = 0;
 function check(name: string, ok: boolean, detail: string): void {
@@ -717,6 +783,235 @@ for (const style of ["over", "under"] as SwingStyle[]) {
   }
   check("连续性 serve 松球", wfs <= wns + 0.5,
     `远臂单帧最大跳变 ${wfs.toFixed(1)}° @f${atS} vs 持拍臂 ${wns.toFixed(1)}°`);
+}
+
+// ---------- 躯干脊柱判据:台阶 / 衣摆贴髋 / 覆盖物不出轮廓 ----------
+// 用户报的「挥拍时腰部显示有问题」= 躯干由三块横移量不同的矩形叠成,中间那块被肩段整个
+// 盖死(死代码),于是只剩 3 单位搭接去扛 4.8 单位的横向偏移;球衣拼色带又锚在肩段的 x 上,
+// 画到身体外面去了。下面三条把这件事变成可验收机制:
+//  ① 把躯干改回任何「分段矩形」→ 左缘出现一处大跳变,红。
+//  ② 任何漏掉 body.torso 的衣摆写法(compact 露背景洞 / tall 垂成长衫)→ 红。
+//  ③ 任何自己算 x 的纹样/明暗(旧 twoTone 在网侧多画 4.8)→ 红。
+// 判据与形状无关(矩形和脊柱带都能量),所以它钉的是「轮廓连续」这件事,不是某种实现。
+// 反例由 --spine-selftest 兜着,防止这三条哪天悄悄变成永远全绿摆设。
+
+/** 与 cc-stub 的 Color.css() 同式的颜色签名 —— 断言靠它从一堆笔画里认出某一笔。
+ *  alpha 换算必须与 palette.withAlpha 一致(Math.round(a*255)),否则签名对不上。 */
+function cssOf(hex: string, a = 1): string {
+  const c = new StubColor(hex);
+  c.a = Math.round((a < 0 ? 0 : a > 1 ? 1 : a) * 255);
+  return c.css();
+}
+/** 同上,但直接给分量(sprites.ts 里那些 "rgba(255,255,255,0.18)" 字面量走的是 pal 解析) */
+function cssLit(r: number, g: number, b: number, a: number): string {
+  return new StubColor(r, g, b, Math.round((a < 0 ? 0 : a > 1 ? 1 : a) * 255)).css();
+}
+
+/** 一笔在 y 处的左右缘;不在该高度上返回 null。4 点(矩形)左右缘恒定,
+ *  ≥6 点的偶数点闭合折线按「前半背缘 / 后半前缘」插值(正是 torsoBand 的出点顺序)。 */
+function spanAtY(p: Pt[], y: number): { lo: number; hi: number } | null {
+  if (!p.length) return null;
+  const ys = p.map((q) => q.y);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (y < y0 - 0.01 || y > y1 + 0.01) return null;
+  if (p.length >= 6 && p.length % 2 === 0) {
+    const half = p.length / 2;
+    const at = (chain: Pt[]): number => {
+      const e = chain[chain.length - 1];
+      if (y >= chain[0].y) return chain[0].x;
+      if (y <= e.y) return e.x;
+      for (let i = 1; i < chain.length; i++) {
+        if (chain[i].y <= y) {
+          const a = chain[i - 1], b = chain[i];
+          return a.x + (b.x - a.x) * ((y - a.y) / ((b.y - a.y) || 1));
+        }
+      }
+      return e.x;
+    };
+    const bx = at(p.slice(0, half)), fx = at(p.slice(half).reverse());
+    return { lo: Math.min(bx, fx), hi: Math.max(bx, fx) };
+  }
+  const xs = p.map((q) => q.x);
+  return { lo: Math.min(...xs), hi: Math.max(...xs) };
+}
+
+/** 从一组 fill 里量出躯干:底色并集的纵向边界、左缘阶梯(总位移与最大单处跳变)、
+ *  以及 watch 点名的覆盖物最坏溢出多少单位。找不到主色填充返回 null。
+ *  主色不只用在衣身上(发带/猫耳/蝴蝶结也吃 th.main),所以要认得出哪几笔才是躯干:
+ *  anchorY/h 给一条「髋点起、按该体型躯干高收口」的解剖学窗口 —— 只有落在窗口里、且自身
+ *  不高过衣身的同色笔才算数(旧画法的三块矩形全在窗口内,头饰那一大坨在窗口外)。 */
+function measureSpine(fills: StubOp[], mainCss: string, watch: Set<string>,
+  anchorY?: number, h?: number): {
+    topY: number; hemY: number; shift: number; jump: number; atJump: number; over: number; overColor: string;
+    /** 躯干在该高度的左右缘(窗口内的主色笔并集);该高度没有衣身返回 null */
+    span(y: number): { lo: number; hi: number } | null;
+  } | null {
+  const inBand = (p: Pt[]): boolean => {
+    if (anchorY === undefined || h === undefined) return true;
+    const ys = p.map((q) => q.y);
+    const y0 = Math.min(...ys), y1 = Math.max(...ys);
+    return (y1 - y0) <= h + 2 && y1 >= anchorY - 1 && y0 <= anchorY + h + 1;
+  };
+  const mains = fills.filter((o) => o.color === mainCss && inBand(opPoints(o)));
+  if (!mains.length) return null;
+  const pts = (o: StubOp): Pt[] => opPoints(o);
+  const span = (y: number): { lo: number; hi: number } | null => {
+    let lo = Infinity, hi = -Infinity;
+    for (const o of mains) {
+      const s = spanAtY(pts(o), y);
+      if (s) { lo = Math.min(lo, s.lo); hi = Math.max(hi, s.hi); }
+    }
+    return lo <= hi ? { lo, hi } : null;
+  };
+  const all = mains.flatMap(pts);
+  const topY = Math.max(...all.map((q) => q.y)), hemY = Math.min(...all.map((q) => q.y));
+  let shift = 0, jump = 0, atJump = 0;
+  const lo: number[] = [];
+  const ys: number[] = [];
+  for (let y = hemY; y <= topY + 0.001; y += 1) {
+    const s = span(Math.min(y, topY));
+    if (s) { lo.push(s.lo); ys.push(Math.min(y, topY)); }
+  }
+  if (lo.length >= 2) {
+    shift = lo[lo.length - 1] - lo[0];
+    for (let i = 1; i < lo.length; i++) {
+      const d = lo[i] - lo[i - 1];
+      if (Math.abs(d) > Math.abs(jump)) { jump = d; atJump = ys[i]; }
+    }
+  }
+  let over = 0, overColor = "";
+  for (const o of fills) {
+    if (!watch.has(o.color)) continue;
+    for (const r of pts(o)) {
+      const s = span(r.y);
+      if (!s) continue;
+      const v = Math.max(s.lo - 0.6 - r.x, r.x - (s.hi + 0.6));
+      if (v > over) { over = v; overColor = o.color; }
+    }
+  }
+  return { topY, hemY, shift, jump, atJump, over, overColor, span };
+}
+
+// ---- --spine-selftest:反例必须被报警 ----
+//   node .tools-build/tools/pose-preview.js --spine-selftest
+// 上面三条判据如果哪天写坏了(边界算反、颜色签名对不上导致 watch 恒空),它们会对任何
+// 画法都返回「通过」。这里喂一份**旧画法**的合成笔画:三块横移量不同的矩形 + 一块锚在
+// 肩段的拼色带 —— 正是用户截图里那个样子。它必须被 ① 和 ③ 双双判红。
+if (process.argv.includes("--spine-selftest")) {
+  const rect = (x0: number, y0: number, x1: number, y1: number, color: string): StubOp => ({
+    kind: "fill", color, width: 0, cap: "butt", join: "miter",
+    cmds: [{ t: "M", x: x0, y: y0 }, { t: "L", x: x1, y: y0 }, { t: "L", x: x1, y: y1 }, { t: "L", x: x0, y: y1 }],
+  });
+  const MAIN = "#e8e4f0", GLOW = "#b8c8e8";
+  // 旧写法在 tall 体型 + 发力帧(lean=4.8)的实际出图:髋段不移、肩段移满、腰段被盖住
+  const old = [
+    rect(-16.8, 34, 11.2, 56.04, cssOf(MAIN)),        // 下段(髋)
+    rect(-12.23, 55.28, 15.49, 63.64, cssOf(MAIN)),   // 中段(腰)
+    rect(-12, 53, 16, 72, cssOf(MAIN)),               // 上段(肩)
+    rect(-12, 34, 16, 51.1, cssOf(GLOW, 0.85)),       // twoTone 色带:锚在肩段 x 上
+  ];
+  const m = measureSpine(old, cssOf(MAIN), new Set([cssOf(GLOW, 0.85)]));
+  const badStep = !!m && Math.abs(m.jump) > 0.45 * Math.abs(m.shift) + 0.6;
+  const badOver = !!m && m.over > 0;
+  console.log(`反例(旧画法三块矩形 + 肩段锚点的拼色带):`);
+  console.log(`  ${badStep ? "✓ 被判红" : "✗ 放过了"} 腰部无台阶   总位移 ${m?.shift.toFixed(1)} 最大跳变 ${m?.jump.toFixed(1)} @y=${m?.atJump.toFixed(0)}`);
+  console.log(`  ${badOver ? "✓ 被判红" : "✗ 放过了"} 纹样不出轮廓 溢出 ${m?.over.toFixed(2)} 单位(${m?.overColor})`);
+  if (!m) { console.log("\n判据失效:反例里认不出躯干 ✗"); process.exit(1); }
+  process.exit(badStep && badOver ? 0 : 1);
+}
+
+{
+  const H = CFG.player.h, W = CFG.player.w;
+  const TW = W * 0.66;
+  const ptsOf = (o: StubOp): Pt[] => opPoints(o);
+
+  const SK = CFG.skins.player;
+  const TORSO_CASES: { label: string; sk: typeof SK[0] | null; ov: Partial<Player> }[] = [
+    { label: "无皮肤 待机", sk: null, ov: {} },
+    { label: "无皮肤 退防跨步", sk: null, ov: { lungeT: 7, lungeDir: -1 } },
+    { label: "宗师 引拍 u=.14", sk: SK.find((s) => s.id === "p-sage")!, ov: { swingT: 3 } },
+    { label: "宗师 断点 u=.27", sk: SK.find((s) => s.id === "p-sage")!, ov: { swingT: 6 } },
+    { label: "宗师 发力 u=.41", sk: SK.find((s) => s.id === "p-sage")!, ov: { swingT: 9 } },
+    { label: "球王 发力 twoTone", sk: SK.find((s) => s.id === "p-king")!, ov: { swingT: 9 } },
+    { label: "豆丁 发力 compact", sk: SK.find((s) => s.id === "p-sprout")!, ov: { swingT: 9 } },
+    { label: "豆丁 退防跨步", sk: SK.find((s) => s.id === "p-sprout")!, ov: { lungeT: 7, lungeDir: -1 } },
+    { label: "猫少女 发力 sash", sk: SK.find((s) => s.id === "p-cat")!, ov: { swingT: 9 } },
+    { label: "骇客 发力 stripes", sk: SK.find((s) => s.id === "p-cyber")!, ov: { swingT: 9 } },
+    { label: "樱少女 发力 trim", sk: SK.find((s) => s.id === "p-blossom")!, ov: { swingT: 9 } },
+  ];
+  for (const tc of TORSO_CASES) {
+    const sk = tc.sk;
+    const main = sk?.main ?? "#ff4d4d", dark = sk?.dark ?? "#a8202c";
+    const mainCss = cssOf(main);
+    const p = mkPlayer({
+      theme: { main, dark, glow: sk?.glow ?? "#ff8a6a", name: sk?.name ?? "red" },
+      playerSkin: sk ?? undefined,
+      // 纹样只在挂了 playerSkin 时渲染,而 drawHead 的肤色款要 faceSkin —— 两个都得给,
+      // 否则「皮肤 × 挥拍」这一格根本没在测纹样(旧覆盖缺口就是这么漏掉这个 bug 的)。
+      faceSkin: { id: "face-auto", kind: "face", name: "auto", price: 0, faceStyle: "auto" },
+      swingStyle: "over", swingHit: false, ...tc.ov,
+    });
+    const ops = render(p, null);
+    const body = CFG.bodies[sk?.body ?? "standard"] ?? CFG.bodies.standard;
+    const fills = ops.filter((o) => o.kind === "fill");
+    // ② 衣摆贴髋:躯干底边必须落在大腿笔画的髋点上(短裤就是那段 th.dark 圆头笔画,
+    //    差 3 单位 = compact 露背景洞,差 6 单位 = tall 衣摆垂成长衫)。
+    //    髋点同时当作认躯干的解剖学窗口原点 —— 头饰也吃 th.main,不能只按颜色认。
+    const thigh = ops.find((o) => o.kind === "stroke" && o.color === cssOf(dark)
+      && ptsOf(o).length === 2 && ptsOf(o)[0].y < SHOULDER_Y);
+    const hipGy = thigh ? ptsOf(thigh)[0].y : NaN;
+    // ③ 覆盖物不出轮廓:躯干的明暗/领口/下摆与球衣纹样,所有顶点都得夹在左右缘之间。
+    //    按颜色签名点名要查的笔画 —— 躯干的纵向范围里还坐着远臂手盘、拍柄这些**本来就该
+    //    在轮廓外**的部件,按「落在躯干带里」筛会把它们一起抓进来假红。
+    const glowCss = (a: number): string => cssOf(sk?.glow ?? "#ff8a6a", a);
+    const JERSEY_FILLS: Record<string, string[]> = {
+      twoTone: [glowCss(0.85)],                   // 球场之王 / 金羽宗师:腰腹以下整段
+      stripes: [glowCss(0.9), glowCss(0.55)],     // 赛博骇客:前胸两道竖纹
+      trim: [glowCss(0.95), glowCss(0.7)],        // 樱花少女 / 萌芽豆丁:两颗樱点
+      sash: [],                                   // 烈焰少年 / 猫系少女:斜带是描边,单独量端点
+    };
+    const watch = new Set<string>([
+      cssLit(255, 255, 255, 0.18), cssLit(0, 0, 0, 0.22),        // 前缘受光 / 背缘背光
+      cssLit(255, 255, 255, 0.20), cssLit(255, 255, 255, 0.10),  // 下摆亮边 / 侧条纹
+      cssOf(dark),                                               // 领口(twoTone 的腰带同色)
+      ...(sk?.jersey ? JERSEY_FILLS[sk.jersey] ?? [] : []),
+    ]);
+    const torsoH = H * body.torso;
+    const m = measureSpine(fills, mainCss, watch, hipGy, torsoH);
+    if (!m) {
+      check(`${tc.label} 躯干可识别`, false, `髋 y=${hipGy.toFixed(1)} 窗口高 ${torsoH.toFixed(0)} 内找不到主色填充`);
+      continue;
+    }
+    const { topY, hemY, span } = m;
+    // ① 台阶:左缘沿高度的跳变,任何一处都不许吃掉总位移的 45%(留 0.6 的量化余量)
+    check(`${tc.label} 腰部无台阶`, Math.abs(m.jump) <= 0.45 * Math.abs(m.shift) + 0.6,
+      `总位移 ${m.shift.toFixed(1)} 单位,最大单处跳变 ${m.jump.toFixed(1)} @y=${m.atJump.toFixed(0)}`
+      + `(上限 ${(0.45 * Math.abs(m.shift) + 0.6).toFixed(1)})`);
+    check(`${tc.label} 衣摆贴髋`, Number.isFinite(hipGy) && Math.abs(hemY - hipGy) <= 1,
+      `衣摆 y=${hemY.toFixed(1)} 髋 y=${Number.isFinite(hipGy) ? hipGy.toFixed(1) : "未找到"} (体型 ${sk?.body ?? "standard"})`);
+    check(`${tc.label} 躯干高度合体型档`, Math.abs((topY - hemY) - torsoH) <= 1.5,
+      `躯干 ${(topY - hemY).toFixed(1)} vs H·body.torso ${torsoH.toFixed(1)}`);
+    // 斜披巾:5 宽的描边,两个端点各自内收半个笔宽才算贴在轮廓上
+    let over = m.over, overColor = m.overColor;
+    if (sk?.jersey === "sash") {
+      for (const o of ops) {
+        if (o.kind !== "stroke" || o.color !== glowCss(0.92)) continue;
+        for (const r of ptsOf(o)) {
+          const s = span(r.y);
+          if (!s) continue;
+          const v = Math.max(s.lo + 2 - r.x, r.x - (s.hi - 2));
+          if (v > over) { over = v; overColor = "sash 端点"; }
+        }
+      }
+    }
+    check(`${tc.label} 纹样不出轮廓`, over <= 0,
+      over <= 0 ? "明暗/领口/下摆/纹样全部夹在躯干左右缘内" : `最坏溢出 ${over.toFixed(2)} 单位(${overColor})`);
+    // 衣宽不该被改动带跑(脊柱化只搬 x,不改宽度)
+    const w0 = span(topY - 0.5), w1 = span(hemY + 0.5);
+    check(`${tc.label} 衣宽恒定`, !!w0 && !!w1
+      && Math.abs((w0.hi - w0.lo) - TW) <= 1.2 && Math.abs((w1.hi - w1.lo) - TW) <= 1.2,
+      `肩 ${(w0 ? w0.hi - w0.lo : NaN).toFixed(1)} / 髋 ${(w1 ? w1.hi - w1.lo : NaN).toFixed(1)} vs W·0.66 ${TW.toFixed(1)}`);
+  }
 }
 
 // ---- 汇总 ----

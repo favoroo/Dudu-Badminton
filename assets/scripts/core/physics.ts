@@ -23,9 +23,30 @@ const CO = C.court;
 // 球有半径,网带的有效拦截线比视觉网顶略高
 const NET_HIT_Y = CO.netTopY - C.shuttle.radius * 0.5;
 
+export interface EnvModifier {
+  windX: number;
+  gravityMul: number;
+  dragMul: number;
+  erratic: boolean;
+  laserRail: boolean;
+}
+
+let activeModifier: EnvModifier | null = null;
+let envTick = 0;
+
+export function setEnvModifier(mod: EnvModifier | null): void {
+  activeModifier = mod;
+  envTick = 0;
+}
+
+export function getEnvModifier(): EnvModifier | null {
+  return activeModifier;
+}
+
 // 单步阻尼因子(纯函数:球壳与 AI 的球路预测共用,免得改一次手感要同步两处)
 function dragOf(sp: number): number {
-  return Math.max(DMIN, 1 - K * Math.min(sp, Pace.vmax));
+  const dragMul = activeModifier ? activeModifier.dragMul : 1;
+  return Math.max(DMIN, 1 - K * Math.min(sp, Pace.vmax) * dragMul);
 }
 
 /** 物理层只依赖球的运动学字段(结构化类型,Ball 天然满足) */
@@ -72,7 +93,30 @@ function step(b: BallLike): void {
   const d = dragOf(sp);
   b.vx *= d;
   b.vy *= d;
-  b.vy += Pace.g;
+  const g = Pace.g * (activeModifier ? activeModifier.gravityMul : 1);
+  b.vy += g;
+
+  if (activeModifier) {
+    envTick++;
+    if (activeModifier.windX !== 0) {
+      b.vx += activeModifier.windX;
+    }
+    if (activeModifier.erratic && sp > 1) {
+      b.vy += Math.sin(envTick * 0.45) * 0.35;
+      b.vx += Math.cos(envTick * 0.35) * 0.2;
+    }
+    if (activeModifier.laserRail) {
+      const crossedNet = (b.px < CO.netX && b.x >= CO.netX) || (b.px > CO.netX && b.x <= CO.netX);
+      if (crossedNet && b.y >= CO.netTopY - 55 && b.y <= CO.netTopY + 15) {
+        b.vx *= 1.75;
+        b.vy *= 0.8;
+        if ("laserBoosted" in b) {
+          (b as { laserBoosted?: boolean }).laserBoosted = true;
+        }
+      }
+    }
+  }
+
   b.x += b.vx;
   b.y += b.vy;
 }
@@ -410,6 +454,18 @@ function reachRadius(ball: { vx: number; vy: number } | null | undefined): numbe
   return Math.min(C.swing.radiusMax, C.swing.radiusBase + sp * C.swing.radiusSpeedGain);
 }
 
+/**
+ * 判定区圆心相对脚底的偏移(px):player.strikeZone 与 core/skills 的闪现站位反解**共用这一条**。
+ * 抽出来的理由很实在 —— 闪现要把球"摆进圆心"就得知道圆心在哪,抄第二份式子早晚会有一处
+ * 跟判定跑偏(旧闪现正是这么漏球的:人闪到球上方,球落在圆心下方 ~88px,半径只有 ~80)。
+ * @param radius   挥拍半径(Physics.reachRadius 的产物,快球更大)
+ * @param reachDir 够球方向(跨步时 = 跨步方向,否则 = 面向)
+ * @param lungeMul 跨步判定区放大倍率(只乘 dx,与 strikeZone 一致)
+ */
+function strikeOffset(radius: number, reachDir: number, lungeMul = 1): { dx: number; dy: number } {
+  return { dx: reachDir * radius * 0.34 * lungeMul, dy: C.swing.pivotY - radius * 0.06 };
+}
+
 // 拍头扫掠角(渲染挥拍弧用)
 function swingArc(style: SwingStyle): { from: number; to: number } {
   return ARCS[style] || ARCS.over;
@@ -443,7 +499,8 @@ export function flightFramesTo(ball: BallLike, tx: number, ty: number, r: number
 export const Physics = {
   step, trace, solveShot, classify, checkNet, predictPath,
   loftFor, baseLoft, aimLoft,
-  racketHead, swingTotal, reachRadius, swingArc, swingPose,
+  racketHead, swingTotal, reachRadius, strikeOffset, swingArc, swingPose,
+  setEnvModifier, getEnvModifier,
   /** 单步阻尼因子(含速度封顶):AI 的球路预测用,不许再自己抄一遍积分 */
   drag: dragOf,
   get gravity() { return Pace.g; },

@@ -14,9 +14,10 @@ import type { RulesState } from "../core/rules";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import {
-  ARCADE, bannerOnce, burstOnce, cancelFade, drawSawtooth, drawSlantPanel,
+  ARCADE, bannerOnce, burstOnce, cancelFade, drawDiagStripes, drawSawtooth, drawSlantPanel,
   drawSlantShadow, fadeOutHide, popScore, retainedDraw, safePad, skewOf, slashIn, slantPath, textW,
 } from "./ui-arcade";
+import { rand } from "../core/utils";
 
 export class Hud {
   readonly root: Node;
@@ -258,6 +259,10 @@ export class Hud {
     bg.lineWidth = 2;
     slantPath(bg, 340, 56, bsk);
     bg.stroke();
+    // P5 撕纸边:上下缘黑色锯齿(撕开纸背的黑衬)+ 底部斜纹带(危险条纹的低饱和用法)
+    drawSawtooth(bg, 340, 6, 13, "#0a0a10", 0.9, "up", 0, -31);
+    drawSawtooth(bg, 340, 6, 13, "#0a0a10", 0.9, "down", 0, 31);
+    drawDiagStripes(bg, 336, 8, 7, "#ffffff", 0.10, 0, 20);
     this.bannerLabel = kit.label(this.banner, "平分! DEUCE", 26, "#fff5f2", { disp: true });
     this.banner.setPosition(0, 150, 0);
     this.banner.setParent(top);
@@ -369,7 +374,9 @@ export class Hud {
   private popCombo(): void {
     Tween.stopAllByTarget(this.combo);
     this.combo.setScale(1.28, 1.28, 1);
-    tween(this.combo).to(0.16, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+    // P5 手感:每次连击跳动带 ±6° 随机歪斜再弹回 —— 徽章像被拍了一下
+    this.combo.angle = rand(-6, 6);
+    tween(this.combo).to(0.16, { scale: new Vec3(1, 1, 1), angle: 0 }, { easing: "backOut" }).start();
   }
 
   /** 每帧由 UIManager 调用;只读 R,不推进任何游戏状态 */

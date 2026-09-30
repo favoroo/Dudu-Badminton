@@ -49,6 +49,12 @@ for (const k of KINDS) DEFAULTS[k] = C.skins[k][0];
 
 let cache: Profile | null = null;
 
+// 作者沙箱开关(纯内存,故意不进存档):一旦拉满就掐断 profile 落盘,于是这一局里
+// 发生的一切(结算的金币经验、用作弊币买的皮肤、生涯战绩)都不会写盘,杀掉重开读到的
+// 还是连点之前的老档 —— 测试不污染真进度。代价是反向开关没有:想恢复落盘只能重启应用。
+// 只管 profile 这一个 key;球馆/设置/闯关进度照旧落盘(那些不是这条通道碰的东西)。
+let sandbox = false;
+
 const fresh = (): Profile => ({
   level: 1, exp: 0, coins: C.career.startCoins,
   owned: KINDS.map((k) => DEFAULTS[k].id),
@@ -114,7 +120,11 @@ function refundDelisted(p: Profile): boolean {
   return changed;
 }
 
-function saveProfile(): void { save(KEY, cache); }
+function saveProfile(): void {
+  // 作者沙箱开着时一个字节都不写盘,见下方 sandbox 注释
+  if (sandbox) return;
+  save(KEY, cache);
+}
 
 function skinById(id: string): SkinDef | null {
   for (const k of KINDS) {
@@ -296,6 +306,23 @@ function equippedSkill(): SkillId {
   return profile().equippedSkill || "lunge";
 }
 
+// ---------- 作者通道:测试档拉满(CFG.author,手势判定在 main-menu.ts) ----------
+// 只动等级与金币:经验清零(满级后 addExp 本就不留经验),金币取「已有 vs 给定」的较大值,
+// 于是重复触发只会稳定停在满档,不会把已经花掉的钱又补回一个更大的数。
+// 皮肤/技能解锁全部按 level 现算(career.unlocked / isSkillUnlocked),所以拉满等级即全解锁。
+// 顺带打开 sandbox:这一局不再落盘,重开应用即回到点之前的档,所以每次进应用都要重新连点。
+function maxOut(coins: number): { level: number; coins: number } {
+  const p = profile();   // 先取档(可能触发退款归一化并落盘),再掐落盘
+  sandbox = true;
+  p.level = C.career.level.cap;
+  p.exp = 0;
+  p.coins = Math.max(p.coins, coins);
+  return { level: p.level, coins: p.coins };
+}
+
+// 沙箱是否开着(UI 想挂「本次不落盘」提示时读它)
+const sandboxed = (): boolean => sandbox;
+
 // 检查某个技能是否已通过等级解锁
 function isSkillUnlocked(id: SkillId): boolean {
   const def = Skills.defOf(id);
@@ -330,5 +357,5 @@ function applyToMatch(): void {
 export const Career = {
   KINDS, profile, skinOf, skinById, owns, unlocked,
   expNeed, levelCoin, settle, settleDrill, buy, equip, buyAndEquip, applyToMatch,
-  equippedSkill, isSkillUnlocked, equipSkill,
+  equippedSkill, isSkillUnlocked, equipSkill, maxOut, sandboxed,
 };

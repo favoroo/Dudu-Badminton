@@ -14,7 +14,8 @@ import { CFG } from "../core/config";
 import { TAU, rand, randi, clamp } from "../core/utils";
 import { withAlpha } from "./palette";
 import { easeOutCubic, easeOutQuart, fadePow } from "./easing";
-import { TIER_SMASH, TIER_SWEET_SMASH } from "./shuttle-motion";
+import { TIER_FIRE, TIER_SMASH, TIER_SWEET_SMASH } from "./shuttle-motion";
+import { drawCrossMark, drawSpikeRing, drawTaper, fillSpikes, SPIKE_VERTS } from "./p5kit";
 
 const C = CFG;
 const CO = C.court;
@@ -36,6 +37,9 @@ const COL_RED     = 4;
 const COL_GREEN_L = 5;  // #d8ffb0
 const COL_CGREEN  = 6;  // confetti green #7dff9e
 const COL_CBLUE   = 7;  // confetti blue  #3ea8ff
+const COL_PURPLE  = 8;  // #a855f7 引力紫
+const COL_TEAL    = 9;  // #06b6d4 时空青
+const COL_SLASH   = 10; // #e60012 P5 主红(火热档的爆裂环)
 
 const CLUT: Color[] = [
   new Color(255, 255, 255, 255),  // 0 white
@@ -46,6 +50,9 @@ const CLUT: Color[] = [
   new Color(216, 255, 176, 255),  // 5 green #d8ffb0
   new Color(125, 255, 158, 255),  // 6 cgreen #7dff9e
   new Color( 62, 168, 255, 255),  // 7 cblue  #3ea8ff
+  new Color(168,  85, 247, 255),  // 8 purple #a855f7
+  new Color(  6, 182, 212, 255),  // 9 teal   #06b6d4
+  new Color(230,   0,  18, 255),  // 10 slash #e60012
 ];
 
 // ---------- 形状枚举 ----------
@@ -93,6 +100,11 @@ const rmx  = new Int32Array(MAX_R);     // max
 const rw   = new Float32Array(MAX_R);   // lineWidth
 const rcol = new Uint8Array(MAX_R);
 const rflat = new Uint8Array(MAX_R);    // 1 = 扁椭圆
+// P5 爆裂锯齿环:尖刺形状出生定死(fillSpikes),逐帧只乘半径与 alpha
+const rvert = new Float32Array(MAX_R * SPIKE_VERTS);  // 顶点乘数(外径 1 / 内径 inK × 抖动)
+const rcnt  = new Uint8Array(MAX_R);    // 顶点数(2N)
+const rrot  = new Float32Array(MAX_R);  // 出生基准角
+const rjag  = new Uint8Array(MAX_R);    // 1 = 尖刺多边形,0 = 平滑椭圆(引力/时空专属)
 let rN = 0;
 
 // ================================================================
@@ -108,6 +120,11 @@ const swmx  = new Int32Array(MAX_SW);
 const sww   = new Float32Array(MAX_SW);
 const swcol = new Uint8Array(MAX_SW);
 const swdl  = new Int32Array(MAX_SW);    // delay
+// P5 锯齿主波:同环池的出生定形方案(次波仍走平滑椭圆)
+const swvert = new Float32Array(MAX_SW * SPIKE_VERTS);
+const swcnt  = new Uint8Array(MAX_SW);
+const swrot  = new Float32Array(MAX_SW);
+const swjag  = new Uint8Array(MAX_SW);
 let swN = 0;
 
 // ================================================================
@@ -192,9 +209,9 @@ export class FXSystem {
     this._sparkle(hx, hy, COL_GOLD,  50, 24);
     if (big) this._sparkle(hx, hy, COL_CYAN, 40, 18);
 
-    // 2) 扩散环:起始半径错开 = 一层层往外推的波纹(顶档多一道)
+    // 2) 扩散环:起始半径错开 = 一层层往外推的波纹(顶档多一道;火热档金环换 P5 斩劈红)
     this._ring(hx, hy, 6,  92,  18, 4.5, COL_WHITE, false);
-    this._ring(hx, hy, 14, 142, 26, 3.2, COL_GOLD,  false);
+    this._ring(hx, hy, 14, 142, 26, 3.2, tier >= TIER_FIRE ? COL_SLASH : COL_GOLD, false);
     if (big) this._ring(hx, hy, 22, 196, 32, 2.6, COL_CYAN, false);
 
     // 3) 爆散粒子(顶档多一组橙)
@@ -277,8 +294,8 @@ export class FXSystem {
     const maxR = C.fx.shockwaveMaxR || 80;
     const speed = C.fx.shockwaveSpeed || 5.5;
     const life = C.fx.shockwaveLife || 18;
-    this._shockwave(lx, ly, 6, maxR, speed, life, 6, COL_ORANGE, 0);
-    this._shockwave(lx, ly, 4, maxR * 0.7, speed * 0.8, life - 4, 4, COL_WHITE, 3);
+    this._shockwave(lx, ly, 6, maxR, speed, life, 6, COL_ORANGE, 0, true);   // 主波:P5 锯齿
+    this._shockwave(lx, ly, 4, maxR * 0.7, speed * 0.8, life - 4, 4, COL_WHITE, 3);  // 次波:平滑椭圆
   }
 
   /** 普通击球接触小火花:一小撮白金粒子,让平抽/高远的对拉每拍都有「打到了」的手感 */
@@ -294,6 +311,117 @@ export class FXSystem {
     }
     // 一道极小的环:普通档不再是"只有几粒灰"(分级炫技的地板抬高半格)
     this._ring(hx, hy, 3, 26, 10, 1.6, COL_WHITE, false);
+  }
+
+  /**
+   * 闪现折跃:从 (fx0,fy0) 到 (tx,ty) 拉一道雷光。
+   * 全部复用既有池(星芒 / 环 / 爆散 / 速度线),不新增管线 —— 雷本来就不是一块连续多边形,
+   * 而是一串炸开的亮斑,贝珠串成的折线读起来正是"闪电"。两端各补一圈涟漪:起点是"人从这
+   * 里消失",终点是"人从这里出现并且已经把拍举起来了"。
+   */
+  blink(fx0: number, fy0: number, tx: number, ty: number): void {
+    const dx = tx - fx0, dy = ty - fy0;
+    const len = hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;            // 路径法向,用来甩出锯齿
+    for (let i = 0; i < 14; i++) {
+      const t = i / 13;
+      const swing = sin(t * PI) * rand(6, 20) * (i % 2 === 0 ? 1 : -1);
+      const x = fx0 + dx * t + nx * swing;
+      const y = fy0 + dy * t + ny * swing;
+      // 中间最亮最粗,两头收细:视线会跟着这条串走到新位置
+      this._sparkle(x, y, i % 4 === 0 ? COL_CYAN : COL_GOLD, 12 + (1 - Math.abs(t - 0.5) * 2) * 14, randi(10, 18));
+    }
+    this._ring(fx0, fy0 - 40, 6, 46, 14, 2.4, COL_CYAN, false);
+    this._burst(fx0, fy0 - 40, 8, COL_WHITE, 7, 16);
+    // 落点两道环刻意比扣杀冲击环小一号、寿命短一半:这几圈是"人刚到位"的余波,
+    // 真正的主角是下一帧那记劈扣 —— 环活太久会把人物糊在靶心里(预览图实测过)
+    this._ring(tx, ty - 60, 5, 54, 13, 2.6, COL_WHITE, false);
+    this._ring(tx, ty - 60, 9, 80, 17, 2.0, COL_GOLD, false);
+    this._burst(tx, ty - 60, 10, COL_GOLD, 10, 20);
+    // 不再叠速度线:折跃已经有那串雷珠 + 两端涟漪,再加一圈向心线会把人物糊在靶心里
+    // (预览图实测:定格那一帧正是全场最安静的一帧,越克制越读得出"时停")
+  }
+
+  /** 闪现扣杀命中苍穹天雷:天际直贯击球点的纵向雷光轰击与地面雷暴 */
+  skyThunder(x: number, y: number): void {
+    const topY = 20;
+    const dy = y - topY;
+    const steps = 8;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const jolt = sin(t * PI * 2) * rand(8, 20) * (i % 2 === 0 ? 1 : -1);
+      const px = x + jolt;
+      const py = topY + dy * t;
+      this._sparkle(px, py, i % 2 === 0 ? COL_GOLD : COL_WHITE, 16 + (1 - t) * 12, randi(12, 18));
+      if (i % 2 === 1) {
+        const branchAng = (jolt > 0 ? 0.35 : PI - 0.35) + rand(-0.25, 0.25);
+        const bSpd = rand(10, 16);
+        this._particle(px, py, cos(branchAng) * bSpd, sin(branchAng) * bSpd,
+          0.04, 0.92, randi(8, 14), 14, 2.0, 0, 0, COL_CYAN, SH_STREAK);
+      }
+    }
+    this.thunderBurst(x, y);
+  }
+
+  /** 闪现雷暴冲击波:金白双层雷环与雷离子爆散 */
+  thunderBurst(x: number, y: number): void {
+    this._sparkle(x, y, COL_WHITE, 26, 16);
+    this._sparkle(x, y, COL_GOLD, 34, 20);
+    this._ring(x, y, 6, 64, 15, 3.4, COL_WHITE, false);
+    this._ring(x, y, 10, 92, 19, 2.6, COL_GOLD, false);
+    this._burst(x, y, 12, COL_GOLD, 10, 22);
+    this._burst(x, y, 8, COL_CYAN, 8, 18);
+  }
+
+  /** 跨步突进爆发:贴地向后喷射的破风气流粒子与扩散气流风环 */
+  lungeDash(x: number, y: number, dir: number): void {
+    const oppDir = -dir;
+    // 6 条贴地向后喷薄的破风流线
+    for (let i = 0; i < 6; i++) {
+      const a = (oppDir > 0 ? 0 : PI) + rand(-0.25, 0.25);
+      const spd = rand(10, 22);
+      const col = i % 2 === 0 ? COL_CYAN : COL_WHITE;
+      this._particle(x, y - rand(2, 10), cos(a) * spd, sin(a) * spd * 0.3 - rand(0.5, 2.5),
+        0.05, 0.90, randi(10, 16), 16, rand(1.8, 2.8), 0, 0, col, SH_STREAK);
+    }
+    // 地面青白色扁平扩散气流环
+    this._ring(x, y - 4, 6, 44, 13, 2.4, COL_CYAN, true);
+    this._dust(x, y, 5, COL_WHITE, 1.8);
+  }
+
+  /** 重击爆气:炽热烈焰爆散与金红双层冲击波 */
+  flameBurst(x: number, y: number): void {
+    // 2 颗星芒 (金/红)
+    this._sparkle(x, y, COL_WHITE, 20, 14);
+    this._sparkle(x, y, COL_RED, 28, 18);
+    // 2 道烈焰扩散环 (内金外红)
+    this._ring(x, y, 6, 56, 16, 3.2, COL_GOLD, false);
+    this._ring(x, y, 10, 84, 20, 2.4, COL_RED, false);
+    // 16 颗金红爆散粒子
+    this._burst(x, y, 10, COL_GOLD, 8, 22);
+    this._burst(x, y, 10, COL_ORANGE, 10, 20);
+    this._burst(x, y, 8, COL_RED, 12, 18);
+  }
+
+  /** 引力奇点爆发:紫色重力波与向心/离心空间粒子(刻意平滑圆:引力=圆,不跟打击抢尖刺) */
+  singularityBurst(x: number, y: number): void {
+    // 双层紫色空间波动环
+    this._ring(x, y, 4, 48, 14, 2.8, COL_PURPLE, false, false);
+    this._ring(x, y, 8, 76, 18, 2.0, COL_WHITE, false, false);
+    // 紫白相间爆散粒子
+    this._burst(x, y, 12, COL_PURPLE, 7, 20);
+    this._burst(x, y, 8, COL_CYAN, 9, 16);
+    this._sparkle(x, y, COL_PURPLE, 24, 16);
+  }
+
+  /** 时空涟漪展开:青碧色时空领域波纹(同上:时空=平滑圆) */
+  timeRupture(x: number, y: number): void {
+    // 柔和时空波动双环
+    this._ring(x, y, 8, 72, 22, 2.2, COL_TEAL, false, false);
+    this._ring(x, y, 14, 110, 26, 1.6, COL_WHITE, false, false);
+    // 青白时空光尘
+    this._burst(x, y, 14, COL_TEAL, 5, 24);
+    this._sparkle(x, y, COL_TEAL, 30, 20);
   }
 
   /** 羽毛飘落:count 片白羽从 (x,y) 散落,重力+风阻+湍流 */
@@ -418,10 +546,15 @@ export class FXSystem {
     this._particle(sx, sy, 0, 0, 0, 1, life, life, s, rand(0, PI / 4), 0, ci, SH_STAR);
   }
 
-  /** 扩散环(老 ring)。目标半径统一乘 fx.ringScale —— 见该键注释 */
+  /**
+   * 扩散环(老 ring)。目标半径统一乘 fx.ringScale —— 见该键注释。
+   * jag = true(P5 缺省):出生时用 mulberry32 定形一颗爆裂锯齿环 ——
+   * 尖刺数/深度/抖动全部进 config,同一种子终身同形,逐帧只扩张不重掷。
+   * 平滑椭圆保留给引力/时空两技能(圆=场控,尖=打击)。
+   */
   private _ring(
     rrx: number, rry: number, r0: number, r1: number,
-    max: number, w: number, ci: number, flat: boolean,
+    max: number, w: number, ci: number, flat: boolean, jag = true,
   ): void {
     if (rN >= MAX_R) return;
     const i = rN;
@@ -431,13 +564,21 @@ export class FXSystem {
     rlf[i] = 0; rmx[i] = max;
     rw[i] = w; rcol[i] = ci;
     rflat[i] = flat ? 1 : 0;
+    rjag[i] = jag ? 1 : 0;
+    if (jag) {
+      const F = C.fx;
+      rcnt[i] = fillSpikes(rvert, i * SPIKE_VERTS, randi(1, 2147483647),
+        F.ringSpikesMin ?? 7, F.ringSpikesMax ?? 11,
+        F.ringSpikeInK ?? 0.7, F.ringJagK ?? 0.18);
+      rrot[i] = rand(0, TAU);
+    }
     rN++;
   }
 
-  /** 冲击波(老 shockwave) */
+  /** 冲击波(老 shockwave)。jag = true 的主波走 P5 锯齿,次波保持平滑椭圆 */
   private _shockwave(
     sx: number, sy: number, r0: number, maxR: number,
-    speed: number, life: number, w: number, ci: number, delay: number,
+    speed: number, life: number, w: number, ci: number, delay: number, jag = false,
   ): void {
     if (swN >= MAX_SW) return;
     const i = swN;
@@ -447,6 +588,14 @@ export class FXSystem {
     swlf[i] = life; swmx[i] = life;
     sww[i] = w; swcol[i] = ci;
     swdl[i] = delay;
+    swjag[i] = jag ? 1 : 0;
+    if (jag) {
+      const F = C.fx;
+      swcnt[i] = fillSpikes(swvert, i * SPIKE_VERTS, randi(1, 2147483647),
+        F.ringSpikesMin ?? 7, F.ringSpikesMax ?? 11,
+        F.ringSpikeInK ?? 0.7, F.ringJagK ?? 0.18);
+      swrot[i] = rand(0, TAU);
+    }
     swN++;
   }
 
@@ -639,6 +788,8 @@ export class FXSystem {
       rx[i]=rx[last]; ry[i]=ry[last]; rr[i]=rr[last]; rr0[i]=rr0[last]; rr1[i]=rr1[last];
       rlf[i]=rlf[last]; rmx[i]=rmx[last]; rw[i]=rw[last];
       rcol[i]=rcol[last]; rflat[i]=rflat[last];
+      rjag[i]=rjag[last]; rcnt[i]=rcnt[last]; rrot[i]=rrot[last];
+      for (let v = 0; v < SPIKE_VERTS; v++) rvert[i * SPIKE_VERTS + v] = rvert[last * SPIKE_VERTS + v];
     }
     rN--;
   }
@@ -649,6 +800,8 @@ export class FXSystem {
       swx[i]=swx[last]; swy[i]=swy[last]; swr[i]=swr[last]; swmr[i]=swmr[last];
       swspd[i]=swspd[last]; swlf[i]=swlf[last]; swmx[i]=swmx[last];
       sww[i]=sww[last]; swcol[i]=swcol[last]; swdl[i]=swdl[last];
+      swjag[i]=swjag[last]; swcnt[i]=swcnt[last]; swrot[i]=swrot[last];
+      for (let v = 0; v < SPIKE_VERTS; v++) swvert[i * SPIKE_VERTS + v] = swvert[last * SPIKE_VERTS + v];
     }
     swN--;
   }
@@ -697,16 +850,16 @@ export class FXSystem {
 
   // ---------- 落点标记 ----------
   private _drawMarks(g: Graphics, vp: Viewport): void {
+    const F = C.fx;
     const gy = CO.groundY + 2;
     for (let i = 0; i < mkN; i++) {
       const a = easeOutCubic(mklf[i] / mkmx[i]);
       const alpha = a * 0.8;
       const ci = mkout[i] ? COL_RED : COL_WHITE;
-      g.strokeColor = withAlpha(CLUT[ci], alpha);
-      g.lineWidth = 2;
-      const rx = 16 * (1.25 - a * 0.25);
-      g.ellipse(vp.x(mkx[i]), vp.y(gy), rx, 5);
-      g.stroke();
+      // P5 落点准星:四向尖刺臂 + 中心菱形(压扁贴地),臂长随寿命微收
+      const len = (F.markCrossLen ?? 20) * (1.25 - a * 0.25);
+      drawCrossMark(g, vp.x(mkx[i]), vp.y(gy), len, F.markCrossW ?? 2.2, 0.32,
+        CLUT[ci], alpha);
     }
   }
 
@@ -718,6 +871,18 @@ export class FXSystem {
       const vx = vp.x(swx[i]);
       const vy = vp.y(swy[i]);
       const r = swr[i];
+
+      if (swjag[i]) {
+        // 主波:P5 爆裂锯齿(扁平贴地),双 pass 同 _drawRings 的晕+芯语义
+        drawSpikeRing(g, vx, vy, r, 0.3, swvert, i * SPIKE_VERTS, swcnt[i], swrot[i],
+          CLUT[swcol[i]], a * 0.8, sww[i] * 0.8, 2.8, 0.24);
+        // 地面辉光垫底
+        g.fillColor = withAlpha(CLUT[swcol[i]], a * 0.12);
+        g.ellipse(vx, vy, r, r * 0.3);
+        g.fill();
+        continue;
+      }
+
       const ry = r * 0.3;
 
       // 描边:alpha = a * 0.7, lineWidth 随寿命收缩
@@ -738,6 +903,8 @@ export class FXSystem {
    * 双道同半径描边:宽而暗的一道当晕 + 窄而亮的一道当芯(sprites.glowStroke 的同款
    * 辉光近似 —— Cocos 2D 没有 additive/blur)。alpha 走 easeOutCubic:
    * 单环硬边读起来像"画了个圈",有晕才像"炸开了一下"。
+   * P5 化:打击类环默认走爆裂锯齿多边形(drawSpikeRing,形状出生定死),
+   * 椭圆环保留给引力/时空(singularity/timeRupture 显式传 jag=false)。
    */
   private _drawRings(g: Graphics, vp: Viewport): void {
     const F = C.fx;
@@ -749,6 +916,12 @@ export class FXSystem {
       const vx = vp.x(rx[i]);
       const vy = vp.y(ry[i]);
       const r = rr[i];
+      if (rjag[i]) {
+        const yK = rflat[i] ? 0.32 : 1;
+        drawSpikeRing(g, vx, vy, r, yK, rvert, i * SPIKE_VERTS, rcnt[i], rrot[i],
+          CLUT[rcol[i]], a, rw[i], haloK, haloA);
+        continue;
+      }
       const rY = rflat[i] ? r * 0.32 : r;
       g.lineWidth = rw[i] * haloK * (0.35 + 0.65 * (1 - t));
       g.strokeColor = withAlpha(CLUT[rcol[i]], a * haloA);
@@ -871,8 +1044,7 @@ export class FXSystem {
    */
   private _drawSpeedLines(g: Graphics, vp: Viewport): void {
     const F = C.fx;
-    const baseW = F.speedLineWidth ?? 2.2;
-    g.lineCap = Graphics.LineCap.ROUND;
+    const baseW = (F.speedLineWidth ?? 2.2) * (F.speedLineHeadK ?? 3);
     for (let i = 0; i < slN; i++) {
       const raw = sllf[i] / slmx[i];
       const a = easeOutCubic(raw) * 0.66;
@@ -880,11 +1052,9 @@ export class FXSystem {
       const t = (1 - raw) * 0.55;                       // 外端向内收 55%
       const x1 = slx1[i] + (slx2[i] - slx1[i]) * t;
       const y1 = sly1[i] + (sly2[i] - sly1[i]) * t;
-      g.strokeColor = withAlpha(CLUT[slcol[i]], a);
-      g.lineWidth = Math.max(0.6, baseW * raw);
-      g.moveTo(vp.x(x1), vp.y(y1));
-      g.lineTo(vp.x(slx2[i]), vp.y(sly2[i]));
-      g.stroke();
+      // 漫画集中线:头粗尾尖的锥形填充取代圆帽线段 —— 尖端扎向击球点
+      drawTaper(g, vp.x(x1), vp.y(y1), vp.x(slx2[i]), vp.y(sly2[i]),
+        Math.max(0.6, baseW * raw), CLUT[slcol[i]], a);
     }
   }
 

@@ -213,6 +213,15 @@ const SFX: SfxDef[] = [
     [523, 659, 784, 1047, 1319].forEach((f, i) =>
       tone(b, { type: "triangle", f0: f, f1: f, dur: 0.24, peak: 0.14, t0: i * 0.09 }));
   } },
+  // 闪现折跃(时停那一下):低频骤坠 = "世界被按停",紧跟一道由亮坠暗的高频扫 = 雷光,
+  // 尾上留一个高次谐波长音 = 停住的余韵。放在数组末尾:确定性随机流是按顺序消费的,
+  // 插在前面会把后面所有音色的烘焙结果改掉。
+  { name: "flash", render: (b) => {
+    tone(b, { type: "sine", f0: 220, f1: 42, dur: 0.16, peak: 0.16 });
+    noise(b, { dur: 0.13, peak: 0.10, type: "bandpass", f0: 4200, f1: 900, q: 1.6 });
+    tone(b, { type: "triangle", f0: 1760, f1: 440, dur: 0.1, peak: 0.09, t0: 0.04 });
+    tone(b, { type: "sine", f0: 3136, f1: 3136, dur: 0.22, peak: 0.06, t0: 0.06 });
+  } },
 ];
 
 function hitLike(b: Float32Array, hot: boolean, quality: number, sweet: boolean, perfect: boolean): void {

@@ -35,6 +35,8 @@ import { CFG } from "../assets/scripts/core/config";
 import { Physics } from "../assets/scripts/core/physics";
 import { approach } from "../assets/scripts/core/utils";
 import { Ball, ShotKind, ShotResult, SkinDef } from "../assets/scripts/core/types";
+import { drawCutinBands, drawFloatPlate, fillSpikes, FloatPlateStyle } from "../assets/scripts/render/p5kit";
+import { pal } from "../assets/scripts/render/palette";
 
 installCc();
 
@@ -290,6 +292,7 @@ for (const spec of [
   { name: "sweet-smash", run: (fx: FXSystem) => fx.smash(480, 210, 0.6, TIER_SWEET_SMASH) },
   { name: "sweet", run: (fx: FXSystem) => fx.sweet(480, 210, 0.6) },
   { name: "mini", run: (fx: FXSystem) => fx.miniSpark(480, 210, 0.6) },
+  { name: "blink", run: (fx: FXSystem) => fx.blink(300, 400, 470, 250) },
 ]) {
   const fx = new FXSystem();
   spec.run(fx);
@@ -314,6 +317,97 @@ check("粒子预算", peakParticles <= 500, `单次峰值笔画 ${peakParticles}
 check("球体拆片生效", shuttleFills >= 12, `每帧最少 ${shuttleFills} 个 fill(老版只有 6 笔)`);
 check("滞后角追踪生效", laggedFrames >= 1, `${laggedFrames} 个采样帧球头与速度方向有夹角(硬对齐时恒为 0)`);
 
+// ============================================================
+// D 表:P5 构件 —— 锯齿环确定性 / 落点准星 / 飘字底板 / 斩劈 cut-in
+// 都是这轮 P5 化新上的形状:出生定形如果不确定(逐帧重掷)真机上就是一团抖动噪点;
+// 底板/cut-in 如果一笔都没画出来,真机上就是"看不见东西"。
+// ============================================================
+const p5Sheet: { name: string; svg: string }[] = [];
+
+// ① fillSpikes 确定性:同种子两次逐位一致;顶点数 = 2N 落在区间;乘数不越界
+{
+  const nMin = F.ringSpikesMin ?? 7, nMax = F.ringSpikesMax ?? 11;
+  const inK = F.ringSpikeInK ?? 0.7, jagK = F.ringJagK ?? 0.18;
+  const a1 = new Float32Array(24), a2 = new Float32Array(24);
+  const c1 = fillSpikes(a1, 0, 1234567, nMin, nMax, inK, jagK);
+  const c2 = fillSpikes(a2, 0, 1234567, nMin, nMax, inK, jagK);
+  let same = c1 === c2;
+  for (let i = 0; i < c1; i++) same = same && a1[i] === a2[i];
+  let inRange = true;
+  for (let v = 0; v < c1; v++) {
+    const m = a1[v] / (v % 2 === 0 ? 1 : inK);
+    if (m < 1 - jagK - 1e-6 || m > 1 + jagK + 1e-6) inRange = false;
+  }
+  check("锯齿环定形确定性", same && inRange && c1 >= nMin * 2 && c1 <= Math.min(24, nMax * 2),
+    `2N=${c1} ∈ [${nMin * 2},${nMax * 2}],同种子逐位一致=${same},乘数越界=${!inRange}`);
+}
+
+// ② 落点准星:场内一记,第 0 帧必须有 fill 笔画(四向臂 + 菱形锚),且无非法坐标
+{
+  const fx = new FXSystem();
+  fx.land(700, 400, true);
+  const gg = new StubGraphics();
+  fx.draw(asGfx(gg), VP);
+  const fills = gg.ops.filter((o) => o.kind === "fill").length;
+  fs.writeFileSync(`${OUT}/p5-crossmark.svg`, svg(gg.ops, "落点准星(场内)"));
+  p5Sheet.push({ name: "落点准星", svg: svg(gg.ops, "落点准星(场内)") });
+  check("落点准星生效", fills > 0 && badCoords(gg.ops) === 0, `${fills} 个 fill`);
+}
+
+// ③ 飘字底板:slant/star 必须出笔画,none 必须零笔画(系统字裸排防刷屏)
+{
+  const cases: { style: FloatPlateStyle }[] = [{ style: "slant" }, { style: "star" }, { style: "none" }];
+  const counts: Record<string, number> = {};
+  for (const cs of cases) {
+    const gg = new StubGraphics();
+    drawFloatPlate(asGfx(gg), 150, 42, cs.style, pal("#ffe14d"), 0.03);
+    counts[cs.style] = gg.ops.length;
+    if (cs.style !== "none") {
+      fs.writeFileSync(`${OUT}/p5-plate-${cs.style}.svg`, svg(gg.ops, `飘字底板 ${cs.style}`));
+      p5Sheet.push({ name: `底板 ${cs.style}`, svg: svg(gg.ops, `飘字底板 ${cs.style}`) });
+      check(`飘字底板 ${cs.style}`, gg.ops.length > 0 && badCoords(gg.ops) === 0, `${gg.ops.length} 笔`);
+    }
+  }
+  check("飘字底板 none 裸排", counts["none"] === 0, `none ${counts["none"]} 笔(应为 0)`);
+}
+
+// ④ 斩劈 cut-in:p=0.2/0.5/0.8 出图;p=0.5(屏心最亮时刻)至少一道带面罩住屏心原点
+{
+  const cols = (F.slashCutinColors ?? ["#e60012", "#07070d", "#ffffff"]).map((h) => pal(h));
+  let coversCenter = false;
+  for (const p of [0.2, 0.5, 0.8]) {
+    const gg = new StubGraphics();
+    drawCutinBands(asGfx(gg), C.world.w, C.world.h, p,
+      F.slashCutinAng ?? 14, F.slashCutinBandW ?? 0.38, cols,
+      F.slashCutinAlpha ?? 0.85, F.slashCutinStagger ?? 0.22, 1);
+    if (p === 0.5) {
+      for (const op of gg.ops) {
+        if (op.kind !== "fill") continue;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const c of op.cmds) {
+          if (c.x !== undefined) { minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x); }
+          if (c.y !== undefined) { minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y); }
+        }
+        if (minX <= 0 && maxX >= 0 && minY <= 0 && maxY >= 0) coversCenter = true;
+      }
+    }
+    fs.writeFileSync(`${OUT}/p5-cutin-${p}.svg`, svg(gg.ops, `斩劈 cut-in p=${p}`));
+    p5Sheet.push({ name: `cut-in p=${p}`, svg: svg(gg.ops, `斩劈 cut-in p=${p}`) });
+    check(`斩劈 cut-in p=${p}`, badCoords(gg.ops) === 0, `${gg.ops.length} 笔`);
+  }
+  check("cut-in 屏心覆盖", coversCenter, "p=0.5 时至少一道带面罩住屏心(0,0)");
+}
+
+// ⑤ smash 第 0 帧的锯齿环:炸开那一瞬必须真画出了尖刺多边形描边(退化成 0 笔 = 环消失)
+{
+  const fx = new FXSystem();
+  fx.smash(480, 210, 0.6, TIER_SMASH);
+  const gg = new StubGraphics();
+  fx.draw(asGfx(gg), VP);
+  const strokes = gg.ops.filter((o) => o.kind === "stroke").length;
+  check("smash 锯齿环笔画", strokes > 0 && badCoords(gg.ops) === 0, `第 0 帧 ${strokes} 道 stroke`);
+}
+
 // ---------- 汇总 ----------
 console.log(`特效预览 —— 输出目录 ${OUT}/`);
 console.log(rows.join("\n"));
@@ -337,6 +431,8 @@ pre{white-space:pre-wrap}</style>
 <div class="grid">${trailSheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}</div>
 <h2>C 击打:smash / sweet / miniSpark —— 第 0/5/12 帧叠加,看粒子成形与缓动</h2>
 <div class="grid">${impactSheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}</div>
+<h2>D P5 构件:落点准星 / 飘字底板 / 斩劈 cut-in(P5 化新增形状的验收图)</h2>
+<div class="grid">${p5Sheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}</div>
 `;
 fs.writeFileSync(`${OUT}/index.html`, html);
 // 单独一张"球体特写"页:整页太长时截图会被缩小,验收羽毛分片要看这一张

@@ -209,8 +209,14 @@ export interface Player {
   lungeShotT: number;
   /** 球员当前技能系统状态 */
   skill?: PlayerSkillState;
-  /** 闪现扣杀残影与电光倒计时 */
+  /** 闪现扣杀残影与电光倒计时(纯视觉,渲染层读它画雷光/蓄力环) */
   flashT?: number;
+  /** 闪现折跃后悬空蓄力剩余帧:>0 期间不吃重力、不接受移动输入(球在那一拍被扣出去之前人是定住的) */
+  flashHoldT?: number;
+  /** 闪现保底接触窗口剩余帧:>0 且已起拍 = 这一拍一定命中,不再受判定区几何限制 */
+  flashStrikeT?: number;
+  /** 闪现折跃起点(世界坐标):渲染层据此画从旧位到新位的雷光与残影 */
+  flashFrom?: { x: number; y: number } | null;
   /** 时空减速领域持续帧 */
   focusT?: number;
   stats: { hits: number; smashes: number; sweets: number; perfects: number; whiffs: number };
@@ -223,6 +229,15 @@ export interface Player {
   faceSkin?: SkinDef;
   hideTag?: boolean;
   groundY?: number;
+  /** 闯关挑战模式:体力值 (0..100) 与体力枯竭标记 */
+  stamina?: number;
+  isExhausted?: boolean;
+  /** 闯关挑战模式:心流计数 (0..2,达到2触发子弹时间) */
+  zenMeter?: number;
+  /** 闯关挑战模式:踩入禁区触电僵直倒计时帧 */
+  forbiddenWarn?: number;
+  /** 闯关挑战模式:极滑地面滑行状态 (正负代表方向,>0绘制溜冰高光轨迹) */
+  sliding?: number;
 }
 
 /** 羽毛球。held 时由持球人手掌位置驱动 */
@@ -247,6 +262,12 @@ export interface Ball {
   flyFromY: number;
   /** 引力吸球进行中的牵引目标与参数 */
   magnetPull?: { targetX: number; targetY: number; player: Player; total: number; t: number; fromX: number; fromY: number } | null;
+  /** 闯关挑战模式:激光加速轨超音速电浆状态 */
+  laserBoosted?: boolean;
+  /** 闯关挑战模式:破损球颤抖晃动 */
+  isErratic?: boolean;
+  /** 闯关挑战模式:全息分身假球实体 */
+  hologramDecoy?: { x: number; y: number; vx: number; vy: number; t: number; alpha: number } | null;
 }
 
 // ---------- 击球参数与结果 ----------
@@ -289,6 +310,8 @@ export interface ShotResult {
   aim?: string;
   /** 触发的专属技能类型(用于飘字、音效、专属特效) */
   skillKind?: SkillId;
+  /** 闯关挑战模式:居合一闪拔刀斩 */
+  iaiStrike?: boolean;
 }
 
 // ---------- 事件 ----------

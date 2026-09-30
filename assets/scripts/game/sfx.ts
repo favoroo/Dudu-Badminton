@@ -17,7 +17,7 @@ const NAMES = [
   "floor_05", "floor_10", "floor_15",
   "jump", "lunge", "whistle",
   "score_good", "cheer_04", "cheer_07", "cheer_10",
-  "win", "lose", "ui", "back", "coin", "buy", "levelup",
+  "win", "lose", "ui", "back", "coin", "buy", "levelup", "flash",
 ];
 
 const nearest = (v: number, opts: number[]): number =>

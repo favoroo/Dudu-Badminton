@@ -128,6 +128,16 @@ export const BODIES: Record<string, { hip: number; torso: number; headMul: numbe
   tall:     { hip: 0.40, torso: 0.32, headMul: 0.90, limbMul: 0.96 },
 };
 
+/** 飘字文案档位(夸奖/技能/瞄准共用):plate 指定 P5 底板样式(缺省 = 无底板) */
+export interface FloatLabel {
+  text: string;
+  color: string;
+  size: number;
+  life: number;
+  dy: number;
+  plate?: "slant" | "star" | "none";
+}
+
 export const CFG = {
   // 手机版入口裁剪(决策②):先只保留「单人 vs CPU」与「训练场」两类入口;
   // 2p/2v2 的逻辑全部保留,只是菜单不暴露 —— 触屏双人四手挤一屏不现实。
@@ -424,6 +434,11 @@ export const CFG = {
     splitDip: 3.5,       // 分腿垫步重心下沉量(px)
     runCarryBob: 1.6,    // 跑动携拍:拍随步频的上下轻颠(px)
     runCarrySway: 3,     // 跑动携拍:拍角随步伐的左右轻摆(度)
+    // 躯干脊柱的采样步长(px):躯干沿这条脊柱切成若干段,髋不动、肩转体,中间连续过渡;
+    // 底色/明暗/领口/下摆/球衣纹样都从同一条脊柱取点,所以覆盖物长在轮廓上、不会错位。
+    // 旧写法是三块横移量不同的矩形,中间那块被肩段整个盖住(死代码),于是只剩 3px 搭接
+    // 去扛 4.8px 的横移 → 挥拍时腰上看到一个台阶。步长越小斜边越顺,代价只是几个顶点。
+    spineRowH: 4,
   },
 
   // 发球等待姿势(纯视觉,零判定):持球待发不再是笔直立正 —— 微屈膝坐重心、躯干
@@ -624,6 +639,18 @@ export const CFG = {
     shakeWhiff: 1.5,          // 挥空微抖:扑空的轻微颤感
     hitstopWhiff: 1,          // 挥空 1 帧微顿
 
+    // 六、闪现折跃演出(时停 → 出刀 → 慢放三段)
+    // 定格走主循环现成的 hitstop 通道,所以也吃 fx.hitstopCap 总闸:这里给到的就是顶格。
+    hitstopFlashCast: 7,      // 折跃当帧的世界定格:球悬在半空,雷光凝住
+    flashCastFlash: 0.6,      // 折跃白闪(比扣杀命中的白闪低一档,把顶闪让给那一下)
+    flashCastShake: 7,
+    flashCastPunch: 1.05,     // 镜头向落点推近,读作「镜头跟着折跃过去」
+    flashCastFloat: { text: "时停 · 闪现", color: "#eab308", size: 26, life: 44, dy: -46, plate: "slant" },
+    flashSmashSlowmo: 10,     // 闪现扣杀命中后的短慢放时长(模拟帧)
+    // 0.45 而不是更低:整段只有 ~0.37s 真实时间。曾经给到 0.32×14 帧(≈0.73s),
+    // 用户已经说过"重击卡住不好操控" —— 时停的爽点由前面那记定格负责,尾巴要短。
+    flashSmashSlowFac: 0.45,  // 短慢放的时间缩放
+
     // 二、方向性击球火花
     sparkFanCount: 12,        // 扇形火花粒子数
     sparkFanSpread: 0.8,      // 扇形半角(弧度)
@@ -755,6 +782,29 @@ export const CFG = {
     burstSmashK: 0.5,          // 扣杀爆散粒子数量倍率(每粒更精,总数下降)
     miniSparkCount: 4,         // 普通拍接触火星粒数(原 6)
 
+    // 二·五、P5 爆裂锯齿环(取代"简单圆圈"的扩散环/冲击波/落点标记)
+    // 尖刺形状在环出生时用种子随机定死,逐帧只做半径扩张与 alpha 衰减 ——
+    // 同一颗粒终身同形,绝不抖闪。singularity/timeRupture 刻意不走锯齿
+    //(引力/时空=平滑圆,打击=尖刺,两套性格)。
+    ringSpikesMin: 7,          // 锯齿环尖刺数下限(出生随机定死)
+    ringSpikesMax: 11,         // 上限(2N ≤ 24 顶点池上限)
+    ringSpikeInK: 0.7,         // 内半径/外半径比(尖刺深度,越小越尖)
+    ringJagK: 0.18,            // 顶点径向抖动比例(出生定死)
+    speedLineHeadK: 3.0,       // 漫画集中线头宽 = speedLineWidth × 此值(尾端收尖)
+    markCrossLen: 20,          // 落点准星臂长(世界单位)
+    markCrossW: 2.2,           // 落点准星臂根宽
+
+    // 二·六、P5 斩劈 cut-in(顶档命中:sweetSmash/fire 三道斜带横扫全屏)
+    // 走模拟步推进(hitstop 冻结时斜带一起定格,更"斩"得住);激活期间
+    // 径向环白闪被顶替,只留低强度整屏提亮。普通档白闪走原通道不变。
+    slashCutinFrames: 9,       // 斩劈闪时长(模拟帧)
+    slashCutinAng: 14,         // 斜带倾角(度)
+    slashCutinBandW: 0.38,     // 带宽/屏宽比
+    slashCutinAlpha: 0.85,     // 带峰值 alpha
+    slashCutinStagger: 0.22,   // 三带错相位
+    slashCutinColors: ["#e60012", "#07070d", "#ffffff"],        // sweetSmash 带色(P5 红黑)
+    slashCutinColorsFire: ["#e60012", "#ff6a1f", "#ffe14d"],    // fire 带色(红橙金)
+
     // 四、镜头与飘字(白闪径向化、震屏阻尼正弦、飘字弹入)
     flashRadial: 0.6,          // 白闪径向化的峰值强度(边缘亮/中心透,不糊住球)
     flashRings: 16,            // 径向近似的描边环数
@@ -766,22 +816,23 @@ export const CFG = {
     floatFadeK: 0.5,           // 全程淡出起点(1=一出现就开始淡)
     // 夸奖档位的文案/字号/寿命:原先硬编码在 game-root 的 drain 里(六档各一行),
     // 挪进配置后"这一档给多大的字"与别的特效旋钮一处对齐
-    floatTierPerfectSmash: { text: "完美重扣!!", color: "#ffe14d", size: 30, life: 56, dy: -32 },
-    floatTierPerfect:      { text: "✦ PERFECT ✦", color: "#00f0ff", size: 24, life: 50, dy: -30 },
-    floatTierSweetSmash:   { text: "黄金重扣!!", color: "#ffe14d", size: 28, life: 52, dy: -30 },
-    floatTierSmash:        { text: "扣杀!!",     color: "#ffe14d", size: 26, life: 48, dy: -28 },
-    floatTierSweet:        { text: "✦ SWEET! ✦", color: "#ffe14d", size: 20, life: 42, dy: -26 },
+    // plate = P5 飘字底板:star 尖刺星芒衬底(最高两档)/ slant 斜切黑片(次档)/ 无底板
+    floatTierPerfectSmash: { text: "完美重扣!!", color: "#ffe14d", size: 30, life: 56, dy: -32, plate: "star" },
+    floatTierPerfect:      { text: "✦ PERFECT ✦", color: "#00f0ff", size: 24, life: 50, dy: -30, plate: "slant" },
+    floatTierSweetSmash:   { text: "黄金重扣!!", color: "#ffe14d", size: 28, life: 52, dy: -30, plate: "star" },
+    floatTierSmash:        { text: "扣杀!!",     color: "#ffe14d", size: 26, life: 48, dy: -28, plate: "slant" },
+    floatTierSweet:        { text: "✦ SWEET! ✦", color: "#ffe14d", size: 20, life: 42, dy: -26, plate: "slant" },
     floatTierGood:         { text: "好球",       color: "#ffffff", size: 16, life: 34, dy: -24 },
     // 瞄准深浅的命中确认(触屏右滑/左滑、键盘 J/K 同链路):比档位字小一号,dy 正值 = 球下方,
     // 与上方的档位飘字、更下方的跨步飘字都错开;mid(直接点击,没滑)不飘,默认档不打扰
     floatAimDeep:          { text: "深球·重",    color: "#ffe14d", size: 14, life: 30, dy: 26 },
     floatAimNear:          { text: "短球·轻",    color: "#00f0ff", size: 14, life: 30, dy: 26 },
     // 技能触发与特殊击球飘字
-    floatSkillLunge:       { text: "疾风重击!!", color: "#38bdf8", size: 26, life: 48, dy: -28 },
-    floatSkillSmash:       { text: "必杀重扣!!", color: "#f43f5e", size: 30, life: 54, dy: -32 },
-    floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, dy: -34 },
-    floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, dy: -30 },
-    floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, dy: -26 },
+    floatSkillLunge:       { text: "疾风重击!!", color: "#38bdf8", size: 26, life: 48, dy: -28, plate: "slant" },
+    floatSkillSmash:       { text: "必杀重扣!!", color: "#f43f5e", size: 30, life: 54, dy: -32, plate: "star" },
+    floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, dy: -34, plate: "star" },
+    floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, dy: -30, plate: "slant" },
+    floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, dy: -26, plate: "slant" },
   },
 
   // BGM:原版是 WebAudio 现场合成的自适应背景音乐(零音频文件);
@@ -894,6 +945,13 @@ export const CFG = {
     shotWindow: 60,         // 跨步后特殊击球窗口(60帧 = 1 秒,身上带风道粒子动画)
     shotBoost: 3.0,         // 窗口内强化重击初速加成(适度提速,兼顾长相持与终结)
     shotPowerDeg: 6.5,      // 窗口内额外压弧度
+    // --- 跨步残影与破风表现 ---
+    ghostFrames: 14,        // 跨步残影留存帧数
+    ghostInterval: 2,       // 产生残影的帧间隔 (每2帧一记)
+    ghostAlpha: 0.45,       // 残影初始最高透明度
+    castPunch: 1.025,       // 技能起手镜头微推
+    castShake: 3,           // 起手轻微震动
+    castFlash: 0.22,        // 起手微光闪烁
     // --- 深跨步姿势(纯视觉):前膝深弯、髋沉、后腿蹬直的下肢剪裁 ---
     dip: 14,                // 髋部下沉量(px):引导腿深弯的来源(legIK 反解)
     lean: 14,               // 躯干沿跨步方向的前倾(度;退防跨步为负 = 后仰)
@@ -929,7 +987,7 @@ export const CFG = {
         name: "闪现扣杀",
         shortName: "闪现",
         tag: "空中折跃",
-        desc: "瞬间瞬移至高空羽毛球后方，凌空打出一记极速劈扣",
+        desc: "折跃瞬间时停悬空，闪至羽毛球下方高点，必定凌空劈扣",
         unlockLevel: 3,
         cooldownFrames: 300, // 5.0s
         accent: "#eab308",
@@ -963,23 +1021,47 @@ export const CFG = {
       buffDuration: 240,    // 附魔激活后持续 4 秒(未击球时维持)
       speedBoost: 4.0,      // 极速加成
       powerDeg: 14,         // 强制压角
+      castPunch: 1.05,      // 技能起手镜头聚推
+      castShake: 6,         // 爆气震屏
+      castFlash: 0.55,      // 金红白闪
+      auraRadius: 28,       // 身体升腾斗气扩散半径
+      flameTongues: 6,      // 球拍烈焰火舌数
     },
     flash: {
-      minHeight: 115,       // 球离地高度需 ≥ 115px 才能点亮触发
-      overheadDist: 28,     // 瞬移至球后方距离
-      overheadY: 15,        // 瞬移至球上方高度
+      // 触发门槛:球离地至少这么高才点亮按键(只有进攻位的球才配折跃)
+      minHeight: 115,
       speedBoost: 3.8,      // 闪现扣杀出球速度加成
       powerDeg: 12,         // 闪现下压角
+      // ===== 2026-09-30 机制重做 =====
+      // 旧写法把脚底瞬移到「球后方 28px / 球上方 15px」,而判定区圆心在脚底上方约 73px ——
+      // 球永远落在圆心下方 ~88px,超出判定半径,于是「闪现」稳定变成「闪失」。
+      // 现在站位由 skills.activate 的 flash 分支拿 Physics.strikeOffset(判定区圆心偏移)
+      // 反解脚底,再叠一层保底接触窗口兜住贴网/贴墙被边界夹走、以及极高球顶到悬空上限的情形。
+      holdFrames: 5,        // 折跃后滞空蓄力帧数:悬空举拍,不吃重力、不接受移动输入
+      strikeFrames: 10,     // 保底接触窗口(帧):起拍之后这段时间内球一定被扣出去
+      guaranteedQ: 0.95,    // 保底接触上报的击球质量:直接吃到 sweet+perfect 那套反馈
+      maxHover: 118,        // 悬空离地高度上限(px):比跳跃顶点(~92)略高,是"跃至空中"不是浮在三层楼
+      ghostFrames: 22,      // 人物身上雷光/残影停留帧数(纯视觉,不参与判定)
     },
     magnet: {
       pullFrames: 9,        // 吸球牵引时长 (约 0.15s 迅速吸至身前)
       speedBoost: 3.2,      // 吸球反弹初速加成
       reboundDepth: 0.92,   // 默认强抽对方深场
+      castPunch: 1.045,     // 镜头向身前推近
+      castShake: 5,         // 引力引爆空间颤动
+      castFlash: 0.45,      // 紫色引力闪烁
+      arcBranches: 3,       // 抓取羽毛球的引力电弧束数
+      vortexRadius: 24,     // 拍前引力吸积漩涡半径
     },
     focus: {
       duration: 90,         // 持续 90 帧 = 1.5 秒
       ballSlow: 0.35,       // 球速减速至 35%
       rivalSlow: 0.40,      // 对手移速减速至 40%
+      castPunch: 1.035,     // 时空张开镜头推近
+      castShake: 4,         // 时空波纹震颤
+      castFlash: 0.40,      // 青碧色时空闪光
+      chronoGhosts: 4,      // 羽毛球慢动作时空残影重数
+      vignetteAlpha: 0.28,  // 全屏时空领域暗角强度
     },
   },
 
@@ -1046,6 +1128,18 @@ export const CFG = {
       firstClear: { coin: 15, exp: 10 },  // 通关底奖
       perStar: { coin: 10, exp: 12 },      // 每颗星再加一份(三星关 = 45 币 / 46 经验)
     },
+  },
+
+  // ===== 作者通道:真机测试用的隐藏手势 =====
+  // 在主菜单连点同一个球馆 tab `taps` 下 → 等级拉到 career.level.cap、金币设为 coins,
+  // 省掉「为了测商店/技能解锁反复打局」。判定与执行在 main-menu.ts + career.maxOut()。
+  // 只在内存生效:拉满后 profile 不再落盘(career.sandbox),重开应用退回原档,每次进应用都要重新连点。
+  // 想让别人拿到包时没有这条路:把 enabled 置 false(唯一的开关,别改手势参数)。
+  author: {
+    enabled: true,
+    taps: 6,        // 连点次数
+    gapMs: 1200,    // 相邻两下的最长间隔;点慢了就重新计数,正常选馆不会误触
+    coins: 99999,   // 拉满后的金币(全商店皮肤合计 ≈ 7400,这里够买穿一整轮)
   },
 
   // 皮肤表(见文件顶部的 SKINS):挂在 CFG 树上,沿用「手感与经济之外的一切数据都在 CFG」的心智

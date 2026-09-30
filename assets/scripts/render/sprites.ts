@@ -368,7 +368,174 @@ export function drawSwingArcGhost(
   g.stroke();
 }
 
+/** 跨步高速突进残影参数 */
+export interface LungeGhost {
+  x: number;
+  y: number;
+  facing: number;
+  life: number;
+  maxLife: number;
+  lungeLegExt?: number;
+  lungeDirRel?: number;
+  color?: string;
+}
+
+/** 绘制跨步幽灵流风残影 (具有深跨步与背侧破风流线) */
+export function drawLungeGhost(g: Graphics, vp: Viewport, ghost: LungeGhost): void {
+  const normA = ghost.life / ghost.maxLife;
+  if (normA <= 0.005) return;
+  const maxA = C.lunge.ghostAlpha || 0.45;
+  const alpha = normA * maxA;
+  const col = ghost.color || "#38bdf8";
+
+  const W = C.player.w, H = C.player.h;
+  // 前冲拉伸变换帧
+  const F = playerFrame(vp, ghost.x, ghost.y, ghost.facing, 1.06, 0.94);
+  const bodyTop = -H * 0.72;
+  const bodyH = H * 0.38;
+  const tw = W * 0.66, tx = -W * 0.40;
+
+  // 1. 半透明幽灵剪影躯干与头部
+  px(g, F, tx, bodyTop, tw, bodyH, withAlpha(pal(col), alpha * 0.65));
+  // 头部圆
+  circleAA(g, F, 2, bodyTop - H * 0.18, H * 0.18);
+  g.fillColor = withAlpha(pal(col), alpha * 0.75);
+  g.fill();
+
+  // 2. 深跨步双腿剪影
+  const hipY = -H * 0.46;
+  const legExt = ghost.lungeLegExt ?? 0.85;
+  const dirRel = ghost.lungeDirRel ?? 1;
+  const leadFx = dirRel > 0 ? 22 * legExt : -18 * legExt;
+  const trailFx = dirRel > 0 ? -18 * legExt : 14 * legExt;
+  g.strokeColor = withAlpha(pal(col), alpha * 0.85);
+  g.lineWidth = F.lw(5.2);
+  lineSeg(g, F, -4, hipY, leadFx, 0);
+  lineSeg(g, F, 4, hipY, trailFx, 0);
+  g.stroke();
+
+  // 3. 前伸持拍臂与球拍光影
+  const handX = 24 * legExt, handY = hipY - 4;
+  lineSeg(g, F, 2, hipY - 10, handX, handY);
+  g.stroke();
+  g.lineWidth = F.lw(1.8);
+  circleAA(g, F, handX + 10 * dirRel, handY - 12, 9.5);
+  g.stroke();
+
+  // 4. 背侧速度流线 (Streamlines)
+  g.lineWidth = F.lw(2.0);
+  g.strokeColor = withAlpha(pal("#ffffff"), alpha * 0.85);
+  const streamL = 18 + 14 * normA;
+  lineSeg(g, F, tx - 2, bodyTop + 6, tx - streamL, bodyTop + 6);
+  lineSeg(g, F, tx - 4, bodyTop + bodyH * 0.5, tx - streamL * 1.25, bodyTop + bodyH * 0.5);
+  lineSeg(g, F, tx - 2, bodyTop + bodyH - 4, tx - streamL * 0.85, bodyTop + bodyH - 4);
+  g.stroke();
+}
+
+/** 闪现折跃离场电离残影参数 */
+export interface FlashGhost {
+  x: number;
+  y: number;
+  facing: number;
+  life: number;
+  maxLife: number;
+}
+
+/** 绘制折跃起点电离消散残影 (金雷光芒与电弧碎屑) */
+export function drawFlashGhost(g: Graphics, vp: Viewport, ghost: FlashGhost): void {
+  const normA = ghost.life / ghost.maxLife;
+  if (normA <= 0.005) return;
+  const alpha = normA * 0.55;
+  const col = "#ffe14d";
+
+  const W = C.player.w, H = C.player.h;
+  const F = playerFrame(vp, ghost.x, ghost.y, ghost.facing, 1.0, 1.0);
+  const bodyTop = -H * 0.72;
+  const bodyH = H * 0.38;
+  const tw = W * 0.66, tx = -W * 0.40;
+
+  // 1. 半透明金色剪影
+  px(g, F, tx, bodyTop, tw, bodyH, withAlpha(pal(col), alpha * 0.7));
+  circleAA(g, F, 2, bodyTop - H * 0.18, H * 0.18);
+  g.fillColor = withAlpha(pal(col), alpha * 0.8);
+  g.fill();
+
+  // 2. 双腿与持拍手臂
+  const hipY = -H * 0.46;
+  g.strokeColor = withAlpha(pal(col), alpha * 0.85);
+  g.lineWidth = F.lw(4.5);
+  lineSeg(g, F, -4, hipY, -10, 0);
+  lineSeg(g, F, 4, hipY, 12, 0);
+  lineSeg(g, F, 2, hipY - 10, 18, hipY);
+  g.stroke();
+
+  // 3. 4 道向四周电离炸裂的金色锯齿雷弧
+  g.lineWidth = F.lw(1.8);
+  g.strokeColor = withAlpha(pal("#00f0ff"), alpha * 0.9);
+  const burstR = (1 - normA) * 16;
+  lineSeg(g, F, tx - 4, bodyTop + 4, tx - 12 - burstR, bodyTop - 6 - burstR);
+  lineSeg(g, F, tx + tw + 4, bodyTop + 4, tx + tw + 12 + burstR, bodyTop - 6 - burstR);
+  lineSeg(g, F, tx - 6, bodyTop + bodyH, tx - 14 - burstR, bodyTop + bodyH + 8 + burstR);
+  lineSeg(g, F, tx + tw + 6, bodyTop + bodyH, tx + tw + 14 + burstR, bodyTop + bodyH + 8 + burstR);
+  g.stroke();
+}
+
 // poseLerp / swingArmPose / recoverPose / lut 已迁往 rig.ts 与 poses.ts(见文件头说明)。
+
+// ---------- 躯干脊柱:一条连续曲线,而不是三块横移量不同的矩形 ----------
+// 为什么不是「髋段 + 腰段 + 肩段」三块矩形叠:腰段 y∈[0.22,0.44]·bodyH 整个落在肩段
+// y∈[0,0.5]·bodyH 里、又画在它**之前**、同宽 → 被完全盖住,是死代码。于是可见躯干只剩
+// 两块矩形,竖向搭接只有 3 单位,却要扛 4.8 单位的横向偏移(lean 前压与 runTwist 扭转
+// 都只加在肩段)→ 用户看到的是「腰断了一截」。拼色球衣的色带/腰带同样锚在肩段 x 上,
+// 而它们画的那一段只有不移的髋段 → 色块会溢出轮廓画到背景上(网侧多画、背侧漏画)。
+// 现在躯干由一条脊柱描述:pt(v,u) = 该高度上「背缘 + u·衣宽」那一点,v=0 在肩、v=1 在髋。
+// 底色、明暗、领口、下摆、球衣纹样**全部**从这同一个 pt() 采样 → 覆盖物的两条竖边就长在
+// 轮廓上,不需要裁剪也不可能错位。
+// 为什么走 polyPath 而不是「按 0.5 网格切横条」:切条会把 4.8 单位的一次大台阶摊成
+// ~8 个 4×0.5 的小台阶,背缘那道 3 单位深色带把每个小台阶都描成一条高对比横线,
+// 1.5 倍缩放下躯干就成了一身肋骨架。斜边本来就该是斜的 —— 四肢笔画/头圆/发型早就是
+// 浮点几何,只有矩形件在吃网格,所以这里不量化并不会让人物「抖」,反而更稳。
+interface Torso {
+  top: number;
+  h: number;
+  w: number;
+  /** 脊柱上一点(局部坐标,y 向下):v=0 肩 / v=1 髋;u=0 背缘 / u=1 前缘 */
+  pt(v: number, u: number): Pt;
+}
+
+/** 沿脊柱建躯干。spineX(v) 给该高度相对髋段背缘(tx)的横向偏移;
+ *  v=1 必须回到 0 —— 髋段背缘 tx 是 pose-preview 里钉死的 BACK(远臂「手贴轮廓」判据量它)。 */
+function makeTorso(tx: number, top: number, h: number, w: number, spineX: (v: number) => number): Torso {
+  return {
+    top, h, w,
+    pt(v: number, u: number): Pt { return { x: tx + spineX(v) + w * u, y: top + h * v }; },
+  };
+}
+
+/** 脊柱跟随带:纵界 v0..v1(0=肩),横界 u0..u1(0=背缘,1=前缘)。
+ *  两条竖边各按 CFG.pose.spineRowH 的步长采点,所以带的边界与躯干轮廓是同一条曲线。
+ *  minLx = 左缘地板,给领口那种「从脖子前沿往网侧延伸」的锚用;宽度算出非正值整条跳过 ——
+ *  旧写法把宽度写成 `tx+lean+tw-2`,退防跨步(lean≈-12)时它是负数,fillRectTr 取绝对值
+ *  → 脖子前面甩出一块没归属的深色板。 */
+function torsoBand(g: Graphics, f: Frame, t: Torso, v0: number, v1: number,
+  u0: number, u1: number, color: string | Color, minLx?: number): void {
+  const mid = t.pt((v0 + v1) / 2, u0);
+  const lxMid = minLx === undefined ? mid.x : Math.max(mid.x, minLx);
+  if (lxMid >= t.pt((v0 + v1) / 2, u1).x) return;
+  const n = Math.max(2, Math.ceil((v1 - v0) * t.h / C.pose.spineRowH));
+  const pts: Pt[] = [];
+  for (let i = 0; i <= n; i++) {                        // 背侧边:v0 → v1
+    const p = t.pt(v0 + (v1 - v0) * (i / n), u0);
+    pts.push(f.pt(minLx === undefined ? p.x : Math.max(p.x, minLx), p.y));
+  }
+  for (let i = n; i >= 0; i--) {                        // 前侧边:v1 → v0
+    const p = t.pt(v0 + (v1 - v0) * (i / n), u1);
+    pts.push(f.pt(p.x, p.y));
+  }
+  g.fillColor = typeof color === "string" ? pal(color) : color;
+  polyPath(g, pts, true);
+  g.fill();
+}
 
 export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, alpha: number, ball: Ball | null): void {
   const pp = p as RPlayer;
@@ -575,7 +742,11 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const splitDip = splitEnv * C.pose.splitDip * swingFade;
   const restDip = landDip + lungeDip + splitDip;
   const hipY = -H * body.hip + bob + readyDip + serveDip + restDip;
-  const bodyTop = hipY - H * body.torso;   // 躯干底边粘在髋上,上沿随下沉/起伏整体移动
+  // 躯干长与「髋到肩」的距离是同一条 body.torso。旧写法这里乘 body.torso、下面的躯干段
+  // 却硬编码 H*0.38:standard 恰好相等所以从没暴露,compact 衣摆比髋点高 3 单位 → 腰侧
+  // 真露出一块背景洞(大腿笔画只盖得住中间那几条),tall 垂到髋下 6 单位 → 像长衫。
+  const torsoH = H * body.torso;
+  const bodyTop = hipY - torsoH;   // 躯干底边粘在髋上,上沿随下沉/起伏整体移动
 
   // ---------- 远臂:躯干后层的远侧手臂(景深)。两段 FK + 肤色小臂 + 手,跟着动作反相 ----------
   // 画在腿/躯干/头之前 → 内侧被躯干盖住是刻意的景深。不要在这里"对称地"补一颗肩关节圆:
@@ -751,27 +922,39 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     px(g, F, fx - 2.5, fy - 1.5, 12.5, H * 0.075, L.far ? withAlpha(pal(L.shoe), 0.80) : pal(L.shoe));
   }
 
-  // ---------- 躯干:3/4 斜侧 —— 向网侧偏置 + 上段前倾 + 前亮后暗 + 脊柱曲度 ----------
-  const bodyH = H * 0.38;
+  // ---------- 躯干:3/4 斜侧 —— 沿一条连续脊柱描出(见文件上方 Torso 注释块) ----------
+  // 髋部钉住不动、肩部转体,中间由 smoothstep 连续过渡;底色/明暗/领口/下摆/纹样共用
+  // 同一条脊柱,所以「腰上台阶」和「色块画到轮廓外」这两类错位在结构上都不可能出现。
+  const bodyH = torsoH;
   const tw = W * 0.66, tx = -W * 0.40;
-  // 脊柱曲度:髋部稳定、肩部拧转,中间渐变形成弯曲感(而非两段折角)
-  const spineCurve = Math.abs(lean - 2) * 0.35
-    + (swinging ? Math.sin(Math.min(poseU, 1) * Math.PI) * 1.5 : 0)
+  const shoulderX = lean + runTwist;   // 端点 = 旧「上段(肩)」矩形偏移 → 领口/V领/头肩关系逐帧不变
+  // 弓背额外量。旧写法是 |lean-2|*0.35 加进 spineCurve 再乘 Math.sign(lean-2) —— 前者
+  // 与 sign 相乘本就等于 0.35*(lean-2)(连续),后者却让另外三项在 lean=2 处整项翻号:
+  // 过头挥拍 u≈0.265、跑步换向、退防跨步都会穿过那条线,腰段一帧横跳 ~2.2 单位。
+  // 换成连续软符号:远离 0 → ±1(方向照旧由前倾侧决定),穿过 0 → 平滑归 0。
+  const dev = lean - 2;
+  const bow = ((swinging ? Math.sin(Math.min(poseU, 1) * Math.PI) * 1.5 : 0)
     + Math.abs(lungeLean) * 0.15
-    + Math.abs(cycRaw) * 0.4 * runAmt * spN;
-  const midLean = lean * 0.45 + Math.sign(lean - 2) * spineCurve;  // 腰部中间段偏移
-  px(g, F, tx, bodyTop + bodyH * 0.42, tw, bodyH * 0.58, th.main);                    // 下段(髋)
-  px(g, F, tx + midLean, bodyTop + bodyH * 0.22, tw, bodyH * 0.22, th.main);          // 中段(腰,脊柱曲度)
-  px(g, F, tx + lean + runTwist, bodyTop, tw, bodyH * 0.5, th.main);                  // 上段(肩,前倾+扭转)
-  px(g, F, tx + lean + runTwist + tw - 3, bodyTop + 5, 3, bodyH * 0.5 - 9, "rgba(255,255,255,0.20)");   // 前缘受光
-  px(g, F, tx + tw - 3, bodyTop + bodyH * 0.42 + 5, 3, bodyH * 0.58 - 9, "rgba(255,255,255,0.12)");
-  px(g, F, tx + lean + runTwist, bodyTop + 5, 3, bodyH * 0.42 - 4, "rgba(0,0,0,0.20)");          // 背缘背光
-  px(g, F, tx, bodyTop + bodyH * 0.42 + 5, 3, bodyH * 0.58 - 5, "rgba(0,0,0,0.24)");
-  // 领口从脖子前沿往网侧延伸:若拖到脖子后面,会在颈后留一块没归属的深色补丁
-  px(g, F, 2, bodyTop, tx + lean + runTwist + tw - 2, 5, th.dark);
-  px(g, F, tx + tw * 0.25, bodyTop + bodyH - 4, tw * 0.75, 4, "rgba(255,255,255,0.20)");
+    + Math.abs(cycRaw) * 0.4 * runAmt * spN) * (dev / (Math.abs(dev) + 0.5));
+  /** v=0 肩 → v=1 髋。smoothstep(本文件 readyK 处已手写过一次 k*k*(3-2*k)):两端导数为 0
+   *  → 骨盆不被剪、肩部不收口,弯曲集中在胸腰交界(腰椎本来就几乎不动)。 */
+  const spineX = (v: number): number => {
+    const u = 1 - v;
+    return shoulderX * (u * u * (3 - 2 * u)) + bow * Math.sin(u * Math.PI);
+  };
+  const T = makeTorso(tx, bodyTop, bodyH, tw, spineX);
+  torsoBand(g, F, T, 0, 1, 0, 1, th.main);
+  // 前缘受光 / 背缘背光:旧写法两条一对(肩段一对、髋段一对),中间在 y∈[17,21] 留了
+  // 4 单位无明暗的死区,正好压在腰上读成一道"腰带"。现在各收成一条,沿脊柱贯通。
+  torsoBand(g, F, T, 5 / bodyH, 1 - 4 / bodyH, 1 - 3 / tw, 1, "rgba(255,255,255,0.18)");
+  torsoBand(g, F, T, 5 / bodyH, 1 - 4 / bodyH, 0, 3 / tw, "rgba(0,0,0,0.22)");
+  // 领口从脖子前沿(x=2)往网侧延伸:若拖到脖子后面,会在颈后留一块没归属的深色补丁。
+  // 宽度地板由 torsoBand 兜住 —— 退防跨步时躯干前缘会退到 x=2 之后,那时不该有领口。
+  torsoBand(g, F, T, 0, 5 / bodyH, 0, 1, th.dark, 2);
+  // 下摆亮边:spineX(1)=0 → 恒贴髋段背缘,与衣摆齐髋后正好落在短裤上沿
+  torsoBand(g, F, T, 1 - 4 / bodyH, 1, 0.25, 1, "rgba(255,255,255,0.20)");
   // V 领:躯干上段顶部中央的 V 形线条,运动球衣的领口细节
-  const vCollarCx = tx + lean + runTwist + tw * 0.52;
+  const vCollarCx = T.pt(0, 0).x + tw * 0.52;
   const vCollarTop = bodyTop + 3;
   g.strokeColor = withAlpha(pal(FACE), 0.30);
   g.lineWidth = F.lw(1.2);
@@ -779,7 +962,9 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   lineSeg(g, F, vCollarCx, vCollarTop + 5.5, vCollarCx + 3.5, vCollarTop);
   g.stroke();
   // 侧条纹:躯干前缘一道纵向亮线,运动球衣的常见装饰
-  px(g, F, tx + lean + runTwist + tw * 0.18, bodyTop + 6, 1.5, bodyH * 0.82, "rgba(255,255,255,0.10)");
+  // (旧写法 6 + 0.82·bodyH 会越过下摆 0.24 单位,矩形件时看不出来,脊柱带会照原样画到
+  //  轮廓外,所以在这里夹住)
+  torsoBand(g, F, T, 6 / bodyH, Math.min(1, 6 / bodyH + 0.82), 0.18, 0.18 + 1.5 / tw, "rgba(255,255,255,0.10)");
 
   // ---------- 跨步后 1 秒内身体疾风残影与流光动效 (配合跨步重击) ----------
   if (p.lungeShotT > 0) {
@@ -796,12 +981,66 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     lineSeg(g, F, tx - 12 - wave, wy3, tx - 2, wy3);
     g.stroke();
     // 躯干周围青色风晕
-    px(g, F, tx - 3, bodyTop - 3, tw + 6, bodyH + 6, withAlpha(pal("#38bdf8"), windAlpha * 0.22));
+    // 躯干周围青色风晕:跟着脊柱外扩一圈 —— 躯干已经不再是一根轴对齐的柱子,
+    // 用 `tx-3, bodyTop-3, tw+6, bodyH+6` 那种矩形框去包,前压/后仰时会露出半边。
+    torsoBand(g, F, T, -3 / bodyH, 1 + 3 / bodyH, -3 / tw, 1 + 3 / tw,
+      withAlpha(pal("#38bdf8"), windAlpha * 0.22));
   }
 
-  // 闪现扣杀折跃雷光
-  if (p.flashT && p.flashT > 0) {
-    const flashA = (p.flashT / 20) * 0.85;
+  // 闪现折跃三段:① 来向速度线(人刚从那边过来)② 落位蓄力雷环(时停那几帧)③ 残余电弧
+  const FL = C.skills.flash;
+  const flashHold = p.flashHoldT ?? 0;
+  const ghost = clamp((p.flashT ?? 0) / FL.ghostFrames, 0, 1);
+  if (p.flashFrom && ghost > 0) {
+    // 残影不真复制一个人(要另起一条绘制链、且和姿势插值抢状态),用三条朝来路收拢的
+    // 青色速度线说"人刚从那儿折跃过来"—— 便宜,也不会糊住人物本体
+    const side = (p.flashFrom.x - p.x) * p.facing > 0 ? 1 : -1;
+    g.strokeColor = withAlpha(pal("#00f0ff"), ghost * 0.6);
+    g.lineWidth = F.lw(2);
+    for (let i = 0; i < 3; i++) {
+      const ly = bodyTop + bodyH * (0.18 + i * 0.3);
+      const x0 = tx - side * (16 + i * 5);
+      lineSeg(g, F, x0, ly, x0 - side * (16 + 14 * ghost), ly);
+    }
+    g.stroke();
+  }
+  if (flashHold > 0) {
+    // 环随剩余帧向外扩张、电弧随剩余帧收紧:能量从四周收拢到身上这一格
+    const k = clamp(flashHold / FL.holdFrames, 0, 1);
+    const cx = tx + tw * 0.5, cy = bodyTop + bodyH * 0.45;
+    const rr = 20 + 26 * (1 - k);
+    g.lineWidth = F.lw(2.2);
+    g.strokeColor = withAlpha(pal("#ffe14d"), 0.32 + 0.4 * k);
+    circleAA(g, F, cx, cy, rr);
+    g.stroke();
+    g.lineWidth = F.lw(1.2);
+    g.strokeColor = withAlpha(pal("#00f0ff"), 0.24 + 0.34 * k);
+    circleAA(g, F, cx, cy, rr * 0.62);
+    g.stroke();
+    g.lineWidth = F.lw(1.8);
+    g.strokeColor = withAlpha(pal("#ffe14d"), 0.5 + 0.4 * k);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * TAU + (1 - k) * 1.2;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      lineSeg(g, F, cx + ca * rr, cy + sa * rr, cx + ca * (rr + 9 + 8 * k), cy + sa * (rr + 9 + 8 * k));
+    }
+    g.stroke();
+
+    // 拍头与球体之间的闪电引信电弧 (悬空蓄力时球与拍高压雷弧吸附)
+    if (ball) {
+      const bdx = (ball.x - x) * p.facing;
+      const bdy = ball.y - y;
+      g.lineWidth = F.lw(2.0);
+      g.strokeColor = withAlpha(pal("#ffe14d"), 0.85 * k);
+      const jx = (bdx * 0.5) + (Math.sin(t * 0.6) * 6);
+      const jy = (bdy * 0.5) + (Math.cos(t * 0.6) * 5);
+      lineSeg(g, F, cx, cy, jx, jy);
+      lineSeg(g, F, jx, jy, bdx, bdy);
+      g.stroke();
+    }
+  }
+  if (ghost > 0) {
+    const flashA = ghost * 0.85;
     g.strokeColor = withAlpha(pal("#eab308"), flashA);
     g.lineWidth = F.lw(2.6);
     lineSeg(g, F, tx - 8, bodyTop - 8, tx + 6, bodyTop + 12);
@@ -810,19 +1049,73 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     g.stroke();
   }
 
-  // 引力吸球波纹光环
+  // 引力吸球向心涡旋力场
   if (p.skill && p.skill.magnetPulling) {
-    const waveR = 18 + ((t * 1.8) % 18);
-    g.strokeColor = withAlpha(pal("#a855f7"), 0.6);
-    g.lineWidth = F.lw(2);
-    circleAA(g, F, 0, 0, waveR);
+    const rot = t * 0.18;
+    const cx = tx + tw * 0.5 + 14, cy = bodyTop + bodyH * 0.45;
+    // 双层向心旋转吸积环
+    g.lineWidth = F.lw(2.2);
+    g.strokeColor = withAlpha(pal("#a855f7"), 0.75);
+    polyPath(g, arcPts(F, cx, cy, 22, rot, rot + Math.PI * 1.25, false), false);
+    polyPath(g, arcPts(F, cx, cy, 22, rot + Math.PI, rot + Math.PI * 2.25, false), false);
+    g.stroke();
+    g.lineWidth = F.lw(1.4);
+    g.strokeColor = withAlpha(pal("#00f0ff"), 0.6);
+    polyPath(g, arcPts(F, cx, cy, 14, -rot * 1.5, -rot * 1.5 + Math.PI * 1.15, false), false);
+    polyPath(g, arcPts(F, cx, cy, 14, -rot * 1.5 + Math.PI, -rot * 1.5 + Math.PI * 2.15, false), false);
+    g.stroke();
+    // 奇点能量核
+    g.fillColor = withAlpha(pal("#ffffff"), 0.9);
+    circleAA(g, F, cx, cy, 3.2);
+    g.fill();
+  }
+
+  // 百分百重击聚能暴气:全身升腾烈焰斗气与火浪
+  if (p.skill && p.skill.id === "smash" && p.skill.buffT > 0) {
+    const buffK = clamp(p.skill.buffT / C.skills.smash.buffDuration, 0.2, 1);
+    const flameCycle = t * 0.24;
+    // 脚底烈焰脉冲光环
+    const pulseR = 16 + Math.sin(flameCycle * 1.6) * 4.5;
+    g.strokeColor = withAlpha(pal("#ff4d4d"), 0.5 * buffK);
+    g.lineWidth = F.lw(2.6);
+    circleAA(g, F, 0, 0, pulseR);
+    g.stroke();
+    g.strokeColor = withAlpha(pal("#ffe14d"), 0.35 * buffK);
+    circleAA(g, F, 0, 0, pulseR * 0.68);
+    g.stroke();
+
+    // 躯干升腾的 5 朵火焰斗气微波
+    g.lineWidth = F.lw(2.2);
+    for (let i = 0; i < 5; i++) {
+      const fxPos = tx + (i / 4) * tw;
+      const fPhase = flameCycle + i * 1.35;
+      const fRise = 8 + ((flameCycle * 7 + i * 9) % 26);
+      const fWiggle = Math.sin(fPhase) * 3.5;
+      const fCol = i % 2 === 0 ? "#ff4d4d" : "#ffe14d";
+      g.strokeColor = withAlpha(pal(fCol), 0.7 * buffK * (1 - fRise / 26));
+      lineSeg(g, F, fxPos, bodyTop + bodyH - 3, fxPos + fWiggle, bodyTop - fRise);
+    }
+    g.stroke();
+
+    // 身体外缘金红火晕
+    px(g, F, tx - 4, bodyTop - 4, tw + 8, bodyH + 8, withAlpha(pal("#ff6a1f"), 0.20 * buffK));
+  }
+
+  // 时空减速:身体周围散发淡青色时空领域微澜
+  if (p.focusT && p.focusT > 0) {
+    const focusAlpha = clamp(p.focusT / C.skills.focus.duration, 0, 1);
+    const chronoR = 24 + Math.sin(t * 0.15) * 5;
+    g.strokeColor = withAlpha(pal("#06b6d4"), 0.40 * focusAlpha);
+    g.lineWidth = F.lw(1.8);
+    circleAA(g, F, 0, bodyTop + bodyH * 0.5, chronoR);
     g.stroke();
   }
   // ---------- 球衣纹样(设计款人物专属):压在底色上、领口描边之下 ----------
   // 注册表分发:key 在 config.SKINS.player[].jersey;glow 色做纹样主色。
-  // 局部参考:躯干从 (jx, top) 到 (+w, +h)
+  // 参考系 = 躯干本身(同一份脊柱行格):纹样逐行取底色画过的那条 x,所以拼色带/腰带/
+  // 斜披巾都不可能画到轮廓外,也不会随挥拍与衣身错开一个腰。
   if (ps?.jersey && OUTFITS[ps.jersey]) {
-    OUTFITS[ps.jersey](g, F, th, { jx: tx + lean + runTwist, top: bodyTop, h: bodyH, w: tw });
+    OUTFITS[ps.jersey](g, F, th, T);
   }
   // 胸前号码:已取消(不画、也不由表现层挂 Label)。老版曾在局部 (1, bodyTop + bodyH*0.40)
   // 以 700 H*0.115px "DIN Alternate" 居中画 p.jersey,色 rgba(255,255,255,0.8);
@@ -855,7 +1148,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, skinCol);
   drawHead(g, F, th, hr, 2 + (lean - 2) * 0.6, bodyTop - hr * 1.12 + headDy,
     { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD, skin: ps,
-      faceStyle, skinTone: ps?.skinTone });
+      faceStyle, skinTone: ps?.skinTone, focusT: p.focusT });
 
   // ---------- 持拍臂:一条姿势管线,挥拍弧线 ↔ 待机收拍全程连续 ----------
   // 命中后持拍臂横拉过身体:肩点朝网侧额外偏移(增强跟随感)
@@ -1071,7 +1364,7 @@ function estTextWidth(s: string): number {
 // 所以「填充 + 描边」同一形状必须重建路径,攒路径后一次性 stroke 与 canvas 同构。
 function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
   opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number;
-    skin?: SkinDef | null; faceStyle?: string; skinTone?: string } = {}): void {
+    skin?: SkinDef | null; faceStyle?: string; skinTone?: string; focusT?: number } = {}): void {
   const lx = opt.lookX || 0, ly = opt.lookY || 0;
   const face: FaceKind = (opt.faceT ?? 0) > 0 ? (opt.face ?? "normal") : "normal";
   const sk = opt.skin ?? null;
@@ -1219,6 +1512,19 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
     (FACE_MARKS[st.mark] ?? (() => {}))(g, f, cx, cy, hr, ink);
   }
 
+  // 时空减速鹰眼激光流光 (Focus Zone Trail)
+  if (opt.focusT && opt.focusT > 0) {
+    const fA = clamp(opt.focusT / C.skills.focus.duration, 0, 1) * 0.92;
+    g.strokeColor = withAlpha(pal("#06b6d4"), fA);
+    g.lineWidth = f.lw(2.2);
+    lineSeg(g, f, exN + lx, eyN + ly, exN + lx - 15, eyN + ly - 5);
+    lineSeg(g, f, exN + lx - 4, eyN + ly - 1, exN + lx - 22, eyN + ly - 8);
+    g.stroke();
+    g.fillColor = withAlpha(pal("#ffffff"), fA);
+    circleAA(g, f, exN + lx, eyN + ly, 2.0);
+    g.fill();
+  }
+
   drawFaceSticker(g, f, opt.t ?? 0, face, opt.faceT ?? 0, opt.faceD ?? 1, cx, cy, hr);
 }
 
@@ -1263,40 +1569,51 @@ const HEADWEARS: Record<string, HwFn> = {
   catears: drawCatEars,
 };
 
-/** 球衣纹样注册表:key → 绘制函数。r = 躯干局部矩形(左上 jx/top,宽 w,高 h) */
-type OutfitFn = (g: Graphics, f: Frame, th: Theme, r: { jx: number; top: number; h: number; w: number }) => void;
+/** 球衣纹样注册表:key → 绘制函数。t = 躯干(与底色同一份脊柱行格)
+ *  纹样一律走 torsoBand / 行格端点,不自己算 x —— 旧写法拿肩段的 jx 去画腰腹以下的图案,
+ *  挥拍前压时色带比身体多出一截画在背景上、另一侧又露出底色。 */
+type OutfitFn = (g: Graphics, f: Frame, th: Theme, t: Torso) => void;
 
 const OUTFITS: Record<string, OutfitFn> = {
   // 霓虹双条纹:前胸两道竖纹(赛博骇客)
-  stripes: (g, f, th, r) => {
-    px(g, f, r.jx + r.w * 0.30, r.top + 4, 2, r.h * 0.86, withAlpha(pal(th.glow), 0.9));
-    px(g, f, r.jx + r.w * 0.46, r.top + 4, 2, r.h * 0.86, withAlpha(pal(th.glow), 0.55));
+  stripes: (g, f, th, t) => {
+    const v0 = 4 / t.h;
+    torsoBand(g, f, t, v0, v0 + 0.86, 0.30, 0.30 + 2 / t.w, withAlpha(pal(th.glow), 0.9));
+    torsoBand(g, f, t, v0, v0 + 0.86, 0.46, 0.46 + 2 / t.w, withAlpha(pal(th.glow), 0.55));
   },
   // 斜披巾:背肩 → 前髋一条斜带,双线勾边(烈焰少年/猫系少女)
-  sash: (g, f, th, r) => {
+  // 端点取脊柱两端的实际 x(而不是肩段那一条),并各内收「半个笔宽」—— 5 的笔画外沿
+  // 正好压在轮廓上,再往外就是背景。
+  sash: (g, f, th, t) => {
+    const a0 = t.pt(0, 0), b1 = t.pt(1, 1);
     g.strokeColor = withAlpha(pal(th.glow), 0.92);
     g.lineWidth = f.lw(5);
-    lineSeg(g, f, r.jx + 2, r.top + 4, r.jx + r.w - 3, r.top + r.h - 3);
+    lineSeg(g, f, a0.x + 4, a0.y + 4, b1.x - 6, b1.y - 3);
     g.stroke();
     g.strokeColor = withAlpha(pal(th.dark), 0.8);
     g.lineWidth = f.lw(1.2);
-    lineSeg(g, f, r.jx + 2, r.top + 7, r.jx + r.w - 4, r.top + r.h - 3);
+    lineSeg(g, f, a0.x + 3, a0.y + 7, b1.x - 5, b1.y - 3);
     g.stroke();
   },
   // 樱纹描边:领口/下摆/前缘走一道 glow 细边 + 两颗小点(樱花少女/萌芽豆丁)
-  trim: (g, f, th, r) => {
+  trim: (g, f, th, t) => {
+    const b0 = t.pt(1, 0), b1 = t.pt(1, 1);
     g.strokeColor = withAlpha(pal(th.glow), 0.95);
     g.lineWidth = f.lw(1.4);
-    lineSeg(g, f, r.jx + 1, r.top + r.h - 2, r.jx + r.w - 1, r.top + r.h - 2);   // 下摆
-    lineSeg(g, f, r.jx + r.w - 2, r.top + 4, r.jx + r.w - 2, r.top + r.h - 4);   // 前缘
+    // 下摆:贴在髋那一行的底边上(spineX(1)=0 → 这条线天然水平、天然对齐衣摆)
+    lineSeg(g, f, b0.x + 1, b0.y - 1, b1.x - 1, b1.y - 1);
     g.stroke();
-    px(g, f, r.jx + r.w * 0.34, r.top + r.h * 0.42, 2.2, 2.2, th.glow);            // 一颗小樱点
-    px(g, f, r.jx + r.w * 0.52, r.top + r.h * 0.58, 2.2, 2.2, withAlpha(pal(th.glow), 0.7));
+    // 前缘:描边 → 脊柱跟随带(代价:失去圆头端帽,≤0.7 单位)
+    torsoBand(g, f, t, 4 / t.h, 1 - 4 / t.h, 1 - 1.4 / t.w, 1, withAlpha(pal(th.glow), 0.95));
+    torsoBand(g, f, t, 0.42, 0.42 + 2.2 / t.h, 0.34, 0.34 + 2.2 / t.w, th.glow);
+    torsoBand(g, f, t, 0.58, 0.58 + 2.2 / t.h, 0.52, 0.52 + 2.2 / t.w, withAlpha(pal(th.glow), 0.7));
   },
   // 拼色:腰腹以下整段换 glow 色 + 一道腰带分界(球场之王/金羽宗师)
-  twoTone: (g, f, th, r) => {
-    px(g, f, r.jx, r.top + r.h * 0.55, r.w, r.h * 0.45, withAlpha(pal(th.glow), 0.85));
-    px(g, f, r.jx, r.top + r.h * 0.55, r.w, 2, th.dark);
+  // 色带与腰带共用同一条 v 边界 → 两者之间只会露底色,绝不会露背景。
+  twoTone: (g, f, th, t) => {
+    const v = 0.55;
+    torsoBand(g, f, t, v, 1, 0, 1, withAlpha(pal(th.glow), 0.85));
+    torsoBand(g, f, t, v, v + 2 / t.h, 0, 1, th.dark);
   },
 };
 
@@ -2000,13 +2317,28 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   g.stroke();
 
   // ---------- 9. 命中与击球反馈辉光 ----------
-  // 百分百重击技能蓄力附魔:炽热金红与烈焰高光外晕
+  // 百分百重击技能蓄力附魔:炽热金红与烈焰高光外晕与翻滚火舌
   const isPowerSmashBuff = !!(p.skill && p.skill.id === "smash" && p.skill.buffT > 0);
   if (isPowerSmashBuff && p.skill) {
-    const flameU = Math.sin((p.skill.buffT || 0) * 0.25);
-    const outer = isometricHeadPts(R, headRx + 4.2 + flameU * 1.5, headRy + 4.8 + flameU * 1.5, 36);
+    const flameU = Math.sin((p.skill.buffT || 0) * 0.28);
+    const outer = isometricHeadPts(R, headRx + 4.5 + flameU * 1.5, headRy + 5.0 + flameU * 1.5, 36);
     glowStroke(g, R, outer, "#f43f5e", 4.2 + 8);
     glowStroke(g, R, head, "#ffe14d", 3.6 + 6);
+    // 拍框外延翻滚跳跃的 6 朵烈火火舌
+    g.strokeColor = withAlpha(pal("#ff6a1f"), 0.85);
+    g.lineWidth = R.lw(2.4);
+    for (let i = 0; i < 6; i++) {
+      const angF = (i / 6) * TAU + flameU * 0.4;
+      const hx0 = Math.cos(angF) * headRx;
+      const hy0 = Math.sin(angF) * headRy;
+      const tongueLen = 5 + Math.sin(angF * 3 + (p.skill.buffT || 0) * 0.4) * 3.5;
+      lineSeg(g, R, hx0, hy0, hx0 + Math.cos(angF) * tongueLen, hy0 + Math.sin(angF) * tongueLen);
+    }
+    g.stroke();
+    // 炽热白色聚能热核
+    g.fillColor = withAlpha(pal("#ffffff"), 0.55);
+    circleAA(g, R, 0, 0, 4.5);
+    g.fill();
     g.strokeColor = pal("#ffffff");
     g.lineWidth = R.lw(3.6);
     polyPath(g, head, true); g.stroke();

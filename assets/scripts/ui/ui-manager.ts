@@ -41,6 +41,8 @@ import { PausePanel } from "./pause-panel";
 import { SettleBadge, SettlePanel, SettlePayload, SettleStat } from "./settle-panel";
 import { CareerPanel } from "./career-panel";
 import { DrillPanel } from "./drill-panel";
+import { CampaignPanel } from "./campaign-panel";
+import type { StageDef } from "../core/campaign";
 import { SettingsPanel } from "./settings-panel";
 import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
@@ -292,6 +294,8 @@ export interface UiKit {
   quitToMenu(): void;
   openCareer(): void;
   openDrills(): void;
+  openCampaign(): void;
+  startCampaignStage(stage: StageDef): void;
   openEndlessDialog(): void;
   /** 技能配置弹窗 (赛前选择主动技能) */
   openSkillDialog(onEquip?: (id: SkillId) => void): void;
@@ -328,6 +332,7 @@ export class UIManager extends Component {
   private updateDialog!: UpdateDialog;
   private endlessDialog!: EndlessDialog;
   private skillDialog!: SkillDialog;
+  private campaignPanel!: CampaignPanel;
   private careerPanel: CareerPanel | null = null;
   private drillPanel: DrillPanel | null = null;
   private settingsPanel: SettingsPanel | null = null;
@@ -364,6 +369,7 @@ export class UIManager extends Component {
     this.updateDialog = new UpdateDialog(root, this.kit);
     this.endlessDialog = new EndlessDialog(root, this.kit);
     this.skillDialog = new SkillDialog(root, this.kit);
+    this.campaignPanel = new CampaignPanel(root, this.kit);
     this.bridgeCareerSettle();
 
     // UI 音复用同一批烘焙 WAV(resources 缓存共享)。
@@ -491,6 +497,7 @@ export class UIManager extends Component {
         this.menu.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
+        this.campaignPanel?.hide();
         this.hud.setPlaying(true);       // 暗遮罩后仍能看见终局前的比分牌
         this.pausePanel.show();
         break;
@@ -498,6 +505,7 @@ export class UIManager extends Component {
         this.menu.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
+        this.campaignPanel?.hide();
         this.hud.setPlaying(true);
         this.settlePanel.show(this.takeSettle("match"));
         break;
@@ -505,6 +513,7 @@ export class UIManager extends Component {
         this.menu.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
+        this.campaignPanel?.hide();
         this.hud.setPlaying(true);
         this.settlePanel.show(this.takeSettle("drill"));
         break;
@@ -512,6 +521,7 @@ export class UIManager extends Component {
         this.menu.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
+        this.campaignPanel?.hide();
         this.pausePanel.hide();
         this.settlePanel.hide();
         this.hud.setPlaying(true);
@@ -525,14 +535,24 @@ export class UIManager extends Component {
     const cap = this.capture && this.capture.kind === kind ? this.capture : null;
     this.capture = null;
     if (kind === "match") {
+      const isCamp = R.mode === "campaign" && !!R.activeStage;
+      const stage = R.activeStage;
+      const won = R.winner === "left";
+      let badge = this.matchBadge();
+      if (isCamp && stage) {
+        badge = {
+          title: won ? `★ 关卡突破 · ${stage.title} (${stage.badge})` : `挑战失败 · ${stage.title}`,
+          color: won ? PAL.accent : PAL.dim,
+        };
+      }
       return {
         kind,
         res: cap ? cap.res : null,
         drill: null,
         before: cap ? cap.before : null,
         scores: [R.scores[0], R.scores[1]],
-        won: R.winner === "left",
-        badge: this.matchBadge(),
+        won,
+        badge,
         stats: this.statRows("match", null),
       };
     }
@@ -576,12 +596,23 @@ export class UIManager extends Component {
     });
   }
 
+  private doStartCampaign(stage: StageDef): void {
+    slashWipe(this.node, () => {
+      this.kit.setCourtTheme(stage.court);
+      Rules.startCampaign(stage);
+      Career.applyToMatch();
+      this.sfx.play("whistle");
+    });
+  }
+
   private doRestart(): void {
     this.sfx.play("ui");
     if (Rules.R.mode === "drill") {
       this.doStartDrill(Drill.cur()?.id || DRILLS[0].id);
     } else if (Rules.R.mode === "endless") {
       this.doStartEndlessMatch(Rules.R.diff);
+    } else if (Rules.R.mode === "campaign" && Rules.R.activeStage) {
+      this.doStartCampaign(Rules.R.activeStage);
     } else {
       Rules.restart();
       Career.applyToMatch();
@@ -695,6 +726,11 @@ export class UIManager extends Component {
     );
   }
 
+  private openCampaign(): void {
+    this.menu.hide();
+    this.campaignPanel.show();
+  }
+
   /**
    * 设置页。从暂停页进来时关完要回暂停页,不能漏进主菜单 ——
    * onState 只在状态**变化沿**触发,而 PAUSED → (开着设置) → PAUSED 根本没有变化沿,
@@ -755,6 +791,8 @@ export class UIManager extends Component {
       quitToMenu: () => this.doQuit(),
       openCareer: () => this.openCareer(),
       openDrills: () => this.openDrills(),
+      openCampaign: () => this.openCampaign(),
+      startCampaignStage: (stage) => this.doStartCampaign(stage),
       openEndlessDialog: () => this.endlessDialog.show(),
       openSkillDialog: (onEquip) => this.skillDialog.show(onEquip),
       openSettings: () => this.openSettings(),

@@ -13,6 +13,7 @@ import { Player as Pl } from "./player";
 import { AI } from "./ai";
 import { Skills } from "./skills";
 import { Ball, DiffKey, GameEvent, Player, PlayerInput, TeamSide } from "./types";
+import { CampaignManager, StageDef } from "./campaign";
 
 const C = CFG;
 const CO = C.court;
@@ -50,6 +51,8 @@ export interface RulesState {
   pointNo: number;
   /** 平分延长:双方都到 winScore-1 后进入 */
   deuce: boolean;
+  /** 当前闯关挑战关卡 (campaign 模式独占) */
+  activeStage?: StageDef | null;
   /** 以下字段在 newMatch / pause 时赋值 */
   humans?: number;
   serveWait: number;
@@ -154,6 +157,10 @@ function applyAiTier(): void {
 }
 
 function newMatch(mode: string, diff: DiffKey, humans?: number): void {
+  R.activeStage = null;
+  Physics.setEnvModifier(null);
+  Pl.setPlayerModifier(null);
+
   R.mode = mode;
   R.diff = diff || "normal";
   const dbl = mode === "2v2";
@@ -196,6 +203,81 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   R.deuce = false;
   R.timeScale = 1;
   R.serveWait = 0;       // 发球蓄力计数:SERVE 状态每帧 +1,挥拍释放时查表定发球类型
+  beginPoint();
+}
+
+function startCampaign(stage: StageDef): void {
+  R.activeStage = stage;
+  CampaignManager.recordAttempt(stage.id);
+
+  Physics.setEnvModifier({
+    windX: stage.modifiers.physics?.windX ?? 0,
+    gravityMul: stage.modifiers.physics?.gravityMul ?? 1,
+    dragMul: stage.modifiers.physics?.dragMul ?? 1,
+    erratic: !!stage.modifiers.physics?.erratic,
+    laserRail: !!stage.modifiers.physics?.laserRail,
+  });
+
+  Pl.setPlayerModifier(stage.modifiers.player || null);
+
+  R.mode = "campaign";
+  R.diff = stage.aiDiff;
+  R.humans = 1;
+  R.players = [];
+
+  // 左队真人
+  R.players.push(mk("left", 0, 1, {
+    theme: C.colors.red,
+    label: "你",
+    isAI: false,
+    aiDiff: null,
+    teamLabel: "你",
+  }));
+
+  // 右队 AI
+  R.players.push(mk("right", 0, 1, {
+    theme: C.colors.blue,
+    label: "AI",
+    isAI: true,
+    aiDiff: stage.aiDiff,
+    teamLabel: "AI",
+  }));
+
+  applyAiTier();
+
+  if (stage.aiSkill) {
+    const aiPlayer = R.players.find((p) => p.side === "right");
+    if (aiPlayer) {
+      aiPlayer.skill = Skills.initSkillState(stage.aiSkill);
+    }
+  }
+
+  if (stage.modifiers.player?.cooldownMul) {
+    const cMul = stage.modifiers.player.cooldownMul;
+    for (const p of R.players) {
+      if (p.skill) {
+        p.skill.maxCd = Math.round(p.skill.maxCd * cMul);
+        p.skill.cd = 0;
+      }
+    }
+  }
+
+  if (stage.isMatchPointStart) {
+    R.scores = [10, 10];
+    R.deuce = true;
+  } else {
+    R.scores = [0, 0];
+    R.deuce = false;
+  }
+
+  R.server = "left";
+  R.serveIdx = 0;
+  R.winner = null;
+  R.rally = 0;
+  R.longestRally = 0;
+  R.pointNo = 0;
+  R.timeScale = 1;
+  R.serveWait = 0;
   beginPoint();
 }
 
@@ -381,7 +463,27 @@ function step(inputs: PlayerInput[]): void {
     return;
   }
 
+  // 闪现扣杀的"时停":折跃落位后到那一拍出手之前,把整颗球按在半空。
+  // 演出上是"时间停了、只有出手的人还在动";机制上是"必中窗口里球不许逃逸"。
+  // 没有这一条,对着快速下坠的球按闪现,球会在蓄力那几帧里落地 —— 技能空有冷却,
+  // 玩家看到的还是"我闪过去了却打不到"。判定链照常跑(蓄力走完那一帧就得扣出去)。
+  const strikeHold = R.players.some((q) => q.skill?.id === "flash" && (q.flashHoldT ?? 0) > 0);
+  if (strikeHold) {
+    for (const p of R.players) {
+      const shot = Pl.tryHit(p, ball);
+      if (shot) { applyShot(ball, shot); break; }
+    }
+    return;
+  }
+
   // 球飞行
+  if (R.mode === "campaign" && R.activeStage?.modifiers.physics?.windOscillate) {
+    const baseW = R.activeStage.modifiers.physics.windX || 0.18;
+    const currentMod = Physics.getEnvModifier();
+    if (currentMod) {
+      currentMod.windX = Math.sin(frameTick * 0.02) * baseW;
+    }
+  }
   Physics.step(ball);
   // 球体形变恢复:每帧向 1 逼近,击球瞬间的压扁逐渐回到正常
   ball.sqPrev = ball.sq;
@@ -476,6 +578,69 @@ function score(scorerSide: TeamSide, reason: string): void {
   R.reason = reason;
   R.msg = `${labelOf(scorerSide)} 得分 · ${reason}`;
 
+  // 闯关挑战模式:按关卡目标分/一球胜负/连赢判定
+  if (R.mode === "campaign" && R.activeStage) {
+    const stage = R.activeStage;
+    const isPlayer = scorerSide === "left";
+    const myScore = R.scores[0];
+    const opScore = R.scores[1];
+
+    let matchOver = false;
+    let winner: TeamSide | null = null;
+
+    if (stage.deathmatch) {
+      if (!isPlayer) {
+        matchOver = true;
+        winner = "right";
+      } else if (myScore >= stage.targetScore && myScore - opScore >= 2) {
+        matchOver = true;
+        winner = "left";
+      }
+    } else {
+      if (myScore >= stage.targetScore) {
+        matchOver = true;
+        winner = "left";
+      } else if (opScore >= stage.targetScore) {
+        matchOver = true;
+        winner = "right";
+      }
+    }
+
+    emit("score", { side: scorerSide, reason, matchOver, score: R.scores.slice() });
+
+    if (matchOver) {
+      R.winner = winner;
+      R.state = "OVER";
+      R.reason = winner === "left" ? "通关成功" : "挑战失败";
+      R.msg = winner === "left" ? `挑战成功！${stage.title}` : `挑战失败，请再接再厉！`;
+      let stars = 0;
+      if (winner === "left") {
+        stars = 1;
+        if (myScore - opScore >= 2) stars++;
+        if (opScore === 0 || R.longestRally >= 8) stars++;
+        const res = CampaignManager.recordStageClear(stage, myScore, opScore, stars);
+        emit("campaign-clear", {
+          stageId: stage.id,
+          stageNo: stage.stageNo,
+          stars,
+          firstClear: res.firstClear,
+          newStars: res.newStars,
+          rewards: stage.rewards,
+          score: R.scores.slice(),
+        });
+      }
+      emit("match-over", {
+        winner,
+        scores: R.scores.slice(),
+        longestRally: R.longestRally,
+        mode: R.mode,
+        stage,
+        stars,
+      });
+    }
+    return;
+  }
+
   // 无限模式:不判赛点与终局,比分正常累加,倒计时结束后继续发球
   if (R.mode === "endless") {
     emit("score", { side: scorerSide, reason, matchOver: false, score: R.scores.slice() });
@@ -516,7 +681,11 @@ function resume(): void {
 }
 
 function restart(): void {
-  newMatch(R.mode, R.diff, R.humans);
+  if (R.mode === "campaign" && R.activeStage) {
+    startCampaign(R.activeStage);
+  } else {
+    newMatch(R.mode, R.diff, R.humans);
+  }
 }
 
 // 「正在打球」:发球准备 / 相持 / 得分停顿三态。
@@ -578,7 +747,7 @@ const statsOf = (s: TeamSide): TeamStats => {
 };
 
 export const Rules = {
-  R, newMatch, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint,
+  R, newMatch, startCampaign, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint,
   applyAiTier,
   teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf, setTrailHook,
 };

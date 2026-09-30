@@ -3,11 +3,14 @@
 // 纯代码构建 UI 节点,复刻老项目 src/ui-career.js 的完整交互。
 // 与老项目的一处**有意差异**:老版是桌面键盘(方向键选中 + Enter 成交),触摸端把两步压成了
 // 一tap 直接扣金币 —— 皮肤买了不能退,误触代价是真的,所以这里拆回「点卡片只选中 / 按按钮才成交」。
+// 货架为什么能滑:角色皮肤 12 款按 4 列排是 3 行,而网格窗只装得下 2 行 —— 第三行从前
+// 直接伸出面板底被屏幕切掉,想看最后几款没法把它挪进画面。现在由 Mask 裁切 + 拖动/惯性滚动,
+// 越界回弹、滚动条、滑与点的分辨见「货架可视窗(滚动)」一节。
 // 依赖:Career(逻辑层)、CFG.skins(配置)、Sprites.drawPlayer/drawShuttle(渲染)
 // ============================================================
 import {
-  _decorator, BlockInputEvents, Button, Color, Component, EventKeyboard, Graphics, Input, input, Label, Layers, Node,
-  UITransform, UIOpacity, Widget, KeyCode,
+  _decorator, BlockInputEvents, Button, Color, Component, EventKeyboard, EventTouch, Graphics, Input, input, Label, Layers,
+  Mask, Node, UITransform, UIOpacity, Widget, KeyCode,
 } from "cc";
 import { Career } from "../core/career";
 import { CFG, DRILLS } from "../core/config";
@@ -17,6 +20,8 @@ import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
 import { drawArcadeButton, drawHardShadow, drawMenuCard, drawVeil, fadeOutHide, makeCoinIcon, pressFx, retainedDraw, slamIn, textW, uiIconButton } from "./ui-arcade";
 import type { BtnStyle } from "./ui-arcade";
+import { SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, thumbHeight } from "./shop-shelf";
+import type { ScrollMotion } from "./shop-shelf";
 
 const { ccclass } = _decorator;
 
@@ -34,19 +39,26 @@ const LV_NAMES = [
   "不朽传奇", "羽球之神", "至高无上", "传说再现", "巅峰至尊",
 ];
 
-/** 列数:两行制(10→5、8→4),与老项目一致;上限 5 —— 6 列 96px 卡会顶破 520 网格宽 */
-function gridCols(n: number): number {
-  return n % 5 === 0 ? 5 : n % 4 === 0 ? 4 : Math.min(n, 5);
-}
-
 // 布局(设计分辨率 960×540)
 const PW = 880, PH = 470;
-const CARD_W = 96, CARD_H = 130, GAP = 8;
-const GRID_W = 520, PREVIEW_W = 320, CONTENT_H = 330;
+// 货架尺寸的唯一出处在 shop-shelf.ts(纯函数,node 下可断言,回归见 tools/shelf-check.ts);
+// 这里只是给既有调用点保留短名。留白(padTop/padBot)只在货架那边参与计算,不再手调。
+const { cardW: CARD_W, cardH: CARD_H, gap: GAP, w: GRID_W, h: CONTENT_H } = SHELF;
+const PREVIEW_W = 320;
 /** 动作按钮:商店里唯一花钱的地方(点卡片只试穿,按一下才扣金币) */
 const ACT_W = 260, ACT_H = 44;
 /** 训练评级满分:六关各三星(原来是硬编码的 18) */
 const DRILL_STARS_MAX = DRILLS.length * 3;
+
+// ---------- 货架滚动(网格超过一屏时才有意义) ----------
+/** 滚动条:贴在可视窗右缘内侧的覆盖式细条(4 列时卡片块两侧各有 56px 留白,不压卡) */
+const BAR_W = 4, BAR_X = GRID_W / 2 - 7, BAR_PAD = 12;
+/** 手指走出这么多**设计像素**就不算「点卡片」了,算滑动。
+ *  960×540 在横屏手机上约 2 倍缩放,10 ≈ Android 的 8dp touch slop,再小就开始误吞点击。 */
+const DRAG_SLOP = 10;
+/** 越界拖动的阻尼:拉到顶/底还能再拖一截,松手弹回(移动端的标准手感) */
+const RUBBER = 0.35;
+/** 松手之后的惯性/回弹/定位运动学在 shop-shelf.advanceScroll(常数也在那边) */
 
 // 配色(对齐老 base.css 的街机令牌:acid 荧光黄 + 暖纸白 + navy)
 const COL = {
@@ -289,6 +301,17 @@ export class CareerPanel extends Component {
     this._gridNode = null;
     this._statsNode = null;
     this._previewArea = null;
+    // 货架整棵随 root 一起销毁,这里只清引用 + 复位滚动状态(面板复用时不留残余)
+    this._viewport = null;
+    this._contentNode = null;
+    this._barG = null;
+    this._scrollY = 0;
+    this._maxScroll = 0;
+    this._rows = 0;
+    this._dragId = null;
+    this._dragMoved = false;
+    this._vel = 0;
+    this._easeTo = null;
     this._tabGraphics = [];
     this._toastNode = null;
     this._toastLabel = null;
@@ -301,7 +324,9 @@ export class CareerPanel extends Component {
 
   /** 每帧:驱动预览动画 */
   update(dt: number) {
-    if (!this.root || this._kind === "stats") return;
+    if (!this.root) return;
+    this._stepScroll(dt);
+    if (this._kind === "stats") return;
     if (this._kind === "player" || this._kind === "racket") {
       this._elapsed += dt;
       if (this._elapsed > 2.2) this._elapsed -= 2.2;
@@ -342,6 +367,29 @@ export class CareerPanel extends Component {
   private _gridNode: Node | null = null;
   private _statsNode: Node | null = null;
   private _previewArea: Node | null = null;
+
+  // 货架滚动:viewport 挂 Mask 裁切,content 是被拖动的货架
+  private _viewport: Node | null = null;
+  private _contentNode: Node | null = null;
+  private _barG: Graphics | null = null;
+  /** 货架位移(≥0 = 往上滚看了后面的行),范围 [0, _maxScroll] */
+  private _scrollY = 0;
+  private _maxScroll = 0;
+  /** 本次列表的行数(把选中卡滚进视野要用) */
+  private _rows = 0;
+  /** 正在拖动的手指 id;null = 没人按着 */
+  private _dragId: number | null = null;
+  private _dragFromY = 0;
+  private _dragBaseY = 0;
+  /** 本次触摸已滑动 → 抬起时不要把它当成「点卡片」 */
+  private _dragMoved = false;
+  /** 拖动中的瞬时速度(px/s,正=向上滚),松手交给惯性 */
+  private _vel = 0;
+  private _scrollSample = 0;
+  /** 非 null = 正在平滑滚向这个值(键盘选中定位、越界回弹共用) */
+  private _easeTo: number | null = null;
+  /** advanceScroll 的复用出参:每帧都要跑,不每次造对象 */
+  private readonly _motion: ScrollMotion = { y: 0, v: 0, easeTo: null };
   private _tabGraphics: Array<{ g: Graphics; l: Label; ut: UITransform }> = [];
   private _toastNode: Node | null = null;
   private _toastG: Graphics | null = null;
@@ -474,7 +522,7 @@ export class CareerPanel extends Component {
   private _buildContent(panel: Node) {
     const cy = PH / 2 - 94 - CONTENT_H / 2;
 
-    // 左:卡片网格
+    // 左:卡片网格(货架在 _ensureGridShell 里建,这里只留一块地)
     const left = mkNode("gridArea", panel, GRID_W, CONTENT_H);
     left.setPosition(-((PW - 20) / 2) + GRID_W / 2 + 5, cy, 0);
     this._gridNode = left;
@@ -523,6 +571,168 @@ export class CareerPanel extends Component {
     });
   }
 
+  // ========== 货架可视窗(滚动) ==========
+
+  /**
+   * 建可视窗 + 货架 + 滚动条。
+   *
+   * 为什么要这一层:12 款角色皮肤按 4 列排是 3 行,而网格窗只装得下 2 行 ——
+   * 第三行从前直接伸出面板底、被屏幕下沿切掉,想看最后几款没有任何办法把它挪进画面。
+   * Mask 只裁「自己的子孙」,所以卡片必须住在 content 里,content 上下移动就是滚动。
+   *
+   * 窗外的卡片点不着,不是这里自己拦的:3.8 的 UITransform.hitTest 命中后会沿父链
+   * 跑 Mask.isHit(_maskTest),渲染与命中一起被裁 —— 越界那一截既看不见也不会偷走
+   * tab 条或底下按钮的点击。滚动时唯一要自己分辨的是「滑」与「点」,见 _dragMoved。
+   *
+   * 不用 active 开关整棵子树:原生侧 Graphics/Mask 的渲染数据会在 onDisable 被清,
+   * 重新激活不会自动重传(见 ui-arcade.retainedDraw 顶部说明),而货架每次切 tab
+   * 都要走一遍「让位给履历页 / 再回来」,所以改成销毁重建。
+   */
+  private _ensureGridShell() {
+    if (!this._gridNode || (this._contentNode && this._contentNode.isValid)) return;
+
+    const vp = mkNode("gridView", this._gridNode, GRID_W, CONTENT_H);
+    const mask = vp.addComponent(Mask);
+    mask.type = Mask.Type.GRAPHICS_RECT;
+
+    const content = mkNode("gridContent", vp, GRID_W, CONTENT_H);
+
+    // 滚动条挂在窗户外面(gridArea 的另一个子节点),否则跟着内容一起被裁掉
+    const bar = mkNode("gridBar", this._gridNode, BAR_W + 4, CONTENT_H);
+    bar.setPosition(BAR_X, 0, 0);
+
+    this._viewport = vp;
+    this._contentNode = content;
+    this._barG = bar.addComponent(Graphics);
+
+    const T = Node.EventType;
+    content.on(T.TOUCH_START, this._onDragStart, this);
+    content.on(T.TOUCH_MOVE, this._onDragMove, this);
+    content.on(T.TOUCH_END, this._onDragEnd, this);
+    content.on(T.TOUCH_CANCEL, this._onDragEnd, this);
+
+    this._scrollY = 0;
+    this._vel = 0;
+    this._easeTo = null;
+    this._applyScroll();
+  }
+
+  /** 让位给履历页时把整棵货架收走(连带 Mask):不 deactivate,直接销毁 */
+  private _destroyGridShell() {
+    const T = Node.EventType;
+    if (this._contentNode && this._contentNode.isValid) {
+      this._contentNode.off(T.TOUCH_START, this._onDragStart, this);
+      this._contentNode.off(T.TOUCH_MOVE, this._onDragMove, this);
+      this._contentNode.off(T.TOUCH_END, this._onDragEnd, this);
+      this._contentNode.off(T.TOUCH_CANCEL, this._onDragEnd, this);
+    }
+    if (this._gridNode) {
+      const kids = this._gridNode.children;
+      for (let i = kids.length - 1; i >= 0; i--) kids[i].destroy();
+    }
+    this._viewport = null;
+    this._contentNode = null;
+    this._barG = null;
+    this._dragId = null;
+    this._dragMoved = false;
+    this._vel = 0;
+    this._easeTo = null;
+    this._scrollY = 0;
+    this._maxScroll = 0;
+  }
+
+  private _applyScroll() {
+    if (this._contentNode && this._contentNode.isValid) {
+      this._contentNode.setPosition(0, this._scrollY, 0);
+    }
+    this._drawBar();
+  }
+
+  /** 覆盖式细滚动条:位置随货架走,装得下时整条不画(不留没意义的轨道) */
+  private _drawBar() {
+    const g = this._barG;
+    if (!g || !g.isValid) return;
+    g.clear();
+    if (this._maxScroll <= 0) return;
+    const trackH = CONTENT_H - BAR_PAD * 2;
+    const thumbH = thumbHeight(trackH, CONTENT_H, this._maxScroll);
+    const f = clamp(this._scrollY / this._maxScroll, 0, 1);
+    const cy = trackH / 2 - f * (trackH - thumbH);
+    g.fillColor = new Color(159, 176, 216, 30);
+    g.roundRect(-BAR_W / 2, -trackH / 2, BAR_W, trackH, BAR_W / 2);
+    g.fill();
+    g.fillColor = new Color(255, 225, 77, 140);
+    g.roundRect(-BAR_W / 2, cy - thumbH / 2, BAR_W, thumbH, BAR_W / 2);
+    g.fill();
+  }
+
+  // ----- 拖动手势(挂在货架上:卡片的事件会冒泡上来,手指不必精准按住卡) -----
+
+  private _onDragStart(e: EventTouch) {
+    if (this._dragId !== null) return;   // 第二根手指不抢方向盘
+    this._dragMoved = false;             // 每一指都从「没滑动」起算,这是点/滑的判定基准
+    if (this._maxScroll <= 0) return;    // 装得下就没有货架可滑
+    this._dragId = e.getID();
+    this._dragFromY = e.getUILocation().y;
+    this._dragBaseY = this._scrollY;
+    this._vel = 0;
+    this._easeTo = null;
+    this._scrollSample = this._scrollY;
+  }
+
+  private _onDragMove(e: EventTouch) {
+    if (this._dragId === null || e.getID() !== this._dragId) return;
+    const dy = e.getUILocation().y - this._dragFromY;
+    if (!this._dragMoved && Math.abs(dy) > DRAG_SLOP) this._dragMoved = true;
+    this._scrollY = rubberBand(this._dragBaseY + dy, this._maxScroll, RUBBER);
+    this._applyScroll();
+  }
+
+  private _onDragEnd(e: EventTouch) {
+    if (this._dragId === null || e.getID() !== this._dragId) return;
+    this._dragId = null;
+    const max = this._maxScroll;
+    if (this._scrollY < 0 || this._scrollY > max) {
+      // 松手时还在越界区:弹回边界,别把货架停在半截
+      this._easeTo = clamp(this._scrollY, 0, max);
+      this._vel = 0;
+    }
+    // 否则保留 _vel,交给 _stepScroll 跑惯性
+  }
+
+  /** 每帧推进:拖动中采样速度 → 松手后跑惯性 / 回弹 / 定位(运动学在 shop-shelf) */
+  private _stepScroll(dt: number) {
+    if (this._dragId !== null) {
+      const inst = (this._scrollY - this._scrollSample) / Math.max(dt, 1 / 240);
+      this._vel = this._vel * 0.6 + inst * 0.4;
+      this._scrollSample = this._scrollY;
+      return;
+    }
+
+    const m = this._motion;
+    m.y = this._scrollY; m.v = this._vel; m.easeTo = this._easeTo;
+    advanceScroll(m, this._maxScroll, dt);
+    if (m.y === this._scrollY && m.v === this._vel && m.easeTo === this._easeTo) return;
+    this._scrollY = m.y;
+    this._vel = m.v;
+    this._easeTo = m.easeTo;
+    this._applyScroll();
+  }
+
+  /** 把选中的卡片滚进视野(键盘上下选、点下半截露在外面的卡片都要) */
+  private _revealSel() {
+    if (this._maxScroll <= 0 || this._rows <= 0) return;
+    const cols = gridCols(this._list().length);
+    const { min, max } = revealRange(Math.floor(this._sel / cols), this._maxScroll);
+    if (min > max) return;   // 这一行在任何位置都露不全 —— shelf-check 拦的就是它
+    let target = this._scrollY;
+    if (target < min) target = min;
+    else if (target > max) target = max;
+    if (target === this._scrollY) return;
+    this._vel = 0;
+    this._easeTo = target;
+  }
+
   // ========== 卡片网格 ==========
 
   /** 商店展示顺序:默认款 → 设计款(稀有度降序→价格升序) → 纯色款(价格升序)。
@@ -540,22 +750,37 @@ export class CareerPanel extends Component {
   }
 
   private _buildGrid() {
-    if (!this._gridNode) return;
-    // 清空旧卡片:移除所有子节点
-    const children = this._gridNode.children;
+    this._ensureGridShell();
+    const host = this._contentNode;
+    if (!this._gridNode || !host || !host.isValid) return;
+    // 清空旧卡片:只清货架,别把挂着 Mask 的可视窗和滚动条一起摘了
+    const children = host.children;
     for (let i = children.length - 1; i >= 0; i--) {
       children[i].removeFromParent();
     }
 
     const list = this._list();
-    const cols = gridCols(list.length);
+    const lay = shelfLayout(list.length);
+    const cols = lay.cols;
     const totalW = cols * CARD_W + (cols - 1) * GAP;
     const prof = Career.profile();
+
+    // 行数决定货架多高:超过窗高才有得滚,滚动条也才有得画(算法与出处见 shop-shelf.ts)
+    this._rows = lay.rows;
+    this._maxScroll = lay.maxScroll;
+    // 货架方框要始终盖住整扇窗(上下各多让 maxScroll),否则滚到底时窗底那一条
+    // 落在货架框外 —— 手指从卡片缝隙起手的拖动就收不到 TOUCH_START 了。
+    host.getComponent(UITransform)!.setContentSize(GRID_W, CONTENT_H + 2 * lay.maxScroll);
+    if (this._scrollY > this._maxScroll) {
+      this._scrollY = this._maxScroll;
+      this._vel = 0;
+      this._easeTo = null;
+    }
 
     list.forEach((s, i) => {
       const col = i % cols, row = Math.floor(i / cols);
       const x = -totalW / 2 + col * (CARD_W + GAP) + CARD_W / 2;
-      const y = CONTENT_H / 2 - 10 - row * (CARD_H + GAP) - CARD_H / 2;
+      const y = rowTopY(row) - CARD_H / 2;
 
       const equipped = prof.equipped[this._kind as SkinKind] === s.id;
       const owned = Career.owns(s.id);
@@ -566,7 +791,7 @@ export class CareerPanel extends Component {
       const rarityCol = parseColor(rmeta.color, COL.white);
 
       // 卡片节点
-      const card = mkNode(`card-${i}`, this._gridNode!, CARD_W, CARD_H);
+      const card = mkNode(`card-${i}`, host, CARD_W, CARD_H);
       card.setPosition(x, y, 0);
 
       const g = card.addComponent(Graphics);
@@ -648,9 +873,14 @@ export class CareerPanel extends Component {
       // 点击 = 只选中:右侧试衣间马上换人,下方按钮改口径;金币不动
       // (先注册业务回调再补按压反馈:重建网格销毁卡片时动画不会晚到一步)
       const idx = i;
-      card.on(Node.EventType.TOUCH_END, () => this._select(idx));
+      card.on(Node.EventType.TOUCH_END, () => {
+        if (this._dragMoved) return;   // 这一指是在滑货架,不是在点卡片
+        this._select(idx);
+      });
       pressFx(card);
     });
+
+    this._applyScroll();
   }
 
   // ---------- 卡片缩略图 ----------
@@ -690,6 +920,7 @@ export class CareerPanel extends Component {
     this._sel = index;
     this._elapsed = 0;
     this._buildGrid();
+    this._revealSel();   // 按到只露半截的卡片时把它整个带进窗里(只挪必要的那一点)
     this._drawLivePreview();
     this._updateAction();
   }
@@ -759,6 +990,12 @@ export class CareerPanel extends Component {
     this._kind = k;
     this._sel = 0;
     this._elapsed = 0;
+    // 换 tab = 换货架:回到第一行,别停在上一页的滚动位置
+    this._scrollY = 0;
+    this._vel = 0;
+    this._easeTo = null;
+    this._dragId = null;
+    this._dragMoved = false;
     this._refresh();
   }
 
@@ -960,7 +1197,8 @@ export class CareerPanel extends Component {
 
     // 内容区
     if (this._kind === "stats") {
-      if (this._gridNode) this._gridNode.active = false;
+      // 货架整棵收走而不是 active=false:原生侧 Mask/Graphics 的渲染数据会在 onDisable 被清
+      this._destroyGridShell();
       // 履历页没有可预览的皮肤:右侧试衣间整块让位给统计卡
       if (this._previewArea) this._previewArea.active = false;
       this._buildStatsPage();
@@ -968,7 +1206,6 @@ export class CareerPanel extends Component {
       this._hintLabel.string = "";   // 履历页全是数据,不需要一句口号压在下头
     } else {
       if (this._statsNode) this._statsNode.active = false;
-      if (this._gridNode) this._gridNode.active = true;
       if (this._previewArea) this._previewArea.active = true;
       this._buildGrid();
       this._updateAction();
@@ -1031,6 +1268,7 @@ export class CareerPanel extends Component {
     this._sel = (this._sel + d + list.length) % list.length;
     this._elapsed = 0;
     this._buildGrid();
+    this._revealSel();   // 选中了窗外那一行也得滚过来,别让人对着看不见的东西按确认
     this._drawLivePreview();
     this._updateAction();
   }

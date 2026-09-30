@@ -6,7 +6,7 @@
 // 菜单/结算完整 UI 是阶段 3;本组件先直进一局「单人 · 普通」。
 // ============================================================
 import { _decorator, Component, ResolutionPolicy, profiler, view } from "cc";
-import { CFG } from "../core/config";
+import { CFG, FloatLabel } from "../core/config";
 import { Settings } from "../core/settings";
 import { installStorageBackend } from "./host";
 import { Rules } from "../core/rules";
@@ -19,7 +19,7 @@ import { Gait } from "../core/gait";
 import { Player, PRESS_LEAD_FRAMES } from "../core/player";
 import { Skills } from "../core/skills";
 import { clamp } from "../core/utils";
-import { Ball, FaceKind, GameEvent, PlayerInput } from "../core/types";
+import { Ball, FaceKind, GameEvent, PlayerInput, SkillId } from "../core/types";
 import { WorldView } from "../render/world";
 import { TIER_FIRE, TIER_NORMAL, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "../render/shuttle-motion";
 import { newPad, clearEdges, buildIntent, emptyIntent, tickHolds, Pad } from "../input/pad";
@@ -252,6 +252,7 @@ export class GameRoot extends Component {
         this.world.fx.stepDust(p.x, C.court.groundY);
       },
       onLunge: () => this.sfx.play("lunge"),
+      onSkill: (p, id) => this.onSkillCast(p, id),
     };
     return R.players.map((p) => {
       // 训练场的右半边不是对手,是喂球机:走同一条 inputs 通道(一拍一落是结构必然)
@@ -261,6 +262,76 @@ export class GameRoot extends Component {
       if (p.isAI) return { ...AI.think(p, R.ball as Ball, R.state), ...hooks };
       return buildIntent(this.pad, hooks);   // 阶段 2:左队 0 号真人用 P1 键位/虚拟按键
     });
+  }
+
+  // ---------- 技能起手演出 ----------
+  /**
+   * onSkill 钩子(player.update 触发成功那一帧调用):
+   * 各主动技能定制化起手视听反馈:
+   * - 强力跨步:贴地破风气流爆发 + 镜头微推 + 青色破风闪 + 飘字
+   * - 百分百重击:狂暴爆气 + 镜头聚推 + 烈火震屏 + 金红烈焰闪 + 飘字
+   * - 引力吸球:引力奇点展开 + 空间紫闪 + 镜头推向羽毛球 + 空间震颤 + 飘字
+   * - 时空减速:子弹时间展开 + 时空涟漪波纹 + 青碧时空闪 + 飘字
+   * - 闪现扣杀:折跃定格 + 雷光劈裂 + 镜头推球 + 劈扣慢放
+   */
+  private onSkillCast(p: Player, id: SkillId): void {
+    const ball = Rules.R.ball;
+    const F = C.fx;
+    if (!ball) return;
+
+    if (id === "lunge") {
+      // 强力跨步起手:贴地破风气浪爆发 + 镜头微推 + 突进轻微破风闪 + 飘字
+      const dir = p.lungeDir || p.facing;
+      this.world.fx.lungeDash(p.x, C.court.groundY, dir);
+      this.world.punch(p.x, p.y, C.lunge.castPunch || 1.025);
+      this.world.shake(C.lunge.castShake || 3);
+      this.world.whiteFlash(C.lunge.castFlash || 0.22, "#38bdf8");
+      this.world.float(p.x, p.y - 48, "疾风突进!", "#38bdf8", 24, 46);
+      this.sfx.play("lunge");
+      if (!p.isAI) haptic("light");
+    } else if (id === "smash") {
+      // 百分百重击起手:聚能爆气 + 镜头推近 + 强力震屏 + 炽热金红爆闪 + 飘字
+      this.world.fx.flameBurst(p.x, p.y - 20);
+      this.world.punch(p.x, p.y, C.skills.smash.castPunch || 1.05);
+      this.world.shake(C.skills.smash.castShake || 6);
+      this.world.whiteFlash(C.skills.smash.castFlash || 0.55, "#f43f5e");
+      this.world.float(p.x, p.y - 54, "暴烈重扣!!", "#f43f5e", 28, 52);
+      this.sfx.play("smash");
+      if (!p.isAI) haptic("score");
+    } else if (id === "magnet") {
+      // 引力吸球起手:引力奇点光环爆发 + 空间震颤 + 紫色微闪 + 镜头推向球 + 飘字
+      this.world.fx.singularityBurst(ball.x, ball.y);
+      this.world.punch(ball.x, ball.y, C.skills.magnet.castPunch || 1.045);
+      this.world.shake(C.skills.magnet.castShake || 5);
+      this.world.whiteFlash(C.skills.magnet.castFlash || 0.45, "#a855f7");
+      this.world.float(ball.x, ball.y - 42, "引力掌控!!", "#a855f7", 26, 48);
+      this.sfx.play("swing", 0.7);
+      if (!p.isAI) haptic("light");
+    } else if (id === "focus") {
+      // 时空减速起手:时空领域展开! 激活子弹时间 + 时空微澜波纹 + 镜头微推 + 青碧闪光 + 飘字
+      const dur = C.skills.focus.duration || 90;
+      const slowFac = C.skills.focus.ballSlow || 0.35;
+      this.world.slowmo(dur, slowFac);
+      this.world.fx.timeRupture(p.x, p.y - 28);
+      this.world.punch(p.x, p.y, C.skills.focus.castPunch || 1.035);
+      this.world.shake(C.skills.focus.castShake || 4);
+      this.world.whiteFlash(C.skills.focus.castFlash || 0.40, "#06b6d4");
+      this.world.float(p.x, p.y - 48, "时空领域!!", "#06b6d4", 26, 50);
+      this.sfx.play("whiff", 0.8);
+      if (!p.isAI) haptic("score");
+    } else if (id === "flash") {
+      // 雷光折跃:保持现有的雷光折跃三段演出
+      if (p.flashFrom) this.world.fx.blink(p.flashFrom.x, p.flashFrom.y, p.x, p.y);
+      this.world.fx.sweet(ball.x, ball.y, Math.atan2(ball.vy, ball.vx));
+      this.setStop(F.hitstopFlashCast || 7);
+      this.world.whiteFlash(F.flashCastFlash || 0.6);
+      this.world.shake(F.flashCastShake || 7, 0, Math.atan2(ball.y - p.y, ball.x - p.x));
+      this.world.punch(ball.x, ball.y, F.flashCastPunch || 1.05);
+      const lab = F.flashCastFloat;
+      this.world.floatSys(ball.x, ball.y + lab.dy, lab.text, lab.color, lab.size, lab.life, -1, lab.plate as FloatLabel["plate"]);
+      this.sfx.play("flash");
+      if (!p.isAI) haptic("score");
+    }
   }
 
   // ---------- 事件 → 反馈(老 game.js drain 的阶段 2 子集) ----------
@@ -312,6 +383,8 @@ export class GameRoot extends Component {
             : sweet ? (C.fx.flashSweet || 0.42)
             : (e.q as number) >= (C.fx.flashNormalAt || 0.86) ? (C.fx.flashNormal || 0.35)
             : (e.q as number) >= (C.fx.flashNormalLowAt || 0.6) ? (C.fx.flashNormalLow || 0.18) : 0);
+          // P5 斩劈 cut-in:甜蜜重扣/火热档三道斜带横扫全屏(内含基底白闪,顶替径向环)
+          if (tier >= TIER_SWEET_SMASH) this.world.slashCutin(hitAng ?? 0, tier >= TIER_FIRE);
           // 球体运动学档位:命中这一下给 pop/裙摆炸开/档位辉光定幅度(与丝带同源的一档)
           this.world.shuttleHit(tier, clamp((e.q as number) + (perfect ? 0.2 : 0), 0, 1), heat);
           // 赛点重锤慢动作(老 game.js:训练场单独放行——它永不记分,赛点判定恒 false)
@@ -351,25 +424,25 @@ export class GameRoot extends Component {
           // 深浅瞄准的命中确认:右滑深球(重)/左滑短球(轻)飘小字,键盘 J/K 同链路;
           // mid(没滑直接点)不飘 —— 默认档不打扰。位置在球下方,与上方档位飘字错开
           if (praise && !R.players[hitterIdx]?.isAI) {
-            const K = C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number; dy: number }>;
+            const K = C.fx as unknown as Record<string, FloatLabel>;
             const aimLab = e.aim === "deep" ? K.floatAimDeep : e.aim === "near" ? K.floatAimNear : null;
-            if (aimLab) this.world.float(e.x as number, (e.y as number) + aimLab.dy, aimLab.text, aimLab.color, aimLab.size, aimLab.life);
+            if (aimLab) this.world.float(e.x as number, (e.y as number) + aimLab.dy, aimLab.text, aimLab.color, aimLab.size, aimLab.life, -1, aimLab.plate);
           }
           if (praise) {
             // 档位文案/字号/寿命全部来自 config.fx.floatTier*(分级炫技的"文字"那一格)
-            const K = C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number; dy: number }>;
+            const K = C.fx as unknown as Record<string, FloatLabel>;
             const lab = (perfect && smash) ? K.floatTierPerfectSmash
               : perfect ? K.floatTierPerfect
                 : (smash && sweet) ? K.floatTierSweetSmash
                   : smash ? K.floatTierSmash
                     : sweet ? K.floatTierSweet
                       : (e.q as number) > 0.86 ? K.floatTierGood : null;
-            if (lab) this.world.float(e.x as number, (e.y as number) + lab.dy, lab.text, lab.color, lab.size, lab.life);
+            if (lab) this.world.float(e.x as number, (e.y as number) + lab.dy, lab.text, lab.color, lab.size, lab.life, -1, lab.plate);
           }
           // 技能专属击球飘字与强化特效
           const skillKind = e.skillKind as string | null;
           if (praise && skillKind) {
-            const K = C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number; dy: number }>;
+            const K = C.fx as unknown as Record<string, FloatLabel>;
             const sLab = skillKind === "lunge" ? K.floatSkillLunge
               : skillKind === "smash" ? K.floatSkillSmash
               : skillKind === "flash" ? K.floatSkillFlash
@@ -377,22 +450,47 @@ export class GameRoot extends Component {
               : skillKind === "focus" ? K.floatSkillFocus
               : null;
             if (sLab) {
-              this.world.float(e.x as number, (e.y as number) + sLab.dy - 16, sLab.text, sLab.color, sLab.size, sLab.life);
+              this.world.float(e.x as number, (e.y as number) + sLab.dy - 16, sLab.text, sLab.color, sLab.size, sLab.life, -1, sLab.plate);
             }
             if (skillKind === "lunge") {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET_SMASH);
-              this.world.whiteFlash(0.48);
-              this.world.shake(9);
-            } else if (skillKind === "smash" || skillKind === "flash") {
+              this.world.whiteFlash(0.52, "#38bdf8");
+              this.world.shake(11, 0, ang);
+              this.world.punch(e.x as number, e.y as number, 1.04);
+            } else if (skillKind === "smash") {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_FIRE);
-              this.world.whiteFlash(0.75);
-              this.world.shake(16);
+              this.world.fx.flameBurst(e.x as number, e.y as number);
+              this.world.whiteFlash(0.80, "#ff4d4d");
+              this.world.shake(18, 0, ang);
+              this.world.punch(e.x as number, e.y as number, 1.08);
+            } else if (skillKind === "flash") {
+              // 闪现扣杀命中那一下:定格刚刚收,接着给一记短慢放,让"时停 → 出刀 → 慢放"
+              // 三段读得出先后(慢放仍受 fx.slowmoEnabled 总闸约束,关了只剩顿帧)
+              const ang = hitAng ?? this.hitAngOf(e);
+              this.world.fx.smash(e.x as number, e.y as number, ang, TIER_FIRE);
+              this.world.fx.skyThunder(e.x as number, e.y as number);
+              this.world.whiteFlash(0.88, "#ffe14d");
+              this.world.shake(20, 0, ang);
+              this.world.punch(e.x as number, e.y as number, (C.fx.flashCastPunch || 1.05) + 0.05);
+              if (this.slowmoOn) {
+                this.world.slowmo(C.fx.flashSmashSlowmo || 14, C.fx.flashSmashSlowFac || 0.32);
+              }
             } else if (skillKind === "magnet") {
-              this.world.fx.sweet(e.x as number, e.y as number, hitAng);
-              this.world.whiteFlash(0.5);
-              this.world.shake(8);
+              const ang = hitAng ?? this.hitAngOf(e);
+              this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
+              this.world.fx.singularityBurst(e.x as number, e.y as number);
+              this.world.whiteFlash(0.60, "#a855f7");
+              this.world.shake(10, 0, ang);
+              this.world.punch(e.x as number, e.y as number, 1.045);
+            } else if (skillKind === "focus") {
+              const ang = hitAng ?? this.hitAngOf(e);
+              this.world.fx.sweet(e.x as number, e.y as number, ang);
+              this.world.fx.timeRupture(e.x as number, e.y as number);
+              this.world.whiteFlash(0.55, "#06b6d4");
+              this.world.shake(8, 0, ang);
+              this.world.punch(e.x as number, e.y as number, 1.035);
             }
           } else if (praise && e.lungeShot) {
             this.world.float(e.x as number, (e.y as number) - 44, "跨步重击!", "#38bdf8", 24, 48);

@@ -412,14 +412,14 @@ export function drawSawtooth(g: Graphics, w: number, h: number, teeth: number, h
 }
 
 /** 45° 斜纹带:gap 为条纹间距(条宽 = gap),裁在 w×h 域内(P5 危险条纹) */
-export function drawDiagStripes(g: Graphics, w: number, h: number, gap: number, hex: string, alpha = 1): void {
+export function drawDiagStripes(g: Graphics, w: number, h: number, gap: number, hex: string, alpha = 1, cx = 0, cy = 0): void {
   g.fillColor = ac(hex, alpha);
   const bw = gap;
   for (let x = -w / 2 - h; x < w / 2; x += gap * 2) {
-    g.moveTo(x, h / 2);
-    g.lineTo(x + bw, h / 2);
-    g.lineTo(x + bw + h, -h / 2);
-    g.lineTo(x + h, -h / 2);
+    g.moveTo(x + cx, h / 2 + cy);
+    g.lineTo(x + bw + cx, h / 2 + cy);
+    g.lineTo(x + bw + h + cx, -h / 2 + cy);
+    g.lineTo(x + h + cx, -h / 2 + cy);
     g.close();
   }
   g.fill();
@@ -450,7 +450,9 @@ export function burstOnce(parent: Node, hex: string, r = 30, points = 10, x = 0,
   n.addComponent(UITransform);
   n.setPosition(x, y, 0);
   const g = n.addComponent(Graphics);
+  // P5 双层尖刺星:内层白 0.4α、rot 错半步,读出「叠了两张纸」的剪纸感
   drawStarburst(g, r, r * 0.55, points, hex, 0.95);
+  drawStarburst(g, r * 0.72, r * 0.4, points, "#ffffff", 0.4, Math.PI / points);
   const op = n.addComponent(UIOpacity);
   n.setScale(0.4, 0.4, 1);
   if (below) parent.insertChild(n, 0); else n.setParent(parent);

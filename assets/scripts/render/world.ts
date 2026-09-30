@@ -9,9 +9,10 @@
 import { Color, Graphics, Label, Layers, Node, UIOpacity, UITransform } from "cc";
 import { CFG } from "../core/config";
 import { Settings } from "../core/settings";
-import { clamp, lerp } from "../core/utils";
+import { clamp, lerp, rand } from "../core/utils";
 import { Ball, GameEvent, Player, SkinDef } from "../core/types";
-import { drawPlayer, drawShuttle, setSwingArcSink, drawSwingArcGhost, SwingArcFx } from "./sprites";
+import { Rules } from "../core/rules";
+import { drawPlayer, drawShuttle, setSwingArcSink, drawSwingArcGhost, SwingArcFx, LungeGhost, drawLungeGhost, FlashGhost, drawFlashGhost } from "./sprites";
 import { pal, withAlpha } from "./palette";
 import { courtRenderer, CourtThemeItem } from "./court";
 import { FXSystem } from "./fx";
@@ -19,6 +20,7 @@ import { HudOverlay } from "./hud-overlay";
 import { Ribbon } from "./ribbon";
 import { advanceShuttle, makeShuttleMotion, shuttleImpact, TIER_FIRE, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "./shuttle-motion";
 import { easeOutBack, fadePow } from "./easing";
+import { drawCutinBands, drawFloatPlate, FloatPlateStyle, measureTextW } from "./p5kit";
 
 const C = CFG;
 
@@ -38,6 +40,10 @@ function makeViewport(): Viewport {
 interface FloatText {
   node: Node;
   label: Label;
+  /** P5 底板(斜切黑片/星芒):独立 Graphics 子节点,spawn 时重画一次(retained) */
+  plateG: Graphics;
+  /** 当前底板样式;none = 裸字(系统信息/轻量提示防刷屏) */
+  plate: FloatPlateStyle;
   opacity: UIOpacity;
   life: number;
   maxLife: number;
@@ -97,6 +103,19 @@ export class WorldView {
   private atmo: AtmoState = { state: "", rally: 0, matchPoint: false };
   /** 按拍预告辉光级别(game 层 updateSwingCue 每帧喂;羽毛球本体发光,见 sprites.drawShuttle) */
   private swingCue = 0;
+  /** 跨步高速突进流风残影队列 */
+  private lungeGhosts: LungeGhost[] = [];
+  /** 闪现折跃起点电离消散残影队列 */
+  private flashGhosts: FlashGhost[] = [];
+  /** 时空领域中羽毛球的慢放幽灵残影队列 */
+  private ballChronoGhosts: { x: number; y: number; life: number; maxLife: number; vx: number; vy: number }[] = [];
+  /** 自定义白闪颜色覆盖(如技能起手紫闪/青闪/火闪) */
+  private customFlashHex: string | null = null;
+
+  // 闯关模式关卡专属动态视觉缓存
+  private sandstormParticles: { x: number; y: number; len: number; spd: number; alpha: number }[] = [];
+  private decoyBall: { x: number; y: number; vx: number; vy: number; t: number } | null = null;
+  private lastDecoyOwner: unknown = null;
 
   constructor(parent: Node) {
     this.vp = makeViewport();
@@ -143,6 +162,16 @@ export class WorldView {
     screenFx.addComponent(UITransform);
     screenFx.setParent(parent);
     this.screenG = screenFx.addComponent(Graphics);
+
+    for (let i = 0; i < 36; i++) {
+      this.sandstormParticles.push({
+        x: Math.random() * C.world.w,
+        y: Math.random() * C.world.h,
+        len: 16 + Math.random() * 26,
+        spd: 6 + Math.random() * 7,
+        alpha: 0.25 + Math.random() * 0.45,
+      });
+    }
 
     // 挥拍弧光残影接线:sprites 在挥拍 active 窗口每帧推入,这里负责衰减与渲染
     // (老 fx.js addSwingArc 的职责;上限 30 条与老版一致)
@@ -274,16 +303,44 @@ export class WorldView {
   /** 主循环每帧取时间缩放(慢动作 <1,平时 1) */
   timeScale(): number { return this.slowT > 0 ? this.slowFac : 1; }
 
-  /** 击球白闪(全屏白光一闪即逝,强度衰减在 stepFx) */
-  whiteFlash(a: number): void {
-    if (a > this.flash) this.flash = a;
+  /** 击球白闪(全屏白光一闪即逝,强度衰减在 stepFx;支持指定专属色) */
+  whiteFlash(a: number, hex?: string): void {
+    if (a > this.flash) {
+      this.flash = a;
+      if (hex) this.customFlashHex = hex;
+    }
+  }
+
+  // ---- P5 斩劈 cut-in:sweetSmash/fire 顶档命中的三道斜带横扫(模拟步驱动,不用 tween)----
+  private cutinT = 0;
+  private cutinDur = 0;
+  private cutinDir = 1;
+  private cutinFire = false;
+  private cutinCols: Color[] = [];
+
+  /**
+   * 顶档命中斩劈闪:三道红黑白/红橙金斜带错相位横扫全屏(P5 cut-in 语汇),
+   * 内含 0.25 基底白闪。cut-in 活跃期间径向环白闪被顶替,只留低强度整屏提亮;
+   * hitstop 冻结时斜带一起定格 —— "斩"得住才像刀。dir = 命中方向角(弧度)。
+   */
+  slashCutin(dir: number, fire = false): void {
+    const F = C.fx;
+    this.cutinT = 0;
+    this.cutinDur = F.slashCutinFrames || 9;
+    this.cutinDir = Math.cos(dir) >= 0 ? 1 : -1;
+    this.cutinFire = fire;
+    const hexes = fire ? (F.slashCutinColorsFire ?? ["#e60012", "#ff6a1f", "#ffe14d"])
+      : (F.slashCutinColors ?? ["#e60012", "#07070d", "#ffffff"]);
+    this.cutinCols = hexes.map((h) => pal(h));   // spawn 时换算,绘制路径零分配
+    if (this.flash < 0.25) this.flash = 0.25;
   }
 
   /**
-   * 白闪取色跟着刚才那一拍的档位走(与球体辉光、丝带同源,不新造状态):
+   * 白闪取色跟着刚才那一拍的档位或技能专属色走(与球体辉光、丝带同源,不新造状态):
    * 普通拍是纯白,甜区偏青,扣烧金,甜蜜重扣/火热烧橙 —— 一眼能分出"这下的闪光是哪档"。
    */
   private flashHex(): string {
+    if (this.customFlashHex && this.flash > 0.05) return this.customFlashHex;
     const tier = this.shuttleMot.tier;
     return tier >= TIER_FIRE ? C.colors.smash.flame
       : tier >= TIER_SWEET_SMASH ? C.colors.sweet.gold
@@ -310,26 +367,37 @@ export class WorldView {
    * 系统信息字(下网/出界/平分等)走 floatSys,不受开关影响。
    * 采用节点对象池(floatPool),寿命耗尽时隐藏并回收入池,杜绝节点泄露与幽灵残留
    */
-  float(wx: number, wy: number, text: string, color: string, size: number, life: number, vy = -1): void {
+  float(wx: number, wy: number, text: string, color: string, size: number, life: number, vy = -1, plate: FloatPlateStyle = "none"): void {
     if (!Settings.hintFloat) return;
-    this.floatSpawn(wx, wy, text, color, size, life, vy, false);
+    this.floatSpawn(wx, wy, text, color, size, life, vy, false, plate);
   }
 
   /** 系统信息飘字:下网/出界/擦网/平分/训练结果等,关掉「飘字提示」也照常显示 */
-  floatSys(wx: number, wy: number, text: string, color: string, size: number, life: number, vy = -1): void {
-    this.floatSpawn(wx, wy, text, color, size, life, vy, true);
+  floatSys(wx: number, wy: number, text: string, color: string, size: number, life: number, vy = -1, plate: FloatPlateStyle = "none"): void {
+    this.floatSpawn(wx, wy, text, color, size, life, vy, true, plate);
   }
 
-  private floatSpawn(wx: number, wy: number, text: string, color: string, size: number, life: number, vy: number, sys: boolean): void {
+  private floatSpawn(wx: number, wy: number, text: string, color: string, size: number, life: number, vy: number, sys: boolean, plate: FloatPlateStyle = "none"): void {
     let item = this.floatPool.pop();
     if (!item) {
+      // 结构:根节点(UITransform+UIOpacity)下挂 plate(Graphics,先加 = 垫底)
+      // 与 text(Label,后加 = 盖在底板上)。Label 必须下沉为子节点,否则被底板盖住。
       const node = new Node("float");
       node.layer = Layers.Enum.UI_2D;
       node.addComponent(UITransform);
-      const label = node.addComponent(Label);
       const opacity = node.addComponent(UIOpacity);
+      const plateNode = new Node("plate");
+      plateNode.layer = Layers.Enum.UI_2D;
+      plateNode.addComponent(UITransform);
+      const plateG = plateNode.addComponent(Graphics);
+      plateNode.setParent(node);
+      const labelNode = new Node("text");
+      labelNode.layer = Layers.Enum.UI_2D;
+      labelNode.addComponent(UITransform);
+      const label = labelNode.addComponent(Label);
+      labelNode.setParent(node);
       node.setParent(this.floatLayer);
-      item = { node, label, opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
+      item = { node, label, plateG, plate: "none", opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
     }
     item.life = life;
     item.maxLife = life;
@@ -343,6 +411,19 @@ export class WorldView {
     item.label.lineHeight = Math.round(size * 1.15);
     item.label.color = color.startsWith("#") ? new Color().fromHEX(color) : new Color(255, 255, 255, 255);
     item.opacity.opacity = 255;
+    // P5 底板:每次 spawn 重画一次(天然规避原生 GraphicsKeepAlive 掉数据,
+    // 也比 retainedDraw 少一个坑);带底板的字给 ±3° 随机倾斜,system 字保持正
+    item.plate = plate;
+    item.plateG.node.active = plate !== "none";
+    item.node.angle = 0;
+    if (plate !== "none") {
+      const pad = plate === "star" ? 44 : 24;
+      const w = measureTextW(text, size) + pad;
+      const h = size * 1.7;
+      item.plateG.clear();
+      drawFloatPlate(item.plateG, w, h, plate, pal(color), rand(-0.05, 0.05));
+      item.node.angle = rand(-3, 3);
+    }
     item.node.active = true;
     this.floats.push(item);
   }
@@ -382,7 +463,9 @@ export class WorldView {
       this.shakeY = -(base * this.shakeDirY) - vert;
 
       if (this.flash > 0.002) this.flash *= C.fx.flashDecay || 0.82;
-      else this.flash = 0;
+      else { this.flash = 0; this.customFlashHex = null; }
+      // 斩劈 cut-in 推进(非冻结段):hitstop 定格时斜带一起停住,更"斩"得住
+      if (this.cutinT < this.cutinDur) this.cutinT++;
       // 镜头指数回弹;慢动作里步进变慢,回弹自然放慢,镜头会「停在」重扣上
       this.camZ = 1 + (this.camZ - 1) * (C.fx.punchDecay || 0.85);
       if (this.camZ < 1.001) this.camZ = 1;
@@ -393,6 +476,12 @@ export class WorldView {
       this.fx.step(dt);
       for (const s of this.swingArcs) s.life--;
       this.swingArcs = this.swingArcs.filter((s) => s.life > 0);
+      for (const lg of this.lungeGhosts) lg.life--;
+      this.lungeGhosts = this.lungeGhosts.filter((lg) => lg.life > 0);
+      for (const fg of this.flashGhosts) fg.life--;
+      this.flashGhosts = this.flashGhosts.filter((fg) => fg.life > 0);
+      for (const bg of this.ballChronoGhosts) bg.life--;
+      this.ballChronoGhosts = this.ballChronoGhosts.filter((bg) => bg.life > 0);
       this.ribbon.step();
       // 球体运动学:步长归一到 60Hz(本步 dt=1/60 → 1)
       advanceShuttle(this.shuttleMot, ball ? ball.vx : 0, ball ? ball.vy : 0,
@@ -442,6 +531,50 @@ export class WorldView {
     // 动态球场重绘(包含球网弹性晃动、看台荧光棒、海浪、霓虹粒子等)
     this.redrawCourt(rallyCount);
 
+    const stage = Rules.R.mode === "campaign" ? Rules.R.activeStage : null;
+    if (stage?.modifiers.player?.forbiddenNetZone) {
+      this.drawForbiddenZone(g, stage.modifiers.player.forbiddenNetZone);
+    }
+
+    // 跨步高速突进流风残影采样
+    for (const p of players) {
+      if (p.lungeT >= 0 && (p.lungeT % (C.lunge.ghostInterval || 2) === 0)) {
+        this.lungeGhosts.push({
+          x: p.x,
+          y: p.y,
+          facing: p.facing,
+          life: C.lunge.ghostFrames || 14,
+          maxLife: C.lunge.ghostFrames || 14,
+          lungeLegExt: 0.9,
+          lungeDirRel: p.lungeDir ? p.lungeDir * p.facing : 1,
+          color: "#38bdf8",
+        });
+      }
+    }
+
+    // 绘制所有跨步流风残影(在实体球员下层,衬托高速位移感)
+    for (const lg of this.lungeGhosts) {
+      drawLungeGhost(g, this.vp, lg);
+    }
+
+    // 闪现折跃起点电离消散残影采样
+    for (const p of players) {
+      if (p.flashFrom && p.flashT === C.skills.flash.ghostFrames) {
+        this.flashGhosts.push({
+          x: p.flashFrom.x,
+          y: p.flashFrom.y,
+          facing: p.facing,
+          life: 14,
+          maxLife: 14,
+        });
+      }
+    }
+
+    // 绘制折跃起点电离消散残影
+    for (const fg of this.flashGhosts) {
+      drawFlashGhost(g, this.vp, fg);
+    }
+
     // 插值:120Hz 屏也不见阶梯;离网远的先画,近网压前(与老 render 同序)
     const order = players.slice().sort(
       (a, b) => Math.abs(C.court.netX - b.x) - Math.abs(C.court.netX - a.x));
@@ -451,9 +584,52 @@ export class WorldView {
       const ry = lerp(p.py, p.y, alpha);
       rxs.push(rx); rys.push(ry);
       drawPlayer(g, this.vp, { ...p, x: rx, y: ry }, animT, alpha, ball);
+      if (p.stamina !== undefined) {
+        this.drawStaminaBar(g, p);
+      }
+      if (p.sliding && Math.abs(p.sliding) > 1.2) {
+        // 溜冰滑行冰雾轨迹
+        g.fillColor = new Color(220, 240, 255, 60);
+        g.ellipse(this.vp.x(rx - (p.sliding > 0 ? 16 : -16)), this.vp.y(C.court.groundY - 2), 12, 3);
+        g.fill();
+      }
     }
     // 名牌文字与球衣号(与角色同层叠加)
     this.syncTags(order, rxs, rys);
+
+    // 引力吸球:球与球拍之间高频跃动的电离子引力光索
+    if (ball && ball.magnetPull) {
+      const mp = ball.magnetPull;
+      const bx = lerp(ball.px, ball.x, alpha);
+      const by = lerp(ball.py, ball.y, alpha);
+      this.drawMagnetTether(g, bx, by, mp.targetX, mp.targetY);
+    }
+
+    // 时空减速:羽毛球飞行中留下慢放幽灵残影
+    const inFocus = players.some((p) => (p.focusT ?? 0) > 0);
+    if (inFocus && ball && ball.live && !ball.held && this.frameT % 2 === 0) {
+      this.ballChronoGhosts.push({
+        x: ball.x,
+        y: ball.y,
+        vx: ball.vx,
+        vy: ball.vy,
+        life: 14,
+        maxLife: 14,
+      });
+    }
+
+    // 绘制羽毛球慢动作时空残影
+    for (const bg of this.ballChronoGhosts) {
+      const bA = (bg.life / bg.maxLife) * 0.42;
+      const dbx = this.vp.x(bg.x), dby = this.vp.y(bg.y);
+      g.fillColor = withAlpha(pal("#06b6d4"), bA * 0.7);
+      g.ellipse(dbx, dby, 7.5, 7.5);
+      g.fill();
+      g.strokeColor = withAlpha(pal("#ffffff"), bA * 0.85);
+      g.lineWidth = 1.2;
+      g.ellipse(dbx, dby, 9.5, 9.5);
+      g.stroke();
+    }
 
     // ---------- 飞行轨迹(锥形丝带)+ 羽毛球本体 ----------
     // 丝带画在球**之前**:尾迹从球头后面长出来,不再像老版那样把球糊在一片白雾底下。
@@ -472,13 +648,47 @@ export class WorldView {
     if (ball && (ball.live || ball.held || ball.flying)) {
       const bx = ball.held ? ball.x : lerp(ball.px, ball.x, alpha);
       const by = ball.held ? ball.y : lerp(ball.py, ball.y, alpha);
-      // sqR:形变的帧间插值(drawShuttle 无 alpha 参数,渲染前补进副本)
-      const sqR = lerp(ball.sqPrev ?? ball.sq, ball.sq ?? 1, alpha);
-      // 复用同一个视图对象(老写法每次 spread 一个新 Ball,每帧一个垃圾)
-      const bv = this.ballView;
-      Object.assign(bv, ball);
-      bv.x = bx; bv.y = by; bv.sqR = sqR;
-      drawShuttle(g, this.vp, bv, skin, this.swingCue, this.shuttleMot);
+      // 烈日刺目关卡:进入高空盲区时球隐入强光中
+      const inSunGlare = !!(stage?.modifiers.environment?.blindingSun && bx > 400 && bx < 560 && by > 130 && by < 240);
+      if (!inSunGlare) {
+        // sqR:形变的帧间插值(drawShuttle 无 alpha 参数,渲染前补进副本)
+        const sqR = lerp(ball.sqPrev ?? ball.sq, ball.sq ?? 1, alpha);
+        // 复用同一个视图对象(老写法每次 spread 一个新 Ball,每帧一个垃圾)
+        const bv = this.ballView;
+        Object.assign(bv, ball);
+        bv.x = bx; bv.y = by; bv.sqR = sqR;
+        drawShuttle(g, this.vp, bv, skin, this.swingCue, this.shuttleMot);
+      }
+    }
+
+    // 全息双生假球绘制
+    if (stage?.modifiers.environment?.hologramDecoy && ball && ball.live && !ball.held) {
+      if (ball.lastHitter === "right" && this.lastDecoyOwner !== ball.shot) {
+        this.lastDecoyOwner = ball.shot;
+        this.decoyBall = {
+          x: ball.x,
+          y: ball.y,
+          vx: ball.vx * 0.96,
+          vy: ball.vy - 1.1,
+          t: 46,
+        };
+      }
+      if (this.decoyBall && this.decoyBall.t > 0) {
+        this.decoyBall.t--;
+        this.decoyBall.x += this.decoyBall.vx;
+        this.decoyBall.y += this.decoyBall.vy;
+        this.decoyBall.vy += 0.36;
+        const dbx = this.vp.x(this.decoyBall.x);
+        const dby = this.vp.y(this.decoyBall.y);
+        const decoyA = Math.min(1, this.decoyBall.t / 18) * 0.72;
+        g.fillColor = new Color(190, 60, 255, Math.round(decoyA * 255));
+        g.ellipse(dbx, dby, 6.5, 6.5);
+        g.fill();
+        g.strokeColor = new Color(240, 160, 255, Math.round(decoyA * 220));
+        g.lineWidth = 1.5;
+        g.ellipse(dbx, dby, 9, 9);
+        g.stroke();
+      }
     }
 
     // 绘制粒子与打击特效(冲击波/火花/羽毛/彩带等)
@@ -527,6 +737,98 @@ export class WorldView {
     this.drawScreenFx();
   }
 
+  private drawForbiddenZone(g: Graphics, zoneW: number): void {
+    const netX = C.court.netX;
+    const startX = netX - zoneW;
+    const groundY = C.court.groundY;
+    const x0 = this.vp.x(startX);
+    const x1 = this.vp.x(netX);
+    const y0 = this.vp.y(groundY + 8);
+    const h = 26;
+
+    // 红色半透明警示网格
+    g.fillColor = new Color(255, 30, 60, 42);
+    g.rect(x0, y0 - h, x1 - x0, h);
+    g.fill();
+
+    // 警示斜线
+    g.strokeColor = new Color(255, 60, 80, 150);
+    g.lineWidth = 1.5;
+    for (let x = startX; x <= netX; x += 14) {
+      g.moveTo(this.vp.x(x), y0);
+      g.lineTo(this.vp.x(Math.min(netX, x + 10)), y0 - h);
+      g.stroke();
+    }
+
+    // 激光警戒边缘
+    g.strokeColor = new Color(255, 40, 60, 220);
+    g.lineWidth = 2.5;
+    g.moveTo(x0, y0);
+    g.lineTo(x0, y0 - h);
+    g.stroke();
+  }
+
+  private drawStaminaBar(g: Graphics, p: Player): void {
+    if (p.stamina === undefined) return;
+    const st = clamp(p.stamina, 0, 100);
+    const px = this.vp.x(p.x);
+    const py = this.vp.y(p.y - 78);
+    const barW = 44;
+    const barH = 5;
+
+    // 背景底槽
+    g.fillColor = new Color(10, 14, 24, 180);
+    g.roundRect(px - barW / 2 - 1, py - barH / 2 - 1, barW + 2, barH + 2, 2.5);
+    g.fill();
+
+    // 体力颜色 (绿 > 黄 > 闪烁红)
+    let col = new Color(50, 220, 120, 230);
+    if (st < 25) {
+      const flash = Math.sin(this.frameT * 0.4) > 0 ? 255 : 80;
+      col = new Color(255, 50, 60, flash);
+    } else if (st < 55) {
+      col = new Color(255, 200, 40, 230);
+    }
+    g.fillColor = col;
+    const fillW = Math.max(2, (barW * st) / 100);
+    g.roundRect(px - barW / 2, py - barH / 2, fillW, barH, 2);
+    g.fill();
+  }
+
+  /** 引力吸球:球与球拍之间高频跃动的电离子引力光索 */
+  private drawMagnetTether(g: Graphics, bx: number, by: number, tx: number, ty: number): void {
+    const p0 = { x: this.vp.x(bx), y: this.vp.y(by) };
+    const p1 = { x: this.vp.x(tx), y: this.vp.y(ty) };
+    const dx = p1.x - p0.x, dy = p1.y - p0.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = -dy / dist, ny = dx / dist;
+
+    // 2 条曲折跳动的紫白色引力电弧
+    for (let b = 0; b < 2; b++) {
+      const segs = 6;
+      g.lineWidth = b === 0 ? 3.0 : 1.4;
+      g.strokeColor = withAlpha(pal(b === 0 ? "#a855f7" : "#ffffff"), b === 0 ? 0.75 : 0.95);
+      g.moveTo(p0.x, p0.y);
+      for (let i = 1; i < segs; i++) {
+        const u = i / segs;
+        const jolt = Math.sin(this.frameT * 0.45 + i * 2.1 + b * 3) * (1 - Math.abs(u - 0.5) * 2) * 12;
+        const mx = p0.x + dx * u + nx * jolt;
+        const my = p0.y + dy * u + ny * jolt;
+        g.lineTo(mx, my);
+      }
+      g.lineTo(p1.x, p1.y);
+      g.stroke();
+    }
+    // 羽毛球引力光晕球
+    g.fillColor = withAlpha(pal("#a855f7"), 0.35);
+    g.ellipse(p0.x, p0.y, 14, 14);
+    g.fill();
+    g.strokeColor = withAlpha(pal("#00f0ff"), 0.6);
+    g.lineWidth = 1.6;
+    g.ellipse(p0.x, p0.y, 17, 17);
+    g.stroke();
+  }
+
   // ---------- 屏幕特效层(老 FX.drawTop 的白闪 + 三种氛围暗角) ----------
   /** 白闪与慢动作/长回合/赛点三种暗角;Cocos 无径向渐变,用描边环近似(court.drawVignette 同手法) */
   private drawScreenFx(): void {
@@ -540,7 +842,18 @@ export class WorldView {
     // 白闪:老实现是一整块全屏纯白矩形(alpha = flash×0.5),重扣那一下连球带人一起糊没。
     // 现在改成「边缘亮、中心透」的径向(复用 strokeVignette 的描边环近似,Cocos 无渐变),
     // 再叠一层很低的整体提亮保住"啪"的一下;色随档位由 game 层 whiteFlash(a, hex) 传入。
-    if (this.flash > 0.02) {
+    // P5 化:顶档命中走斩劈 cut-in(slashCutin 置入),三道斜带横扫顶替径向环。
+    if (this.cutinT < this.cutinDur) {
+      const F = C.fx;
+      const p = this.cutinT / Math.max(1, this.cutinDur);
+      drawCutinBands(g, W, H, p,
+        F.slashCutinAng ?? 14, F.slashCutinBandW ?? 0.38, this.cutinCols,
+        F.slashCutinAlpha ?? 0.85, F.slashCutinStagger ?? 0.22, this.cutinDir);
+      // 低强度整屏提亮保住"啪"的一下(径向环被 cut-in 顶替)
+      g.fillColor = withAlpha(pal("#ffffff"), this.flash * 0.10);
+      g.rect(-1600, -1000, 3200, 2000);
+      g.fill();
+    } else if (this.flash > 0.02) {
       const F = C.fx;
       const hex = this.flashHex();
       this.strokeVignette(g, cx, cy, H * 1.05, H * 0.34, hex,
@@ -565,6 +878,85 @@ export class WorldView {
     if ((this.atmo.state === "SERVE" || this.atmo.state === "RALLY") && this.atmo.matchPoint) {
       const pulse = 0.5 + 0.5 * Math.sin(t * 0.08);
       this.strokeVignette(g, cx, cy, W * 0.58, H * 0.36, "#6e0a14", 0.07 + 0.05 * pulse);
+    }
+    // 时空减速领域暗角:全屏淡青色时空微澜波动力场
+    const inFocusMode = Rules.R.players.some((p) => (p.focusT ?? 0) > 0);
+    if (inFocusMode) {
+      const focusPulse = 0.85 + Math.sin(t * 0.12) * 0.15;
+      const vA = (C.skills.focus.vignetteAlpha || 0.28) * focusPulse;
+      this.strokeVignette(g, cx, cy, W * 0.60, H * 0.38, "#06b6d4", vA);
+    }
+
+    // 闯关关卡专属视觉环境特效
+    const stage = Rules.R.activeStage;
+    if (stage && Rules.R.mode === "campaign") {
+      const env = stage.modifiers.environment;
+      // 1. 沙尘暴滤镜与狂风飞沙
+      if (env?.sandstorm) {
+        g.fillColor = new Color(220, 160, 60, 38);
+        g.rect(-1600, -1000, 3200, 2000);
+        g.fill();
+
+        g.strokeColor = new Color(245, 205, 115, 140);
+        g.lineWidth = 1.8;
+        for (const sp of this.sandstormParticles) {
+          sp.x += sp.spd;
+          sp.y += sp.spd * 0.22;
+          if (sp.x > W + 60) sp.x = -60;
+          if (sp.y > H + 60) sp.y = -60;
+          g.moveTo(this.vp.x(sp.x), this.vp.y(sp.y));
+          g.lineTo(this.vp.x(sp.x + sp.len), this.vp.y(sp.y + sp.len * 0.22));
+          g.stroke();
+        }
+      }
+      // 2. 网前迷雾
+      if (env?.fog) {
+        const nx = this.vp.x(C.court.netX);
+        const ny = this.vp.y(C.court.netTopY + 25);
+        g.fillColor = new Color(240, 245, 255, 68);
+        g.ellipse(nx, ny, 165, 95);
+        g.fill();
+        g.fillColor = new Color(255, 255, 255, 96);
+        g.ellipse(nx, ny + 15, 110, 65);
+        g.fill();
+      }
+      // 3. 烈日致盲高空耀斑
+      if (env?.blindingSun) {
+        const sx = this.vp.x(480);
+        const sy = this.vp.y(180);
+        const flareA = 0.36 + Math.sin(t * 0.08) * 0.08;
+        g.fillColor = new Color(255, 245, 180, Math.round(flareA * 255));
+        g.ellipse(sx, sy, 120, 120);
+        g.fill();
+        g.fillColor = new Color(255, 255, 230, Math.round((flareA + 0.22) * 255));
+        g.ellipse(sx, sy, 55, 55);
+        g.fill();
+      }
+      // 4. EMP 故障闪烁条纹 (多拍时触发)
+      if (env?.empGlitch && this.atmo.rally >= 3) {
+        const glitchT = t % 160;
+        if (glitchT > 138) {
+          g.fillColor = new Color(0, 240, 255, 34);
+          g.rect(-1600, -1000, 3200, 2000);
+          g.fill();
+          g.strokeColor = new Color(255, 0, 128, 120);
+          g.lineWidth = 3;
+          for (let y = -360; y < 360; y += 42) {
+            const shiftX = Math.sin(y + t) * 25;
+            g.moveTo(-750, y);
+            g.lineTo(750 + shiftX, y);
+            g.stroke();
+          }
+        }
+      }
+      // 5. 看台闪光灯爆闪
+      if (env?.spectatorFlash && this.atmo.rally >= 5) {
+        if (Math.sin(t * 0.42) > 0.86) {
+          g.fillColor = new Color(255, 255, 255, 60);
+          g.ellipse(cx + Math.sin(t * 1.3) * 220, cy - 60, 150, 85);
+          g.fill();
+        }
+      }
     }
   }
 
