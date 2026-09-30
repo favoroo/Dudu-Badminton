@@ -12,7 +12,7 @@ import { DiffKey, SkinDef, SkinKind } from "./types";
 
 const C = CFG;
 const KEY = "profile";
-const KINDS: SkinKind[] = ["player", "racket", "shuttle"];
+const KINDS: SkinKind[] = ["player", "racket", "shuttle", "face"];
 
 export interface DrillRec {
   stars: number; clears: number; bestQ: number; bestReps: number; attempts: number;
@@ -49,7 +49,7 @@ let cache: Profile | null = null;
 const fresh = (): Profile => ({
   level: 1, exp: 0, coins: C.career.startCoins,
   owned: KINDS.map((k) => DEFAULTS[k].id),
-  equipped: { player: DEFAULTS.player.id, racket: DEFAULTS.racket.id, shuttle: DEFAULTS.shuttle.id },
+  equipped: { player: DEFAULTS.player.id, racket: DEFAULTS.racket.id, shuttle: DEFAULTS.shuttle.id, face: DEFAULTS.face.id },
   streak: 0, bestStreak: 0,
   drills: {},
   stats: {
@@ -73,6 +73,11 @@ function profile(): Profile {
   if (!cache.stats || typeof cache.stats !== "object") cache.stats = fresh().stats;
   for (const sk of Object.keys(ref.stats) as (keyof Profile["stats"])[]) {
     if (!(sk in cache.stats)) cache.stats[sk] = ref.stats[sk];
+  }
+  // 新增皮肤类别时老档的 owned 里没有它的默认款,就地补上(默认款永远人人有份,
+  // 否则商店里会冒出「免费领取自己本来就有的脸」这种怪事);幂等
+  for (const k of KINDS) {
+    if (!cache.owned.includes(DEFAULTS[k].id)) cache.owned.push(DEFAULTS[k].id);
   }
   // 首次自动合流散落的旧 wins / matches 记录
   const legacyWins = load<number>("wins", 0);
@@ -292,6 +297,7 @@ function applyToMatch(): void {
     me.theme = { main: ps.main || "#ff4d4d", dark: ps.dark || "#a8202c", glow: ps.glow || "#ff8a6a", name: ps.name };
     me.playerSkin = ps;
     me.racketSkin = skinOf("racket");
+    me.faceSkin = skinOf("face");
   }
 }
 

@@ -469,7 +469,7 @@ export class WorldView {
     this.ribbon.draw(g, this.vp, trailStyle);
 
     // 羽毛球:运动学状态(滞后角/翻滚/裙摆炸开)由 stepFx 按模拟步推进,这里只读
-    if (ball && (ball.live || ball.held)) {
+    if (ball && (ball.live || ball.held || ball.flying)) {
       const bx = ball.held ? ball.x : lerp(ball.px, ball.x, alpha);
       const by = ball.held ? ball.y : lerp(ball.py, ball.y, alpha);
       // sqR:形变的帧间插值(drawShuttle 无 alpha 参数,渲染前补进副本)

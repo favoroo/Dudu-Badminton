@@ -80,6 +80,7 @@ function mkBall(x: number, y: number, vx = 0, vy = 0): Ball {
     live: true, held: false, owner: null,
     lastHitter: null, crossed: false, netted: false,
     shot: null, sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
 }
 

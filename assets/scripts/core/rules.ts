@@ -104,6 +104,7 @@ function makeBall(): Ball {
     live: false, held: true, owner: null,
     lastHitter: null, crossed: false, netted: false, shot: null,
     sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
 }
 
@@ -171,16 +172,30 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
 }
 
 function beginPoint(): void {
-  // 球速档位在这里落地(而不是面板改完立刻生效):此刻刚 makeBall、场上没有飞行中的球,
+  // 球速档位在这里落地(而不是面板改完立刻生效):此刻场上没有飞行中的球,
   // 换重力不会让谁的残程拐一下。训练场每球重喂也走这条路,所以「改完下一球就是新档」
   // 在对局与训练场里同时成立。
   Pace.commit();
   const mates = teamOf(R.server);
   const s = mates[R.serveIdx % mates.length];
   R.serverPlayer = s;
-  R.ball = makeBall();
-  R.ball.owner = s;
-  R.ball.lastHitter = R.server;
+  const old = R.ball;
+  if (old) {
+    // 复用落地的球,从落点飞入手中(而非闪现)
+    old.flyFromX = old.x; old.flyFromY = old.y;
+    old.vx = 0; old.vy = 0;
+    old.flying = true; old.flyT = C.scoring.flyToHandFrames;
+    old.held = false; old.live = false;
+    old.owner = s; old.lastHitter = R.server;
+    old.crossed = false; old.netted = false;
+    old.shot = null;
+    old.sq = 1; old.sqPrev = 1;
+  } else {
+    // 首球:无历史球,直接到位
+    R.ball = makeBall();
+    R.ball.owner = s;
+    R.ball.lastHitter = R.server;
+  }
   R.rally = 0;
   R.state = "SERVE";
   R.timer = C.scoring.servePause;
@@ -243,6 +258,30 @@ function step(inputs: PlayerInput[]): void {
     Pl.update(p, inp, ball);
   }
   separate();
+
+  // 得分后球从落点飞入手中:ease-out 插值,期间不可释放/不可击打
+  if (ball.flying) {
+    const o = ball.owner as Player;
+    const tx = handX(o), ty = handY(o);
+    const total = C.scoring.flyToHandFrames;
+    const elapsed = total - ball.flyT;
+    ball.flyT--;
+    if (ball.flyT <= 0) {
+      // 动画结束:球到位,进入正常持球
+      ball.x = tx; ball.y = ty;
+      ball.px = tx; ball.py = ty;
+      ball.flying = false; ball.held = true;
+    } else {
+      const t = (elapsed + 1) / total;
+      const e = 1 - Math.pow(1 - t, 3);  // ease-out cubic
+      ball.px = ball.x; ball.py = ball.y;
+      ball.x = ball.flyFromX + (tx - ball.flyFromX) * e;
+      ball.y = ball.flyFromY + (ty - ball.flyFromY) * e;
+      ball.vx = ball.x - ball.px;
+      ball.vy = ball.y - ball.py;
+    }
+    return;
+  }
 
   if (ball.held) {
     const o = ball.owner as Player;

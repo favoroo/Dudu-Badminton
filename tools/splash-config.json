@@ -7,7 +7,7 @@
     "totalTime": "splash 时长(ms),引擎在这段时间里做首屏加载。"
   },
   "config": {
-    "displayRatio": 4.4,
+    "displayRatio": 1.8,
     "totalTime": 2000,
     "watermarkLocation": "default",
     "autoFit": true

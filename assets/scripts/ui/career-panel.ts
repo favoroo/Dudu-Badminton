@@ -11,8 +11,8 @@ import {
 } from "cc";
 import { Career } from "../core/career";
 import { CFG, DRILLS } from "../core/config";
-import { Ball, Player, SkinDef, SkinKind, Theme } from "../core/types";
-import { drawPlayer, drawRacketStill, drawShuttle, hueColor, Viewport } from "../render/sprites";
+import { Ball, FaceKind, Player, SkinDef, SkinKind, Theme } from "../core/types";
+import { drawHeadStill, drawPlayer, drawRacketStill, drawShuttle, hueColor, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
 import { drawArcadeButton, drawHardShadow, drawMenuCard, drawVeil, fadeOutHide, makeCoinIcon, pressFx, retainedDraw, slamIn, textW, uiIconButton } from "./ui-arcade";
@@ -22,10 +22,10 @@ const { ccclass } = _decorator;
 
 // ---------- 常量 ----------
 
-const KIND_ORDER: SkinKind[] = ["player", "racket", "shuttle"];
-const KIND_ALL: string[] = ["player", "racket", "shuttle", "stats"];
+const KIND_ORDER: SkinKind[] = ["player", "racket", "shuttle", "face"];
+const KIND_ALL: string[] = ["player", "racket", "shuttle", "face", "stats"];
 const KIND_LABEL: Record<string, string> = {
-  player: "角色皮肤", racket: "球拍皮肤", shuttle: "羽毛球皮肤", stats: "生涯战绩",
+  player: "角色皮肤", racket: "球拍皮肤", shuttle: "羽毛球皮肤", face: "面部皮肤", stats: "生涯战绩",
 };
 const LV_NAMES = [
   "新手菜鸟", "初学乍练", "渐入佳境", "业余好手", "俱乐部主力",
@@ -95,7 +95,10 @@ function mkLabel(
   const n = new Node(name);
   n.layer = Layers.Enum.UI_2D;
   // 多行文本按行数撑高节点,否则 Overflow.CLAMP 会把后续行裁掉
-  n.addComponent(UITransform).setContentSize(o.w ?? 200, size * 1.4 * (o.lines ?? 1));
+  const ut = n.addComponent(UITransform);
+  ut.setContentSize(o.w ?? 200, size * 1.4 * (o.lines ?? 1));
+  // 左对齐标签用左锚点,x 即文本左边缘,避免文本框向左延伸到图标区域
+  if ((o.align ?? 0) === 0) ut.setAnchorPoint(0, 0.5);
   if (o.x !== undefined || o.y !== undefined) n.setPosition(o.x ?? 0, o.y ?? 0, 0);
   n.setParent(parent);
   const l = n.addComponent(Label);
@@ -169,6 +172,7 @@ function dummyBall(): Ball {
     live: false, held: false, owner: null,
     lastHitter: null, crossed: false, netted: false,
     shot: null, sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
 }
 
@@ -182,6 +186,9 @@ function previewVp(scale: number, cx: number, cy: number): Viewport {
 
 /** 设计款卖点一句话:卡片底部小字与购买欲直接挂钩 */
 function fxTag(s: SkinDef): string {
+  if (s.kind === "face") {
+    return s.faceStyle === "skin" ? "肤色脸 · 暖棕五官 · 心情腮红" : "";
+  }
   if (s.kind === "racket") {
     switch (s.swingFx) {
       case "fire": return "专属火焰挥拍弧光";
@@ -407,9 +414,9 @@ export class CareerPanel extends Component {
     });
 
     // 金币(Graphics 图标 + 数字,替代 🪙 emoji)
-    makeCoinIcon(bar, PW / 2 - 152, 6, 9);
+    makeCoinIcon(bar, PW / 2 - 155, 6, 9);
     this._coinsLabel = mkLabel(bar, "coins", "50", 18, COL.gold, {
-      x: PW / 2 - 140, y: 6, w: 100, align: 0,
+      x: PW / 2 - 136, y: 6, w: 80, align: 0,
     });
 
     // 返回按钮:命中区 56(视觉圆底 44),Button.CLICK 自带按压反馈
@@ -654,6 +661,10 @@ export class CareerPanel extends Component {
     } else if (kind === "shuttle") {
       // 真羽毛球(与上场同一套 drawShuttle,放大 2.05 对齐原版)
       drawShuttle(g, previewVp(2.05, 0, 4), dummyBall(), s);
+    } else if (kind === "face") {
+      // 大头像(与上场同一套 drawHead):常态表情,换什么脸一眼可辨
+      drawHeadStill(g, previewVp(2.1, 0, 10), 0, 0, 1,
+        themeOf(Career.skinOf("player")), s.faceStyle ?? "ink", "normal", 0);
     }
   }
 
@@ -825,6 +836,20 @@ export class CareerPanel extends Component {
       if (this._previewName) {
         const rn = CFG.rarity[s.rarity ?? "common"].name;
         this._previewName.string = `${s.name} · ${rn}`;
+      }
+      return;
+    }
+
+    // --- 面部 tab:大头像循环表情,把五官配色和心情腮红直接演给买家看 ---
+    if (kind === "face") {
+      const vp = previewVp(3.4, 0, 10);
+      const exprs: FaceKind[] = ["normal", "happy", "star", "wow"];
+      const seg = 2.2 / exprs.length;               // 与试衣间同一个 2.2s 循环时钟
+      const expr = exprs[Math.min(exprs.length - 1, Math.floor(this._elapsed / seg))];
+      drawHeadStill(g, vp, 0, 0, 1, themeOf(curPlayer), s.faceStyle ?? "ink", expr, this._elapsed);
+      if (this._previewName) {
+        const rn = CFG.rarity[s.rarity ?? "common"].name;
+        this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;
       }
       return;
     }

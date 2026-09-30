@@ -71,7 +71,7 @@ export class MainMenu {
     const coinBadge = this.badge(230, topY, 128, 44, "ghost");
     makeCoinIcon(coinBadge, -42, -2, 9);   // Graphics 金币(替代 🪙 emoji,原生平台无彩色 emoji 字体)
     this.coinLabel = kit.label(coinBadge, "0", 16, P.accent);
-    this.coinLabel.node.setPosition(6, -2, 0);
+    this.coinLabel.node.setPosition(16, -2, 0);
 
     // 「声音」= 音效 + 音乐两条总线一起切(单独的开关在设置页里)
     const soundBadge = this.badge(344, topY, 72, 44, "ghost");

@@ -68,6 +68,7 @@ function mkBall(kind: ShotKind, vx: number, vy: number, x: number, y: number,
     crossed: false, netted: false,
     shot: mkShot(kind, sweet, perfect, heat, vx, vy),
     sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
 }
 

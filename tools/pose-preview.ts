@@ -14,6 +14,7 @@
 //   npx tsc -p tools/tsconfig.json
 //   node .tools-build/tools/pose-preview.js            # 出图 + 断言,有失败则 exit 1
 //   node .tools-build/tools/pose-preview.js --out DIR  # 换输出目录
+//   node .tools-build/tools/pose-preview.js --faces    # 面部款式 × 表情网格(商店脸面配色验收)
 //
 // 断言为什么能锁定远臂:远臂是 drawPlayer 里**第一个 stroke()**(影子是 fill),笔画
 // 顺序确定。旧代码是一条 3 点折线;新代码是「深袖 2 点 + 肤色小臂 2 点 + 手盘 fill」。
@@ -24,9 +25,9 @@
 // 因为 tsc 只顺着静态 import 建模块图 —— 动态 require 会让 sprites.ts 根本不参与编译、
 // 不会被 emit 到 .tools-build。
 import { installCc, Graphics as StubGraphics, StubOp, opPoints, opsToSvg } from "./cc-stub";
-import { drawPlayer, Viewport } from "../assets/scripts/render/sprites";
+import { drawHeadStill, drawPlayer, Viewport } from "../assets/scripts/render/sprites";
 import { CFG } from "../assets/scripts/core/config";
-import { Player, Ball, SwingStyle } from "../assets/scripts/core/types";
+import { Ball, FaceKind, Player, SwingStyle } from "../assets/scripts/core/types";
 
 installCc();   // 幂等;真正的打补丁发生在 cc-stub 求值时
 
@@ -116,6 +117,15 @@ const POSES: Named[] = [
   { name: "frustrate 沮丧", held: true, p: mkPlayer({ ai: mkAi({ frustrateT: 12 }) }) },
   // 来球在右上方:验「远侧手指向来球」只在抬起时轻推、且手不缩回躯干后
   { name: "idle+ball 待机有球", held: true, p: mkPlayer(), ball: mkBall({ x: 520, y: 250 }) },
+  // 来球预备架拍:快速来球逼近(vx=-14 朝我方)→ readyK≈0.95,拍抬到肩前、屈膝沉降、远臂后上平衡
+  { name: "ready 架拍", held: true, p: mkPlayer(), ball: mkBall({ x: 340, y: 280, vx: -14 }) },
+  // under 蓄力折腿(poseU≈0.09 引拍期,双膝对称折)+ over 蹬伸(接触帧,远侧后腿提跟)
+  { name: "under-crouch 蓄力折腿", held: false, p: mkPlayer({ swingT: 2, swingStyle: "under", swingHit: true }) },
+  { name: "over-drive 蹬伸", held: false, p: mkPlayer({ swingT: 9, swingStyle: "over", swingHit: true }) },
+  // 挥空踉跄:硬直窗中段(swingT=19 > windup+active),躯干前冲 + 远臂划大弧
+  { name: "whiff 挥空踉跄", held: false, p: mkPlayer({ swingT: 19, swingStyle: "over", swingHit: false }) },
+  // 收拍回弹峰值:easeOutBack 过冲顶点在 recK≈0.64 → recoverT≈3.6,拍子甩过头一点
+  { name: "recover-end 回弹", held: false, p: mkPlayer({ swingT: -1, recoverT: 4, swingStyle: "over", lastSwingStyle: "over" }) },
   // 发球托球:球钉在 rules.handX/handY(x-facing*28、y-0.515H),远臂后摆手心托球。
   // holdBall = 断言换成「手正好托在球下」—— 肘/手在体侧属于本姿势的预期,不走背缘外露检查。
   // 注意 p 与 ball.owner 必须是同一实例(drawPlayer 里用 === 判持球归属)
@@ -198,6 +208,60 @@ function svg(ops: StubOp[], bg: string, title: string): string {
 ${opsToSvg(ops)}
 </g>
 </svg>`;
+}
+
+// ---- --faces 模式:面部款式 × 表情 网格出图(改脸面配色后的肉眼验收),不做几何断言 ----
+//   node .tools-build/tools/pose-preview.js --faces [--out DIR]
+// 用商店同款 drawHeadStill(内部就是 drawHead)画大头像;faceT=666 让贴纸走「定格」分支,
+// pop 完成且不淡出,每格都能看到表情 + 贴纸的最终成色。
+if (process.argv.includes("--faces")) {
+  const STYLES: { label: string; style: "ink" | "skin" }[] = [
+    { label: "经典墨面 ink", style: "ink" },
+    { label: "阳光肤色 skin", style: "skin" },
+  ];
+  const EXPRS: FaceKind[] = ["normal", "fierce", "star", "wow", "oops", "happy", "sad", "cheer", "ko"];
+  const RED = { main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a", name: "red" };
+  // 方形小画布,头像居中(单位视口 y 取负 = 预翻转,给外层 scale(6,-6) 再翻回来);
+  // 画布右侧留出贴纸位(头侧 +hr*1.12 处的星/泡/汗滴/爱心不能被裁掉)
+  const VP2: Viewport = { x: (wx: number) => wx, y: (wy: number) => -wy };
+  const faceSvg = (ops: StubOp[], bg: string, title: string): string => {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="340" height="340" viewBox="0 0 340 340">
+<title>${title}</title>
+<rect width="100%" height="100%" fill="${bg}"/>
+<g transform="translate(170,170) scale(6,-6)">
+${opsToSvg(ops)}
+</g>
+</svg>`;
+  };
+  const headSvg = (style: "ink" | "skin", expr: FaceKind, bg: string): string => {
+    const g = new StubGraphics();
+    drawHeadStill(g as unknown as Parameters<typeof drawHeadStill>[0], VP2, 0, 0, 1, RED, style, expr, 0.4);
+    return faceSvg(g.ops, bg, `${style}-${expr}`);
+  };
+  const cells: string[] = [];
+  for (const { label, style } of STYLES) {
+    for (const expr of EXPRS) {
+      // 单张 SVG 一并落盘(face-<款>-<表情>.svg / .light.svg),供转 PNG 做视觉验收
+      const s = headSvg(style, expr, "#12161f"), l = headSvg(style, expr, "#d8ecd2");
+      fs.writeFileSync(`${OUT}/face-${style}-${expr}.svg`, s);
+      fs.writeFileSync(`${OUT}/face-${style}-${expr}.light.svg`, l);
+      cells.push(`<div class="c"><b>${label} · ${expr}</b>` +
+        `<div class="pair">${s}${l}</div></div>`);
+    }
+  }
+  const html = `<!doctype html><meta charset="utf-8"><title>face preview</title>
+<style>body{background:#0b0e15;color:#dfe6f3;font:13px/1.5 ui-monospace,Menlo,monospace;margin:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.c{background:#161b26;border:1px solid #2a3242;border-radius:8px;padding:8px;text-align:center}
+.c b{display:block;margin-bottom:6px;font-weight:600}
+.c svg{max-width:292px;height:auto}
+.pair{display:flex;gap:4px;justify-content:center}</style>
+<h2>面部款式 × 表情预览(左:暗球场底 / 右:亮球场底)</h2>
+<div class="grid">${cells.join("")}</div>
+`;
+  fs.writeFileSync(`${OUT}/faces.html`, html);
+  console.log(`面部款式预览: ${OUT}/faces.html(${STYLES.length} 款 × ${EXPRS.length} 表情 × 暗/亮两底)`);
+  process.exit(0);
 }
 
 const rows: string[] = [];
@@ -301,6 +365,29 @@ for (const style of ["over", "under"] as SwingStyle[]) {
   const near = worstStep((s, f) => g(s, f).near, style);
   check(`连续性 ${style}`, far.deg <= near.deg + 0.5,
     `远臂单帧最大跳变 ${far.deg.toFixed(1)}° @f${far.at} vs 持拍臂 ${near.deg.toFixed(1)}° @f${near.at}`);
+}
+
+// ---- 架拍渐入连续性:来球从远到近扫一遍,远臂依旧不许比持拍臂更跳 ----
+// readyK 随来球逼近 smoothstep 爬升,躯干/远臂/持拍臂三条都被同一个权重拉着走;
+// 若哪一条(尤其远臂)在爬升中突跳,架拍就会「抖一下」而不是「提起来」。
+{
+  const armDir = (a: Arm | null): number | null =>
+    a && a.hd ? Math.atan2(a.hd.y - a.sh.y, a.hd.x - a.sh.x) * 180 / Math.PI : null;
+  let prev: { far: number; near: number } | null = null;
+  let wf = 0, wn = 0, at = 0;
+  for (let f = 0; f <= 34; f++) {
+    // 球从远处飞向肩前(vx=-12 朝我方),readyK 随距离递增
+    const ops = render(mkPlayer(), mkBall({ x: 620 - f * 9, y: 250, vx: -12, vy: 2 }));
+    const far = armDir(farArm(ops)), near = armDir(nearArm(ops));
+    if (prev && far !== null && near !== null) {
+      let df = Math.abs(far - prev.far); if (df > 180) df = 360 - df;
+      let dn = Math.abs(near - prev.near); if (dn > 180) dn = 360 - dn;
+      if (df > wf) { wf = df; wn = dn; at = f; }
+    }
+    if (far !== null && near !== null) prev = { far, near };
+  }
+  check("连续性 ready 渐入", wf <= wn + 0.5,
+    `远臂单帧最大跳变 ${wf.toFixed(1)}° @f${at} vs 持拍臂 ${wn.toFixed(1)}°`);
 }
 
 // ---- 汇总 ----

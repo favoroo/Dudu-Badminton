@@ -171,6 +171,8 @@ export interface Player {
   racketSkin?: SkinDef;
   /** 完整人物皮肤定义:theme 只传三色,发型/头饰/纹样/光环等设计字段从这里读 */
   playerSkin?: SkinDef;
+  /** 面部款式:未挂或字段缺失时渲染层兜回墨面款(经典黑脸) */
+  faceSkin?: SkinDef;
   hideTag?: boolean;
   groundY?: number;
 }
@@ -187,6 +189,14 @@ export interface Ball {
   shot: ShotResult | null;
   sq: number;
   sqPrev: number;
+  /** 得分后球飞入手中动画期间为 true */
+  flying: boolean;
+  /** 飞入手中动画剩余帧 */
+  flyT: number;
+  /** 飞入手中动画起点 X（落点） */
+  flyFromX: number;
+  /** 飞入手中动画起点 Y */
+  flyFromY: number;
 }
 
 // ---------- 击球结果 ----------
@@ -229,11 +239,11 @@ export interface GameEvent {
 /** 稀有度:商店卡片框色/角标/排序依据;纯色款=common,设计款按设计量分级 */
 export type Rarity = "common" | "rare" | "epic" | "legendary";
 
-/** 皮肤:三类共用一张表结构,颜色字段按 kind 各取所需;
+/** 皮肤:四类共用一张表结构,颜色字段按 kind 各取所需;
  *  设计字段(发型/头饰/纹样/特效)同样按 kind 各取所需,全部可选=纯色款只填颜色 */
 export interface SkinDef {
   id: string;
-  kind: "player" | "racket" | "shuttle";
+  kind: "player" | "racket" | "shuttle" | "face";
   name: string;
   price: number;
   unlockLevel?: number;
@@ -246,6 +256,8 @@ export interface SkinDef {
   headwear?: "cap" | "crown" | "goggles" | "ribbon" | "bandana";
   jersey?: "stripes" | "sash" | "trim" | "twoTone";
   aura?: "gold" | "neon" | "flame" | "ice";
+  /** face 设计字段:脸面款式 —— ink=黑色剪影(经典),skin=肤色底+墨色五官+心情腮红 */
+  faceStyle?: "ink" | "skin";
   /** racket 配色;frame 留空 = 跟随人物主题 glow 色 */
   grip?: string; shaft?: string; frame?: string | null;
   /** racket 设计字段:拍线颜色/拍框贴章/挥拍弧光专属风格(残影同步) */
@@ -258,7 +270,7 @@ export interface SkinDef {
   trailStyle?: "star" | "flame" | "petal" | "rainbow";
 }
 
-export type SkinKind = "player" | "racket" | "shuttle";
+export type SkinKind = "player" | "racket" | "shuttle" | "face";
 
 /** 主菜单条目 */
 export interface MenuEntry {

@@ -182,6 +182,7 @@ function incoming(paceId: string, sc: { name: string; depth: number; q: number }
     x: 680, y: CO.groundY - 180, px: 680, py: CO.groundY - 180,
     vx: shot.vx, vy: shot.vy, live: true, held: false,
     owner: null, lastHitter: "right", crossed: false, netted: false, shot: null, sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
   return { ball, landX: Math.min(STAND_MAX, Math.max(STAND_MIN, shot.trace.landX)) };
 }
@@ -203,6 +204,7 @@ function incoming(paceId: string, sc: { name: string; depth: number; q: number }
         x: 680, y: CO.groundY - 180, px: 680, py: CO.groundY - 180,
         vx: shot.vx, vy: shot.vy, live: true, held: false,
         owner: null, lastHitter: "right", crossed: false, netted: false, shot: null, sq: 1, sqPrev: 1,
+        flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
       };
       let best = -Infinity, bestDesc = "";
       for (const x of CAND) {

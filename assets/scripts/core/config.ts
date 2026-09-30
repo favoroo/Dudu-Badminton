@@ -70,6 +70,11 @@ export const SKINS: Record<SkinKind, SkinDef[]> = {
     { id: "s-galaxy",  kind: "shuttle", name: "星河羽", price: 788, unlockLevel: 9, rarity: "legendary",
       cap: "#e0d4ff", band: "#8b5cf6", skirt: "#f4eeff", vein: "rgba(160,120,240,0.72)", trailStyle: "rainbow" },
   ],
+  // 面部是真人 0 号专属穿戴位(CPU/P2 恒为墨面,敌我一眼分明);只换脸面配色,不碰任何判定
+  face: [
+    { id: "face-ink", kind: "face", name: "经典墨面", price: 0, faceStyle: "ink" },
+    { id: "face-sun", kind: "face", name: "阳光肤色", price: 88, rarity: "common", faceStyle: "skin" },
+  ],
 };
 
 // ===== 下架皮肤退款表:本轮商店重构中被设计款替代的纯色款(id → 当年售价) =====
@@ -329,6 +334,38 @@ export const CFG = {
     wristOvershoot: 7,   // 随挥段腕部过冲角(度):判定窗关闭后甩腕,零手感风险
     swingBurst: [0.12, 0.72], // 挥拍节奏:发力时间窗(引拍缓起 → 窗内匀速爆发 → 随挥缓收)
     doubleHitLock: 12, // 同一个人连续击球的最短间隔(帧)
+    // 收拍惯性回弹:回摆曲线由二次缓出换成 easeOutBack,末端拍子小幅甩过头再稳住
+    // (follow-through 的弹簧感)。只作用在球拍姿势插值上,躯干/远臂的 recK 衰减不参与,
+    // 免得 lean 反向过冲。1=无过冲,标准 easeOutBack 是 1.70158(≈10%),这里收着用
+    recoverOvershoot: 1.2,
+    // 挥空踉跄:挥空的额外硬直(whiffExtra)期间躯干前冲角(度,sin 半波起落),
+    // 配合远臂划大弧 —— 扑空要有失衡的代价感,而不是和打中一样从容收拍
+    whiffStagger: 3.5,
+  },
+
+  // 来球预备架拍(纯视觉,零判定):球朝己方飞来且临近时,从待机向架拍姿势插值 ——
+  // 拍头抬到肩前、屈膝降重心、远臂前抬平衡。真实羽毛球接球者的「提前架拍」,
+  // 也是动画的 anticipation 法则:预备在半路,起拍行程视觉上变短,3 帧 blendIn 更利落。
+  // readyK 信号由渲染层按几何近似现算(不积分弹道、不写逻辑字段),AI/玩家通吃。
+  // **挥拍中强制归零**:肩点 pivotY 是判定锁定位,降了就破坏「视觉拍头=扫掠判定」。
+  readyStance: {
+    horizonFrames: 32,   // 预计多少帧后到身边开始渐入架拍(0=刚开始抬,1=贴身)
+    speedGain: 0.55,     // 来球越快预备越深:慢球(≤8)只做 55% 上下,快球做满
+    dip: 2.5,            // 屈膝降重心:髋/躯干/肩/头整体下沉量(px),大腿段等量缩短脚不动
+    kneeBend: 5,         // 双膝对称弯曲(px,同 landKnee 画法:小腿后折+脚跟微抬)
+    lean: 1.5,           // 躯干前倾增量(度)
+    farUp: 38,           // 远臂上臂前抬量(度,从待机 206 抬到 168:肘提到肩后上方)
+    farFold: 42,         // 远臂前臂前抬量(度,从待机 250 折到 208)—— 手收到肩后平衡位
+  },
+
+  // 挥拍下半身动力链(纯视觉):上半身拧转/挥臂/甩腕之外,腿也要参与 ——
+  // over 高压球发力窗后腿蹬伸提跟,under 低球起拍先折腿蓄力、发力段蹬伸挑起。
+  // **under 蓄力只走膝弯机制(小腿后折+脚跟微抬),不降肩点**:肩点是判定锁定位。
+  // 幅度全部压在个位数 px,人物才 100px 高,过了就是抽风。
+  swingLegs: {
+    overDriveLift: 2.2,    // over 发力窗:后腿蹬伸、脚跟抬起的量(px)
+    underCrouchKnee: 5,    // under 起拍段:双膝对称折腿蓄力(px)
+    underDriveLift: 2.5,   // under 发力段:蹬伸提跟(px)
   },
 
   // 按拍预告(触屏反馈):球临近判定区心时击球两键渐亮,到最佳按拍帧闪一下金环。
@@ -434,6 +471,7 @@ export const CFG = {
     winScore: 11,
     pointPause: 78,    // 得分停顿帧
     servePause: 26,
+    flyToHandFrames: 12, // 得分后球从落点飞入手中动画帧数(60fps)
     // 赛点重锤慢放的倍速。0.34 那种「几乎停住」在手机上读起来像掉帧而不是演出,
     // 而且训练场每一拍重扣都会走它(见 game-root 的 drill 放行),0.5 保住电影感又能操控。
     // 现状:fx.slowmoEnabled 已置 false,这个值和 slowmoFrames / scoreSlowmo 一起被总闸屏蔽,

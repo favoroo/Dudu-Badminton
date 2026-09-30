@@ -43,6 +43,7 @@ function makeLoneBall(owner: Player): Ball {
     live: false, held: true, owner,
     lastHitter: "right", crossed: false, netted: false, shot: null,
     sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
 }
 
@@ -109,6 +110,7 @@ function contactPoints(feed: NonNullable<ReturnType<typeof simulateFeed>>): Cont
     vx: feed.shot.vx, vy: feed.shot.vy, held: false, live: true,
     owner: null, lastHitter: "right", crossed: false, netted: false, shot: null,
     sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
   const pts: ContactPoint[] = [];
   for (let i = 0; i < 320; i++) {

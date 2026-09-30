@@ -116,7 +116,9 @@ Android 构建流程见 [.agents/skills/export-apk/SKILL.md](file:///Users/a1/Do
 
 ## 变更日志(每次改代码必读必写)
 
-修改源码后必须把改动追加写入 [CHANGELOG.md](CHANGELOG.md)(gitignored,仅本地)。最新日期在最上,条目头一句话概述(写明用户指令或现场问题),子项用 Added/Changed/Fixed/Verified 标签并附文件路径。会话收尾前补记,未提交也要记(标注「未提交」)。
+修改源码后必须把改动追加写入 [CHANGELOG.md](CHANGELOG.md)(gitignored,仅本地)。最新日期在最上,条目头一句话概述(写明用户指令或现场问题),子项用 Added/Changed/Fixed/Removed/Verified 标签并附文件路径。会话收尾前补记,未提交也要记(标注「未提交」)。
+
+**记录要简洁** —— 每个子项一句话:做了什么 + 涉及哪个文件。**不要**写根因分析、设计推导、量化数字、并发提示、未验到的长篇讨论(那些留在会话里或代码注释里)。Verified 只列回归项与 exit 状态,不铺陈数据。一条改动的 changelog 通常三五行就够,读者要的是「改了什么、过没过」,不是「为什么这么改」。
 
 ## 必须知道的坑
 

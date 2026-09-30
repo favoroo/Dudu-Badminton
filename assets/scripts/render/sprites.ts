@@ -196,10 +196,14 @@ function px(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number,
   fillRectTr(g, f, x0, y0, Math.ceil(w), Math.ceil(h), typeof color === "string" ? pal(color) : color);
 }
 
-// 头部固定配色(重设计):一整颗黑脸圆 + 白色线条五官,队色只上发带 ——
-// 黑脸上唯一的彩色,红蓝阵营识别靠它。SKIN/SKIN_LINE 仍用于手臂与手。
+// 头部固定配色,两款脸面(商店「面部皮肤」):墨面款(经典)一整颗黑脸圆 + 白色线条五官,
+// 队色只上发带 —— 黑脸上唯一的彩色,红蓝阵营识别靠它;肤色款脸底与手臂同一肤色,
+// 五官换深暖棕墨色,好心情表情加腮红。SKIN/SKIN_LINE 仍用于手臂与手(肤色款脸圆共用)。
 const SKIN = "#f2c491", SKIN_LINE = "rgba(10,13,24,0.55)";
+// HEAD 兼任三处墨迹:墨面款脸底、wow 感叹号气泡的「!」、羽毛球球托背光暗面
 const HEAD = "#0a0e18", HEAD_LINE = "rgba(235,240,255,0.5)", FACE = "#ffffff";
+// 肤色款专用:五官墨色(与肤色同暖调,比纯黑柔和)/ 心情腮红(happy/cheer/star 两颊淡粉)
+const INK = "#4a2b16", BLUSH = "rgba(255,110,120,0.32)";
 
 // 皮肤默认值(与 config.skins 对应项同色):没装备皮肤或旧调用方没传时兜回原配色,
 // 皮肤只换颜色不改形状,判定半径与手感完全不受影响
@@ -262,6 +266,12 @@ function swingFxPair(sk: SkinDef | null | undefined, t: number): [string, string
 // 发球等待也用它(配合远臂后摆托球 =「一手拍、一手球」);旧的 SERVE_POSE(拍举脑后)
 // 已删 —— 拍头正好压在脸中心,pose-preview 实测整个脸被拍面糊住。
 const IDLE_POSE: Pose = { pts: [[0, -2], [9, 10]], hand: [20, 22], ang: 68, len: 25 };
+
+// 来球预备架拍姿势(肩坐标系):肘收到肩前下方、前臂上抬把手举到肩前上方,拍头斜指上前方。
+// 真实接球者的「提前架拍」——球朝己方飞来时从 IDLE_POSE 渐入这里(权重 readyW),
+// 起拍行程视觉上变短,3 帧 blendIn 的引拍反而更利落。手位 (16,-8) 在头部遮挡圆
+// (肩局部 y≈-47~-8、x≤12)右下方,pose-preview 实测不糊脸。
+const READY_POSE: Pose = { pts: [[0, -1], [6, 6]], hand: [16, -8], ang: 64, len: 25 };
 
 interface Pose {
   pts: number[][];
@@ -404,11 +414,16 @@ function swingArmPose(ang: number, reach: number, u: number): Pose {
 }
 
 // 收拍姿势:k=0 是弧线终点(u=1:呼吸半径收至 0.86、腕部过冲恰归零,与挥拍末帧无缝),
-// k=1 回到待机。用 lastSwingStyle/Radius:起拍会把 swingStyle 换成本拍的,回摆得看上一拍
+// k=1 回到待机。用 lastSwingStyle/Radius:起拍会把 swingStyle 换成本拍的,回摆得看上一拍。
+// 插值曲线走 easeOutBack:末端拍子朝待机位小幅甩过头再弹回 —— 收拍的惯性回弹
+// (follow-through 的弹簧感)。只弯这一条曲线,躯干/远臂共用的 recK 不动,
+// 否则过冲会把 lean 拉到反方向。幅度由 swing.recoverOvershoot 控制,1=无过冲
 function recoverPose(p: RPlayer, k: number): Pose {
   const arc = Physics.swingArc(p.lastSwingStyle ?? p.swingStyle);
   const reach = (p.lastSwingRadius ?? p.swingRadius) * 0.86;
-  return poseLerp(swingArmPose(arc.to, reach, 1), IDLE_POSE, k);
+  const c = C.swing.recoverOvershoot, tt = k - 1;
+  const kb = 1 + (c + 1) * tt * tt * tt + c * tt * tt;
+  return poseLerp(swingArmPose(arc.to, reach, 1), IDLE_POSE, kb);
 }
 
 // 分段线性查表:躯干拧转曲线这类小型关键帧
@@ -527,6 +542,35 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const idleWeight = swinging || lunging ? 0.1 : 1;
   const weightShift = Math.sin(t * 0.012) * 1.0 * (1 - runAmt * 0.7) * idleWeight;
 
+  // ---------- 发球等待:持球未挥拍 = 非持拍手后摆托球(远臂 serveHold 分支),球钉在 rules.handX/handY ----------
+  const serveHold = !!(ball && ball.held && ball.owner === p && !swinging);
+
+  // ---------- 来球预备架拍:球朝己方飞来且临近时从待机向架拍姿势渐入(纯视觉,零判定) ----------
+  // 信号是几何近似:水平速度朝我方 + 直线距离/速率估到达帧数,不积分弹道 —— 架拍是
+  // 氛围表现,快慢半拍无感。挥拍中权重归零(肩点 pivotY 是判定锁定位,沉降不能动它);
+  // 收拍期用 recK 接入,从弧线终点平滑长出来,不跳变。AI/玩家通吃。
+  let readyK = 0;
+  if (ball && ball.live && !ball.held && !serveHold && !lunging && !celebrating && !frustrated
+    && ball.vx * p.facing < 0) {
+    const speed = Math.hypot(ball.vx, ball.vy);
+    const dist = Math.hypot(ball.x - x, ball.y - (y + SW.pivotY));
+    const tEst = dist / Math.max(speed, 2);
+    let k = clamp(1 - tEst / C.readyStance.horizonFrames, 0, 1);
+    k = k * k * (3 - 2 * k);                            // smoothstep:远处懒抬,近前坐实
+    k *= lerp(0.45, 1, clamp((speed - 4) / 10, 0, 1));  // 慢球轻架,快球架满
+    readyK = k;
+  }
+  // 应用权重:挥拍 0;收拍/待机随 recK 进出。空中保留举拍与远臂,屈膝/沉降只在地上
+  const readyW = swinging ? 0 : readyK * recK;
+  const readyG = airborne ? 0 : readyW;
+  // 沉降/膝弯的量在这里出(远肩 bsy 在腿段之前就要用)
+  const readyDip = readyG * C.readyStance.dip;
+  const readyKnee = readyG * C.readyStance.kneeBend;
+  // 挥空踉跄:挥空硬直窗(whiffExtra)内躯干前冲 sin 半波,随收拍自然衰减
+  const whiffing = swinging && !p.swingHit && swT > SW.windup + SW.active;
+  const whiffK = whiffing
+    ? Math.sin(clamp((swT - (SW.windup + SW.active)) / SW.whiffExtra, 0, 1) * Math.PI) : 0;
+
   // ---------- 躯干倾斜量:基础前倾 + 随速度俯身 + 挥拍拧转(引拍后仰→发力前压) ----------
   // 命中后跟随动作:身体跟着球的方向大幅前压(over 更前倾,under 更后仰)
   const ft = p.swingHit;
@@ -540,16 +584,15 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     + lungeLean * lungeDirRel               // 跨步救球:身体沿跨步方向大幅倾斜
     + emotionLean                            // CPU 情绪:庆祝后仰/沮丧前倾
     + weightShift                            // 待机重心微移(跑/挥时衰减)
-    + landAmt * 4;                           // 落地冲击:躯干前倾吸收冲击
-
-  // ---------- 发球等待:持球未挥拍 = 非持拍手后摆托球(远臂 serveHold 分支),球钉在 rules.handX/handY ----------
-  const serveHold = !!(ball && ball.held && ball.owner === p && !swinging);
+    + landAmt * 4                            // 落地冲击:躯干前倾吸收冲击
+    + readyW * C.readyStance.lean            // 架拍:微微前倾压向来球
+    + whiffK * C.swing.whiffStagger;         // 挥空踉跄:前冲失衡
 
   // ---------- 远臂:躯干后层的远侧手臂(景深)。两段 FK + 肤色小臂 + 手,跟着动作反相 ----------
   // 画在腿/躯干/头之前 → 内侧被躯干盖住是刻意的景深。不要在这里"对称地"补一颗肩关节圆:
   // 远肩距躯干背缘只有 5.8,画了会被整个抹掉(近侧那颗有效是因为它画在躯干之后)。
   const bsx = -9 + (lean - 2) * 0.9;             // 远侧肩:与近侧 A 相距 10.5 = 3/4 视角的肩宽透视;
-  const bsy = SW.pivotY + bob - 2 + runShDy;    //   离转体轴更远所以 lean 系数 0.9 > 近侧的 0.8;跑步时肩高差
+  const bsy = SW.pivotY + bob + readyDip - 2 + runShDy;    //   离转体轴更远所以 lean 系数 0.9 > 近侧的 0.8;跑步时肩高差
   const B = offsetFrame(F, bsx, bsy);            //   比近侧肩高 2:斜侧视角远肩略抬,肘更容易露出背缘
 
   // 基准 = 待机放松挂位(肘朝后外翻、前臂垂在后下),跑动/空中/跨步/情绪逐层覆盖
@@ -586,6 +629,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     fef = 250 + Math.sin(t * 0.018 + 0.7) * 1 + cycRaw * 4 * runAmt;
   }
   fea += (p.hitRecoil || 0) * 0.6;
+  // 架拍平衡:远臂从垂挂位抬到肩后上方。3/4 视角下远臂前伸会撞进后脑遮挡圆(见下文
+  // 手指来球的警告),只能往后上抬 —— 读作反手预备的绷臂。挥空踉跄:划大弧找平衡
+  if (readyW > 0) { fea -= readyW * C.readyStance.farUp; fef -= readyW * C.readyStance.farFold; }
+  if (whiffK > 0) { fea -= whiffK * 26; fef -= whiffK * 30; }
 
   // 收拍 → 挥拍:与持拍臂共用 recK / blendIn 两条窗。**顺序不可调换** —— 缓冲衔接的连拍
   // 在起拍时 recoverT 还没走完,远臂要从回摆中途接过去(对应持拍臂的 poseLerp(recoverPose…))
@@ -607,15 +654,20 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     fea += (poseU - 0.5) * 2 * 12;
   }
 
-  // 手指向来球:只在远臂已抬起(fea<195)且球在肩以上时轻推,±12° 封顶。绝不做全 IK ——
-  // 手一往前上就撞进后脑的遮挡圆,往回缩就没过躯干背缘,两头都坏事
-  if (ball && fea < 195) {
+  // 手指向来球:只在远臂已抬起且球在肩以上时轻推,±12° 封顶。绝不做全 IK ——
+  // 手一往前上就撞进后脑的遮挡圆,往回缩就没过躯干背缘,两头都坏事。
+  // 两重门控都走斜坡:fea 硬切会瞬跳(跑步步态 fea 206±14 来回穿越那条线);
+  // |d|>90 = 球在手的反方向,轻推无意义,90~120 淡出 —— 否则 d 扫过 ±180
+  // (正对反方向)时 clamp 的符号翻转会让手指瞬跳
+  if (ball) {
     const bdx = (ball.x - x) * p.facing, bdy = ball.y - (y + SW.pivotY);
     if (bdy < -6) {
       let d = Math.atan2(-bdy, bdx) / D2R - fef;
       while (d > 180) d -= 360;
       while (d < -180) d += 360;
-      fef += clamp(d, -12, 12);
+      fef += clamp(d, -12, 12)
+        * clamp((195 - fea) / 10, 0, 1)
+        * clamp((120 - Math.abs(d)) / 30, 0, 1);
     }
   }
 
@@ -628,7 +680,16 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   drawHand(g, B, fp.hand[0], fp.hand[1], 3.3, 0.66);   // 有手 = 是手臂,不是棍子
 
   // ---------- 腿:跑姿(幅度随速度)与空中姿势(升收腿/落展腿)按权重混合 ----------
-  const hipY = -H * 0.34 + bob;
+  // 挥拍下半身动力链:under 引拍期折腿蓄力、发力段蹬伸挑起;over 发力窗后腿蹬伸提跟。
+  // 肩点是判定锁定位,under 蓄力只走膝弯机制,不降肩 —— 上身照常,腿自己在发力
+  const burstA = C.swing.swingBurst[0];
+  const legOn = swinging && !airborne;
+  const legU = legOn ? clamp((poseU - burstA) / (1 - burstA), 0, 1) : 0;
+  const driveK = Math.sin(legU * Math.PI);                               // 蹬伸:发力窗起,随挥收
+  const crouchK = legOn && p.swingStyle === "under"
+    ? clamp(poseU / burstA, 0, 1) * (1 - legU) : 0;                      // 蓄力:引拍折腿,发力释放(低球专属)
+  const swingCrouchKnee = crouchK * C.swingLegs.underCrouchKnee;
+  const hipY = -H * 0.34 + bob + readyDip;
   const thigh = H * 0.19, shin = H * 0.09;
   const skinGap = H * 0.04;                    // 短裤与球袜之间露出的膝盖皮肤段
   const sockH = shin - skinGap;                 // 球袜相应缩短
@@ -656,22 +717,30 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     const kneeBend = Math.max(0, L.s * cycRaw) * (C.player.kneeBendMax || 8) * spN * runAmt;
     // 落地冲击:双腿同步深弯吸收冲击,幅度随 squash 恢复衰减
     const landKnee = landAmt * 14;
-    const kneeOff = -(kneeBend + landKnee);                     // 小腿向后(远离网方向)偏移
-    const kneeLift = (kneeBend + landKnee) * 0.35;              // 弯曲时脚微抬(脚跟离地)
+    // 架拍/under 蓄力的双膝对称弯(跑姿膝弯是单侧摆动弯,这里是两条一起折)
+    const symKnee = readyKnee + swingCrouchKnee;
+    // 蹬伸提跟:over 只有远侧后腿蹬地,under 双腿一起挑
+    const driveLift = !legOn ? 0
+      : p.swingStyle === "over"
+        ? (L.far ? driveK * C.swingLegs.overDriveLift : 0)
+        : driveK * C.swingLegs.underDriveLift;
+    const kneeOff = -(kneeBend + landKnee + symKnee);                     // 小腿向后(远离网方向)偏移
+    const kneeLift = (kneeBend + landKnee + symKnee) * 0.35 + driveLift;  // 弯曲时脚微抬(脚跟离地)
     // 远侧腿:宽度收窄 8%(透视缩短) + 颜色压暗(景深)
     const lw = L.far ? 0.92 : 1.0;
     const darkColor = L.far ? withAlpha(pal(th.dark), 0.78) : pal(th.dark);
     const skinColor = L.far ? withAlpha(pal(SKIN), 0.78) : pal(SKIN);
     const sockColor = L.far ? withAlpha(pal(L.sock), 0.82) : pal(L.sock);
     const shoeColor = L.far ? withAlpha(pal(L.shoe), 0.80) : pal(L.shoe);
-    px(g, F, L.bx + dx - W * 0.12 * lw, hipY, W * 0.24 * lw, thigh - lift, darkColor);              // 短裤/大腿
-    px(g, F, L.bx + dx + kneeOff - W * 0.10 * lw, hipY + thigh - lift, W * 0.20 * lw, skinGap, skinColor);     // 膝盖皮肤
-    px(g, F, L.bx + dx + kneeOff - W * 0.10 * lw, hipY + thigh + skinGap - lift - kneeLift, W * 0.20 * lw, sockH, sockColor); // 球袜
-    px(g, F, L.bx + dx + kneeOff - W * 0.165 * lw, hipY + thigh + shin - 1 - lift - kneeLift, W * 0.33 * lw, shoeH, shoeColor); // 鞋(加厚加宽)
+    const thighLen = thigh - lift - readyDip;   // 沉降:大腿段等量缩短,脚底原地不动
+    px(g, F, L.bx + dx - W * 0.12 * lw, hipY, W * 0.24 * lw, thighLen, darkColor);              // 短裤/大腿
+    px(g, F, L.bx + dx + kneeOff - W * 0.10 * lw, hipY + thighLen, W * 0.20 * lw, skinGap, skinColor);     // 膝盖皮肤
+    px(g, F, L.bx + dx + kneeOff - W * 0.10 * lw, hipY + thighLen + skinGap - kneeLift, W * 0.20 * lw, sockH, sockColor); // 球袜
+    px(g, F, L.bx + dx + kneeOff - W * 0.165 * lw, hipY + thighLen + skinGap + sockH - 1 - kneeLift, W * 0.33 * lw, shoeH, shoeColor); // 鞋(加厚加宽)
   }
 
   // ---------- 躯干:3/4 斜侧 —— 向网侧偏置 + 上段前倾 + 前亮后暗 + 脊柱曲度 ----------
-  const bodyTop = -H * 0.72 + bob;
+  const bodyTop = -H * 0.72 + bob + readyDip;
   const bodyH = H * 0.38;
   const tw = W * 0.66, tx = -W * 0.40;
   // 脊柱曲度:髋部稳定、肩部拧转,中间渐变形成弯曲感(而非两段折角)
@@ -749,7 +818,8 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const landHeadTuck = (p.sq < 0.85 && p.onGround) ? (1 - p.sq) * 4 : 0;
   // 跨步倾斜:头朝跨步方向微倾
   const lungeHeadTilt = lungeLean * lungeDirRel * 0.15;
-  const headDy = swingHeadDy + runHeadBob + landHeadTuck + lungeHeadTilt;
+  const headDy = swingHeadDy + runHeadBob + landHeadTuck + lungeHeadTilt
+    + whiffK * 1.5;   // 挥空踉跄:头跟着前冲微低
   // 眼神追球:瞳孔朝球的方向偏一点(局部坐标);没球时看向前方。眨眼按相位错开的
   // 周期触发,无状态 —— 不用给每个角色维护计时器
   let lookX = 0.6, lookY = 0;
@@ -761,12 +831,13 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const blink = ((t + (p.blinkSeed ?? 0)) % 220) < 5;
   px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, SKIN);
   drawHead(g, F, th, H * 0.21, 2 + (lean - 2) * 0.6, bodyTop - H * 0.21 * 1.12 + headDy,
-    { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD, skin: ps });
+    { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD, skin: ps,
+      faceStyle: p.faceSkin?.faceStyle });
 
   // ---------- 持拍臂:一条姿势管线,挥拍弧线 ↔ 待机收拍全程连续 ----------
   // 命中后持拍臂横拉过身体:肩点朝网侧额外偏移(增强跟随感)
   const ftPull = (ft && poseU > 0.6) ? (poseU - 0.6) * 2.5 * p.facing : 0;
-  const A = offsetFrame(F, 1.5 + (lean - 2) * 0.8 + ftPull, SW.pivotY + bob - runShDy);   // 肩点在躯干上段内,随拧转前移;跑步肩高差与远肩反向
+  const A = offsetFrame(F, 1.5 + (lean - 2) * 0.8 + ftPull, SW.pivotY + bob + readyDip - runShDy);   // 肩点在躯干上段内,随拧转前移;跑步肩高差与远肩反向。挥拍中 readyDip=0,判定锁定位不动
   let pose: Pose;
   const prevAng = lastAng.get(angKey(p)) ?? null;
   if (swinging && sp) {
@@ -777,8 +848,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     const dir = Math.sign(sp.to - sp.from) || 1;
     pose = swingArmPose(sp.ang + dir * wrist, sp.reach, sp.u);
     if (swT < SW.blendIn) {
-      // 起拍过渡:上一拍没收完就从那里接,否则从待机;easeOut 让引拍先快后缓
-      pose = poseLerp(recoverPose(pp, recK), pose, 1 - (1 - clamp(swT / SW.blendIn, 0, 1)) ** 2);
+      // 起拍过渡:上一拍没收完就从那里接,否则从待机;easeOut 让引拍先快后缓。
+      // 出发姿势带上架拍权重(readyK 是未门控的信号值):从架拍位起拍,拍子不跳回待机
+      pose = poseLerp(poseLerp(recoverPose(pp, recK), READY_POSE, readyK), pose,
+        1 - (1 - clamp(swT / SW.blendIn, 0, 1)) ** 2);
     }
     lastAng.set(angKey(p), pose.ang);
     const inWin = swT >= Math.max(SW.windup, SW.blendIn) && swT <= SW.windup + SW.active;
@@ -850,6 +923,12 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
       ang: IDLE_POSE.ang + Math.sin(t * 0.025) * 2.5,
       len: IDLE_POSE.len,
     };
+  }
+  // 来球预备架拍:后置混合级 —— 待机/收拍姿势整体往架拍位拉。挥拍分支不进(readyW=0),
+  // 收拍期权重随 recK 长出来,与弧线终点无缝。*readyBreath 给架拍位留一点呼吸,
+  // 满权重时拍子不是冻住的
+  if (readyW > 0) {
+    pose = poseLerp(pose, READY_POSE, readyW * (0.9 + 0.1 * Math.sin(t * 0.028)));
   }
   // 上臂深色衣袖 + 前臂露肤色:整条深色会在球衣上读成「斜挎的带子」
   arm(g, A, th.dark, pose.pts);
@@ -943,29 +1022,32 @@ function estTextWidth(s: string): number {
   return w;
 }
 
-// ---------- 头:一整颗黑脸圆 + 白色线条五官 + 队色发带(重设计) ----------
-// 肤色/刘海/耳朵全部去掉,表情全靠白色线条(face 种类见 types.FaceKind),
+// ---------- 头:两款脸面 + 队色发带(商店「面部皮肤」) ----------
+// 墨面款(经典):一整颗黑脸圆 + 白色线条五官;肤色款:脸底同手臂肤色 + 深暖棕墨色五官,
+// 好心情表情加腮红。表情种类见 types.FaceKind,
 // 局部 +x = 朝球网:近侧眼大、远侧眼小,瞳位随 opt.look 追球,和斜侧身体同一个视角。
 // 注意 cc.Graphics 的 fill()/stroke() 会消费当前路径(弧光双描边处靠重建路径证实),
 // 所以「填充 + 描边」同一形状必须重建路径,攒路径后一次性 stroke 与 canvas 同构。
 function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
   opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number;
-    skin?: SkinDef | null } = {}): void {
+    skin?: SkinDef | null; faceStyle?: "ink" | "skin" } = {}): void {
   const lx = opt.lookX || 0, ly = opt.lookY || 0;
   const face: FaceKind = (opt.faceT ?? 0) > 0 ? (opt.face ?? "normal") : "normal";
   const sk = opt.skin ?? null;
+  const sunny = opt.faceStyle === "skin";   // 肤色款:脸底肤色 + 墨色五官 + 心情腮红
+  const ink = sunny ? INK : FACE;           // 五官用色(两款各自的"墨")
 
-  // 黑脸圆:近黑填充 + 淡白描边,暗色球馆里勾出轮廓
-  g.fillColor = pal(HEAD);
+  // 脸圆:墨面款近黑填充 + 淡白描边(暗色球馆里勾轮廓);肤色款与手臂同肤色 + 同款描边
+  g.fillColor = pal(sunny ? SKIN : HEAD);
   circleAA(g, f, cx, cy, hr);
   g.fill();
-  g.strokeColor = pal(HEAD_LINE);
+  g.strokeColor = pal(sunny ? SKIN_LINE : HEAD_LINE);
   circleAA(g, f, cx, cy, hr);
   g.lineWidth = f.lw(1.6);
   g.stroke();
 
-  // 头顶高光:一道极淡反光弧,黑脸不至于闷成纯色块
-  g.strokeColor = withAlpha(pal(FACE), 0.15);
+  // 头顶高光:一道极淡反光弧,墨面款不至于闷成纯色块;浅色脸上稍提亮才看得见
+  g.strokeColor = withAlpha(pal(FACE), sunny ? 0.22 : 0.15);
   g.lineWidth = f.lw(2.5);
   polyPath(g, arcPts(f, cx, cy, hr * 0.76, Math.PI * 1.12, Math.PI * 1.42, false), false);
   g.stroke();
@@ -986,7 +1068,7 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
   } else if (hw === "bandana") {
     drawBandana(g, f, th, hr, cx, cy, opt.t ?? 0);
   } else {
-    // 队色发带:压在头顶,黑脸上的红蓝识别靠它
+    // 队色发带:压在头顶,两款脸上的红蓝阵营识别都靠它
     g.strokeColor = pal(th.main);
     g.lineWidth = f.lw(4);
     polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.14, Math.PI * 1.86, false), false);
@@ -998,8 +1080,8 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
   const exN = cx + hr * 0.40, exF = cx - hr * 0.16;   // 近/远眼 x
   const eyN = cy + hr * 0.10, eyF = cy + hr * 0.14;   // 近/远眼 y(远眼略低)
   const mx = cx + hr * 0.17, my = cy + hr * 0.34;     // 嘴基点(偏网侧)
-  g.fillColor = pal(FACE);
-  g.strokeColor = pal(FACE);
+  g.fillColor = pal(ink);
+  g.strokeColor = pal(ink);
 
   switch (face) {
     case "fierce": {
@@ -1009,7 +1091,7 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
       lineSeg(g, f, exF + 1.7, eyF - 3.0, exF - 1.7, eyF - 4.8);
       lineSeg(g, f, mx - 1.5, my + 0.2, mx + 4.5, my - 0.4);
       g.stroke();
-      dotEyes(g, f, exN, eyN, exF, eyF, lx, ly);
+      dotEyes(g, f, exN, eyN, exF, eyF, lx, ly, ink);
       break;
     }
     case "star": {
@@ -1045,7 +1127,7 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
       polyPath(g, arcPts(f, exF + lx * 0.7, eyF + 0.8, 1.6, Math.PI, 0, false), false);
       g.stroke();
       if (face === "cheer") {
-        g.fillColor = pal(FACE);
+        g.fillColor = pal(ink);
         polyPath(g, arcPts(f, mx + 1, my - 1.4, 3.3, Math.PI * 0.06, Math.PI * 0.94, false), true);
         g.fill();
       } else {
@@ -1081,7 +1163,7 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
         lineSeg(g, f, exF - 1.3 + lx * 0.7, eyF, exF + 1.3 + lx * 0.7, eyF);
         g.stroke();
       } else {
-        dotEyes(g, f, exN, eyN, exF, eyF, lx, ly);
+        dotEyes(g, f, exN, eyN, exF, eyF, lx, ly, ink);
       }
       g.lineWidth = f.lw(1.3);
       lineSeg(g, f, mx - 0.5, my, mx + 3.8, my + 0.4);
@@ -1090,7 +1172,25 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
     }
   }
 
+  // 心情腮红(肤色款专属):好心情表情在两颊点两团淡粉,3/4 透视近颊略大
+  if (sunny && (face === "happy" || face === "cheer" || face === "star")) {
+    g.fillColor = pal(BLUSH);
+    circleAA(g, f, cx + hr * 0.56, cy + hr * 0.30, hr * 0.15);
+    g.fill();
+    circleAA(g, f, cx - hr * 0.40, cy + hr * 0.32, hr * 0.11);
+    g.fill();
+  }
+
   drawFaceSticker(g, f, opt.t ?? 0, face, opt.faceT ?? 0, opt.faceD ?? 1, cx, cy, hr);
+}
+
+// ---------- 商店面部款预览:大头像(与上场同一套 drawHead 笔画) ----------
+// career-panel 的面部 tab 缩略图/试衣间用;expr 传表情种类,faceT 给到 666(>600 = 贴纸
+// 走「定格」分支:pop 完成且不淡出),让表情与贴纸都以最终成色示人
+export function drawHeadStill(g: Graphics, vp: Viewport, wx: number, wy: number, scale: number,
+  th: Theme, faceStyle: "ink" | "skin", expr: FaceKind, t: number): void {
+  const f = playerFrame(vp, wx, wy, 1, scale, scale);
+  drawHead(g, f, th, 20, 0, 0, { t, face: expr, faceT: expr === "normal" ? 0 : 666, faceD: 666, faceStyle });
 }
 
 // ---------- 设计款发型与头饰零件(全部局部坐标,角度沿用 canvas y 向下约定:
@@ -1273,11 +1373,12 @@ function drawRibbon(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy
   g.fill();
 }
 
-// ---------- 表情五官零件(全部白色线条,由 drawHead 按种类取用) ----------
+// ---------- 表情五官零件(颜色由 drawHead 按脸面款式给:墨面=白 / 肤色=暖棕) ----------
 
-// 白点眼:normal/fierce 共用;瞳位随球偏移(look 已是局部单位向量 × 1.3)
-function dotEyes(g: Graphics, f: Frame, exN: number, eyN: number, exF: number, eyF: number, lx: number, ly: number): void {
-  g.fillColor = pal(FACE);
+// 圆点眼:normal/fierce 共用;瞳位随球偏移(look 已是局部单位向量 × 1.3)
+function dotEyes(g: Graphics, f: Frame, exN: number, eyN: number, exF: number, eyF: number, lx: number, ly: number,
+  color: string): void {
+  g.fillColor = pal(color);
   ellipseAA(g, f, exN + lx, eyN + ly, 1.9, 2.6);
   g.fill();
   ellipseAA(g, f, exF + lx * 0.7, eyF + ly, 1.4, 2.1);
