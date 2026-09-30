@@ -726,9 +726,18 @@ export class UIManager extends Component {
     );
   }
 
+  /**
+   * 闯关大厅和 career / drills 一样是「浮在 MENU 之上的一屏」:Rules 状态全程不动,
+   * 所以关完的归途必须命令式给回来。少这一句的后果不是难看,是**卡死** ——
+   * 菜单被 hide 掉、状态又没有变化沿,onState 永远不会再跑,屏幕上只剩一座空球场
+   * (用户报的「进入闯关模式后什么按钮都看不到」)。
+   */
   private openCampaign(): void {
     this.menu.hide();
-    this.campaignPanel.show();
+    this.campaignPanel.show(() => {
+      this.campaignPanel.hide();
+      this.menu.show();
+    });
   }
 
   /**

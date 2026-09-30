@@ -97,6 +97,8 @@ export class CampaignPanel {
   private currentCourt: CourtTheme = "beach";
   private tabButtons: { court: CourtTheme; node: Node; g: Graphics; lbl: Label }[] = [];
   private totalStarsLabel!: Label;
+  /** 关完把上一屏(主菜单)交回来的归途 —— 见 show() 的注释 */
+  private onClose: (() => void) | null = null;
 
   // 战前简报弹窗节点
   private briefDialog!: Node;
@@ -112,11 +114,17 @@ export class CampaignPanel {
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
     this.root = kit.root(parent, "campaign-panel");
-    this.root.active = false;
+    this.root.active = false;   // 此刻子树一个像素都没画过,关一下不丢渲染数据(画过之后再关才丢)
     this.build();
   }
 
-  show(): void {
+  /**
+   * 大厅是「浮在主菜单之上的一屏」,不挂在任何 Rules 状态上:进来时 openCampaign() 把菜单
+   * 收走了,而状态自始至终都是 MENU —— onState 只在**变化沿**触发,所以菜单不会自己回来。
+   * 归途只能由调用方给(onClose),和 openCareer / openDrills 同一个契约。
+   */
+  show(onClose?: () => void): void {
+    if (onClose) this.onClose = onClose;
     cancelFade(this.root);
     this.root.active = true;
     this.refreshHeader();
@@ -125,10 +133,18 @@ export class CampaignPanel {
     slamIn(this.panelNode, 0);
   }
 
+  /** 收起:只淡出、不 deactivate —— 原生(JSB)侧 Graphics 的渲染数据会在 onDisable 被清,
+   *  重显时不自动重传,第二次进大厅就是一屏没有底块的空壳(见 ui-arcade.retainedDraw 顶部)。 */
   hide(): void {
-    fadeOutHide(this.root, () => {
-      this.root.active = false;
-    });
+    this.closeBriefing();     // 简报别留在身后:大厅重开时它要处于「已收起」态,否则放行回来的第一个按钮会是它的
+    fadeOutHide(this.root);
+  }
+
+  /** ✕ / 返回:交回上一屏。没有归途(理论上不该发生)就自己收,至少留个能点的界面。 */
+  private close(): void {
+    this.kit.sfx.play("ui");
+    if (this.onClose) this.onClose();
+    else this.hide();
   }
 
   private build(): void {
@@ -161,10 +177,7 @@ export class CampaignPanel {
     // 关闭按钮
     const closeBtn = uiIconButton(this.panelNode, "✕", { bg: "#6e2029", edge: "#ff8a8a", fontSize: 18, hit: 44, vis: 36 });
     closeBtn.setPosition(PW / 2 - 36, titleY, 0);
-    closeBtn.on(Button.EventType.CLICK, () => {
-      this.kit.sfx.play("ui");
-      this.hide();
-    });
+    closeBtn.on(Button.EventType.CLICK, () => this.close());
 
     // 场景 Tab 切换横栏 (4个场景)
     const tabY = PH / 2 - 76;
@@ -379,10 +392,11 @@ export class CampaignPanel {
     const startBtn = makeArcadeBtn(body, "立即开战 ★", 180, 46, "primary");
     startBtn.setPosition(90, btnY, 0);
     startBtn.on(Button.EventType.CLICK, () => {
-      if (!this.briefStage) return;
+      const stage = this.briefStage;      // 先接住:hide() 会顺手 closeBriefing() 把 briefStage 清掉
+      if (!stage) return;
       this.kit.sfx.play("ui");
       this.hide();
-      this.kit.startCampaignStage(this.briefStage);
+      this.kit.startCampaignStage(stage);
     });
   }
 
@@ -399,12 +413,16 @@ export class CampaignPanel {
       if (this.briefStars[i]) this.briefStars[i].string = `★ ${goal}`;
     });
 
+    // 弹窗本体同样「只淡出、不 deactivate」:它是画过一次再收的第二次子树,
+    // 用 active=false 收起会让原生侧底块在第二次打开时整个隐身(只剩字)。
+    // cancelFade 排在最前:把上一次退场时禁用的按钮/遮罩放行回来。
+    cancelFade(this.briefDialog);
     this.briefDialog.active = true;
     slamIn(this.briefDialog, 0);
   }
 
   private closeBriefing(): void {
-    this.briefDialog.active = false;
+    fadeOutHide(this.briefDialog);
     this.briefStage = null;
   }
 }

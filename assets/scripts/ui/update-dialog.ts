@@ -32,6 +32,8 @@ const TRACK_H = 14;
 const CARD_W = 480;
 /** 卡顶 → 日志框顶缘:标题 40 / 版本 66 / 大小 86 + 13 间隙 */
 const HEAD_H = 99;
+/** 「安装包大小」行高;大小取不到(Gitee latest 不带 assets.size)时整行隐藏,头部按此收缩 */
+const SIZE_ROW_H = 20;
 /** 日志框底缘 → 卡底:进度条区 + 按钮区 */
 const FOOT_H = 149;
 /** 日志框可视高区间(与折行同一把尺,见 release-notes.NOTE_BOX) */
@@ -77,6 +79,8 @@ export class UpdateDialog {
   private hintDown: Node;
   private verLabel: Label;
   private sizeLabel: Label;
+  /** 本次弹窗是否显示大小行(false = 大小取不到,整行隐藏、头部收缩) */
+  private sizeLineShown = true;
   private progressNode: Node;
   private progressFill: Graphics;
   private progressLabel: Label;
@@ -295,14 +299,16 @@ export class UpdateDialog {
     const layout = buildNotes(md, textW);
     const fit = fitNotesBox(layout.height);
     const boxH = fit.boxH;
-    const cardH = boxH + HEAD_H + FOOT_H;
+    // 大小行隐藏时头部少一行,卡与框整体上提,不留空洞
+    const headH = this.sizeLineShown ? HEAD_H : HEAD_H - SIZE_ROW_H;
+    const cardH = boxH + headH + FOOT_H;
     const top = cardH / 2;
     const bottom = -cardH / 2;
-    const boxCY = top - HEAD_H - boxH / 2;
+    const boxCY = top - headH - boxH / 2;
 
     this.paintCard(cardH);
     this.title.node.setPosition(0, top - 40, 0);
-    this.verLabel.node.setPosition(0, top - 66, 0);
+    this.verLabel.node.setPosition(0, top - (this.sizeLineShown ? 66 : 62), 0);
     this.sizeLabel.node.setPosition(0, top - 86, 0);
     this.paintNotesBox(boxH);
     this.notesBoxNode.setPosition(0, boxCY, 0);
@@ -453,7 +459,9 @@ export class UpdateDialog {
     this.downloadedPath = "";
 
     this.verLabel.string = `新版本: ${info.tagName}`;
-    this.sizeLabel.string = info.fileSizeText ? `安装包大小: ${info.fileSizeText}` : "安装包大小: 未知";
+    this.sizeLineShown = Boolean(info.fileSizeText);
+    this.sizeLabel.node.active = this.sizeLineShown;
+    this.sizeLabel.string = info.fileSizeText ? `安装包大小: ${info.fileSizeText}` : "";
     this.renderNotes(info.releaseNotes || "");
 
     this.progressFill.clear();
