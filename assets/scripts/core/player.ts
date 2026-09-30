@@ -69,6 +69,9 @@ function startSwing(p: PlayerEntity, ball: Ball | null, aim?: string | number | 
   p.swingStyle = ball && CO.groundY - ball.y > 95 ? "over" : "under";
   p.swingRadius = Physics.reachRadius(ball);
   p.racketPrev = Physics.racketHead(p, 0, p.swingRadius);
+  // 发球起拍标记:起拍时球还握在手上 = 这一拍是发球。每次起拍覆盖,无需清理;
+  // 渲染层据此走发球专属的出发姿势与远臂松球轨迹(纯视觉,不参与判定)
+  p.serveSwing = !!(ball && ball.held && ball.owner === p);
 }
 
 // 命中窗口内的位置 → 质量 0..1(窗口正中 = 甜蜜点)
@@ -419,6 +422,8 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     hitter: p,
     heat: p.heat,
     lungeShot,
+    // 瞄准档位只在字符串瞄准(真人路径 mid/deep/near)时有意义;AI 直接给数值深度,不上报
+    aim: typeof p.swingAim === "string" ? p.swingAim : undefined,
   };
 }
 

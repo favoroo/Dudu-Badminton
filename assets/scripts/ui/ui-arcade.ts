@@ -1,7 +1,9 @@
 // ============================================================
-// 街机绘图构件:移植老项目 styles/ui.css + base.css 的
-// 「黄昏体育馆 · 街机赛事海报」语言 —— 硬偏移阴影贴纸感、
-// 厚底 3D 按钮、扫描线氛围、rise / slam / pop 分层入场。
+// 街机绘图构件:「暗红斩劈」视觉语言(女神异闻录式 UI)——
+// 斜切平行四边形、锯齿撕纸边、星芒爆发、侧向斩入与全屏斜切转场,
+// 叠在老项目「硬偏移阴影贴纸感」的骨架上(rise / slam / pop 保留)。
+// 面色由 navy 蓝调整体换血为墨黑,主强调色由荧光黄让位给斩劈红,
+// 黄降为二级点缀(金币 / 连击 / TO 徽章)。
 //
 // 只依赖 cc、core/config 与零依赖的 text-metrics,不 import 其它 ui 文件:ui-manager 与 career/drill
 // 面板都要用它,放独立文件避免互相 import 成环。
@@ -9,33 +11,58 @@
 // 例外是 retainedDraw() 那一条:节点被 deactivate 再 activate 时原生侧会掉渲染数据,
 // 所以「会被按状态开关」的底块都登记一份可重放的绘制,激活时 clear()+重画。
 // ============================================================
-import { BlockInputEvents, Button, Color, Component, Graphics, Label, Node, sys, Tween, tween, UIOpacity, UITransform, Vec3, view, _decorator } from "cc";
+import { BlockInputEvents, Button, Color, Component, Font, Graphics, Label, Node, resources, sys, Tween, tween, UIOpacity, UITransform, Vec3, view, Widget, _decorator } from "cc";
 import { CFG } from "../core/config";
 import { textW } from "./text-metrics";
 
 const { ccclass } = _decorator;
 
-// ---------- 设计令牌(老 base.css :root 同源) ----------
+// ---------- 设计令牌(P5「暗红斩劈」:红黑白主导,黄点缀) ----------
 export const ARCADE = {
-  ink: "#05070f",        // --ink 最深底
-  navy: "#0e1428",       // --navy 面板底
-  navy2: "#182142",      // --navy-2 按钮底/面板上层
-  panelTop: "#16203c",   // 面板渐变上端(老 .panel linear-gradient)
-  line: "#2b3560",       // --line
-  paper: "#f5efe1",      // --paper 暖纸白(正文/大字)
-  paperDim: "#cfc7b4",   // --paper-dim
-  acid: "#ffe14d",       // --acid 荧光黄
-  acidEdge: "#b79b12",   // 主按钮描边
-  acidDk: "#8a7514",     // 厚底按钮的底边
-  red: "#ff4d4d",        // --red
-  blue: "#3ea8ff",       // --blue
-  wood: "#c8703a",       // --wood 暖木
-  good: "#7dff9e",       // --good
-  bad: "#ff6b6b",        // --bad
+  ink: "#07070d",        // 最深底(P5 黑)
+  navy: "#101018",       // 面板底(原深蓝 navy 换血为近黑)
+  navy2: "#1a1a26",      // 按钮底/面板上层
+  panelTop: "#20202e",   // 面板渐变上端
+  line: "#2c2c3a",       // 描线
+  paper: "#f5efe1",      // 暖纸白(正文/大字)
+  paperDim: "#cfc7b4",
+  acid: "#ffe14d",       // 荧光黄:二级点缀(金币/连击/TO 徽章)
+  acidEdge: "#b79b12",
+  acidDk: "#8a7514",
+  slash: "#e60012",      // P5 主红:主按钮/横幅/强调块
+  slashDk: "#8f000b",    // 主红的厚底边
+  red: "#ff4d4d",        // 队色红(与球衣同源,别当主红用)
+  blue: "#3ea8ff",       // 队色蓝
+  wood: "#c8703a",       // 暖木
+  good: "#7dff9e",
+  bad: "#ff6b6b",
   cyan: "#00f0ff",
-  dim: "#8f9cbe",        // 老项目里高频出现的灰蓝字
-  dimDeep: "#6f7ca6",    // 更暗一档
+  dim: "#8f9cbe",
+  dimDeep: "#6f7ca6",
 };
+
+// ---------- 显示字体:子集化的中文标题黑体(见 tools/make-font-subset.py) ----------
+// 挂标题/比分大字/横幅;加载失败(资源未导入、低端机)静默回退系统字体,调用方无需判空。
+let displayFont: Font | null = null;
+const fontWaiters: Array<(f: Font) => void> = [];
+
+/** 标题/大字专用字体;尚未加载完成时返回 null(调用方先按系统字体走) */
+export function getDisplayFont(): Font | null { return displayFont; }
+
+/** 字体就绪回调(已就绪则立即调):给先建好的 Label 补挂字体用 */
+export function onDisplayFont(cb: (f: Font) => void): void {
+  if (displayFont) { cb(displayFont); return; }
+  fontWaiters.push(cb);
+}
+
+try {
+  resources.load("fonts/dudu-display", Font, (err, asset) => {
+    if (!err && asset && asset.isValid) {
+      displayFont = asset;
+      for (const cb of fontWaiters.splice(0)) cb(asset);
+    }
+  });
+} catch { /* 无 resources 的运行环境忽略:一律系统字体 */ }
 
 // ---------- 移动端触控令牌(统一从这把尺子出,不再每个面板各写各的) ----------
 
@@ -290,6 +317,147 @@ export function drawHardShadow(g: Graphics, w: number, h: number, r: number, dx 
   g.fill();
 }
 
+// ---------- 斜切几何(P5 的基本语汇:平行四边形 + 锯齿 + 星芒) ----------
+
+/** 斜切量换算:高 h 的块倾斜 deg 度时,顶边相对底边的水平偏移(世界单位) */
+export function skewOf(h: number, deg: number): number {
+  return h * Math.tan(deg * Math.PI / 180);
+}
+
+/**
+ * 斜切平行四边形路径(视觉居中约定):整体盒心与节点原点对齐,
+ * skew>0 = 顶边向 +x 倾(与 CSS skewX(负角) 同视效)。cx/cy 为整块平移。
+ * 注意视觉盒比 w 宽 |skew|:动态底块的宽度计算要预留这份溢出。
+ */
+export function slantPath(g: Graphics, w: number, h: number, skew: number, cx = 0, cy = 0): void {
+  const s = skew / 2;
+  g.moveTo(-w / 2 + s + cx, -h / 2 + cy);
+  g.lineTo(w / 2 + s + cx, -h / 2 + cy);
+  g.lineTo(w / 2 - s + cx, h / 2 + cy);
+  g.lineTo(-w / 2 - s + cx, h / 2 + cy);
+  g.close();
+}
+
+/** 斜切硬阴影:与 drawHardShadow 同职责,形状跟着斜切块走 */
+export function drawSlantShadow(g: Graphics, w: number, h: number, skew: number, dx = 5, dy = 5, alpha = 0.55): void {
+  g.fillColor = ac("#000000", alpha);
+  slantPath(g, w, h, skew, dx, -dy);
+  g.fill();
+}
+
+export interface SlantPanelOpts {
+  /** 整块不透明度,默认 0.92 */
+  alpha?: number;
+  /** 面色,默认面板黑 */
+  face?: string;
+  /** 描边色,默认纸白低透明 */
+  edge?: string;
+  edgeA?: number;
+}
+
+/**
+ * 斜切面板底:面色 + 下半压暗(同斜率的内接带)+ 描边 + 顶缘高光线。
+ * P5 是平面高对比,不做多层渐变;层次靠硬阴影与描边。
+ */
+export function drawSlantPanel(g: Graphics, w: number, h: number, skew: number, o: SlantPanelOpts = {}): void {
+  const a = o.alpha ?? 0.92;
+  g.fillColor = ac(o.face ?? ARCADE.panelTop, a);
+  slantPath(g, w, h, skew);
+  g.fill();
+  g.fillColor = ac(ARCADE.ink, 0.45 * a);
+  slantPath(g, w, h * 0.5, skew * 0.5, 0, h * 0.25);
+  g.fill();
+  g.strokeColor = ac(o.edge ?? ARCADE.paper, o.edgeA ?? 0.18);
+  g.lineWidth = 2;
+  slantPath(g, w, h, skew);
+  g.stroke();
+  const s = skew / 2;
+  g.strokeColor = ac("#ffffff", 0.13);
+  g.lineWidth = 1;
+  g.moveTo(-w / 2 + s + 3, -h / 2);
+  g.lineTo(w / 2 + s - 3, -h / 2);
+  g.stroke();
+}
+
+/**
+ * 锯齿条(撕纸边):w 均分 teeth 个齿。dir="up" 齿尖朝上(基线在下缘 -h/2),
+ * "down" 齿尖朝下(基线在上缘 +h/2);"left"/"right" 为竖向齿(基线在 x=+w/2 / -w/2)。
+ * 用作横幅上下缘、卡片撕边、旗标装饰带;cx/cy 为整条平移。
+ */
+export function drawSawtooth(g: Graphics, w: number, h: number, teeth: number, hex: string, alpha = 1, dir: "up" | "down" | "left" | "right" = "up", cx = 0, cy = 0): void {
+  g.fillColor = ac(hex, alpha);
+  if (dir === "up" || dir === "down") {
+    const base = dir === "up" ? -h / 2 : h / 2;
+    const tip = -base;
+    const step = w / teeth;
+    g.moveTo(-w / 2 + cx, base + cy);
+    for (let i = 0; i < teeth; i++) {
+      const x0 = -w / 2 + i * step;
+      g.lineTo(x0 + step * 0.5 + cx, tip + cy);
+      g.lineTo(x0 + step + cx, base + cy);
+    }
+  } else {
+    const base = dir === "right" ? -w / 2 : w / 2;
+    const tip = -base;
+    const step = h / teeth;
+    g.moveTo(base + cx, h / 2 + cy);
+    for (let i = 0; i < teeth; i++) {
+      const y0 = h / 2 - i * step;
+      g.lineTo(tip + cx, y0 - step * 0.5 + cy);
+      g.lineTo(base + cx, y0 - step + cy);
+    }
+  }
+  g.close();
+  g.fill();
+}
+
+/** 45° 斜纹带:gap 为条纹间距(条宽 = gap),裁在 w×h 域内(P5 危险条纹) */
+export function drawDiagStripes(g: Graphics, w: number, h: number, gap: number, hex: string, alpha = 1): void {
+  g.fillColor = ac(hex, alpha);
+  const bw = gap;
+  for (let x = -w / 2 - h; x < w / 2; x += gap * 2) {
+    g.moveTo(x, h / 2);
+    g.lineTo(x + bw, h / 2);
+    g.lineTo(x + bw + h, -h / 2);
+    g.lineTo(x + h, -h / 2);
+    g.close();
+  }
+  g.fill();
+}
+
+/** 星芒:n 尖多角星(rot 弧度),得分爆发/徽章衬底 */
+export function drawStarburst(g: Graphics, rOut: number, rIn: number, points: number, hex: string, alpha = 1, rot = 0): void {
+  g.fillColor = ac(hex, alpha);
+  for (let i = 0; i < points * 2; i++) {
+    const r = i % 2 === 0 ? rOut : rIn;
+    const t = (Math.PI * i) / points + rot;
+    const x = Math.cos(t) * r;
+    const y = Math.sin(t) * r;
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  }
+  g.close();
+  g.fill();
+}
+
+/**
+ * 一次性星芒爆发:得分/连击点燃的 P5 高光。自构建自销毁,不占常驻节点;
+ * below=true 时插到父节点最底层(星芒衬在数字后面,不糊字)。
+ */
+export function burstOnce(parent: Node, hex: string, r = 30, points = 10, x = 0, y = 0, below = false): void {
+  if (!parent.isValid) return;
+  const n = new Node("burst");
+  n.layer = parent.layer;
+  n.addComponent(UITransform);
+  n.setPosition(x, y, 0);
+  const g = n.addComponent(Graphics);
+  drawStarburst(g, r, r * 0.55, points, hex, 0.95);
+  const op = n.addComponent(UIOpacity);
+  n.setScale(0.4, 0.4, 1);
+  if (below) parent.insertChild(n, 0); else n.setParent(parent);
+  tween(n).to(0.2, { scale: new Vec3(1.15, 1.15, 1) }, { easing: "quadOut" }).start();
+  tween(op).to(0.26, { opacity: 0 }).call(() => { if (n.isValid) n.destroy(); }).start();
+}
+
 // ---------- 面板:渐变模拟 + 描边 + 内高光 ----------
 
 // ---------- 遮罩:老 .screen 的 radial-gradient(中心透、四周暗) ----------
@@ -327,21 +495,40 @@ export function drawVeil(g: Graphics, w: number, h: number, centerA: number, edg
  * 用于菜单卡片/列表项这类要贴在球场上展示的表面。
  * 两层底:近黑层压对比,再叠一层 navy-2 蓝灰「色底」—— 深色球馆背景上
  * 纯近黑半透明看不出卡片的形状,蓝灰层让按钮在任何背景下都显出底色。
+ * slant≠0 时切成平行四边形(跳过圆角专属的半面高光)。
  */
-export function drawGlassCard(g: Graphics, w: number, h: number, r = 10, darkA = 0.42, accentHex?: string): void {
+export function drawGlassCard(g: Graphics, w: number, h: number, r = 10, darkA = 0.42, accentHex?: string, slant = 0): void {
+  const drawBody = (): void => {
+    if (slant !== 0) {
+      slantPath(g, w, h, skewOf(h, slant));
+      g.fill();
+      return;
+    }
+    g.roundRect(-w / 2, -h / 2, w, h, r);
+    g.fill();
+  };
   g.fillColor = ac(ARCADE.ink, darkA);
-  g.roundRect(-w / 2, -h / 2, w, h, r);
-  g.fill();
+  drawBody();
   g.fillColor = ac(ARCADE.navy2, darkA * 0.6);
-  g.roundRect(-w / 2, -h / 2, w, h, r);
-  g.fill();
-  g.fillColor = ac("#ffffff", 0.06);
-  g.roundRect(-w / 2, h / 2 - h * 0.5, w, h * 0.5, r);
-  g.fill();
+  drawBody();
+  if (slant === 0) {
+    g.fillColor = ac("#ffffff", 0.06);
+    g.roundRect(-w / 2, h / 2 - h * 0.5, w, h * 0.5, r);
+    g.fill();
+  }
   g.strokeColor = ac(accentHex ?? ARCADE.paper, accentHex ? 0.75 : 0.3);
   g.lineWidth = accentHex ? 2 : 1.5;
-  g.roundRect(-w / 2, -h / 2, w, h, r);
+  drawBody();
   g.stroke();
+  if (slant !== 0) {
+    const s = skewOf(h, slant) / 2;
+    g.strokeColor = ac("#ffffff", 0.12);
+    g.lineWidth = 1;
+    g.moveTo(-w / 2 + s + 3, -h / 2);
+    g.lineTo(w / 2 + s - 3, -h / 2);
+    g.stroke();
+    return;
+  }
   // 顶缘高光:老 kbd / 面板 border 上沿提亮
   g.strokeColor = ac("#ffffff", 0.1);
   g.lineWidth = 1;
@@ -364,6 +551,8 @@ export interface MenuCardOpts {
   edge?: number;
   /** 选中态:accent 描边提亮 */
   active?: boolean;
+  /** 斜切角度(度,P5 平行四边形);0/缺省 = 圆角矩形(向后兼容) */
+  slant?: number;
 }
 
 /**
@@ -373,6 +562,7 @@ export interface MenuCardOpts {
  * 而难度卡 / 入口条 / 球馆 tab 是直接贴在球场地面上的 —— 海滩场、竹林道场
  * 这类亮地面下,0.4 的近黑根本读不出形状(实测就是"和背景融成一片")。
  * 所以这里底色给到 navy 的实色渐变,再靠 accent 把三档难度区分开。
+ * slant>0 时整体切成平行四边形(P5 卡片),子矩形按高度比例同斜率内接。
  */
 export function drawMenuCard(g: Graphics, w: number, h: number, r = 12, o: MenuCardOpts = {}): void {
   const a = o.alpha ?? 0.88;
@@ -380,44 +570,55 @@ export function drawMenuCard(g: Graphics, w: number, h: number, r = 12, o: MenuC
   const hw = w / 2, hh = h / 2;
   const edge = o.edge ?? 4;
   const bar = o.bar ?? 5;
+  const slDeg = o.slant ?? 0;
+  const skew = slDeg !== 0 ? skewOf(h, slDeg) : 0;
 
   // 厚底边:同色系压暗向下垫一层 → 街机贴纸的立体感(按下时整卡缩放,底边跟着走)
   if (edge > 0 && accent) {
     g.fillColor = acShade(accent, 0.36, a);
-    g.roundRect(-hw, -hh - edge, w, h + edge, r);
-    g.fill();
+    if (slDeg !== 0) { slantPath(g, w, h + edge, skewOf(h + edge, slDeg), 0, -edge / 2); g.fill(); }
+    else { g.roundRect(-hw, -hh - edge, w, h + edge, r); g.fill(); }
   }
 
   // navy 竖向渐变(上亮下暗),与 drawArcadePanel 同源
   g.fillColor = ac(ARCADE.panelTop, a);
-  g.roundRect(-hw, -hh, w, h, r);
-  g.fill();
+  if (slDeg !== 0) { slantPath(g, w, h, skew); g.fill(); }
+  else { g.roundRect(-hw, -hh, w, h, r); g.fill(); }
   g.fillColor = ac(ARCADE.navy, 0.62 * a);
-  g.roundRect(-hw, -hh, w, h * 0.62, r);
-  g.fill();
+  if (slDeg !== 0) { slantPath(g, w, h * 0.62, skewOf(h * 0.62, slDeg), 0, -hh + h * 0.31); g.fill(); }
+  else { g.roundRect(-hw, -hh, w, h * 0.62, r); g.fill(); }
   g.fillColor = ac(ARCADE.ink, 0.55 * a);
-  g.roundRect(-hw, -hh, w, h * 0.34, r);
-  g.fill();
+  if (slDeg !== 0) { slantPath(g, w, h * 0.34, skewOf(h * 0.34, slDeg), 0, -hh + h * 0.17); g.fill(); }
+  else { g.roundRect(-hw, -hh, w, h * 0.34, r); g.fill(); }
 
   // accent 整面染色:让每张卡带自己的色调,而不是只有一条边
   if (accent) {
     g.fillColor = ac(accent, (o.tint ?? 0.12) * a);
-    g.roundRect(-hw, -hh, w, h, r);
-    g.fill();
+    if (slDeg !== 0) { slantPath(g, w, h, skew); g.fill(); }
+    else { g.roundRect(-hw, -hh, w, h, r); g.fill(); }
   }
 
-  // 左缘色带:内缩一点,免得戳出圆角
+  // 左缘色带:内缩一点,免得戳出圆角;斜切模式下跟着卡边同斜率
   if (bar > 0 && accent) {
     g.fillColor = ac(accent, 0.95);
-    g.roundRect(-hw + 5, -hh + 6, bar, h - 12, bar / 2);
-    g.fill();
+    if (slDeg !== 0) { slantPath(g, bar, h - 12, skewOf(h - 12, slDeg), -hw + 5 + bar / 2, 0); g.fill(); }
+    else { g.roundRect(-hw + 5, -hh + 6, bar, h - 12, bar / 2); g.fill(); }
   }
 
   // 描边 + 顶缘高光线
   g.strokeColor = ac(accent ?? ARCADE.paper, accent ? (o.active ? 0.92 : 0.6) : 0.24);
   g.lineWidth = accent ? 2 : 1.5;
-  g.roundRect(-hw, -hh, w, h, r);
-  g.stroke();
+  if (slDeg !== 0) { slantPath(g, w, h, skew); g.stroke(); }
+  else { g.roundRect(-hw, -hh, w, h, r); g.stroke(); }
+  if (slDeg !== 0) {
+    const s = skew / 2;
+    g.strokeColor = ac(accent ?? "#ffffff", 0.22);
+    g.lineWidth = 1;
+    g.moveTo(-hw + s + 3, -hh);
+    g.lineTo(hw + s - 3, -hh);
+    g.stroke();
+    return;
+  }
   g.strokeColor = ac(accent ?? "#ffffff", 0.18);
   g.lineWidth = 1;
   g.roundRect(-hw + 3, -hh + 3, w - 6, h - 6, Math.max(2, r - 3));
@@ -444,16 +645,37 @@ export function drawChevron(g: Graphics, size = 10, hex = ARCADE.paper, alpha = 
   }
 }
 
-/** 街机面板底:上亮下暗的竖向渐变(用半透明叠层模拟)+ 2px 描边 + 顶边高光线 */
-export function drawArcadePanel(g: Graphics, w: number, h: number, r = 14, alpha = 1): void {
+/** 街机面板底:上亮下暗的竖向渐变(用半透明叠层模拟)+ 2px 描边 + 顶边高光线;
+ *  slant≠0 时改为斜切平行四边形(P5 平面高对比,不做渐变叠层) */
+export function drawArcadePanel(g: Graphics, w: number, h: number, r = 14, alpha = 1, slant = 0): void {
+  if (slant !== 0) {
+    const skew = skewOf(h, slant);
+    g.fillColor = ac(ARCADE.panelTop, alpha);
+    slantPath(g, w, h, skew);
+    g.fill();
+    g.fillColor = ac(ARCADE.ink, 0.45 * alpha);
+    slantPath(g, w, h * 0.5, skew * 0.5, 0, h * 0.25);
+    g.fill();
+    g.strokeColor = ac(ARCADE.paper, 0.16);
+    g.lineWidth = 2;
+    slantPath(g, w, h, skew);
+    g.stroke();
+    const s = skew / 2;
+    g.strokeColor = ac("#ffffff", 0.12);
+    g.lineWidth = 1;
+    g.moveTo(-w / 2 + s + 3, -h / 2);
+    g.lineTo(w / 2 + s - 3, -h / 2);
+    g.stroke();
+    return;
+  }
   // 渐变模拟:底部整块 navy,再叠 3 段向上变亮的横带(半透明,肉眼平滑)
-  g.fillColor = ac(ARCADE.panelTop, alpha);          // 顶端最亮 #16203c
+  g.fillColor = ac(ARCADE.panelTop, alpha);          // 顶端最亮
   g.roundRect(-w / 2, -h / 2, w, h, r);
   g.fill();
   g.fillColor = ac(ARCADE.navy, 0.55 * alpha);       // 中段压暗
   g.roundRect(-w / 2, -h / 2, w, h * 0.62, r);
   g.fill();
-  g.fillColor = ac(ARCADE.ink, 0.5 * alpha);         // 底端最深 #0b1020
+  g.fillColor = ac(ARCADE.ink, 0.5 * alpha);         // 底端最深
   g.roundRect(-w / 2, -h / 2, w, h * 0.34, r);
   g.fill();
   // 描边
@@ -473,29 +695,54 @@ export function drawArcadePanel(g: Graphics, w: number, h: number, r = 14, alpha
 export type BtnStyle = "primary" | "ghost" | "danger";
 
 /**
- * 街机按钮底(老 .btn / .btn.primary):
- * primary = 荧光黄面 + 暗黄描边 + 4px 暗黄底边(厚底 3D);
- * ghost   = 白 7% 面 + 白 18% 描边;danger = 暗红面。
+ * 街机按钮底:
+ * primary = 斩劈红面 + 暗红厚底 4px(P5 主行动键,原荧光黄让位为点缀);
+ * ghost   = 面板黑面 + 纸白 32% 描边;danger = 暗红面。
+ * slant≠0 时整个按钮切成平行四边形(P5 斜切键)。
  * 阴影画在独立节点返回(按压时缩进,见 pressShadow)。
  */
-export function drawArcadeButton(g: Graphics, w: number, h: number, style: BtnStyle = "ghost", r = 9): void {
+export function drawArcadeButton(g: Graphics, w: number, h: number, style: BtnStyle = "ghost", r = 9, slant = 0): void {
   const bottom = 4; // 厚底厚度
+  if (slant !== 0) {
+    const skew = skewOf(h, slant);
+    let face: Color, bot: Color, edge: Color;
+    if (style === "primary") { bot = ac(ARCADE.slashDk); face = ac(ARCADE.slash); edge = ac("#ff6b72", 0.9); }
+    else if (style === "danger") { bot = ac("#3a1218"); face = ac("#6e2029"); edge = ac(ARCADE.bad, 0.6); }
+    else { bot = acShade(ARCADE.navy2, 0.42); face = ac(ARCADE.navy2, 0.98); edge = ac(ARCADE.paper, 0.32); }
+    g.fillColor = bot;
+    slantPath(g, w, h + bottom, skew, 0, -bottom / 2);
+    g.fill();
+    g.fillColor = face;
+    slantPath(g, w, h, skew);
+    g.fill();
+    g.strokeColor = edge;
+    g.lineWidth = 2;
+    slantPath(g, w, h, skew);
+    g.stroke();
+    const s = skew / 2;
+    g.strokeColor = ac("#ffffff", 0.18);
+    g.lineWidth = 1;
+    g.moveTo(-w / 2 + s + 3, -h / 2);
+    g.lineTo(w / 2 + s - 3, -h / 2);
+    g.stroke();
+    return;
+  }
   if (style === "primary") {
-    g.fillColor = ac(ARCADE.acidDk);                 // 底边厚块
+    g.fillColor = ac(ARCADE.slashDk);                // 底边厚块
     g.roundRect(-w / 2, -h / 2 - bottom, w, h + bottom, r);
     g.fill();
-    g.fillColor = ac(ARCADE.acid);                   // 主面
+    g.fillColor = ac(ARCADE.slash);                  // 主面:斩劈红
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.fill();
-    g.strokeColor = ac(ARCADE.acidEdge);
+    g.strokeColor = ac("#ff6b72");                   // 提亮描边
     g.lineWidth = 2;
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.stroke();
     // 顶缘提亮(kbd 高光同款)
-    g.strokeColor = ac("#fff8e2", 0.55);
+    g.strokeColor = ac("#ffd9d9", 0.55);
     g.lineWidth = 1;
     g.roundRect(-w / 2 + 3, h / 2 - 6, w - 6, 3, 1.5);
-    g.fillColor = ac("#fff8e2", 0.4);
+    g.fillColor = ac("#ffd9d9", 0.4);
     g.roundRect(-w / 2 + 4, h / 2 - 5, w - 8, 2, 1);
     g.fill();
   } else if (style === "danger") {
@@ -510,9 +757,9 @@ export function drawArcadeButton(g: Graphics, w: number, h: number, style: BtnSt
     g.roundRect(-w / 2, -h / 2, w, h, r);
     g.stroke();
   } else {
-    // ghost = 面板里的次级按钮。老写法(ink 40% + 白 7%)在 navy 面板上只有
+    // ghost = 面板里的次级按钮。老写法(ink 40% + 白 7%)在深色面板上只有
     // 约 1.1:1,读起来根本不像个按钮 —— 和主菜单那次「和背景融成一片」同一个病。
-    // 现在与 primary/danger 同构:暗底边 + 实色 navy-2 面 + 提亮描边。
+    // 现在与 primary/danger 同构:暗底边 + 实色面板黑面 + 提亮描边。
     g.fillColor = acShade(ARCADE.navy2, 0.42);            // 厚底边
     g.roundRect(-w / 2, -h / 2 - bottom, w, h + bottom, r);
     g.fill();
@@ -569,17 +816,25 @@ export function drawChip(g: Graphics, w: number, h: number, bg = ARCADE.acid, r 
   g.fill();
 }
 
-/** 标签 chip:底块 + 深色小字(用于 SOLO / EASY / 赛点等) */
-export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid, fg = "#0a0e1c"): Node {
+/** 标签 chip:底块 + 深色小字(用于 SOLO / EASY / 赛点等);slantDeg>0 切成斜切小片 */
+export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid, fg = "#0a0e1c", slantDeg = 0): Node {
   const n = new Node("chip");
   n.layer = parent.layer;
   n.addComponent(UITransform);
   const g = n.addComponent(Graphics);
 
   // 计算字符显示宽度(全角汉字按 1.05, 半角按 0.62)
-  const w = Math.max(size * 2 + 16, textW(text, size) + 16);
   const h = Math.round(size + 10);
-  retainedDraw(g, () => drawChip(g, w, h, bg));
+  const w = Math.max(size * 2 + 16, textW(text, size) + 16) + (slantDeg !== 0 ? Math.abs(skewOf(h, slantDeg)) : 0);
+  retainedDraw(g, () => {
+    if (slantDeg !== 0) {
+      g.fillColor = ac(bg);
+      slantPath(g, w, h, skewOf(h, slantDeg));
+      g.fill();
+    } else {
+      drawChip(g, w, h, bg);
+    }
+  });
 
   const lNode = new Node("chip-text");
   lNode.layer = parent.layer;
@@ -631,7 +886,7 @@ export function makeCoinIcon(parent: Node, x = 0, y = 0, r = 9): Node {
   return n;
 }
 
-// ---------- 动画(老 ui.css 的 rise / slam / pop / banner) ----------
+// ---------- 动画(老 ui.css 的 rise / slam / pop / banner + P5 斩入/转场) ----------
 
 /**
  * rise:淡入 + 上移归位(老 @keyframes rise)。
@@ -667,6 +922,89 @@ export function slamIn(node: Node, delay = 0): void {
   tween(node)
     .delay(delay)
     .to(0.3, { scale: new Vec3(1, 1, 1), position: new Vec3(node.position.x, y, 0) }, { easing: "backOut" })
+    .start();
+}
+
+/**
+ * 斩入(P5 式入场):从侧面平移进来 + 初始偏转角回正 + 轻缩放回弹。
+ * 用于顶栏徽章 / 比分牌的逐级入场;调用前节点应已就位在最终坐标。
+ */
+export function slashIn(node: Node, delay = 0, fromX = -42, angle = -6, dur = 0.34): void {
+  const op = node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
+  Tween.stopAllByTarget(node);
+  Tween.stopAllByTarget(op);
+  const x = node.position.x;
+  const y = node.position.y;
+  op.opacity = 0;
+  node.setPosition(x + fromX, y, 0);
+  node.setScale(0.92, 0.92, 1);
+  node.angle = angle;
+  tween(op).delay(delay).to(dur * 0.4, { opacity: 255 }).start();
+  tween(node)
+    .delay(delay)
+    .to(dur, { position: new Vec3(x, y, 0), angle: 0, scale: new Vec3(1, 1, 1) }, { easing: "backOut" })
+    .start();
+}
+
+// ---------- 全屏斜切转场(P5 关卡切换的招牌) ----------
+
+let wipeBusy = false;
+
+/**
+ * 斜切转场:黑/红两条斜带依次扫过全屏,黑带盖满中点(约 0.2s)回调 onMid ——
+ * 状态切换放这里,被盖住时切,观众看不到过程;扫完整层自毁。
+ * 进行中重复调用会立即执行 onMid/onDone 并跳过(状态切换必须发生,转场不叠加)。
+ * 层级:挂在谁下面就压在谁之上 —— 传最顶层的父节点(Canvas 级)。
+ */
+export function slashWipe(parent: Node, onMid?: () => void, onDone?: () => void): void {
+  if (wipeBusy) { onMid?.(); onDone?.(); return; }
+  wipeBusy = true;
+
+  const root = new Node("slash-wipe");
+  root.layer = parent.layer;
+  root.addComponent(UITransform);
+  const wg = root.addComponent(Widget);
+  wg.isAlignTop = true; wg.top = 0;
+  wg.isAlignBottom = true; wg.bottom = 0;
+  wg.isAlignLeft = true; wg.left = 0;
+  wg.isAlignRight = true; wg.right = 0;
+  wg.updateAlignment();
+  root.addComponent(BlockInputEvents);   // 转场期吞触摸;整层随 root 销毁,不留残党
+  root.setParent(parent);
+
+  const mkBand = (name: string, th: number, hex: string, alpha: number, delay: number): Node => {
+    // 带宽 2400 + 斜切 0.9 倍带宽:黑带中心过屏芯时(约 0.2s)必然盖满整屏
+    const bw = 2400;
+    const sk = th * 0.9;
+    const n = new Node(name);
+    n.layer = root.layer;
+    n.addComponent(UITransform);
+    const g = n.addComponent(Graphics);
+    g.fillColor = ac(hex, alpha);
+    slantPath(g, bw, th, sk);
+    g.fill();
+    n.setPosition(-1850, 0, 0);
+    n.setParent(root);
+    tween(n)
+      .delay(delay)
+      .to(0.4, { position: new Vec3(1850, 0, 0) }, { easing: "quadIn" })
+      .start();
+    return n;
+  };
+  const black = mkBand("wipe-black", 900, ARCADE.ink, 0.98, 0);
+  mkBand("wipe-red", 420, ARCADE.slash, 0.92, 0.09);
+
+  tween(black)
+    .delay(0.2)
+    .call(() => onMid?.())
+    .start();
+  tween(root)
+    .delay(0.62)
+    .call(() => {
+      onDone?.();
+      wipeBusy = false;
+      if (root.isValid) root.destroy();
+    })
     .start();
 }
 

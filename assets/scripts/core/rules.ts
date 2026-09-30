@@ -227,6 +227,7 @@ function applyShot(ball: Ball, shot: ShotLike): void {
     x: shot.contactX, y: shot.contactY, power: shot.power,
     landX: shot.landX, steps: shot.steps, intoNet: shot.intoNet, rally: R.rally,
     vx: shot.vx, vy: shot.vy, heat: shot.hitter.heat, lungeShot: !!shot.lungeShot,
+    aim: shot.aim ?? null,
   });
 }
 
@@ -308,6 +309,9 @@ function step(inputs: PlayerInput[]): void {
         const cfg = R.serveWait < sv.flickThresh ? sv.flick : sv.clear;
         shot.vx *= cfg.speedMul;
         shot.vy += cfg.loftDelta * (o.side === "left" ? -1 : 1) * 0.3;
+        // 偷后场/高远是 forced 弹道,瞄准档位根本没参与 —— 在源头清掉,免得下面 applyShot
+        // 的 hit 事件照常上报 aim,飘出与实际弹道不符的「深球·重/短球·轻」(谎报比不飘更糟)
+        shot.aim = undefined;
       }
       releaseBall(ball);
       R.state = "RALLY";

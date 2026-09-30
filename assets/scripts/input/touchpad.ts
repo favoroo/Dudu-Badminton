@@ -58,10 +58,10 @@
 // (错一帧),还会丢掉正在进行的触摸 claim。**唯一例外**是 moveMode 切换:
 // 摇杆与左右键是不同的节点结构,这时会拆左簇重建,同时清掉左半的 claim。
 // ============================================================
-import { Color, EventTouch, Graphics, Layers, Node, Tween, tween, UIOpacity, UITransform, Vec3, Widget, sys, v3, view } from "cc";
+import { Color, EventTouch, Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Vec3, Widget, sys, v3, view } from "cc";
 import { Pad, press, release, cancelJump, resetPadHolds, setMoveAxis, setTargetX } from "./pad";
 import {
-  PAD_BASE, Settings,
+  PAD_BASE, PAD_LABEL, Settings,
   JOYSTICK_BASE,
   SLIDER_BASE, railGeo,
   type MoveMode, type PadAction,
@@ -135,8 +135,10 @@ interface BtnRec {
   flash: Node;             // 冲击环子节点
   flashG: Graphics;
   flashOp: UIOpacity;
-  /** 滑动手势方向(仅 swing 键用):0=未提交, 1=右滑(deep), -1=左滑(near)。paint 时据此画方向箭头 */
+  /** 滑动手势方向(仅 swing 键用):0=未提交, 1=右滑(deep), -1=左滑(near)。paint 时据此画方向色弧与切图标 */
   swipeDir: number;
+  /** 键名文字的透明度节点(仅 swing/lunge 有):apply 里随 padAlpha 同步,不参与 paint 重画 */
+  labelOp: UIOpacity | null;
 }
 
 interface StickRec {
@@ -216,9 +218,10 @@ function paint(rec: BtnRec, edit: boolean): void {
     g.circle(0, 0, rec.r + 8);
     g.stroke();
   }
-  // 图标跟随按下/选中态变色
+  // 图标跟随按下/选中态变色;击球键再带上滑动档位(提交后整键切档位图)
   drawIcon(g, rec.action, rec.r,
-    mix(rec.pressed ? S.downIcon : S.icon, (rec.pressed ? S.downIconA : S.iconA) * A, glow * 0.7));
+    mix(rec.pressed ? S.downIcon : S.icon, (rec.pressed ? S.downIconA : S.iconA) * A, glow * 0.7),
+    rec.action === "swing" ? rec.swipeDir : 0);
   // 滑动手势反馈(仅 swing 键):已提交方向时画一道方向色弧
   if (rec.action === "swing" && rec.swipeDir !== 0) {
     const hex = rec.swipeDir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan;
@@ -231,7 +234,7 @@ function paint(rec: BtnRec, edit: boolean): void {
   }
 }
 
-/** 冲击环:按下瞬间亮一下,半径与按钮一致,alpha/scale 由 tween 驱动淡出;hex 传入档位色(甜蜜/完美辉光复用同一子节点) */
+/** 冲击环:按下瞬间亮一下,半径与按钮一致,alpha/scale 由 tween 驱动淡出;hex 传入档位色(甜蜜/完美辉光、滑动方向色复用同一子节点) */
 function paintFlashRing(rec: BtnRec, hex?: string): void {
   const g = rec.flashG;
   const S = CFG.padSkin;
@@ -242,8 +245,8 @@ function paintFlashRing(rec: BtnRec, hex?: string): void {
   g.stroke();
 }
 
-function triggerFlash(rec: BtnRec): void {
-  paintFlashRing(rec);
+function triggerFlash(rec: BtnRec, hex?: string): void {
+  paintFlashRing(rec, hex);
   rec.flashOp.opacity = 220;
   rec.flash.setScale(0.85, 0.85, 1);
   Tween.stopAllByTarget(rec.flash);
@@ -433,15 +436,68 @@ function paintSliderThumb(st: SliderRec, pressed: boolean): void {
 
 // ---------- 按钮图标(矢量,跟随按钮半径缩放) ----------
 
+/** 重击图(深球档):粗笔高弧 + 顶端实心球 + 爆发短线 —— 力量感。
+ *  击球键右滑提交后整键切这张;键盘 swingFar(已不上屏)共用同一份。 */
+function drawPowerShot(g: Graphics, r: number): void {
+  const w = r * 0.55;
+  const h = r * 0.78;
+  const N = 20;
+  g.lineWidth = 6;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const x = -w + 2 * w * t;
+    const y = -r * 0.15 + 4 * h * t * (1 - t);
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  }
+  g.stroke();
+  // 顶端实心球(羽毛球)
+  const br = r * 0.11;
+  g.circle(w, -r * 0.15, br);
+  g.fill();
+  // 力量爆发线(从球向外辐射)
+  g.lineWidth = 3;
+  const bx = w, by = -r * 0.15;
+  for (const a of [-0.9, -0.35, 0.2]) {
+    g.moveTo(bx + Math.cos(a) * (br + 2), by + Math.sin(a) * (br + 2));
+    g.lineTo(bx + Math.cos(a) * (br + 9), by + Math.sin(a) * (br + 9));
+    g.stroke();
+  }
+}
+
+/** 轻击图(短球档):细笔低弧 + 空心球 + 落点反弹小弧 —— 轻盈感。
+ *  击球键左滑提交后整键切这张;键盘 swingNear(已不上屏)共用同一份。 */
+function drawDropShot(g: Graphics, r: number): void {
+  const w = r * 0.55;
+  const h = r * 0.5;
+  const N = 16;
+  g.lineWidth = 3.5;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const x = -w + 2 * w * t;
+    const y = r * 0.02 + h * Math.sin(Math.PI * t);
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  }
+  g.stroke();
+  // 落点空心圈(球轻盈落地)
+  g.circle(w, r * 0.02, r * 0.09);
+  g.stroke();
+  // 过网轻落小弧(在落点右侧)
+  g.lineWidth = 2.5;
+  const bx = w + r * 0.14, by = r * 0.02;
+  g.moveTo(bx, by + 2);
+  g.quadraticCurveTo(bx + r * 0.09, by + 9, bx + r * 0.18, by + 2);
+  g.stroke();
+}
+
 /**
  * 在 Graphics 原点周围画按钮图标。
  * - left / right: 箭头
  * - jump: 上箭头
- * - lunge: 左右背对背箭头 + 中缝起振线(键本身不带方向,往哪跨由方向键决定)
- * - swing: 中性羽毛球图标 + 左右方向提示箭头(右滑=深球,左滑=短球)
- * - swingFar / swingNear: 旧图标(触屏不再建按钮,留给类型完备性)
+ * - lunge: 正面大开立的人形剪影 + 两侧速度线(键本身不带方向,往哪跨由方向键决定)
+ * - swing: variant 三态 —— 0 中性羽毛球 + 档位色滑动箭头;1 深球重击图;-1 短球轻击图
+ * - swingFar / swingNear: 键盘专用路径(触屏不再建按钮),与 swing 的两张档位图同源
  */
-function drawIcon(g: Graphics, action: PadAction, r: number, color: Color): void {
+function drawIcon(g: Graphics, action: PadAction, r: number, color: Color, variant = 0): void {
   g.strokeColor = color;
   g.fillColor = color;
   g.lineWidth = 5;
@@ -478,105 +534,95 @@ function drawIcon(g: Graphics, action: PadAction, r: number, color: Color): void
     }
 
     case "lunge": {
-      // 跨步:左右两个背对背箭头 + 中间一道起振竖线。
-      // 刻意不画成单个方向的箭头 —— 这个键不带方向,往哪跨由左手方向键/摇杆决定,
-      // 图形先替玩家把「按住哪边/推哪侧就往哪跨」这件事说清楚。
-      const s = r * 0.4;
-      g.lineWidth = 6;
-      g.moveTo(-s * 0.32, s * 0.78);
-      g.lineTo(-s * 1.02, 0);
-      g.lineTo(-s * 0.32, -s * 0.78);
-      g.stroke();
-      g.moveTo(s * 0.32, s * 0.78);
-      g.lineTo(s * 1.02, 0);
-      g.lineTo(s * 0.32, -s * 0.78);
-      g.stroke();
-      g.lineWidth = 4;
-      g.moveTo(0, -s * 0.5);
-      g.lineTo(0, s * 0.5);
-      g.stroke();
-      break;
-    }
-
-    case "swingFar": {
-      // 重击(高远球):粗笔高弧 + 顶端实心球 + 外侧力量短线(爆发感)
-      const w = r * 0.55;
-      const h = r * 0.7;
-      const N = 20;
-      g.lineWidth = 6;
-      for (let i = 0; i <= N; i++) {
-        const t = i / N;
-        const x = -w + 2 * w * t;
-        const y = -r * 0.15 + 4 * h * t * (1 - t);
-        if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-      }
-      g.stroke();
-      // 顶端实心球(羽毛球)
-      g.circle(w, -r * 0.15, 5);
+      // 跨步:正面大开立的人形剪影 + 两侧速度线。
+      // 人形一眼读出「位移动作」;刻意画成左右对称的开立姿,不暗示单一方向
+      // —— 往哪跨由左手方向键/摇杆决定(见 pad.ts press("lunge") 的方向解算)。
+      const s = r * 0.42;
+      // 头(实心)
+      g.circle(0, s * 0.88, s * 0.24);
       g.fill();
-      // 力量爆发线(从球向外辐射)
-      g.lineWidth = 3;
-      const bx = w, by = -r * 0.15;
-      const angles = [-0.9, -0.35, 0.2];
-      for (const a of angles) {
-        g.moveTo(bx + Math.cos(a) * 7, by + Math.sin(a) * 7);
-        g.lineTo(bx + Math.cos(a) * 14, by + Math.sin(a) * 14);
-        g.stroke();
+      // 躯干
+      g.lineWidth = 5.5;
+      g.moveTo(0, s * 0.6);
+      g.lineTo(0, s * 0.05);
+      g.stroke();
+      // 双腿大开立(跨步姿)
+      g.moveTo(0, s * 0.05);
+      g.lineTo(-s * 0.72, -s * 0.62);
+      g.moveTo(0, s * 0.05);
+      g.lineTo(s * 0.72, -s * 0.62);
+      g.stroke();
+      // 双臂向下外张(压低重心)
+      g.lineWidth = 4.5;
+      g.moveTo(0, s * 0.48);
+      g.lineTo(-s * 0.52, s * 0.02);
+      g.moveTo(0, s * 0.48);
+      g.lineTo(s * 0.52, s * 0.02);
+      g.stroke();
+      // 两侧速度线(冲刺感)
+      g.lineWidth = 3.5;
+      for (const side of [-1, 1]) {
+        const x0 = side * s * 0.98, x1 = side * s * 1.34;
+        g.moveTo(x0, s * 0.32); g.lineTo(x1, s * 0.32); g.stroke();
+        g.moveTo(x0, -s * 0.08); g.lineTo(x1, -s * 0.08); g.stroke();
       }
       break;
     }
 
-    case "swingNear": {
-      // 轻击(吊球):细笔低弧 + 空心球(轻盈) + 落地反弹小弧(过网轻落)
-      const w = r * 0.55;
-      const h = r * 0.38;
-      const N = 16;
-      g.lineWidth = 3;
-      for (let i = 0; i <= N; i++) {
-        const t = i / N;
-        const x = -w + 2 * w * t;
-        const y = r * 0.05 + h * Math.sin(Math.PI * t);
-        if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-      }
-      g.stroke();
-      // 落点空心圈(球轻盈落地)
-      g.circle(w, r * 0.05, 4);
-      g.stroke();
-      // 过网轻落小弧(在落点下方)
-      g.lineWidth = 2;
-      g.moveTo(w + 6, r * 0.05 + 2);
-      g.quadraticCurveTo(w + 10, r * 0.05 + 8, w + 14, r * 0.05 + 2);
-      g.stroke();
+    case "swingFar":
+      drawPowerShot(g, r);
       break;
-    }
+
+    case "swingNear":
+      drawDropShot(g, r);
+      break;
 
     case "swing": {
-      // 合并击球键:中性球拍图标 + 左右淡色方向提示(右滑=深球金,左滑=短球绿)
-      // 中心画一个羽毛球轮廓 + 两侧三角箭头暗示滑动方向
-      const s = r * 0.3;
-      // 羽毛球(中心圆 + 放射线)
-      g.lineWidth = 3;
-      g.circle(0, 0, s);
+      // 合并击球键,三态:
+      //   variant 0(未滑) —— 羽毛球本体 + 两侧档位色滑动箭头(右金=深球,左青=短球,
+      //     与提交后的反馈弧/冲击环同色系:颜色即档位语言);
+      //   variant 1(右滑) —— 整键切金色重击图;variant -1(左滑)—— 整键切青色轻击图。
+      if (variant > 0) { drawPowerShot(g, r); break; }
+      if (variant < 0) { drawDropShot(g, r); break; }
+      const s = r * 0.42;
+      // —— 羽毛球本体:球头实心 + 锥形羽裙 + 三片羽线(球头朝下,立在键面中央)——
+      g.lineWidth = 3.5;
+      // 裙口弧
+      g.moveTo(-s * 0.55, s * 0.5);
+      g.quadraticCurveTo(0, s * 0.68, s * 0.55, s * 0.5);
       g.stroke();
-      g.lineWidth = 2;
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2;
-        g.moveTo(s * 0.35 * Math.cos(a), s * 0.35 * Math.sin(a));
-        g.lineTo(s * Math.cos(a), s * Math.sin(a));
-        g.stroke();
-      }
-      // 左右方向提示箭头(小三角,暗示可滑动)
-      const aw = r * 0.14;
-      const ax = r * 0.55;
-      g.lineWidth = 2;
-      // 左箭头(短球方向)
+      // 裙两侧轮廓
+      g.moveTo(-s * 0.55, s * 0.5);
+      g.lineTo(-s * 0.2, -s * 0.34);
+      g.moveTo(s * 0.55, s * 0.5);
+      g.lineTo(s * 0.2, -s * 0.34);
+      g.stroke();
+      // 羽片线(裙内三道)
+      g.lineWidth = 2.5;
+      g.moveTo(0, s * 0.56);
+      g.lineTo(0, -s * 0.28);
+      g.moveTo(-s * 0.06, s * 0.52);
+      g.lineTo(-s * 0.32, -s * 0.2);
+      g.moveTo(s * 0.06, s * 0.52);
+      g.lineTo(s * 0.32, -s * 0.2);
+      g.stroke();
+      // 球头(软木):实心圆
+      g.circle(0, -s * 0.52, s * 0.26);
+      g.fill();
+      // —— 左右滑动指示:大号档位色箭头 ——
+      const aw = r * 0.15;           // 箭头半宽
+      const ax = r * 0.66;           // 箭头尖到中心距离
+      g.lineWidth = 4;
+      // 左箭头(青,短球)
+      g.strokeColor = skinColor(CFG.colors.sweet.neonCyan, color.a / 255);
       g.moveTo(-ax + aw, -aw);
-      g.lineTo(-ax - aw * 0.3, 0);
+      g.lineTo(-ax - aw * 0.35, 0);
       g.lineTo(-ax + aw, aw);
       g.stroke();
-      // 右箭头(深球方向)
+      // 右箭头(金,深球)
+      g.strokeColor = skinColor(CFG.colors.sweet.gold, color.a / 255);
       g.moveTo(ax - aw, -aw);
-      g.lineTo(ax + aw * 0.3, 0);
+      g.lineTo(ax + aw * 0.35, 0);
       g.lineTo(ax - aw, aw);
       g.stroke();
       break;
@@ -676,9 +722,33 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
   flashOp.opacity = 0;
   flash.setParent(node);
 
+  // 键名文字标签(仅击球/跨步两键):图形之外再给一行字,一眼可读。
+  // 挂在按钮圆内底部,不参与 paint 重画;透明度随 padAlpha,由 apply() 同步。
+  let labelOp: UIOpacity | null = null;
+  if (action === "swing" || action === "lunge") {
+    const PS = CFG.padSkin;
+    const ln = new Node(`label-${action}`);
+    ln.layer = Layers.Enum.UI_2D;
+    ln.addComponent(UITransform).setContentSize(r * 1.7, PS.labelSize * 1.5);
+    const lb = ln.addComponent(Label);
+    lb.string = PAD_LABEL[action];
+    lb.fontSize = PS.labelSize;
+    lb.lineHeight = Math.round(PS.labelSize * 1.22);
+    lb.horizontalAlign = 1;
+    lb.verticalAlign = 1;
+    lb.color = skinColor(PS.label, 1);
+    lb.enableOutline = true;
+    lb.outlineColor = skinColor(PS.labelOutline, 1);
+    lb.outlineWidth = 2;
+    ln.setPosition(0, -r * 0.62);
+    labelOp = ln.addComponent(UIOpacity);
+    labelOp.opacity = Math.round(PS.labelA * Settings.padAlpha * 255);
+    ln.setParent(node);
+  }
+
   const rec: BtnRec = {
     action, node, ut, g, cluster, r, pressed: false, selected: false, glow: 0,
-    flash, flashG, flashOp, swipeDir: 0,
+    flash, flashG, flashOp, swipeDir: 0, labelOp,
   };
   paint(rec, !!opts.edit);
 
@@ -1076,6 +1146,9 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       rec.swipeDir = dir;
       pad.swingSwipe = dir;
       paint(rec, false);
+      // 方向色冲击环:提交哪档就用哪档的颜色闪一圈 —— 配合图标切换,把「这一拍是重是轻」
+      // 在拇指底下说清楚,不等命中才知道。色值与中性图标的滑动箭头同源。
+      triggerFlash(rec, dir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan);
       haptic("light");
     };
 
@@ -1324,6 +1397,13 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
   };
 
+  /** 键名标签跟随半径与透明度(仅 swing/lunge 两键有标签;半径变、padAlpha 变都要刷) */
+  const syncLabel = (rec: BtnRec): void => {
+    if (!rec.labelOp) return;
+    rec.labelOp.node.setPosition(0, -rec.r * 0.62);
+    rec.labelOp.opacity = Math.round(CFG.padSkin.labelA * Settings.padAlpha * 255);
+  };
+
   const apply = (): void => {
     // 模式或设备尺寸变了 → 拆左簇重建;scale 只影响左侧摇杆与按钮渲染
     const newMode = Settings.moveMode;
@@ -1341,6 +1421,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
         rec.node.setPosition((base.x + p.dx) * currentScale, (base.y + p.dy) * currentScale);
         rec.ut.setContentSize(rec.r * 2, rec.r * 2);
         rec.flash.getComponent(UITransform)!.setContentSize(rec.r * 2.6, rec.r * 2.6);
+        syncLabel(rec);
         paint(rec, !!opts.edit);
       }
     } else {
@@ -1352,6 +1433,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
         rec.node.setPosition((base.x + shown.dx) * currentScale, (base.y + shown.dy) * currentScale);
         rec.ut.setContentSize(rec.r * 2, rec.r * 2);
         rec.flash.getComponent(UITransform)!.setContentSize(rec.r * 2.6, rec.r * 2.6);
+        syncLabel(rec);
         paint(rec, !!opts.edit);
       }
       if (stick) {
@@ -1447,7 +1529,9 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       claims.clear();
       for (const rec of recs) {
         const hadGlow = rec.glow > 0;
-        if (!rec.pressed && !hadGlow && rec.node.scale.x === 1) continue;
+        const hadSwipe = rec.swipeDir !== 0;   // 滑动档位也是视觉态:层被藏起来时一并清,
+        rec.swipeDir = 0;                      // 否则再亮出来会残留上一次的深/浅图标
+        if (!rec.pressed && !hadGlow && !hadSwipe && rec.node.scale.x === 1) continue;
         rec.pressed = false;
         rec.glow = 0;
         Tween.stopAllByTarget(rec.node);

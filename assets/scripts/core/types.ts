@@ -138,6 +138,8 @@ export interface Player {
   swingStyle: SwingStyle;
   lastSwingStyle?: SwingStyle;
   swingHit: boolean;
+  /** 这一拍是发球起拍(起拍时球还在手上):渲染层用来切换发球专属的远臂松球轨迹 */
+  serveSwing?: boolean;
   swingQ: number;
   swingBuf: number;
   swingBufAim: string | number | null;
@@ -224,6 +226,9 @@ export interface ShotResult {
   lungeShot?: boolean;
   /** 时机教学:命中了但不甜时提示该往哪边调(只给真人) */
   timingHint?: "early" | "late";
+  /** 瞄准档位:挥拍时提交的落点瞄准("deep"=深球压底线 / "near"=短球放网 / "mid"=不指定);
+   *  命中确认飘字用(表现层判断真人后区分轻重提示) */
+  aim?: string;
 }
 
 // ---------- 事件 ----------
@@ -240,7 +245,10 @@ export interface GameEvent {
 export type Rarity = "common" | "rare" | "epic" | "legendary";
 
 /** 皮肤:四类共用一张表结构,颜色字段按 kind 各取所需;
- *  设计字段(发型/头饰/纹样/特效)同样按 kind 各取所需,全部可选=纯色款只填颜色 */
+ *  设计字段(发型/头饰/纹样/特效)同样按 kind 各取所需,全部可选=纯色款只填颜色。
+ *  设计字段是「注册表 key」而不是枚举:render/sprites 里各有一张
+ *  HAIRS/HEADWEARS/OUTFITS 函数表,新特征 = 注册一个绘制函数,
+ *  新人物 = 在 config.SKINS 加一条数据(复用现有特征时零绘制代码)。 */
 export interface SkinDef {
   id: string;
   kind: "player" | "racket" | "shuttle" | "face";
@@ -250,14 +258,23 @@ export interface SkinDef {
   rarity?: Rarity;
   /** player 皮肤主题色 */
   main?: string; dark?: string; glow?: string;
-  /** player 设计字段:发型/发色/头饰/球衣纹样/脚下光环(传说专属) */
-  hairStyle?: "spiky" | "twin" | "bun" | "mohawk";
+  /** player 设计字段:发型/发色/头饰/球衣纹样/脚下光环(传说专属)。
+   *  key 对应 sprites.ts 的 HAIRS/HEADWEARS/OUTFITS/AURA_COLORS 注册表 */
+  hairStyle?: string;
   hairColor?: string;
-  headwear?: "cap" | "crown" | "goggles" | "ribbon" | "bandana";
-  jersey?: "stripes" | "sash" | "trim" | "twoTone";
-  aura?: "gold" | "neon" | "flame" | "ice";
-  /** face 设计字段:脸面款式 —— ink=黑色剪影(经典),skin=肤色底+墨色五官+心情腮红 */
-  faceStyle?: "ink" | "skin";
+  headwear?: string;
+  jersey?: string;
+  aura?: string;
+  /** player 人物默认脸面(faceStyle key);装备的脸面商品为 face-auto 时生效 */
+  face?: string;
+  /** player 体型档:config.bodies 的 key —— 髋高/躯干/头身比的整体微调
+   *  (挥拍肩点 pivotY 是判定锁定位,体型档不碰它,只改下肢/躯干/头) */
+  body?: "standard" | "compact" | "tall";
+  /** player 肤色:脸面为肤色系时作脸底、手臂/手共用;缺省走全局 SKIN */
+  skinTone?: string;
+  /** face 设计字段:脸面款式 key(config.faceStyles 注册表)。
+   *  "auto" = 跟随人物默认脸(装备位默认款),其余 key 直接指定 */
+  faceStyle?: string;
   /** racket 配色;frame 留空 = 跟随人物主题 glow 色 */
   grip?: string; shaft?: string; frame?: string | null;
   /** racket 设计字段:拍线颜色/拍框贴章/挥拍弧光专属风格(残影同步) */

@@ -2067,108 +2067,391 @@ export class CourtRenderer {
   }
 
   // ============================================================
-  // 球网受力物理系统 (Net Jiggle & Wave Dynamics)
+  // 球网受力物理与高精度材质渲染系统 (Net Jiggle & Wave Dynamics)
+  // 包含：
+  // 1. 底座与地锚系统 (重型铸铁防滑台 / 沙袋地锚 / 磁吸合金底盘 / 和风木台)
+  // 2. 网面本体 (高密度菱形交叉编织网格 + 受击高斯行波物理弹性传导)
+  // 3. 立柱系统 (立体管身反光 + 紧线绞盘/手摇曲柄 / 粗麻捆扎 / 能量导管 / 锻铁抱箍)
+  // 4. 网顶白带 (双层帆布夹裹 + 双排车缝缝线 + 钢缆外露与拉线套管)
+  // 5. 柱头系统 (金属导向滑轮 / 随风防风彩带 / 等离子偏转环 / 和风拟宝珠)
   // ============================================================
   drawNet(g: Graphics, vp: Viewport, shake?: number): void {
     this.ensureTheme();
     const top = CO.netTopY;
     const gy = CO.groundY;
     const x = CO.netX;
-    const halfW = 5;
+    const halfW = CO.netHalfW;
+    const netH = gy - top;
 
     const amp = shake != null ? shake : this.netShakeAmp;
     // 柱头弹性弯曲阻尼正弦摆动
     const poleDX = amp > 0.001 ? Math.sin(this.netShakeTime * 0.48) * amp * 2.2 : 0;
+    const tx = x + poleDX;
 
-    let poleCol1 = new Color(36, 43, 69, 255);
-    let poleCol2 = new Color(72, 84, 138, 255);
-    let netMeshCol = colRgba(201, 214, 255, 0.52);
-    let tapeCol1 = new Color(246, 243, 234, 255);
-    let tapeCol2 = new Color(200, 194, 178, 255);
-    let capCol = new Color(255, 225, 77, 255);
+    // 行波位移计算闭包：距离受击点越近振幅越大，且随时间衰减
+    const getWave = (yy: number): number => {
+      if (amp <= 0.001) return 0;
+      const falloff = Math.exp(-Math.abs(yy - this.netHitY) / 28);
+      return Math.sin(this.netShakeTime * 0.55 + (yy - top) * 0.08) * amp * 3.6 * falloff;
+    };
+
+    // --------------------------------------------------------
+    // 1. 底座与接地地基系统 (Base & Floor Fitting)
+    // --------------------------------------------------------
+    // 地面软阴影
+    fillEllipse(g, vp, x, gy + 1, 16, 3, colRgba(0, 0, 0, 0.35));
 
     if (this.currentTheme === "beach") {
-      poleCol1 = new Color(120, 53, 15, 255);
-      poleCol2 = new Color(146, 64, 14, 255);
-      netMeshCol = colRgba(255, 255, 255, 0.52);
-      tapeCol1 = new Color(239, 68, 68, 255);
-      tapeCol2 = new Color(255, 255, 255, 255);
-      capCol = new Color(253, 224, 71, 255);
-    } else if (this.currentTheme === "cyber") {
-      poleCol1 = new Color(9, 5, 20, 255);
-      poleCol2 = new Color(255, 0, 127, 255);
-      netMeshCol = colRgba(0, 240, 255, 0.52);
-      tapeCol1 = new Color(0, 240, 255, 255);
-      tapeCol2 = new Color(255, 0, 127, 255);
-      capCol = new Color(0, 240, 255, 255);
-    } else if (this.currentTheme === "dojo") {
-      poleCol1 = new Color(43, 24, 16, 255);
-      poleCol2 = new Color(84, 51, 32, 255);
-      netMeshCol = colRgba(226, 217, 200, 0.52);
-      tapeCol1 = new Color(220, 38, 38, 255);
-      tapeCol2 = new Color(153, 27, 27, 255);
-      capCol = new Color(251, 191, 36, 255);
-    }
-
-    // 沙滩场地专属: 立柱抗海风斜撑拉线与地面地锚木桩
-    if (this.currentTheme === "beach") {
-      g.strokeColor = colRgba(120, 53, 15, 0.45);
+      // 沙滩专属: 抗海风斜撑拉线与地面地锚木桩
+      g.strokeColor = colRgba(135, 75, 25, 0.55);
       g.lineWidth = 1.2;
-      g.moveTo(vp.x(x + poleDX), vp.y(top + 2));
+      g.moveTo(vp.x(tx), vp.y(top + 2));
       g.lineTo(vp.x(x - 38), vp.y(gy));
-      g.moveTo(vp.x(x + poleDX), vp.y(top + 2));
+      g.moveTo(vp.x(tx), vp.y(top + 2));
       g.lineTo(vp.x(x + 38), vp.y(gy));
       g.stroke();
 
-      fillRect(g, vp, x - 40, gy - 4, 4, 6, new Color(92, 43, 9, 255));
-      fillRect(g, vp, x + 36, gy - 4, 4, 6, new Color(92, 43, 9, 255));
+      // 拉线上的木质紧线滑块
+      fillRect(g, vp, x - 20, gy - 16, 4, 3, new Color(160, 100, 45, 255));
+      fillRect(g, vp, x + 16, gy - 16, 4, 3, new Color(160, 100, 45, 255));
+
+      // 地面地锚木桩
+      fillRect(g, vp, x - 40, gy - 4, 5, 7, new Color(92, 43, 9, 255));
+      fillRect(g, vp, x + 35, gy - 4, 5, 7, new Color(92, 43, 9, 255));
+
+      // 原木十字底桩
+      fillRect(g, vp, x - 14, gy - 2, 28, 5, new Color(110, 55, 18, 255));
+      // 左右配重沙袋
+      fillEllipse(g, vp, x - 8, gy - 1, 7, 4, new Color(220, 192, 140, 255));
+      fillEllipse(g, vp, x + 8, gy - 1, 7, 4, new Color(212, 184, 132, 255));
+      // 沙袋十字捆扎封口线
+      drawLine(g, vp, x - 12, gy - 1, x - 4, gy - 1, colRgba(120, 70, 25, 0.6), 1);
+      drawLine(g, vp, x + 4, gy - 1, x + 12, gy - 1, colRgba(120, 70, 25, 0.6), 1);
+    } else if (this.currentTheme === "cyber") {
+      // 赛博专属: 磁吸合金八角底座与呼吸能量指示灯
+      fillRect(g, vp, x - 14, gy - 2, 28, 5, new Color(16, 10, 32, 255));
+      strokeRect(g, vp, x - 14, gy - 2, 28, 5, new Color(0, 240, 255, 180), 1);
+      fillRect(g, vp, x - 10, gy - 4, 20, 2, new Color(30, 18, 55, 255));
+
+      const breath = 0.5 + Math.sin(this.time * 0.08) * 0.5;
+      fillCircle(g, vp, x, gy, 2, colRgba(0, 240, 255, 0.7 + breath * 0.3));
+      fillConcentricGlow(g, vp, x, gy, 8, 4, colRgba(0, 240, 255, 0.35 * breath), colRgba(0, 0, 0, 0), 2);
+    } else if (this.currentTheme === "dojo") {
+      // 和风道场专属: 双层黑漆实木方台与金铜包角
+      fillRect(g, vp, x - 13, gy - 1, 26, 4, new Color(32, 18, 12, 255));
+      fillRect(g, vp, x - 9, gy - 4, 18, 3, new Color(48, 28, 18, 255));
+      // 四角金铜包边
+      fillRect(g, vp, x - 13, gy - 1, 3, 4, new Color(217, 119, 6, 220));
+      fillRect(g, vp, x + 10, gy - 1, 3, 4, new Color(217, 119, 6, 220));
+      fillCircle(g, vp, x, gy - 2.5, 1.2, new Color(245, 180, 50, 255));
+    } else {
+      // 专业球馆 (Arena): 铸铁 T 型防滑配重底座与安全警示反光条
+      fillRect(g, vp, x - 12, gy - 1, 24, 4, new Color(26, 32, 48, 255));
+      fillRect(g, vp, x - 9, gy - 3, 18, 2, new Color(38, 46, 68, 255));
+      fillRect(g, vp, x - 9, gy - 3, 18, 1, colRgba(120, 140, 185, 0.45)); // 倒角高光
+      // 警示黄色反光块
+      fillRect(g, vp, x - 7, gy, 14, 1.5, new Color(234, 179, 8, 220));
+      // 沉头固定螺栓
+      fillCircle(g, vp, x - 8, gy + 1, 0.9, new Color(90, 105, 135, 255));
+      fillCircle(g, vp, x + 8, gy + 1, 0.9, new Color(90, 105, 135, 255));
+      // 柱脚锁紧法兰
+      fillRect(g, vp, x - 4, gy - 5, 8, 3, new Color(50, 60, 88, 255));
     }
 
-    // 1. 双立柱 (底部固定于 groundY，顶部受力产生弹性倾斜)
-    drawLine(g, vp, x + poleDX, top - 4, x, gy, poleCol1, 2);
-    drawLine(g, vp, x + poleDX - 0.5, top - 4, x - 0.5, gy, poleCol2, 1);
+    // --------------------------------------------------------
+    // 2. 网面本体与高密度菱形交叉编织系统 (Braided Net Mesh)
+    // --------------------------------------------------------
+    let meshMainCol = colRgba(195, 210, 245, 0.50);
+    let meshAltCol = colRgba(160, 180, 230, 0.38);
+    let sideTapeCol = colRgba(230, 235, 250, 0.65);
+    let bottomCordCol = new Color(55, 65, 95, 255);
 
-    // 2. 网面水平横线 (带高斯衰减的受击正弦行波波动)
-    g.strokeColor = netMeshCol;
+    if (this.currentTheme === "beach") {
+      meshMainCol = colRgba(255, 250, 235, 0.52);
+      meshAltCol = colRgba(245, 230, 205, 0.40);
+      sideTapeCol = colRgba(255, 255, 255, 0.65);
+      bottomCordCol = new Color(120, 60, 20, 255);
+    } else if (this.currentTheme === "cyber") {
+      meshMainCol = colRgba(0, 240, 255, 0.48);
+      meshAltCol = colRgba(255, 0, 127, 0.35);
+      sideTapeCol = colRgba(0, 240, 255, 0.75);
+      bottomCordCol = new Color(0, 240, 255, 255);
+    } else if (this.currentTheme === "dojo") {
+      meshMainCol = colRgba(220, 210, 190, 0.50);
+      meshAltCol = colRgba(190, 175, 150, 0.38);
+      sideTapeCol = colRgba(235, 225, 205, 0.65);
+      bottomCordCol = new Color(60, 35, 22, 255);
+    }
+
+    // 网底张紧下索 (Bottom Tension Cord)
+    drawLine(g, vp, x - halfW, gy - 2, x + halfW, gy - 2, bottomCordCol, 1.5);
+
+    // 网面两侧垂直加固包边带 (Side Boundary Tapes)
+    drawLine(g, vp, x - halfW + poleDX * 0.95, top + 3, x - halfW, gy - 2, sideTapeCol, 1.2);
+    drawLine(g, vp, x + halfW + poleDX * 0.95, top + 3, x + halfW, gy - 2, sideTapeCol, 1.2);
+
+    // 网面水平经纬主线 (带高斯衰减正弦波动)
+    g.strokeColor = meshMainCol;
     g.lineWidth = 1;
-    for (let yy = top + 3; yy < gy; yy += 6) {
-      let wave = 0;
-      if (amp > 0.001) {
-        const falloff = Math.exp(-Math.abs(yy - this.netHitY) / 26);
-        wave = Math.sin(this.netShakeTime * 0.55 + (yy - top) * 0.08) * amp * 3.6 * falloff;
-      }
-      g.moveTo(vp.x(x - halfW + wave), vp.y(yy));
-      g.lineTo(vp.x(x + halfW + wave), vp.y(yy));
-    }
-
-    // 垂直纵线 (连接顶部摆动点与底部固定锚点)
-    for (let xx = -halfW; xx <= halfW; xx += 5) {
-      const topX = x + xx + poleDX;
-      const botX = x + xx;
-      g.moveTo(vp.x(topX), vp.y(top + 2));
-      g.lineTo(vp.x(botX), vp.y(gy));
+    for (let yy = top + 4; yy < gy - 2; yy += 5.5) {
+      const wave = getWave(yy);
+      const topRatio = (gy - yy) / netH;
+      const curPoleDX = poleDX * topRatio;
+      g.moveTo(vp.x(x - halfW + curPoleDX + wave), vp.y(yy));
+      g.lineTo(vp.x(x + halfW + curPoleDX + wave), vp.y(yy));
     }
     g.stroke();
 
-    // 3. 网顶白带 (双层分色 + 白色高光，跟随 poleDX 摆动)
-    const tx = x + poleDX;
-    fillRect(g, vp, tx - 6, top - 2, 12, 3, tapeCol1);
-    fillRect(g, vp, tx - 6, top + 1, 12, 1, tapeCol2);
-    fillRect(g, vp, tx - 6, top - 2, 12, 1, new Color(255, 255, 255, 255));
+    // 菱形斜向交叉编织纹理 (Diamond Mesh Cross-Strands)
+    // 双向交叉斜线使得网格呈现真实羽毛球网的紧密菱形编制感
+    g.strokeColor = meshAltCol;
+    g.lineWidth = 0.8;
+    for (let yy = top + 3; yy < gy - 3; yy += 9) {
+      const wave1 = getWave(yy);
+      const wave2 = getWave(Math.min(gy - 2, yy + 7));
+      const r1 = (gy - yy) / netH;
+      const r2 = (gy - Math.min(gy - 2, yy + 7)) / netH;
+      // 正斜向线
+      g.moveTo(vp.x(x - halfW + poleDX * r1 + wave1), vp.y(yy));
+      g.lineTo(vp.x(x + halfW + poleDX * r2 + wave2), vp.y(Math.min(gy - 2, yy + 7)));
+      // 反斜向线
+      g.moveTo(vp.x(x + halfW + poleDX * r1 + wave1), vp.y(yy));
+      g.lineTo(vp.x(x - halfW + poleDX * r2 + wave2), vp.y(Math.min(gy - 2, yy + 7)));
+    }
+    g.stroke();
 
-    // 赛博场专属: 撞网电火花放电折线
-    if (this.currentTheme === "cyber" && amp > 0.2) {
-      g.strokeColor = new Color(0, 240, 255, 255);
-      g.lineWidth = 1.2;
-      g.moveTo(vp.x(tx - 4), vp.y(top));
-      g.lineTo(vp.x(tx - 8 + Math.sin(this.netShakeTime * 2) * 5), vp.y(top - 6));
-      g.moveTo(vp.x(tx + 4), vp.y(top));
-      g.lineTo(vp.x(tx + 8 + Math.cos(this.netShakeTime * 2) * 5), vp.y(top - 4));
-      g.stroke();
+    // 中部纵向支撑线
+    for (const off of [-halfW * 0.5, 0, halfW * 0.5]) {
+      const waveMid = getWave(top + netH * 0.5);
+      g.moveTo(vp.x(x + off + poleDX), vp.y(top + 2));
+      g.lineTo(vp.x(x + off + poleDX * 0.5 + waveMid * 0.5), vp.y(top + netH * 0.5));
+      g.lineTo(vp.x(x + off), vp.y(gy - 2));
+    }
+    g.stroke();
+
+    // 赛博主题专属: 垂直激光能量扫描线与交叉节点能量点
+    if (this.currentTheme === "cyber") {
+      const scanY = top + ((this.time * 1.5) % (netH - 8));
+      const scanRatio = (gy - scanY) / netH;
+      const scanWave = getWave(scanY);
+      const scanDX = poleDX * scanRatio + scanWave;
+      drawLine(g, vp, x - halfW - 2 + scanDX, scanY, x + halfW + 2 + scanDX, scanY, colRgba(0, 240, 255, 0.75), 1.8);
+      fillConcentricGlow(g, vp, x + scanDX, scanY, 12, 3, colRgba(0, 240, 255, 0.35), colRgba(0, 0, 0, 0), 2);
+
+      // 击球撞网等离子电弧与火花散落
+      if (amp > 0.15) {
+        g.strokeColor = new Color(0, 240, 255, 255);
+        g.lineWidth = 1.3;
+        const hitWave = getWave(this.netHitY);
+        const hitX = x + poleDX * ((gy - this.netHitY) / netH) + hitWave;
+        // 折线电弧
+        g.moveTo(vp.x(hitX - 4), vp.y(this.netHitY));
+        g.lineTo(vp.x(hitX - 9 + Math.sin(this.netShakeTime * 2.2) * 5), vp.y(this.netHitY - 5));
+        g.moveTo(vp.x(hitX + 4), vp.y(this.netHitY));
+        g.lineTo(vp.x(hitX + 9 + Math.cos(this.netShakeTime * 2.2) * 5), vp.y(this.netHitY + 4));
+        g.stroke();
+        // 微型等离子跳跃火花
+        for (let sp = 0; sp < 4; sp++) {
+          const spX = hitX + Math.sin(this.netShakeTime * 3 + sp * 1.5) * 8;
+          const spY = this.netHitY + Math.cos(this.netShakeTime * 2.5 + sp * 1.5) * 6;
+          fillCircle(g, vp, spX, spY, 1.2, colRgba(255, 0, 127, 0.85));
+        }
+      }
     }
 
-    // 4. 柱头金属帽
-    fillCircle(g, vp, tx, top - 4.5, 2.2, capCol);
+    // --------------------------------------------------------
+    // 3. 立柱本体系统 (Upright Post with Cylindrical Shading)
+    // --------------------------------------------------------
+    let postDark = new Color(20, 25, 42, 255);
+    let postLight = new Color(75, 88, 135, 255);
+    let postHighlight = new Color(135, 150, 195, 255);
+
+    if (this.currentTheme === "beach") {
+      postDark = new Color(75, 38, 12, 255);
+      postLight = new Color(130, 68, 22, 255);
+      postHighlight = new Color(175, 105, 45, 255);
+    } else if (this.currentTheme === "cyber") {
+      postDark = new Color(8, 4, 18, 255);
+      postLight = new Color(28, 16, 52, 255);
+      postHighlight = new Color(0, 240, 255, 255);
+    } else if (this.currentTheme === "dojo") {
+      postDark = new Color(28, 16, 10, 255);
+      postLight = new Color(55, 33, 20, 255);
+      postHighlight = new Color(90, 58, 36, 255);
+    }
+
+    // 立体管身：暗底主干 + 受光高光面 + 边缘阴影线
+    drawLine(g, vp, tx + 0.5, top - 6, x + 0.5, gy, postDark, 4);
+    drawLine(g, vp, tx - 0.8, top - 6, x - 0.8, gy, postLight, 1.8);
+    drawLine(g, vp, tx - 1.2, top - 6, x - 1.2, gy, postHighlight, 1.0);
+
+    // 柱身机械装置与装饰细节
+    if (this.currentTheme === "arena") {
+      // 专业手摇曲柄紧线器 (Tension Winch / Ratchet)
+      const winchY = top + 38;
+      const winchDX = poleDX * ((gy - winchY) / netH);
+      // 铸铜齿轮外盒
+      fillRect(g, vp, x + winchDX + 2, winchY - 3, 4, 7, new Color(180, 120, 25, 255));
+      fillRect(g, vp, x + winchDX + 2.5, winchY - 2.5, 3, 6, new Color(225, 160, 45, 255));
+      // 摇臂曲柄 (Crank Arm)
+      drawLine(g, vp, x + winchDX + 6, winchY, x + winchDX + 9, winchY - 4, new Color(200, 210, 230, 255), 1.5);
+      // 黑色手柄头
+      fillCircle(g, vp, x + winchDX + 9, winchY - 4, 1.3, new Color(18, 22, 32, 255));
+
+      // 柱身两道系网金属固定扣 (Tie Cleats)
+      for (const cy of [top + 16, top + 62]) {
+        const cdx = poleDX * ((gy - cy) / netH);
+        fillRect(g, vp, x + cdx - 2.5, cy - 1, 5, 2, new Color(90, 105, 140, 255));
+      }
+    } else if (this.currentTheme === "beach") {
+      // 天然老竹节瘤 (Bamboo Joints)
+      for (const jy of [top + 18, top + 38, top + 58]) {
+        const jdx = poleDX * ((gy - jy) / netH);
+        fillRect(g, vp, x + jdx - 2.8, jy - 1.2, 5.6, 2.4, new Color(90, 48, 16, 255));
+        fillRect(g, vp, x + jdx - 2.8, jy - 1.2, 5.6, 1, new Color(175, 105, 45, 255));
+      }
+      // 柱身粗黄麻绳交叉捆扎 (Coir Rope Wrapping)
+      const ropeY = top + 26;
+      const rdx = poleDX * ((gy - ropeY) / netH);
+      fillRect(g, vp, x + rdx - 2.5, ropeY - 3, 5, 6, new Color(185, 135, 75, 255));
+      for (let ry = ropeY - 2.5; ry <= ropeY + 2.5; ry += 1.8) {
+        drawLine(g, vp, x + rdx - 2.5, ry, x + rdx + 2.5, ry, new Color(125, 80, 35, 255), 1);
+      }
+    } else if (this.currentTheme === "cyber") {
+      // 垂直发光能量导光管 (Neon Conduit)
+      const flowT = (this.time * 2) % netH;
+      const flowY = gy - flowT;
+      const flowDX = poleDX * ((gy - flowY) / netH);
+      drawLine(g, vp, tx - 0.2, top - 4, x - 0.2, gy - 2, colRgba(0, 240, 255, 0.4), 1.2);
+      fillCircle(g, vp, x + flowDX - 0.2, flowY, 1.8, new Color(255, 0, 127, 255));
+    } else if (this.currentTheme === "dojo") {
+      // 传统日式黑铁抱箍与铆钉
+      for (const hy of [top + 16, top + 42, top + 64]) {
+        const hdx = poleDX * ((gy - hy) / netH);
+        fillRect(g, vp, x + hdx - 2.8, hy - 1.5, 5.6, 3, new Color(20, 12, 8, 255));
+        fillCircle(g, vp, x + hdx, hy, 1.0, new Color(217, 119, 6, 255));
+      }
+      // 日式传统水引红白绳结 (Mizuhiki Ribbon Knot)
+      const knotY = top + 24;
+      const kdx = poleDX * ((gy - knotY) / netH);
+      fillCircle(g, vp, x + kdx - 2, knotY, 1.8, new Color(220, 38, 38, 255));
+      fillCircle(g, vp, x + kdx + 2, knotY, 1.8, new Color(250, 245, 235, 255));
+      // 垂落的红白流苏须
+      drawLine(g, vp, x + kdx - 1.5, knotY + 1.5, x + kdx - 3, knotY + 7, new Color(220, 38, 38, 255), 1.2);
+      drawLine(g, vp, x + kdx + 1.5, knotY + 1.5, x + kdx + 3, knotY + 7, new Color(250, 245, 235, 255), 1.2);
+    }
+
+    // --------------------------------------------------------
+    // 4. 网顶白边加厚帆布带系统 (Top White Headband)
+    // --------------------------------------------------------
+    let tapeBaseCol = new Color(248, 246, 240, 255);
+    let tapeLightCol = new Color(255, 255, 255, 255);
+    let tapeDarkCol = new Color(205, 200, 185, 255);
+    let stitchCol = colRgba(135, 130, 115, 0.7);
+
+    if (this.currentTheme === "beach") {
+      tapeBaseCol = new Color(239, 68, 68, 255);
+      tapeLightCol = new Color(252, 110, 110, 255);
+      tapeDarkCol = new Color(185, 40, 40, 255);
+      stitchCol = colRgba(255, 255, 255, 0.85);
+    } else if (this.currentTheme === "cyber") {
+      tapeBaseCol = new Color(0, 240, 255, 255);
+      tapeLightCol = new Color(255, 255, 255, 255);
+      tapeDarkCol = new Color(255, 0, 127, 255);
+      stitchCol = colRgba(0, 240, 255, 0.95);
+    } else if (this.currentTheme === "dojo") {
+      tapeBaseCol = new Color(210, 42, 42, 255);
+      tapeLightCol = new Color(235, 75, 75, 255);
+      tapeDarkCol = new Color(145, 24, 24, 255);
+      stitchCol = colRgba(255, 235, 175, 0.75);
+    }
+
+    // 外露钢缆 (Tension Cable) 与金属固定套管 (Ferrule)
+    drawLine(g, vp, tx - 11, top, tx - 8, top, colRgba(210, 220, 235, 0.85), 1);
+    drawLine(g, vp, tx + 8, top, tx + 11, top, colRgba(210, 220, 235, 0.85), 1);
+    fillRect(g, vp, tx - 9.5, top - 1.5, 2, 3, new Color(120, 130, 150, 255));
+    fillRect(g, vp, tx + 7.5, top - 1.5, 2, 3, new Color(120, 130, 150, 255));
+
+    // 帆布带本体 (宽 16px，高 6px)
+    fillRect(g, vp, tx - 8, top - 3, 16, 6, tapeBaseCol);
+    // 上沿受光折叠层
+    fillRect(g, vp, tx - 8, top - 3, 16, 2.5, tapeLightCol);
+    // 下沿夹网阴影隙缝
+    fillRect(g, vp, tx - 8, top + 2, 16, 1, tapeDarkCol);
+
+    // 沙滩专属: 热情洋溢的红白相间斜条纹
+    if (this.currentTheme === "beach") {
+      g.fillColor = new Color(255, 255, 255, 255);
+      for (let bx = tx - 7; bx <= tx + 7; bx += 4) {
+        g.moveTo(vp.x(bx), vp.y(top - 3));
+        g.lineTo(vp.x(bx + 2.5), vp.y(top - 3));
+        g.lineTo(vp.x(bx + 1.2), vp.y(top + 3));
+        g.lineTo(vp.x(bx - 1.3), vp.y(top + 3));
+        g.close();
+        g.fill();
+      }
+    }
+
+    // 双排车缝缝线工艺点 (Stitching Dots)
+    g.fillColor = stitchCol;
+    for (let sx = tx - 6.5; sx <= tx + 6.5; sx += 2.2) {
+      // 上排缝线
+      g.rect(vp.x(sx), vp.y(top - 1.5 + 0.8), 1.2, 0.8);
+      g.fill();
+      // 下排缝线
+      g.rect(vp.x(sx), vp.y(top + 1.2 + 0.8), 1.2, 0.8);
+      g.fill();
+    }
+
+    // --------------------------------------------------------
+    // 5. 柱头与滑轮系统 (Post Top & Pulley / Finials)
+    // --------------------------------------------------------
+    if (this.currentTheme === "beach") {
+      // 原木倒角端盖
+      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, new Color(110, 55, 18, 255));
+      fillCircle(g, vp, tx, top - 6, 2.0, new Color(253, 224, 71, 255));
+
+      // 随海风飘扬的黄色防风彩带 (Wind Streamer)
+      // 使用二次贝塞尔曲线随着时间与风力自然飘荡
+      const gust = Math.sin(this.time * 0.08) * 3 + this.windX * 0.8;
+      g.strokeColor = new Color(253, 224, 71, 230);
+      g.lineWidth = 1.8;
+      g.moveTo(vp.x(tx), vp.y(top - 6));
+      g.quadraticCurveTo(
+        vp.x(tx + 6 + gust * 0.5),
+        vp.y(top - 9 + Math.cos(this.time * 0.08) * 2),
+        vp.x(tx + 14 + gust),
+        vp.y(top - 6 + Math.sin(this.time * 0.1) * 3)
+      );
+      g.stroke();
+    } else if (this.currentTheme === "cyber") {
+      // 悬浮等离子偏转晶体环 (Plasma Emitter Ring)
+      const ringAlpha = 0.75 + Math.sin(this.time * 0.1) * 0.25;
+      fillConcentricGlow(g, vp, tx, top - 6, 9, 5, colRgba(0, 240, 255, 0.5 * ringAlpha), colRgba(0, 0, 0, 0), 2);
+      strokeRect(g, vp, tx - 3, top - 8, 6, 4, new Color(0, 240, 255, 255), 1.2);
+      fillCircle(g, vp, tx, top - 6, 1.6, new Color(255, 0, 127, 255));
+    } else if (this.currentTheme === "dojo") {
+      // 传统和风铜质「拟宝珠」(Giboshi)
+      // 仰莲座底托
+      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, new Color(185, 115, 25, 255));
+      // 宝珠尖饰
+      g.fillColor = new Color(245, 185, 55, 255);
+      g.moveTo(vp.x(tx - 2.5), vp.y(top - 7));
+      g.lineTo(vp.x(tx + 2.5), vp.y(top - 7));
+      g.lineTo(vp.x(tx), vp.y(top - 11));
+      g.close();
+      g.fill();
+      fillCircle(g, vp, tx, top - 8, 1.8, new Color(251, 191, 36, 255));
+    } else {
+      // 专业馆 (Arena): 柱头金属端盖与黄铜导向滑轮 (Cable Pulley)
+      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, new Color(38, 46, 72, 255));
+      fillRect(g, vp, tx - 3.5, top - 7, 7, 1, colRgba(135, 150, 195, 0.6)); // 倒角微亮
+      // 黄铜导线滑轮轮盘
+      fillCircle(g, vp, tx + 2, top - 6.5, 2.2, new Color(225, 160, 45, 255));
+      fillCircle(g, vp, tx + 2, top - 6.5, 0.8, new Color(20, 25, 40, 255)); // 轴心螺栓
+      // 柱头金属球帽
+      fillCircle(g, vp, tx - 1.5, top - 6.5, 1.8, new Color(255, 225, 77, 255));
+    }
   }
 }
 

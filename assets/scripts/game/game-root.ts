@@ -339,6 +339,13 @@ export class GameRoot extends Component {
           if (praise && !R.players[hitterIdx]?.isAI && (sweet || perfect)) {
             touchPad.pulseSwing(perfect ? "perfect" : "sweet");
           }
+          // 深浅瞄准的命中确认:右滑深球(重)/左滑短球(轻)飘小字,键盘 J/K 同链路;
+          // mid(没滑直接点)不飘 —— 默认档不打扰。位置在球下方,与上方档位飘字错开
+          if (praise && !R.players[hitterIdx]?.isAI) {
+            const K = C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number; dy: number }>;
+            const aimLab = e.aim === "deep" ? K.floatAimDeep : e.aim === "near" ? K.floatAimNear : null;
+            if (aimLab) this.world.float(e.x as number, (e.y as number) + aimLab.dy, aimLab.text, aimLab.color, aimLab.size, aimLab.life);
+          }
           if (praise) {
             // 档位文案/字号/寿命全部来自 config.fx.floatTier*(分级炫技的"文字"那一格)
             const K = C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number; dy: number }>;
@@ -401,6 +408,8 @@ export class GameRoot extends Component {
           } else if (e.type === "clear") {
             this.world.floatSys(C.world.w / 2, 60, "高远发球", "#c0d8ff", 16, 36);
           }
+          // 发球的深浅确认不用在这做:applyShot 的 hit 事件带 aim,发球也会走一次 hit 分支;
+          // 这里再飘就叠两层。forced 发球(偷后场/高远)已在 rules 里清掉 aim,不会谎报。
           break;
         }
         case "net":

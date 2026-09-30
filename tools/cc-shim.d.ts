@@ -112,6 +112,14 @@ declare module "cc" {
     shadowColor: Color;
     shadowOffset: Vec2;
     overflow: number;
+    /** 子集化标题字体(uiLabel disp 选项挂 dudu-display 用) */
+    font: Font | null;
+    useSystemFont: boolean;
+  }
+  /** 字体资源(resources.load("fonts/dudu-display") 的产物;仅类型兜底) */
+  export class Font {
+    name: string;
+    isValid: boolean;
   }
   export namespace Label {
     export enum Overflow { NONE = 0, CLAMP = 1, SHRINK = 2, RESIZE_HEIGHT = 3 }
@@ -184,6 +192,8 @@ declare module "cc" {
     readonly scale: Readonly<Vec3>;
     /** 3.x 保留 API,等价 setParent */
     addChild(child: Node): void;
+    /** 3.x 保留 API:插入到指定兄弟位(arcade 面板把底块垫到最底用) */
+    insertChild(child: Node, siblingIndex: number): void;
     setSiblingIndex(index: number): void;
     getSiblingIndex(): number;
     /** 2D 旋转角(度,settle 面板飘字/徽章用) */
@@ -271,6 +281,8 @@ declare module "cc" {
   };
   export const resources: {
     loadDir(dir: string, type: { new(): AudioClip }, cb: (err: Error | null, clips: AudioClip[]) => void): void;
+    /** 单资源加载(ui-arcade 挂 dudu-display 子集字体用) */
+    load<T>(path: string, type: { new(): T }, cb: (err: Error | null, asset: T | null) => void): void;
   };
 
   // 阶段 2 旧式键盘监听(drill-panel 在用;3.8 中已废弃但仍然导出)

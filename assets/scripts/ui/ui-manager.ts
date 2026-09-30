@@ -18,7 +18,7 @@
 // ============================================================
 import {
   BlockInputEvents, Button, Color, Component, director, Director,
-  Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Widget,
+  Font, Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Widget,
   view, _decorator,
 } from "cc";
 import { CFG, DRILLS } from "../core/config";
@@ -32,7 +32,7 @@ import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
 import { courtRenderer, CourtThemeItem } from "../render/court";
-import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawVeil, drawVignette, textW, TOUCH_MIN } from "./ui-arcade";
+import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawSlantShadow, drawVeil, drawVignette, getDisplayFont, onDisplayFont, skewOf, slashWipe, textW, TOUCH_MIN } from "./ui-arcade";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
 import { Hud } from "./hud";
@@ -48,21 +48,22 @@ import type { UpdateInfo } from "../core/update-service";
 
 const { ccclass } = _decorator;
 
-// ---------- 调色板(老 base.css :root 的「黄昏体育馆」令牌,暖纸白正文) ----------
+// ---------- 调色板(P5「暗红斩劈」:红黑白主导,黄降为点缀;与 ui-arcade.ARCADE 同源) ----------
 export const PAL = {
-  ink: "#05070f",         // 最深底(--ink)
-  panel: "#0e1428",       // 面板底(--navy)
-  panelLight: "#182142",  // 按钮底(--navy-2)
+  ink: "#07070d",         // 最深底(P5 黑)
+  panel: "#101018",       // 面板底(近黑)
+  panelLight: "#1a1a26",  // 按钮底
   line: "#f5efe1",        // 描边基色(暖纸白,配 alpha 用)
-  accent: "#ffe14d",      // 荧光黄(--acid)—— 与 CFG.colors.accent 同源
+  accent: "#ffe14d",      // 荧光黄 —— 二级点缀(金币/连击/经验条),与 CFG.colors.accent 同源
+  slash: "#e60012",       // P5 主红:主按钮/横幅/强调块
   cyan: "#00f0ff",
-  red: "#ff4d4d",         // --red
-  blue: "#3ea8ff",        // --blue
-  wood: "#c8703a",        // --wood 暖木(球场氛围色)
-  text: "#f5efe1",        // --paper 暖纸白正文
+  red: "#ff4d4d",         // 队色红(与球衣同源,勿当主红用)
+  blue: "#3ea8ff",        // 队色蓝
+  wood: "#c8703a",        // 暖木(球场氛围色)
+  text: "#f5efe1",        // 暖纸白正文
   dim: "#8f9cbe",
   danger: "#ff6b6b",      // --bad
-  good: "#7dff9e",        // --good
+  good: "#7dff9e",
 };
 
 /** hex(+alpha) → cc.Color;Graphics/Label 逐帧赋值时引擎内部会拷贝,放心用临时实例 */
@@ -80,6 +81,8 @@ export interface LabelOpts {
   outlineW?: number;
   align?: number;       // 0 左 / 1 中 / 2 右(与 Label.HorizontalAlign 对齐)
   opacity?: number;
+  /** 挂子集化标题黑体(tools/make-font-subset.py 的产物);加载完成前先按系统字体渲染 */
+  disp?: boolean;
 }
 
 export function uiLabel(parent: Node, text: string, size: number, colorHex: string, opts: LabelOpts = {}): Label {
@@ -99,6 +102,15 @@ export function uiLabel(parent: Node, text: string, size: number, colorHex: stri
     l.outlineColor = col(opts.outline);
     l.outlineWidth = opts.outlineW ?? 2;
   }
+  if (opts.disp) {
+    const apply = (f: Font | null): void => {
+      if (!f || !l.isValid) return;
+      l.font = f;
+      l.useSystemFont = false;
+    };
+    apply(getDisplayFont());
+    if (!getDisplayFont()) onDisplayFont(apply);
+  }
   if (opts.opacity != null) n.addComponent(UIOpacity).opacity = opts.opacity;
   return l;
 }
@@ -110,26 +122,35 @@ export interface BtnOpts {
   size?: number;
   stroke?: string;
   strokeAlpha?: number;
-  /** 街机按钮分层:acid 面自动判为 primary(厚底 3D),其余 ghost */
+  /** 街机按钮分层:acid/红面自动判为 primary(厚底 3D),其余 ghost */
   style?: BtnStyle;
+  /** 斜切角度(度),默认 6;传 0 回到圆角矩形 */
+  slantDeg?: number;
 }
 
 /**
  * 街机按钮:硬偏移阴影 + 厚底 3D(primary)/浮起(ghost)+ Label;
  * 按压反馈用 Button(SCALE),与老 .btn:active 的「按下去」等价。
  * 高度钳到 TOUCH_MIN:移动端拇指点准的下限,低于它的按钮一律抬到 44。
+ * P5 化:默认 6° 斜切平行四边形,primary 为斩劈红面白字。
  */
 export function uiButton(parent: Node, text: string, w: number, h: number, opts: BtnOpts = {}): Node {
   h = Math.max(h, TOUCH_MIN);
   const style: BtnStyle = opts.style
-    ?? (opts.bg === PAL.accent || opts.bg?.toLowerCase() === "#ffe14d" ? "primary" : "ghost");
+    ?? (opts.bg === PAL.accent || opts.bg === PAL.slash || opts.bg?.toLowerCase() === "#ffe14d" ? "primary" : "ghost");
+  const slantDeg = opts.slantDeg ?? 6;
   const n = new Node(`btn:${text}`);
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(w, h);
   const g = n.addComponent(Graphics);
-  drawHardShadow(g, w, h, 9, 4, 4, 0.5);
-  drawArcadeButton(g, w, h, style);
-  const fg = opts.fg ?? (style === "primary" ? "#14100a" : PAL.text);
+  if (slantDeg !== 0) {
+    drawSlantShadow(g, w, h, skewOf(h, slantDeg), 4, 4, 0.5);
+    drawArcadeButton(g, w, h, style, 9, skewOf(h, slantDeg));
+  } else {
+    drawHardShadow(g, w, h, 9, 4, 4, 0.5);
+    drawArcadeButton(g, w, h, style);
+  }
+  const fg = opts.fg ?? (style === "primary" ? "#fff5f2" : PAL.text);
   uiLabel(n, text, opts.size ?? 18, fg);
   const b = n.addComponent(Button);
   b.transition = Button.Transition.SCALE;
@@ -151,16 +172,25 @@ export interface PanelOpts {
   scan?: boolean;
   /** 面板整体不透明度:默认 0.93,留一点球场在身后 */
   alpha?: number;
+  /** 斜切角度(度),默认 3(轻微斜切的 P5 衬纸感);传 0 回到圆角矩形 */
+  slantDeg?: number;
 }
 
-/** 街机面板:硬偏移阴影 + 渐变底 + 描边 + 内高光(老 .panel 的贴纸感) */
+/** 街机面板:硬偏移阴影 + 渐变底 + 描边 + 内高光;P5 化后默认 3° 斜切 */
 export function uiPanel(parent: Node, w: number, h: number, opts: PanelOpts = {}): Graphics {
   const n = new Node("panel");
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(w, h);
   const g = n.addComponent(Graphics);
-  if (!opts.noShadow) drawHardShadow(g, w, h, opts.r ?? 14, 6, 6, 0.45);
-  drawArcadePanel(g, w, h, opts.r ?? 14, opts.alpha ?? 0.93);
+  const slantDeg = opts.slantDeg ?? 3;
+  if (slantDeg !== 0) {
+    const skew = skewOf(h, slantDeg);
+    if (!opts.noShadow) drawSlantShadow(g, w, h, skew, 6, 6, 0.45);
+    drawArcadePanel(g, w, h, opts.r ?? 14, opts.alpha ?? 0.93, skew);
+  } else {
+    if (!opts.noShadow) drawHardShadow(g, w, h, opts.r ?? 14, 6, 6, 0.45);
+    drawArcadePanel(g, w, h, opts.r ?? 14, opts.alpha ?? 0.93);
+  }
   if (opts.scan) drawScanlines(g, w, h, 0.05);
   n.setParent(parent);
   return g;
@@ -515,22 +545,29 @@ export class UIManager extends Component {
 
   // ---------- 动作(kit 回调) ----------
 
+  // 开赛三连都用斜切转场包住:状态切换放在黑带盖满屏的中点,切换过程观众看不到
   private doStartMatch(diff: DiffKey): void {
-    Rules.newMatch("1p", diff);
-    Career.applyToMatch();               // 皮肤跟「你」走,换局也要重挂
-    this.sfx.play("whistle");
+    slashWipe(this.node, () => {
+      Rules.newMatch("1p", diff);
+      Career.applyToMatch();               // 皮肤跟「你」走,换局也要重挂
+      this.sfx.play("whistle");
+    });
   }
 
   private doStartEndlessMatch(diff: DiffKey): void {
-    Rules.newMatch("endless", diff);
-    Career.applyToMatch();
-    this.sfx.play("whistle");
+    slashWipe(this.node, () => {
+      Rules.newMatch("endless", diff);
+      Career.applyToMatch();
+      this.sfx.play("whistle");
+    });
   }
 
   private doStartDrill(id: string): void {
-    Rules.newMatch("drill", "normal");
-    Drill.begin(id);                     // 发球权焊死在喂球机一侧
-    this.sfx.play("whistle");
+    slashWipe(this.node, () => {
+      Rules.newMatch("drill", "normal");
+      Drill.begin(id);                     // 发球权焊死在喂球机一侧
+      this.sfx.play("whistle");
+    });
   }
 
   private doRestart(): void {
@@ -548,7 +585,9 @@ export class UIManager extends Component {
   private doQuit(): void {
     this.sfx.play("back");
     Drill.reset();                       // 训练进行态不跨局泄漏(账本/关卡都清)
-    Rules.R.state = "MENU";              // frozen 态,世界自动停;老 game 同款直改
+    slashWipe(this.node, () => {
+      Rules.R.state = "MENU";            // frozen 态,世界自动停;老 game 同款直改
+    });
   }
 
   // ---------- 全局静音:一个钮管音效/音乐两条总线,真值只在 Settings ----------

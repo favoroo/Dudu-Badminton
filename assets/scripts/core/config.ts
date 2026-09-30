@@ -38,6 +38,16 @@ export const SKINS: Record<SkinKind, SkinDef[]> = {
     { id: "p-king",    kind: "player", name: "球场之王", price: 888, unlockLevel: 8, rarity: "legendary",
       main: "#f5f2e6", dark: "#8a6a1c", glow: "#ffd24d",
       hairStyle: "bun", hairColor: "#3a2e20", headwear: "crown", jersey: "twoTone", aura: "gold" },
+    // --- 首批「整套人物形象」新档:走 CharacterDef 管线(体型档/默认脸面/新特征注册表) ---
+    { id: "p-sprout",  kind: "player", name: "萌芽豆丁", price: 168, rarity: "rare",
+      main: "#4fae5a", dark: "#1e5c31", glow: "#a8e6b0",
+      hairStyle: "bob", hairColor: "#58b24d", jersey: "trim", body: "compact", face: "freckle" },
+    { id: "p-cat",     kind: "player", name: "猫系少女", price: 328, unlockLevel: 5, rarity: "epic",
+      main: "#b06bff", dark: "#4a2a80", glow: "#d8b8ff",
+      hairStyle: "long", hairColor: "#c9a8ff", headwear: "catears", jersey: "sash", face: "cat" },
+    { id: "p-sage",    kind: "player", name: "金羽宗师", price: 888, unlockLevel: 8, rarity: "legendary",
+      main: "#e8e4f0", dark: "#4a4660", glow: "#b8c8e8",
+      hairStyle: "bun", hairColor: "#d8dce8", jersey: "twoTone", aura: "ice", body: "tall", face: "sage" },
   ],
   // 拍框 frame 留空 = 跟随人物主题 glow 色(默认拍的现状)
   racket: [
@@ -70,10 +80,16 @@ export const SKINS: Record<SkinKind, SkinDef[]> = {
     { id: "s-galaxy",  kind: "shuttle", name: "星河羽", price: 788, unlockLevel: 9, rarity: "legendary",
       cap: "#e0d4ff", band: "#8b5cf6", skirt: "#f4eeff", vein: "rgba(160,120,240,0.72)", trailStyle: "rainbow" },
   ],
+  // 脸面商品:face-auto(人物默认)= 免费默认款,肤色脸随人物形象走;
+  // face-ink 转免费情怀款(老档人人已有);face-sun(阳光肤色 88)已被 face-auto
+  // 取代而下架,已购玩家按 SKIN_REFUNDS 原价退款;新付费脸面 = 特征标记款。
   // 面部是真人 0 号专属穿戴位(CPU/P2 恒为墨面,敌我一眼分明);只换脸面配色,不碰任何判定
   face: [
-    { id: "face-ink", kind: "face", name: "经典墨面", price: 0, faceStyle: "ink" },
-    { id: "face-sun", kind: "face", name: "阳光肤色", price: 88, rarity: "common", faceStyle: "skin" },
+    { id: "face-auto",    kind: "face", name: "人物默认", price: 0, faceStyle: "auto" },
+    { id: "face-ink",     kind: "face", name: "经典墨面", price: 0, faceStyle: "ink" },
+    { id: "face-freckle", kind: "face", name: "雀斑肤色", price: 88, rarity: "common", faceStyle: "freckle" },
+    { id: "face-tear",    kind: "face", name: "泪痣肤色", price: 88, rarity: "common", faceStyle: "tear" },
+    { id: "face-cat",     kind: "face", name: "猫系脸面", price: 168, rarity: "rare", faceStyle: "cat" },
   ],
 };
 
@@ -83,6 +99,33 @@ export const SKIN_REFUNDS: Record<string, number> = {
   "p-mint": 150, "p-violet": 300, "p-onyx": 350, "p-jade": 420, "p-gold": 500, "p-ice": 680,
   "r-sunset": 250, "r-aurora": 450, "r-mono": 600, "r-inferno": 880,
   "s-sunset": 300, "s-jade": 550, "s-gold": 600, "s-volt": 760,
+  "face-sun": 88,   // 肤色脸转为人物默认款(免费)后下架,已购原价退
+};
+
+// ===== 脸面款式注册表(数据):faceStyle key → 脸底/描边/五官墨色/腮红/特征标记 =====
+// 五官与特征的**笔画**在 sprites.drawHead;这里只放配色与开关(数值只进 config)。
+// "ink" 墨面=黑色剪影+白五官(经典/CPU 默认);"skin" 系=肤色底+暖棕墨+心情腮红。
+// mark 交给 sprites 的 FACE_MARKS 函数表渲染(雀斑/泪痣/猫须/白眉须)。
+// hi = 头顶高光弧的透明度(墨面深底更淡、浅色脸稍亮才看得见)。
+export const FACE_STYLES: Record<string, {
+  base: string; line: string; ink: string; blush: boolean; hi: number; mark?: string;
+}> = {
+  ink:     { base: "#0a0e18", line: "rgba(235,240,255,0.5)", ink: "#ffffff", blush: false, hi: 0.15 },
+  skin:    { base: "#f2c491", line: "rgba(10,13,24,0.55)", ink: "#4a2b16", blush: true, hi: 0.22 },
+  freckle: { base: "#f6cd9d", line: "rgba(10,13,24,0.55)", ink: "#4a2b16", blush: true, hi: 0.22, mark: "freckle" },
+  tear:    { base: "#f2c491", line: "rgba(10,13,24,0.55)", ink: "#4a2b16", blush: true, hi: 0.22, mark: "tear" },
+  cat:     { base: "#f2c491", line: "rgba(10,13,24,0.55)", ink: "#4a2b16", blush: true, hi: 0.22, mark: "cat" },
+  sage:    { base: "#eec39a", line: "rgba(10,13,24,0.55)", ink: "#3a2a18", blush: false, hi: 0.22, mark: "sage" },
+};
+
+// ===== 体型档(纯视觉):人物形象的整体微调 =====
+// hip=髋高占身高比例(决定腿长与站姿),torso=躯干高比例,headMul=头半径倍率,
+// limbMul=远臂/腿笔画粗细倍率。**挥拍肩点 pivotY 不参与**(判定锁定位),
+// 所以体型档只改轮廓观感,零手感影响。人物形象在 SKINS.player[].body 里引用。
+export const BODIES: Record<string, { hip: number; torso: number; headMul: number; limbMul: number }> = {
+  standard: { hip: 0.34, torso: 0.38, headMul: 1.0,  limbMul: 1.0 },
+  compact:  { hip: 0.31, torso: 0.41, headMul: 1.08, limbMul: 1.06 },
+  tall:     { hip: 0.40, torso: 0.32, headMul: 0.90, limbMul: 0.96 },
 };
 
 export const CFG = {
@@ -311,7 +354,6 @@ export const CFG = {
     jumpStretch: 1.16,
     runPhaseK: 0.06,     // 步频相位随水平位移累积(rad/px):慢走小碎步、冲刺大步频
     footstepSpeed: 5.5,  // 落脚扬尘的速度门槛(低于此值的碎步不扬尘)
-    kneeBendMax: 8,      // 跑步膝盖弯曲最大水平偏移(px):小腿向后折的最大幅度
   },
 
   // 挥拍:windup → active(可命中) → recovery
@@ -351,21 +393,43 @@ export const CFG = {
   readyStance: {
     horizonFrames: 32,   // 预计多少帧后到身边开始渐入架拍(0=刚开始抬,1=贴身)
     speedGain: 0.55,     // 来球越快预备越深:慢球(≤8)只做 55% 上下,快球做满
-    dip: 2.5,            // 屈膝降重心:髋/躯干/肩/头整体下沉量(px),大腿段等量缩短脚不动
-    kneeBend: 5,         // 双膝对称弯曲(px,同 landKnee 画法:小腿后折+脚跟微抬)
+    dip: 4.5,            // 屈膝降重心:髋/躯干/肩/头整体下沉量(px);膝弯由腿部 IK 反解,沉降量即屈膝深度
     lean: 1.5,           // 躯干前倾增量(度)
     farUp: 38,           // 远臂上臂前抬量(度,从待机 206 抬到 168:肘提到肩后上方)
     farFold: 42,         // 远臂前臂前抬量(度,从待机 250 折到 208)—— 手收到肩后平衡位
   },
 
   // 挥拍下半身动力链(纯视觉):上半身拧转/挥臂/甩腕之外,腿也要参与 ——
-  // over 高压球发力窗后腿蹬伸提跟,under 低球起拍先折腿蓄力、发力段蹬伸挑起。
-  // **under 蓄力只走膝弯机制(小腿后折+脚跟微抬),不降肩点**:肩点是判定锁定位。
+  // over 高压球发力窗后腿蹬伸提跟,under 低球起拍先提跟蓄力、发力段蹬伸挑起。
+  // **肩点/髋点是判定锁定位,蓄力只走「脚跟抬起」机制(poses.swingFootLift),
+  // 不降髋**:屈膝的深蹲读感由脚位目标 + legIK 反解给出。
   // 幅度全部压在个位数 px,人物才 100px 高,过了就是抽风。
   swingLegs: {
     overDriveLift: 2.2,    // over 发力窗:后腿蹬伸、脚跟抬起的量(px)
-    underCrouchKnee: 5,    // under 起拍段:双膝对称折腿蓄力(px)
+    underCrouchKnee: 5,    // under 起拍段:双腿提跟蓄力(px,乘 0.55 折算成提跟量)
     underDriveLift: 2.5,   // under 发力段:蹬伸提跟(px)
+  },
+
+  // 动作系统(纯视觉):真关节骨架(rig.ts)的动作幅度旋钮。屈膝/下沉统一走
+  // 「髋部下沉量」,膝弯由腿部 IK 几何反解 —— 沉降量就是屈膝深度,不再有
+  // 第二套「膝盖偏移」数值。分腿垫步 = 对手击球瞬间(readyK 爬升沿)的
+  // 双脚分踩,羽毛球步法的标志性起手,约 splitDur 帧收完。
+  pose: {
+    landDip: 5,          // 落地冲击髋部下沉量(px):膝自动深弯吸收,随 squash 恢复抬回
+    splitDur: 12,        // 分腿垫步时长(帧)
+    splitSpread: 6,      // 分腿垫步双脚错开量(px)
+    splitDip: 3.5,       // 分腿垫步重心下沉量(px)
+    runCarryBob: 1.6,    // 跑动携拍:拍随步频的上下轻颠(px)
+    runCarrySway: 3,     // 跑动携拍:拍角随步伐的左右轻摆(度)
+  },
+
+  // 发球等待姿势(纯视觉,零判定):持球待发不再是笔直立正 —— 微屈膝坐重心、躯干
+  // 微后倾蓄势,与挥拍期 underCrouchKnee→underDriveLift 串成「落位沉→折腿→蹬伸」
+  // 的完整动力链。serveK 由渲染层现算(球飞回手时渐入、起拍后随挥拍进度融掉),
+  // 球位/释放点(rules.handX/handY)不参与,发球弹道与手感零影响。
+  serveHold: {
+    dip: 3.5,      // 屈膝降重心:髋/躯干/肩整体下沉量(px);膝弯由腿部 IK 反解
+    lean: 1.5,     // 躯干后倾增量(度,负向 lean = 重心后坐,发球预备的标准蓄势)
   },
 
   // 按拍预告(触屏反馈):球临近判定区心时击球两键渐亮,到最佳按拍帧闪一下金环。
@@ -705,6 +769,10 @@ export const CFG = {
     floatTierSmash:        { text: "扣杀!!",     color: "#ffe14d", size: 26, life: 48, dy: -28 },
     floatTierSweet:        { text: "✦ SWEET! ✦", color: "#ffe14d", size: 20, life: 42, dy: -26 },
     floatTierGood:         { text: "好球",       color: "#ffffff", size: 16, life: 34, dy: -24 },
+    // 瞄准深浅的命中确认(触屏右滑/左滑、键盘 J/K 同链路):比档位字小一号,dy 正值 = 球下方,
+    // 与上方的档位飘字、更下方的跨步飘字都错开;mid(直接点击,没滑)不飘,默认档不打扰
+    floatAimDeep:          { text: "深球·重",    color: "#ffe14d", size: 14, life: 30, dy: 26 },
+    floatAimNear:          { text: "短球·轻",    color: "#00f0ff", size: 14, life: 30, dy: 26 },
   },
 
   // BGM:原版是 WebAudio 现场合成的自适应背景音乐(零音频文件);
@@ -746,6 +814,9 @@ export const CFG = {
     downIcon: "#ffe14d", downIconA: 0.96,       // 按下图标(245)
     pressScale: 0.9,       // 按下缩放:比 UI 按钮 zoomScale 0.94 更狠一点(游戏键要「墩」)
     edgePad: 12,           // 圆心到屏边最小间隙:6 太贴边,拇指容易蹭到系统手势区
+    label: "#ffffff", labelA: 0.62,   // 键名文字(「击球」「跨步」,乘 padAlpha)
+    labelOutline: "#0a0d18",          // 键名描边:亮场(海滩)上白字没描边会糊掉
+    labelSize: 13,                    // 键名字号
   },
 
   // ===== 摇杆上推代跳(仅 joystick 模式;数值是底圈半径的比例,与设备 scale 无关) =====
@@ -812,6 +883,9 @@ export const CFG = {
     shotWindow: 60,         // 跨步后特殊击球窗口(帧,1 秒,从跨步触发起算)
     shotBoost: 2.5,         // 窗口内击球初速上限加成(≈ perfectBoost 的八成)
     shotPowerDeg: 6,        // 窗口内额外压弧度(度,介于 sweet 5 / perfect 9 之间)
+    // --- 深跨步姿势(纯视觉):前膝深弯、髋沉、后腿蹬直的下肢剪裁 ---
+    dip: 14,                // 髋部下沉量(px):引导腿深弯的来源(legIK 反解)
+    lean: 14,               // 躯干沿跨步方向的前倾(度;退防跨步为负 = 后仰)
   },
 
   // AI 拦截高度带:站立够球上限 / 跳起够球上限 / 低位接球截面(px 离地)。
@@ -865,6 +939,9 @@ export const CFG = {
   rarity: RARITY_META,
   // 下架皮肤退款表,career.profile() 归一化存档时消费
   refunds: SKIN_REFUNDS,
+  // 脸面款式注册表(数据)与体型档:sprites.drawHead/drawPlayer 消费
+  faceStyles: FACE_STYLES,
+  bodies: BODIES,
 };
 
 export const MENU: MenuEntry[] = [

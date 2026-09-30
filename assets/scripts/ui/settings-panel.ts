@@ -208,7 +208,7 @@ export class SettingsPanel extends Component {
       const active = t.key === this.tab;
       drawHardShadow(t.g, TAB_W, TAB_H, 8, 3, 3, 0.4);
       drawArcadeButton(t.g, TAB_W, TAB_H, active ? "primary" : "ghost", 8);
-      t.label.color = ac(active ? "#14100a" : P.text);
+      t.label.color = ac(active ? "#fff5f2" : P.text);
     }
   }
 
@@ -427,7 +427,7 @@ export class SettingsPanel extends Component {
       const active = b.mode === cur;
       drawHardShadow(b.g, btnW, btnH, 8, 3, 3, 0.4);
       drawArcadeButton(b.g, btnW, btnH, active ? "primary" : "ghost", 8);
-      b.label.color = ac(active ? "#14100a" : P.text);
+      b.label.color = ac(active ? "#fff5f2" : P.text);
     }
     const item = MODES.find((m) => m.mode === cur);
     if (this.modeTipLabel && item) {

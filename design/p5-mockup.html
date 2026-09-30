@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>嘟嘟羽毛球 · P5「暗红斩劈」UI 效果图</title>
+<style>
+/* ============================================================
+   嘟嘟羽毛球 UI 重构效果图 —— 女神异闻录5「暗红斩劈」方向
+   本文件是纯静态设计稿,不参与游戏构建。三屏对应:
+   屏1 主菜单(新顶栏贴角 + 斜切卡片) / 屏2 对局 HUD(新比分牌)
+   屏3 赛点斩劈横幅 + 结算大字
+   正式实现为 Cocos Graphics 程序化绘制,斜切/锯齿/星芒与本稿一致。
+   ============================================================ */
+:root{
+  --red:#e60012;         /* P5 主红:主按钮 / 横幅 / 强调块 */
+  --red-dk:#8f000b;      /* 主红压暗:厚底边 */
+  --ink:#0a0a10;         /* 墨黑:最深底 */
+  --ink2:#12121c;        /* 面板黑 */
+  --ink3:#1c1c28;        /* 按钮黑 */
+  --line:#2a2a38;
+  --paper:#f5efe1;       /* 纸白正文 */
+  --paper-dim:#b8b2a4;
+  --acid:#ffe14d;        /* 荧光黄:降为二级点缀(金币/连击/TO) */
+  --acid-dk:#b79b12;
+  --team-l:#ff4d4d;      /* 我方队色(与球衣一致) */
+  --team-r:#3ea8ff;      /* 对方队色 */
+  --good:#7dff9e;
+  --orange:#ff9f1c;
+  --cyan:#00f0ff;
+  --font:"YouSheBiaoTiHei","ZCOOL QingKe HuangYou","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#08080c;color:var(--paper);font-family:var(--font);padding:28px 0 60px}
+.page-head{max-width:960px;margin:0 auto 26px;padding:0 8px}
+.page-head h1{font-size:26px;letter-spacing:2px}
+.page-head h1 em{color:var(--red);font-style:normal}
+.page-head p{color:var(--paper-dim);font-size:12px;margin-top:6px;line-height:1.7}
+.swatches{display:flex;gap:10px;margin-top:12px}
+.sw{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--paper-dim)}
+.sw i{width:22px;height:14px;display:inline-block;transform:skewX(-14deg)}
+
+.frame-wrap{max-width:960px;margin:0 auto 44px}
+.frame-label{font-size:13px;color:var(--acid);letter-spacing:3px;margin:0 0 10px 8px}
+.frame-label small{color:var(--paper-dim);letter-spacing:0;margin-left:12px}
+.frame{position:relative;width:960px;height:540px;overflow:hidden;background:var(--ink);
+  outline:1px solid #23232f;outline-offset:8px;border-radius:2px}
+
+/* ---------- 通用:背景氛围 ---------- */
+.hall{position:absolute;inset:0;background:
+  radial-gradient(900px 420px at 50% 118%, #232b47 0%, #131828 52%, #0a0c14 100%)}
+.floor{position:absolute;left:0;right:0;bottom:0;height:212px;background:
+  linear-gradient(180deg,#3a2a1c 0%,#2b1f14 30%,#1c150d 100%)}
+.floor::before{content:"";position:absolute;inset:0;background:
+  repeating-linear-gradient(90deg,rgba(255,255,255,.045) 0 2px,transparent 2px 64px)}
+.court-line{position:absolute;background:rgba(245,239,225,.5)}
+.net{position:absolute;left:50%;bottom:150px;width:2px;height:104px;background:
+  repeating-linear-gradient(180deg,rgba(245,239,225,.75) 0 2px,transparent 2px 5px)}
+.net::after{content:"";position:absolute;top:-4px;left:-9px;width:20px;height:5px;background:var(--paper);opacity:.85}
+.veil{position:absolute;inset:0;background:radial-gradient(700px 380px at 50% 46%,rgba(10,10,16,.18) 0%,rgba(10,10,16,.66) 100%)}
+.scan{position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(0,0,0,.13) 0 1px,transparent 1px 3px);pointer-events:none}
+.grain{position:absolute;inset:0;background:
+  radial-gradient(circle,rgba(230,0,18,.16) 1.2px,transparent 1.6px);background-size:11px 11px;
+  -webkit-mask-image:linear-gradient(215deg,#000 0%,transparent 34%);mask-image:linear-gradient(215deg,#000 0%,transparent 34%)}
+.grain.tr{-webkit-mask-image:linear-gradient(145deg,#000 0%,transparent 34%);mask-image:linear-gradient(145deg,#000 0%,transparent 34%)}
+/* P5 斜切装饰:大幅半透明红块 */
+.slash-deco{position:absolute;background:linear-gradient(120deg,rgba(230,0,18,.5),rgba(230,0,18,.12));transform:skewX(-24deg)}
+.slash-deco.thin{background:rgba(245,239,225,.07)}
+
+/* ---------- 通用:斜切元件 ---------- */
+.sl{transform:skewX(-8deg)} .unsl{transform:skewX(8deg)}
+.hard{filter:drop-shadow(5px 5px 0 rgba(0,0,0,.55))}
+.hard-sm{filter:drop-shadow(3px 3px 0 rgba(0,0,0,.5))}
+.chip{position:absolute;display:flex;align-items:center;justify-content:center}
+.chip .in{display:flex;align-items:center;gap:6px;transform:var(--un,skewX(8deg))}
+.lbl{font-size:12px;letter-spacing:1px;white-space:nowrap}
+
+/* ============================================================
+   屏 1 · 主菜单
+   ============================================================ */
+/* 顶栏:贴角 */
+.lv-badge{left:16px;top:14px;width:112px;height:42px;background:var(--red);--un:skewX(8deg)}
+.lv-badge .in{font-size:19px;letter-spacing:2px;color:#fff}
+.lv-badge .in b{font-size:12px;letter-spacing:1px;color:#ffd9d9;margin-right:2px;font-weight:400}
+.corner-cluster{position:absolute;top:0;right:16px;height:70px}
+.corner-cluster .chip{top:14px}
+.cc-coin{right:150px;width:132px;height:42px;background:var(--ink3);border:1px solid var(--line);--un:skewX(8deg)}
+.cc-coin .num{color:var(--acid);font-size:17px;letter-spacing:1px}
+.cc-sound{right:72px;width:92px;height:42px;background:var(--ink3);border:1px solid var(--line);--un:skewX(8deg);margin-top:5px}
+.cc-sound .lbl{color:var(--paper-dim)}
+.cc-set{right:0;width:84px;height:42px;background:var(--red);--un:skewX(8deg);margin-top:10px}
+.cc-set .lbl{color:#fff}
+.corner-cluster .cc-coin,.corner-cluster .cc-sound,.corner-cluster .cc-set{position:absolute}
+
+/* 标题区 */
+.kicker{position:absolute;left:0;right:0;top:118px;text-align:center;font-size:11px;letter-spacing:6px;color:var(--paper-dim)}
+.title{position:absolute;left:0;right:0;top:142px;height:96px;display:flex;align-items:center;justify-content:center}
+.title .backing{position:absolute;width:472px;height:74px;left:50%;top:52%;transform:translate(-50%,-50%) skewX(-8deg);
+  background:var(--red);filter:drop-shadow(7px 7px 0 rgba(0,0,0,.55))}
+.title .backing::after{content:"";position:absolute;inset:5px;background:var(--ink);clip-path:polygon(0 0,100% 0,96% 100%,0 100%);
+  transform:skewX(0);left:8px}
+.title .t{position:relative;font-size:52px;letter-spacing:4px;line-height:1}
+.title .t.a{color:var(--acid);transform:rotate(-1.5deg)}
+.title .t.b{color:var(--paper);transform:rotate(-1.5deg);margin-left:10px}
+.title .star{position:relative;margin-left:14px;width:30px;height:30px}
+.rule-line{position:absolute;left:0;right:0;top:252px;display:flex;align-items:center;justify-content:center;gap:14px}
+.rule-line .dash{width:120px;height:2px;background:linear-gradient(90deg,transparent,rgba(245,239,225,.35))}
+.rule-line .dash:last-child{transform:scaleX(-1)}
+.rule-line span{font-size:11px;letter-spacing:3px;color:var(--acid)}
+
+/* 球馆 tab */
+.courts{position:absolute;left:0;right:0;top:288px;display:flex;justify-content:center;gap:14px}
+.court{width:198px;height:42px;background:rgba(18,18,28,.85);border:1px solid #262636;
+  display:flex;flex-direction:column;justify-content:center;padding-left:16px;transform:skewX(-8deg)}
+.court .n{font-size:13px;color:var(--paper-dim);letter-spacing:1px;transform:skewX(8deg)}
+.court .d{font-size:10px;color:#6f7ca6;transform:skewX(8deg)}
+.court.on{background:rgba(28,28,40,.95);border:1px solid var(--acid)}
+.court.on .n{color:var(--paper)}
+.court .flag{position:absolute;right:-6px;top:-9px;background:var(--acid);color:#0a0e1c;font-size:10px;
+  padding:2px 10px;transform:skewX(-8deg);letter-spacing:1px}
+
+/* 难度卡 */
+.modes{position:absolute;left:0;right:0;top:352px;display:flex;justify-content:center;gap:16px}
+.mode{position:relative;width:266px;height:98px;padding:14px 18px;transform:skewX(-6deg);
+  background:linear-gradient(180deg,#1c1c28 0%,#101018 70%);border:1px solid}
+.mode>*{transform:skewX(6deg)}
+.mode .tag{position:absolute;right:10px;top:10px;font-size:10px;padding:2px 9px;letter-spacing:1px;transform:skewX(-6deg)}
+.mode .name{font-size:24px;letter-spacing:3px}
+.mode .desc{font-size:11px;color:var(--paper-dim);margin-top:8px;line-height:1.5;transform:skewX(6deg)}
+.mode .edge{position:absolute;left:0;top:0;bottom:0;width:6px;transform:skewX(0)}
+.mode.easy{border-color:rgba(125,255,158,.5)} .mode.easy .edge{background:var(--good)} .mode.easy .name{color:var(--good)} .mode.easy .tag{background:var(--good);color:#04121a}
+.mode.normal{border-color:rgba(255,225,77,.5)} .mode.normal .edge{background:var(--acid)} .mode.normal .name{color:var(--acid)} .mode.normal .tag{background:var(--acid);color:#0a0e1c}
+.mode.hard{border-color:rgba(255,106,31,.55)} .mode.hard .edge{background:#ff6a1f} .mode.hard .name{color:#ff6a1f} .mode.hard .tag{background:#ff6a1f;color:#1a0d02}
+
+/* 入口条 */
+.entries{position:absolute;left:0;right:0;top:474px;display:flex;justify-content:center;gap:16px}
+.entry{position:relative;width:266px;height:50px;background:rgba(18,18,28,.9);border:1px solid #262636;
+  display:flex;align-items:center;padding:0 14px;gap:10px;transform:skewX(-6deg)}
+.entry>*{transform:skewX(6deg)}
+.entry .tag{font-size:10px;padding:2px 8px;letter-spacing:1px;transform:skewX(-6deg)}
+.entry .n{font-size:16px;letter-spacing:2px;color:var(--paper)}
+.entry .sub{font-size:10px;color:#6f7ca6;margin-left:auto}
+.entry .chev{color:rgba(245,239,225,.6);font-size:13px;margin-left:6px}
+.ver{position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:10px;color:#5a6588;letter-spacing:1px}
+
+/* ============================================================
+   屏 2 · 对局 HUD
+   ============================================================ */
+.hud .mode-tag{left:16px;top:16px;height:26px;background:rgba(10,10,16,.88);border:1px solid #22222e;--un:skewX(8deg)}
+.hud .mode-tag .lbl{color:#8f9cbe;font-size:11px;letter-spacing:2px}
+.hud .pause{right:16px;top:14px;width:52px;height:52px;background:var(--ink2);border:1.5px solid rgba(245,239,225,.35);--un:skewX(0)}
+.hud .pause .in{font-size:20px;color:var(--paper);letter-spacing:2px}
+
+.score-bar{position:absolute;top:34px;left:0;right:0;height:96px}
+.pill{position:absolute;top:6px;width:196px;height:62px;background:var(--ink2);
+  border:1px solid #2c2c3a;display:flex;align-items:center}
+.pill .stripe{position:absolute;top:-2px;bottom:-2px;width:9px}
+.pill .team{position:absolute;top:7px;font-size:11px;letter-spacing:2px}
+.pill .num{position:absolute;bottom:2px;font-size:44px;line-height:1;letter-spacing:0}
+.pill-l{left:272px;transform:skewX(-9deg);filter:drop-shadow(-6px 6px 0 rgba(0,0,0,.55))}
+.pill-l .stripe{left:-2px;background:var(--team-l)}
+.pill-l .team{left:20px;color:var(--team-l)}
+.pill-l .num{left:22px;color:var(--paper);transform:rotate(-3deg)}
+.pill-r{right:272px;transform:skewX(9deg);filter:drop-shadow(6px 6px 0 rgba(0,0,0,.55))}
+.pill-r .stripe{right:-2px;background:var(--team-r)}
+.pill-r .team{right:20px;color:var(--team-r)}
+.pill-r .num{right:22px;color:var(--paper);transform:rotate(-3deg)}
+.to-badge{position:absolute;left:50%;top:26px;z-index:2;width:88px;height:30px;margin-left:-44px;background:var(--acid);
+  transform:skewX(-10deg) rotate(-4deg);filter:drop-shadow(3px 4px 0 rgba(0,0,0,.6))}
+.to-badge span{display:block;transform:skewX(10deg) rotate(0deg);text-align:center;line-height:30px;
+  color:#0a0e1c;font-size:13px;letter-spacing:2px}
+.to-burst{position:absolute;left:50%;top:41px;width:74px;height:74px;margin-left:-37px;opacity:.95}
+
+.status-plate{left:50%;top:112px;height:30px;background:rgba(10,10,16,.9);border:1px solid #26262f;--un:skewX(8deg);
+  transform:translateX(-50%) skewX(-8deg)}
+.status-plate .lbl{color:var(--acid);font-size:13px;letter-spacing:1px}
+.serve-flag{position:absolute;left:300px;top:118px;filter:drop-shadow(3px 3px 0 rgba(0,0,0,.5));z-index:3}
+.serve-flag .body{width:44px;height:24px;background:var(--red);clip-path:polygon(0 0,100% 0,74% 50%,100% 100%,0 100%);
+  border:none;display:flex;align-items:center;justify-content:center}
+.serve-flag .body span{font-size:11px;color:#fff;letter-spacing:2px}
+
+.combo{position:absolute;right:22px;top:96px;width:118px;height:58px;background:var(--ink2);
+  border:1.5px solid var(--orange);display:flex;flex-direction:column;align-items:center;justify-content:center;
+  filter:drop-shadow(4px 4px 0 rgba(0,0,0,.5))}
+.combo .row{display:flex;align-items:baseline;gap:6px}
+.combo .num{font-size:27px;color:var(--orange)}
+.combo .sub{font-size:11px;color:var(--paper-dim);letter-spacing:2px}
+.combo .bar{width:96px;height:3px;background:rgba(255,255,255,.12);margin-top:5px}
+.combo .bar i{display:block;height:100%;width:70%;background:var(--orange)}
+.combo .saw{position:absolute;left:-3px;right:-3px;height:7px;background:var(--orange)}
+
+/* ============================================================
+   屏 3 · 赛点横幅 + 结算
+   ============================================================ */
+.mp-band{position:absolute;left:-30px;right:-30px;top:26px;height:52px;background:var(--red);
+  transform:skewY(-1.6deg);filter:drop-shadow(0 7px 0 rgba(0,0,0,.55))}
+.mp-band::before{content:"";position:absolute;left:0;right:0;top:-12px;height:12px;background:var(--ink);
+  transform:skewY(1.6deg)}
+.mp-band .txt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  transform:skewY(1.6deg);font-size:19px;letter-spacing:6px;color:#fff;font-style:italic}
+.mp-band .txt b{color:#ffd9d9;font-weight:400;margin:0 10px;font-size:12px;letter-spacing:3px}
+
+.settle{position:absolute;inset:0}
+.vic{position:absolute;left:50%;top:180px;transform:translateX(-50%)}
+.vic .backing{position:absolute;width:430px;height:86px;left:52%;top:56%;transform:translate(-50%,-50%) skewX(-10deg);
+  background:var(--red);filter:drop-shadow(8px 8px 0 rgba(0,0,0,.6))}
+.vic .txt{position:relative;font-size:64px;letter-spacing:6px;color:var(--paper);font-style:italic;
+  transform:rotate(-2deg);line-height:1;text-shadow:4px 4px 0 rgba(0,0,0,.5)}
+.vic .sub{position:absolute;left:0;right:0;top:96px;text-align:center;font-size:12px;letter-spacing:5px;color:var(--acid)}
+.final-score{position:absolute;left:50%;top:330px;transform:translateX(-50%) skewX(-8deg) rotate(-2deg);
+  background:var(--ink2);border:1px solid #2c2c3a;padding:8px 30px;filter:drop-shadow(5px 5px 0 rgba(0,0,0,.55))}
+.final-score span{display:block;transform:skewX(8deg);font-size:40px;letter-spacing:8px;color:var(--paper)}
+.final-score span b{color:var(--team-l);font-weight:400}
+.final-score span i{color:var(--team-r);font-style:normal}
+.reward{position:absolute;left:50%;top:412px;transform:translateX(-50%) skewX(-8deg);
+  background:var(--ink3);border:1px solid var(--acid-dk);padding:7px 22px;display:flex;gap:8px;align-items:center}
+.reward span{display:block;transform:skewX(8deg);font-size:15px;color:var(--acid);letter-spacing:2px}
+.btn-row{position:absolute;left:0;right:0;top:466px;display:flex;justify-content:center;gap:20px}
+.btn{width:150px;height:44px;display:flex;align-items:center;justify-content:center;font-size:16px;letter-spacing:4px}
+.btn.red{background:var(--red);color:#fff}
+.btn.ghost{background:rgba(28,28,40,.92);border:1px solid rgba(245,239,225,.3);color:var(--paper)}
+.btn{transform:skewX(-8deg);filter:drop-shadow(4px 4px 0 rgba(0,0,0,.55))}
+.btn span{display:block;transform:skewX(8deg)}
+
+.hint{position:absolute;left:0;right:0;bottom:10px;text-align:center;font-size:10px;color:#5a6588;letter-spacing:2px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>嘟嘟羽毛球 · <em>P5「暗红斩劈」</em>UI 方向稿</h1>
+  <p>三屏自上而下:主菜单(顶栏贴角+斜切卡片)/ 对局 HUD(斜切比分牌+锯齿连击)/ 赛点斩劈横幅+结算大字。
+     红黑白三色主导,荧光黄降为二级点缀;斜切平行四边形+锯齿边+星芒为基本语汇。
+     正式版以 Cocos Graphics 程序化绘制本稿同一套几何;大字将使用子集化的中文标题黑体(本稿以系统粗体近似)。</p>
+  <div class="swatches">
+    <span class="sw"><i style="background:#e60012"></i>主红 #E60012</span>
+    <span class="sw"><i style="background:#0a0a10;outline:1px solid #2a2a38"></i>墨黑 #0A0A10</span>
+    <span class="sw"><i style="background:#f5efe1"></i>纸白 #F5EFE1</span>
+    <span class="sw"><i style="background:#ffe14d"></i>点缀黄 #FFE14D</span>
+    <span class="sw"><i style="background:#ff4d4d"></i>我方队色</span>
+    <span class="sw"><i style="background:#3ea8ff"></i>对方队色</span>
+  </div>
+</div>
+
+<!-- ================= 屏 1 · 主菜单 ================= -->
+<div class="frame-wrap">
+  <p class="frame-label">屏 1 · 主菜单<small>顶栏贴角:Lv 左上,金币/声音/设置右上角层叠级联,斜切+锯齿</small></p>
+  <div class="frame" id="s1">
+    <div class="hall"></div><div class="floor"></div>
+    <div class="court-line" style="left:120px;right:120px;bottom:190px;height:2px"></div>
+    <div class="court-line" style="left:60px;right:60px;bottom:60px;height:2px"></div>
+    <div class="net"></div>
+    <div class="slash-deco" style="right:-140px;top:-80px;width:420px;height:230px"></div>
+    <div class="slash-deco thin" style="left:-120px;top:220px;width:360px;height:160px"></div>
+    <div class="grain"></div><div class="grain tr"></div>
+    <div class="veil"></div><div class="scan"></div>
+
+    <!-- 顶栏:左上 Lv -->
+    <div class="chip lv-badge hard-sm saw-r" data-saw="right" data-teeth="7" data-amp="16"><div class="in"><b>LEVEL</b>Lv.7</div></div>
+    <!-- 顶栏:右上角级联 -->
+    <div class="corner-cluster">
+      <div class="chip cc-coin hard-sm"><div class="in">
+        <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="#ffd34d" stroke="#b79b12" stroke-width="1.5"/><circle cx="9" cy="9" r="5" fill="none" stroke="#c79a1e"/><path d="M5.5 5.5 A5 5 0 0 1 9 4" stroke="#fff2b8" fill="none" stroke-width="1.6"/></svg>
+        <span class="num">1,280</span></div></div>
+      <div class="chip cc-sound hard-sm"><div class="in"><span class="lbl">声音开</span></div></div>
+      <div class="chip cc-set hard-sm"><div class="in"><span class="lbl">设置</span></div></div>
+    </div>
+
+    <!-- 标题 -->
+    <p class="kicker">黄昏体育馆 · RALLY TONIGHT</p>
+    <div class="title">
+      <div class="backing"></div>
+      <span class="t a">嘟嘟</span><span class="t b">羽毛球</span>
+      <svg class="star" viewBox="0 0 30 30"><polygon data-star data-cx="15" data-cy="15" data-ro="14" data-ri="8" data-n="8" fill="#ffe14d"/></svg>
+    </div>
+    <div class="rule-line"><i class="dash"></i><span>11 分制 · 单局决胜</span><i class="dash"></i></div>
+
+    <!-- 球馆 -->
+    <div class="courts">
+      <div class="court on"><span class="flag">使用中</span><span class="n">中央体育馆</span><span class="d">标准木地板 · 灯光暖</span></div>
+      <div class="court"><span class="n">海滩场</span><span class="d">沙风 · 视野开阔</span></div>
+      <div class="court"><span class="n">竹林道场</span><span class="d">清风 · 静</span></div>
+      <div class="court"><span class="n">霓虹夜馆</span><span class="d">暗光 · 高对比</span></div>
+    </div>
+
+    <!-- 难度 -->
+    <div class="modes">
+      <div class="mode easy hard"><i class="edge"></i><span class="tag">EASY</span><div class="name">入门</div><div class="desc">球速温和 · AI 反应慢半拍<br>适合熟悉手感</div></div>
+      <div class="mode normal hard"><i class="edge"></i><span class="tag">NORMAL</span><div class="name">普通</div><div class="desc">标准球速 · 有来有回<br>合计 11 分制</div></div>
+      <div class="mode hard hard"><i class="edge"></i><span class="tag">HARD</span><div class="name">大师</div><div class="desc">球速拉满 · AI 主动变速<br>每一分都烫手</div></div>
+    </div>
+
+    <!-- 入口 -->
+    <div class="entries">
+      <div class="entry hard-sm"><span class="tag" style="background:var(--cyan);color:#04121a">TRAIN</span><span class="n">专项训练</span><span class="sub">6 关已练成 4</span><span class="chev">»</span></div>
+      <div class="entry hard-sm"><span class="tag" style="background:var(--good);color:#04121a">ENDLESS</span><span class="n">无限练习</span><span class="sub">对拉不记分</span><span class="chev">»</span></div>
+      <div class="entry hard-sm"><span class="tag" style="background:var(--acid);color:#0a0e1c">CAREER</span><span class="n">生涯与商店</span><span class="sub">32 胜 · 胜率 61%</span><span class="chev">»</span></div>
+    </div>
+    <p class="ver">v0.0.9 · 检查更新</p>
+  </div>
+</div>
+
+<!-- ================= 屏 2 · 对局 HUD ================= -->
+<div class="frame-wrap">
+  <p class="frame-label">屏 2 · 对局 HUD<small>比分牌顶部居中改斜切对抗式;连击锯齿卡;发球箭旗;得分星芒爆发</small></p>
+  <div class="frame hud" id="s2">
+    <div class="hall"></div><div class="floor"></div>
+    <div class="court-line" style="left:140px;right:140px;bottom:196px;height:2px"></div>
+    <div class="court-line" style="left:80px;right:80px;bottom:70px;height:2px"></div>
+    <div class="court-line" style="left:80px;bottom:70px;width:2px;height:126px"></div>
+    <div class="court-line" style="right:80px;bottom:70px;width:2px;height:126px"></div>
+    <div class="net"></div>
+    <div class="grain"></div><div class="grain tr"></div>
+    <div class="veil" style="background:radial-gradient(700px 380px at 50% 60%,rgba(10,10,16,.1) 0%,rgba(10,10,16,.6) 100%)"></div>
+    <div class="scan"></div>
+
+    <div class="chip mode-tag hard-sm"><div class="in"><span class="lbl">SOLO · 大师</span></div></div>
+    <div class="chip pause hard-sm"><div class="in">II</div></div>
+
+    <!-- 比分牌 -->
+    <div class="score-bar">
+      <div class="pill pill-l">
+        <i class="stripe"></i>
+        <span class="team">你</span>
+        <svg class="burst" style="position:absolute;left:34px;top:8px;width:52px;height:52px;opacity:.9" viewBox="0 0 52 52">
+          <polygon data-star data-cx="26" data-cy="26" data-ro="25" data-ri="15" data-n="10" fill="rgba(230,0,18,.85)"/></svg>
+        <span class="num">7</span>
+      </div>
+      <div class="to-badge"><span>TO 11</span></div>
+      <svg class="to-burst" viewBox="0 0 74 74">
+        <polygon data-star data-cx="37" data-cy="37" data-ro="36" data-ri="22" data-n="12" fill="rgba(255,225,77,.22)"/></svg>
+      <div class="pill pill-r">
+        <i class="stripe"></i>
+        <span class="team">AI</span>
+        <span class="num">5</span>
+      </div>
+    </div>
+
+    <div class="chip status-plate hard-sm"><div class="in"><span class="lbl">你发球 · 深球压底线,短球放网前</span></div></div>
+    <div class="serve-flag"><div class="body"><span>发球</span></div></div>
+
+    <!-- 连击 -->
+    <div class="combo">
+      <i class="saw saw-t" data-saw="top" data-teeth="9" data-amp="45"></i>
+      <i class="saw saw-b" data-saw="bottom" data-teeth="9" data-amp="45"></i>
+      <div class="row"><span class="num">12</span><span class="sub">连击</span></div>
+      <div class="bar"><i></i></div>
+    </div>
+
+    <p class="hint">对局 HUD · 虚拟按键在屏幕下两角,顶部整簇不与球场争视线</p>
+  </div>
+</div>
+
+<!-- ================= 屏 3 · 赛点 + 结算 ================= -->
+<div class="frame-wrap">
+  <p class="frame-label">屏 3 · 赛点斩劈横幅 + 结算大字<small>赛点:全宽斜切红带锯齿缘,一次斩入后低频脉动;结算:VICTORY 大字斜切衬底</small></p>
+  <div class="frame" id="s3">
+    <div class="hall"></div><div class="floor"></div>
+    <div class="court-line" style="left:120px;right:120px;bottom:190px;height:2px"></div>
+    <div class="net"></div>
+    <div class="grain tr"></div>
+    <div class="veil" style="background:radial-gradient(760px 420px at 50% 42%,rgba(10,10,16,.24) 0%,rgba(10,10,16,.8) 100%)"></div>
+    <div class="scan"></div>
+
+    <!-- 赛点横幅(上半屏示意) -->
+    <div class="mp-band">
+      <span class="txt"><b>★</b> 赛末点 · MATCH POINT <b>★</b></span>
+    </div>
+    <div class="settle">
+      <div class="vic">
+        <div class="backing"></div>
+        <div class="txt">VICTORY!</div>
+        <div class="sub">SETS CLEAN · 干脆利落</div>
+      </div>
+      <div class="final-score hard"><span><b>11</b> : <i>8</i></span></div>
+      <div class="reward hard-sm">
+        <svg width="17" height="17" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="#ffd34d" stroke="#b79b12" stroke-width="1.5"/><circle cx="9" cy="9" r="5" fill="none" stroke="#c79a1e"/></svg>
+        <span>+120</span>
+      </div>
+      <div class="btn-row">
+        <div class="btn red"><span>再 战</span></div>
+        <div class="btn ghost"><span>回大厅</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- 锯齿边 clip-path 生成(与正式版 Graphics drawSawtooth 同一几何) ----
+function sawPoints(edge, teeth, ampPct){
+  const p = [], s = 100 / teeth;
+  if (edge === "bottom") {
+    p.push([0,0],[100,0]);
+    for (let i = 0; i < teeth; i++) p.push([100 - s*(i+.5), 100-ampPct], [100 - s*(i+1), 100]);
+  } else if (edge === "top") {
+    p.push([0,100]);
+    for (let i = 0; i < teeth; i++) p.push([s*i, ampPct], [s*(i+.5), 0]);
+    p.push([100, ampPct],[100,100]);
+  } else if (edge === "right") {
+    p.push([0,0],[100-ampPct,0]);
+    for (let i = 0; i < teeth; i++) p.push([100, s*(i+.5)], [100-ampPct, s*(i+1)]);
+    p.push([0,100]);
+  }
+  return p.map(q => q[0].toFixed(2) + "% " + q[1].toFixed(2) + "%").join(",");
+}
+document.querySelectorAll("[data-saw]").forEach(el => {
+  const teeth = +el.dataset.teeth || 10;
+  const ampPct = +el.dataset.amp || 20;
+  el.style.clipPath = "polygon(" + sawPoints(el.dataset.saw, teeth, ampPct) + ")";
+});
+// 连击卡上下锯齿:对整卡裁剪(上下缘各一排齿)
+const combo = document.querySelector(".combo");
+if (combo) {
+  const teeth = 9, top = [], bot = [], s = 100 / teeth;
+  top.push([0, 12]);
+  for (let i = 0; i < teeth; i++) top.push([s*i + s/2, 0], [s*(i+1), 12]);
+  for (let i = 0; i < teeth; i++) bot.push([100 - s*i, 100], [100 - s*(i+.5), 88]);
+  bot.push([0, 100]);
+  combo.style.clipPath = "polygon(" + top.concat(bot).map(q => q[0].toFixed(2)+"% "+q[1].toFixed(2)+"%").join(",") + ")";
+}
+// ---- 星芒 polygon 生成(与 drawStarburst 同一几何) ----
+function starPts(cx, cy, ro, ri, n, rot){
+  const a = [];
+  for (let i = 0; i < n * 2; i++) {
+    const r = i % 2 ? ri : ro, t = Math.PI * i / n + (rot || 0);
+    a.push((cx + Math.cos(t) * r).toFixed(1) + "," + (cy + Math.sin(t) * r).toFixed(1));
+  }
+  return a.join(" ");
+}
+document.querySelectorAll("polygon[data-star]").forEach(pg => {
+  const d = pg.dataset;
+  pg.setAttribute("points", starPts(+d.cx, +d.cy, +d.ro, +d.ri || +d.ro * .55, +d.n || 12, +(d.rot || 0)));
+});
+</script>
+</body>
+</html>

@@ -50,16 +50,16 @@ const DRILL_STARS_MAX = DRILLS.length * 3;
 
 // 配色(对齐老 base.css 的街机令牌:acid 荧光黄 + 暖纸白 + navy)
 const COL = {
-  overlay: new Color(5, 7, 15, 110),          // --ink 遮罩基准(渐变由 drawVeil 补)
-  panelBg: new Color(14, 20, 40, 228),        // --navy:半透,身后球场还看得见
-  cardBg: new Color(24, 33, 66, 208),         // --navy-2
+  overlay: new Color(7, 7, 13, 110),          // --ink 遮罩基准(渐变由 drawVeil 补)
+  panelBg: new Color(16, 16, 24, 228),        // 面板黑:半透,身后球场还看得见
+  cardBg: new Color(26, 26, 38, 208),         // 卡片黑(面板抬一档)
   cardSel: new Color(255, 225, 77, 255),      // --acid 选中描边
   cardSelBg: new Color(255, 225, 77, 26),     // 选中卡内的 acid 薄染
   cardEquip: new Color(21, 56, 42, 208),
-  cardLock: new Color(16, 19, 30, 170),
+  cardLock: new Color(16, 16, 24, 170),
   // 未选中 tab:白 5% 压在 panelBg 上只有 1.1:1,读不出一格一格的形状。
   // 改成抬一档的 navy-2 + 冷灰描边 —— 未选中也要「能点」的样子。
-  tabBg: new Color(24, 33, 66, 235),
+  tabBg: new Color(26, 26, 38, 235),
   tabEdge: new Color(159, 176, 216, 90),
   tabSel: new Color(255, 225, 77, 255),       // acid 芯片
   accent: new Color(255, 225, 77, 255),
@@ -141,7 +141,9 @@ function themeOf(s: SkinDef): Theme {
   return { main: s.main ?? "#ff4d4d", dark: s.dark ?? "#a8202c", glow: s.glow ?? "#ff8a6a", name: s.name };
 }
 
-/** 构造最小可用的 Player 实体供 drawPlayer 消费 */
+/** 构造最小可用的 Player 实体供 drawPlayer 消费。
+ *  faceSkin 恒挂 face-auto:商品卡展示的是「人物形象本体」,默认走人物自带脸面
+ *  (萌芽豆丁的雀斑/猫系少女的猫须),不被玩家当前装备的脸面盖掉。 */
 function dummyPlayer(theme: Theme, racketSkin: SkinDef, ov: Partial<Player> = {}): Player {
   return {
     side: "left", isAI: false, theme, jersey: "01",
@@ -159,6 +161,7 @@ function dummyPlayer(theme: Theme, racketSkin: SkinDef, ov: Partial<Player> = {}
     hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeCd: 0, lungeShotT: 0,
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
     racketSkin,
+    faceSkin: { id: "face-auto", kind: "face", name: "auto", price: 0, faceStyle: "auto" },
     hideTag: true,
     groundY: 0,
     ...ov,
@@ -187,7 +190,15 @@ function previewVp(scale: number, cx: number, cy: number): Viewport {
 /** 设计款卖点一句话:卡片底部小字与购买欲直接挂钩 */
 function fxTag(s: SkinDef): string {
   if (s.kind === "face") {
-    return s.faceStyle === "skin" ? "肤色脸 · 暖棕五官 · 心情腮红" : "";
+    switch (s.faceStyle) {
+      case "auto": return "跟随人物默认脸面";
+      case "ink": return "经典剪影 · 情怀款";
+      case "freckle": return "肤色脸 · 雀斑 · 心情腮红";
+      case "tear": return "肤色脸 · 泪痣 · 心情腮红";
+      case "cat": return "猫系脸面 · 猫须腮红";
+      case "sage": return "白眉长须 · 仙风道骨";
+      default: return "";
+    }
   }
   if (s.kind === "racket") {
     switch (s.swingFx) {
@@ -207,6 +218,8 @@ function fxTag(s: SkinDef): string {
     }
     return "";
   }
+  if (s.body === "compact") return "小巧体型 · 全新人物形象";
+  if (s.body === "tall") return "高挑体型 · 全新人物形象";
   return s.aura ? "专属脚下光环"
     : (s.hairStyle || s.headwear || s.jersey) ? "全新人物形象" : "";
 }
@@ -664,7 +677,7 @@ export class CareerPanel extends Component {
     } else if (kind === "face") {
       // 大头像(与上场同一套 drawHead):常态表情,换什么脸一眼可辨
       drawHeadStill(g, previewVp(2.1, 0, 10), 0, 0, 1,
-        themeOf(Career.skinOf("player")), s.faceStyle ?? "ink", "normal", 0);
+        themeOf(Career.skinOf("player")), s.faceStyle ?? "skin", "normal", 0);
     }
   }
 
@@ -693,10 +706,10 @@ export class CareerPanel extends Component {
     if (Career.owns(s.id)) return { text: "装备上身", style: "ghost", fg: COL.white };
     if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, style: "ghost", fg: COL.dimGray };
     if (p.coins < s.price) return { text: `金币不足 · 还差 ${s.price - p.coins}`, style: "ghost", fg: COL.dimGray };
-    // acid 面上要用深字(与老 .btn.primary 同)
-    const acidFg = new Color(20, 16, 10, 255);
-    if (s.price === 0) return { text: "免费领取", style: "primary", fg: acidFg };
-    return { text: `购买 · ${s.price} 金币`, style: "primary", fg: acidFg };
+    // 红面 primary 上要用浅字(P5 主按钮:斩劈红面白字)
+    const primaryFg = new Color(255, 245, 242, 255);
+    if (s.price === 0) return { text: "免费领取", style: "primary", fg: primaryFg };
+    return { text: `购买 · ${s.price} 金币`, style: "primary", fg: primaryFg };
   }
 
   /** 底块单独走一遍,好让 retainedDraw 的重放和状态刷新用同一张脸 */
@@ -846,7 +859,7 @@ export class CareerPanel extends Component {
       const exprs: FaceKind[] = ["normal", "happy", "star", "wow"];
       const seg = 2.2 / exprs.length;               // 与试衣间同一个 2.2s 循环时钟
       const expr = exprs[Math.min(exprs.length - 1, Math.floor(this._elapsed / seg))];
-      drawHeadStill(g, vp, 0, 0, 1, themeOf(curPlayer), s.faceStyle ?? "ink", expr, this._elapsed);
+      drawHeadStill(g, vp, 0, 0, 1, themeOf(curPlayer), s.faceStyle ?? "skin", expr, this._elapsed);
       if (this._previewName) {
         const rn = CFG.rarity[s.rarity ?? "common"].name;
         this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;

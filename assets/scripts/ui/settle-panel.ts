@@ -12,7 +12,7 @@ import type { SettleResult } from "../core/career";
 import type { DrillResult } from "../core/drill";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { cancelFade, drawMenuCard, fadeOutHide, retainedDraw } from "./ui-arcade";
+import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, slantPath, skewOf } from "./ui-arcade";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -87,15 +87,34 @@ export class SettlePanel {
     this.card.setPosition(0, 2, 0);
     this.cardOp = this.card.addComponent(UIOpacity);
 
-    this.verdict = kit.label(this.card, "", 38, P.accent, { outline: P.ink, outlineW: 3 });
+    // 大标语斜切衬底(P5):胜利时红色斩劈块,失败/训练不亮
+    const verdictBg = new Node("verdict-bg");
+    verdictBg.layer = this.card.layer;
+    verdictBg.addComponent(UITransform);
+    const vbg = verdictBg.addComponent(Graphics);
+    const vsk = skewOf(88, 9);
+    drawSlantShadow(vbg, 470, 88, vsk, 7, 7, 0.55);
+    vbg.fillColor = col(ARCADE.slash, 0.96);
+    slantPath(vbg, 470, 88, vsk);
+    vbg.fill();
+    vbg.strokeColor = col("#ff6b72", 0.5);
+    vbg.lineWidth = 1.5;
+    slantPath(vbg, 470, 88, vsk);
+    vbg.stroke();
+    verdictBg.setPosition(0, 198, 0);
+    verdictBg.setParent(this.card);
+    verdictBg.active = false;
+
+    this.verdict = kit.label(this.card, "", 42, P.text, { outline: P.ink, outlineW: 2, disp: true });
     this.verdict.node.setPosition(0, 198, 0);
+    this.verdict.node.angle = 2;
     this.verdict.enableShadow = true;
     this.verdict.shadowColor = new Color(0, 0, 0, 140);
     this.verdict.shadowOffset = new Vec2(0, -5);
     // 比分(比赛)与关卡名(训练)共用同一个位置,同屏只亮一个
     this.sub = kit.label(this.card, "", 15, P.text);
     this.sub.node.setPosition(0, 158, 0);
-    this.score = kit.label(this.card, "", 30, P.text);
+    this.score = kit.label(this.card, "", 34, P.text, { disp: true });
     this.score.node.setPosition(0, 158, 0);
     this.score.node.angle = 7;   // 老 .final 的斜切数字
     this.score.enableShadow = true;
@@ -154,7 +173,7 @@ export class SettlePanel {
     this.newsLine.lineHeight = 20;
 
     // ---------- 按钮 ----------
-    const again = kit.button(this.card, "", 240, 52, { bg: P.accent, fg: P.ink, size: 18 });
+    const again = kit.button(this.card, "", 240, 52, { style: "primary", size: 18 });
     again.setPosition(-128, -190, 0);
     // 文案随模式在 show() 里设置(老 index.html:「再来一局」/「再练一次」)
     this.againLabel = again.getChildByName("label")?.getComponent(Label) ?? null;
@@ -231,9 +250,11 @@ export class SettlePanel {
     const match = p.kind === "match";
     const won = p.won;
 
-    // 大标语:胜金败灰;训练用中文,语气也不同(老 .verdict / .verdict.lose)
+    // 大标语:胜利压在红衬纸上;训练用中文,语气也不同(老 .verdict / .verdict.lose)
     this.verdict.string = match ? (won ? "VICTORY!" : "DEFEAT") : (won ? "训练完成!" : "再接再厉");
-    this.verdict.color = col(won ? P.accent : P.dim);
+    this.verdict.color = col(won ? P.text : P.dim);
+    // 红衬纸只在「比赛获胜」时亮(失败/训练标语直接压在面板上)
+    (this.card.getChildByName("verdict-bg"))!.active = match && won;
     this.score.node.active = match;
     this.sub.node.active = !match;
     this.score.string = `${p.scores[0]} : ${p.scores[1]}`;

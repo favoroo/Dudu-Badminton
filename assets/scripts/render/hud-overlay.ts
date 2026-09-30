@@ -7,7 +7,7 @@
 // 文字(Graphics 画不了)用挂在世界层的小 Label,每帧同步位置。
 // 渲染层只读游戏状态,不改任何逻辑字段。
 // ============================================================
-import { Color, Graphics, Label, Layers, Node, UITransform } from "cc";
+import { Color, Graphics, Label, Layers, Node, Tween, tween, UITransform, Vec3 } from "cc";
 import { CFG } from "../core/config";
 import { Physics } from "../core/physics";
 import { Settings } from "../core/settings";
@@ -37,6 +37,7 @@ export class HudOverlay {
   private vp: Viewport;
   // 赛点旗标(拍数由 HUD 的连击大字负责,训练进度由 HUD 的状态行负责)
   private mpLabel: Label;
+  private mpShown = false;
   // ---------- 轨迹预测虚线的预分配缓冲(每帧复用,零 GC)----------
   // predictPath 写世界坐标点 → px/py 存换算后的 Graphics 坐标 → dashBuf 存切好的虚线段
   // (每段 5 个 float:x0,y0,x1,y1,透明度档)。虚线段数上限 ≈ 弧长/(dash+gap),
@@ -53,7 +54,10 @@ export class HudOverlay {
     n.addComponent(UITransform);
     n.setParent(parent);
     this.g = n.addComponent(Graphics);
-    this.mpLabel = txt(n, "mp", 11);
+    this.mpLabel = txt(n, "mp", 15);
+    this.mpLabel.enableOutline = true;
+    this.mpLabel.outlineColor = new Color().fromHEX("#07070d");
+    this.mpLabel.outlineWidth = 2;
     this.mpLabel.node.active = false;
   }
 
@@ -340,39 +344,61 @@ export class HudOverlay {
     meter(this.g, x0, y0, w, u, { h: 12, a });
   }
 
-  // ---------- 赛点顶部霓虹旗标(hud.js#L90-169 的旗标那一半) ----------
+  // ---------- 赛点斩劈横幅(原 hud.js 旗标的 P5 化:全宽斜切红带 + 锯齿撕边) ----------
   // 拍数不在这里重复:RALLY 计数由 HUD 的「x N 连击」大字负责
   private matchPointFlag(R: typeof Rules.R, t: number): void {
     const g = this.g;
     const isMP = (R.state === "SERVE" || R.state === "RALLY") && Rules.isMatchPoint();
 
     this.mpLabel.node.active = isMP;
-    if (isMP) {
-      const mp = Rules.matchPointInfo();
-      const pulse = 0.5 + 0.5 * Math.sin(t * 0.12);
-      const cx = this.vp.x(C.world.w / 2), cy = this.vp.y(25);
-      // rules 的 label 里自带 ★,这里只补两侧装饰 —— 直接拼会出现「★ ★ 赛末点 ★」
-      const raw = mp.label.replace(/★/g, "").trim();
-      const content = raw ? `★ ${raw} ★` : "★ MATCH POINT ★";
-      const pw = Math.max(136, content.length * 11 * 0.62 + 24);
-      const ph = 20;
-      // 胶囊衬底
-      g.fillColor = withAlpha(pal("#2d0a10"), 0.85 + 0.1 * pulse);
-      g.roundRect(cx - pw / 2, cy - ph / 2, pw, ph, ph / 2);
-      g.fill();
-      // 边框
-      g.lineWidth = 1.6;
-      g.strokeColor = withAlpha(pal("#ff5050"), 0.7 + 0.3 * pulse);
-      g.roundRect(cx - pw / 2, cy - ph / 2, pw, ph, ph / 2);
-      g.stroke();
-      // 细微外发光
-      g.lineWidth = 3.5;
-      g.strokeColor = withAlpha(pal("#ff3c3c"), 0.2 * pulse);
-      g.roundRect(cx - pw / 2, cy - ph / 2, pw, ph, ph / 2);
-      g.stroke();
-      this.mpLabel.node.setPosition(cx, cy, 0);
-      this.mpLabel.string = content;
-      this.mpLabel.color = pulse > 0.4 ? new Color().fromHEX("#fff0f0") : new Color().fromHEX("#ffb0b0");
+    if (!isMP) {
+      this.mpShown = false;
+      return;
     }
+    const mp = Rules.matchPointInfo();
+    const pulse = 0.5 + 0.5 * Math.sin(t * 0.12);
+    const cy = this.vp.y(25);
+    // rules 的 label 里自带 ★,这里只补两侧装饰 —— 直接拼会出现「★ ★ 赛末点 ★」
+    const raw = mp.label.replace(/★/g, "").trim();
+    const content = raw ? `★ ${raw} ★` : "★ MATCH POINT ★";
+    // P5 斩劈横幅:近黑衬带 + 全宽主红带(微仰切)+ 下缘锯齿撕边
+    const w = C.world.w + 120;
+    const h = 30;
+    const band = (bh: number, hex: string, a: number, skew: number): void => {
+      g.fillColor = withAlpha(pal(hex), a);
+      const s = skew / 2;
+      g.moveTo(-w / 2 + s, -bh / 2 + cy);
+      g.lineTo(w / 2 + s, -bh / 2 + cy);
+      g.lineTo(w / 2 - s, bh / 2 + cy);
+      g.lineTo(-w / 2 - s, bh / 2 + cy);
+      g.close();
+      g.fill();
+    };
+    band(h + 10, "#07070d", 0.88, 24);
+    band(h, "#e60012", 0.9 + 0.1 * pulse, 18);
+    g.fillColor = withAlpha(pal("#07070d"), 0.9);
+    const teeth = 26;
+    const tw = w / teeth;
+    for (let i = 0; i < teeth; i++) {
+      const x0 = -w / 2 + i * tw;
+      g.moveTo(x0, -h / 2 + cy);
+      g.lineTo(x0 + tw / 2, -h / 2 - 5 + cy);
+      g.lineTo(x0 + tw, -h / 2 + cy);
+    }
+    g.fill();
+    if (!this.mpShown) {
+      // 一次性侧向斩入(渲染层不 import ui 构件,内联同款动画);之后只做颜色脉动
+      this.mpShown = true;
+      const n = this.mpLabel.node;
+      Tween.stopAllByTarget(n);
+      const x0 = this.vp.x(C.world.w / 2);
+      n.setPosition(x0 - 60, cy, 0);
+      n.angle = -5;
+      tween(n)
+        .to(0.3, { position: new Vec3(x0, cy, 0), angle: 0 }, { easing: "backOut" })
+        .start();
+    }
+    this.mpLabel.string = content;
+    this.mpLabel.color = pulse > 0.4 ? new Color().fromHEX("#fff5f2") : new Color().fromHEX("#ffd9d9");
   }
 }

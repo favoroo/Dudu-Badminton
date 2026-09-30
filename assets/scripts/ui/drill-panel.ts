@@ -29,8 +29,8 @@ const INFO_W = PW - ANIM_W - 40;
 
 // 配色(与 career-panel 同源:对齐老 base.css 街机令牌)
 const COL = {
-  panelBg: new Color(14, 20, 40, 228),        // --navy:半透,身后球场还看得见
-  cardBg: new Color(24, 33, 66, 208),         // --navy-2
+  panelBg: new Color(16, 16, 24, 228),        // 面板黑:半透,身后球场还看得见
+  cardBg: new Color(26, 26, 38, 208),         // 卡片黑
   cardSel: new Color(255, 225, 77, 255),      // --acid
   cardDone: new Color(21, 56, 42, 208),
   accent: new Color(255, 225, 77, 255),
@@ -41,21 +41,21 @@ const COL = {
   white: new Color(245, 239, 225, 255),       // --paper
   dimWhite: new Color(159, 176, 216, 200),
   dimGray: new Color(140, 153, 190, 235),
-  overlay: new Color(5, 7, 15, 102),          // --ink 遮罩基准(渐变由 drawVeil 补)
+  overlay: new Color(7, 7, 13, 102),          // --ink 遮罩基准(渐变由 drawVeil 补)
   starOn: new Color(255, 225, 77, 255),
   // 未得星:白 18% 的细空心圈在 navy 面板上基本看不见,0 星的卡像缺了块东西
   starOff: new Color(159, 176, 216, 130),
-  btnPrimary: new Color(255, 225, 77, 255),   // acid 厚底主按钮
-  btnPrimaryEdge: new Color(183, 155, 18, 255),
+  btnPrimary: new Color(230, 0, 18, 255),     // 斩劈红厚底主按钮
+  btnPrimaryEdge: new Color(255, 107, 114, 255),
   // 次级按钮:白 7% 压在 panelBg 上只有约 1.1:1,读不出「这是个按钮」。
   // 与 career 的未选中 tab 同一个病,一起换成抬一档的 navy-2 + 冷灰描边。
-  btnGhost: new Color(24, 33, 66, 235),
+  btnGhost: new Color(26, 26, 38, 235),
   btnGhostEdge: new Color(159, 176, 216, 90),
   btnDanger: new Color(110, 32, 41, 230),
 };
 
-/** acid 底按钮上的深色前景字(老 .btn.primary 的 #1a1a2a) */
-const DARK_FG = new Color(20, 16, 10, 255);
+/** 红面主按钮上的浅色前景字(P5:斩劈红面白字) */
+const PRIMARY_FG = new Color(255, 245, 242, 255);
 
 // ---------- UI 辅助(与 career-panel 同构) ----------
 
@@ -431,7 +431,7 @@ export class DrillPanel extends Component {
     const btnPlay = mkNode("btnPlay", ctrlBar, 74, 32);
     btnPlay.setPosition(-ANIM_W / 2 + 42, 0, 0);
     const pg = btnPlay.addComponent(Graphics);
-    drawRR(pg, 74, 32, 6, new Color(24, 33, 66, 240), new Color(159, 176, 216, 110), 1.2);
+    drawRR(pg, 74, 32, 6, new Color(26, 26, 38, 240), new Color(159, 176, 216, 110), 1.2);
     this._btnPlayLabel = mkLabel(btnPlay, "txt", "⏸ 暂停", 12, COL.white, { align: 1, w: 74 });
     const playBtn = btnPlay.addComponent(Button);
     playBtn.transition = Button.Transition.SCALE;
@@ -447,7 +447,7 @@ export class DrillPanel extends Component {
     const btnSpeed = mkNode("btnSpeed", ctrlBar, 74, 32);
     btnSpeed.setPosition(-ANIM_W / 2 + 122, 0, 0);
     const sg = btnSpeed.addComponent(Graphics);
-    drawRR(sg, 74, 32, 6, new Color(24, 33, 66, 240), new Color(159, 176, 216, 110), 1.2);
+    drawRR(sg, 74, 32, 6, new Color(26, 26, 38, 240), new Color(159, 176, 216, 110), 1.2);
     this._btnSpeedLabel = mkLabel(btnSpeed, "txt", "🐢 0.5x", 12, COL.gold, { align: 1, w: 74 });
     const speedBtn = btnSpeed.addComponent(Button);
     speedBtn.transition = Button.Transition.SCALE;
@@ -463,7 +463,7 @@ export class DrillPanel extends Component {
     const btnReplay = mkNode("btnReplay", ctrlBar, 70, 32);
     btnReplay.setPosition(-ANIM_W / 2 + 200, 0, 0);
     const rg = btnReplay.addComponent(Graphics);
-    drawRR(rg, 70, 32, 6, new Color(24, 33, 66, 240), new Color(159, 176, 216, 110), 1.2);
+    drawRR(rg, 70, 32, 6, new Color(26, 26, 38, 240), new Color(159, 176, 216, 110), 1.2);
     mkLabel(btnReplay, "txt", "↺ 重播", 12, COL.white, { align: 1, w: 70 });
     const repBtn = btnReplay.addComponent(Button);
     repBtn.transition = Button.Transition.SCALE;
@@ -481,7 +481,7 @@ export class DrillPanel extends Component {
     const stageCard = mkNode("stageCard", ctrlBar, 210, 32);
     stageCard.setPosition(ANIM_W / 2 - 110, 0, 0);
     const scg = stageCard.addComponent(Graphics);
-    drawRR(scg, 210, 32, 6, new Color(14, 20, 42, 230), new Color(107, 124, 166, 120), 1.0);
+    drawRR(scg, 210, 32, 6, new Color(16, 16, 26, 230), new Color(107, 124, 166, 120), 1.0);
     this._stageLabel = mkLabel(stageCard, "stTxt", "1. 迎球 · 观察来球", 11, COL.cyan, { align: 1, w: 200 });
 
     // ---------- 右侧: 信息区 (370×360) ----------
@@ -497,7 +497,7 @@ export class DrillPanel extends Component {
     const coachBox = mkNode("coachBox", infoArea, INFO_W - 16, 48);
     coachBox.setPosition(0, ANIM_H / 2 - 60, 0);
     const cbg = coachBox.addComponent(Graphics);
-    drawRR(cbg, INFO_W - 16, 48, 8, new Color(21, 30, 60, 240), new Color(255, 225, 77, 160), 1.5);
+    drawRR(cbg, INFO_W - 16, 48, 8, new Color(26, 26, 40, 240), new Color(255, 225, 77, 160), 1.5);
     mkLabel(coachBox, "coachTip", coachTipOf(def.id), 12, COL.gold, { y: 8, w: INFO_W - 28, align: 1 });
     mkLabel(coachBox, "keyPrompt", keyPromptOf(def), 11, COL.white, { y: -12, w: INFO_W - 28, align: 1 });
 
@@ -515,7 +515,7 @@ export class DrillPanel extends Component {
     const starBox = mkNode("starBox", infoArea, INFO_W - 16, 56);
     starBox.setPosition(0, -ANIM_H / 2 + 76, 0);
     const sbg = starBox.addComponent(Graphics);
-    drawRR(sbg, INFO_W - 16, 56, 6, new Color(16, 23, 46, 220), new Color(159, 176, 216, 80), 1.0);
+    drawRR(sbg, INFO_W - 16, 56, 6, new Color(18, 18, 28, 220), new Color(159, 176, 216, 80), 1.0);
     mkLabel(starBox, "sHead", "★ 考核指标", 11, COL.gold, { x: -INFO_W / 2 + 56, y: 16, w: 90 });
     const starDesc = "★ 基础：打出 3 拍有效回球\n★★ 进阶：2 拍击中甜蜜区\n★★★ 炉火纯青：1 次完美击球且综合质量≥78%";
     mkLabel(starBox, "sDesc", starDesc, 10, COL.dimWhite, { y: -10, w: INFO_W - 32, align: 0, lines: 3 });
@@ -528,7 +528,7 @@ export class DrillPanel extends Component {
     const goG = btnGo.addComponent(Graphics);
     drawHardShadow(goG, 180, 48, 8, 3, 4, 0.45);
     drawArcadeButton(goG, 180, 48, "primary", 8);
-    mkLabel(btnGo, "text", "开始训练", 16, DARK_FG, { align: 1, w: 180 });
+    mkLabel(btnGo, "text", "开始训练", 16, PRIMARY_FG, { align: 1, w: 180 });
     const goBtn = btnGo.addComponent(Button);
     goBtn.transition = Button.Transition.SCALE;
     goBtn.zoomScale = 0.94;
