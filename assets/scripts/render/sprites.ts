@@ -644,6 +644,13 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   // 庆祝:身体微微后仰 + 手臂上举;沮丧:身体前倾 + 肩膀下沉
   const emotionLean = celebrating ? -3 * Math.sin(celebrateU * Math.PI) : frustrated ? 2 * Math.sin(frustrateU * Math.PI) : 0;
 
+  // ---------- AI 扑救俯冲(鱼跃) ----------
+  // 够不到球时 ai.ts 置 scrambleT,这里只读它做一次前扑:躯干大幅前倾 + 髋下沉 + 双臂张开。
+  // 纯表现,不改判定(球照样漏)。方向按球在身前/身后决定前倾还是后仰。
+  const scrambleU = ai && ai.scrambleT > 0 ? clamp(ai.scrambleT / (C.aiReach.scrambleFrames || 16), 0, 1) : 0;
+  const scrambleK = Math.sin(scrambleU * Math.PI);
+  const scrambleRel = ball ? (Math.sign((ball.x - p.x) * p.facing) || 1) : 1;
+
   // 呼吸律动:复合波(~3s 主周期 + ~6s 副周期),待机时最明显,跑/跳时降级为背景
   const breathBob = Math.sin(t * 0.035) * 1.2 + Math.sin(t * 0.017) * 0.4;
   const bob = airborne ? breathBob * 0.3 + Math.sin(t * 0.05) * 0.4
@@ -729,6 +736,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     + landAmt * 4                            // 落地冲击:躯干前倾吸收冲击
     + readyW * C.readyStance.lean            // 架拍:微微前倾压向来球
     + whiffK * C.swing.whiffStagger          // 挥空踉跄:前冲失衡
+    + scrambleK * C.aiReach.scrambleLean * scrambleRel   // AI 扑救俯冲:朝球方向大幅前扑/后仰
     - serveBodyK * C.serveHold.lean;         // 发球蓄势:重心微后坐(落位沉下的同时上身略仰)
 
   // ---------- 下沉量与髋/躯干锚点:所有非判定类下沉统一走髋部 ----------
@@ -740,7 +748,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const lungeDip = (lunging && !airborne ? lungeLegExt : 0) * C.lunge.dip * swingFade;
   const splitEnv = splitLeft > 0 ? Math.sin((1 - splitLeft / C.pose.splitDur) * Math.PI) : 0;
   const splitDip = splitEnv * C.pose.splitDip * swingFade;
-  const restDip = landDip + lungeDip + splitDip;
+  const restDip = landDip + lungeDip + splitDip + scrambleK * C.aiReach.scrambleDip * swingFade;
   const hipY = -H * body.hip + bob + readyDip + serveDip + restDip;
   // 躯干长与「髋到肩」的距离是同一条 body.torso。旧写法这里乘 body.torso、下面的躯干段
   // 却硬编码 H*0.38:standard 恰好相等所以从没暴露,compact 衣摆比髋点高 3 单位 → 腰侧
@@ -813,6 +821,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     fef = lerp(fef, C.readyStance.farArm[1], readyW);
   }
   if (whiffK > 0) { fea -= whiffK * 26; fef -= whiffK * 30; }   // 挥空踉跄:划大弧找平衡
+  if (scrambleK > 0) { fea -= scrambleK * 34; fef -= scrambleK * 40; }   // 扑救俯冲:远臂张开甩向球侧
 
   // 收拍 → 挥拍:与持拍臂共用 recK / blendIn 两条窗。**顺序不可调换** —— 缓冲衔接的连拍
   // 在起拍时 recoverT 还没走完,远臂要从回摆中途接过去(对应持拍臂的 poseLerp(recoverPose…))

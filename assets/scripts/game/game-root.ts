@@ -151,6 +151,12 @@ export class GameRoot extends Component {
           // (音效早已烘焙,此前一直没接;双方玩家与 AI 都播,音量压低不抢戏)
           for (const p of R.players) {
             if (p.swingT === C.swing.windup) this.sfx.play("swing", 0.35);
+            // AI 够不到时的鱼跃俯冲:ai.ts 在置位那一帧给到满值,这里补一记扑空音效
+            // (俯冲姿势由 sprites.ts 读 scrambleT 画;只表现,不改判定)
+            if (p.ai && p.ai.scrambleT === C.aiReach.scrambleFrames) {
+              this.sfx.play("whiff", 0.7);
+              this.world.shake(C.fx.shakeWhiff || 1.5);
+            }
           }
           this.world.stepFx(step, false, R.ball);
         }
@@ -167,7 +173,11 @@ export class GameRoot extends Component {
       const s = human.skill;
       const cdRatio = s.maxCd > 0 ? clamp(s.cd / s.maxCd, 0, 1) : 0;
       const def = Skills.defOf(s.id);
-      touchPad.setSkillState(cdRatio, s.ready, s.id, def.shortName);
+      // cd 是世界步帧数(60Hz 递减),换算成秒给键心当倒计时;
+      // 冷却之外还差一道门槛时,把可读原因一并喂给键上方当提示
+      const blockReason = cdRatio <= 0
+        ? Skills.skillBlockReason(human, R.ball) : null;
+      touchPad.setSkillState(cdRatio, s.ready, s.id, def.shortName, s.cd / 60, blockReason);
     }
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     // 氛围暗角输入(长回合金晕/赛点红晕在渲染层只读消费)
@@ -203,6 +213,8 @@ export class GameRoot extends Component {
       this.swingCueArmed = true;
       touchPad.setSwingGlow(0);
       this.world.setSwingCue(0);
+      this.world.hudOverlay.setTimingRing(null);
+      touchPad.setShotPreview(null);
       return;
     }
     const z = Player.strikeZone(human, Math.hypot(ball.vx, ball.vy));
@@ -214,6 +226,8 @@ export class GameRoot extends Component {
       this.swingCueArmed = true;
       touchPad.setSwingGlow(0);
       this.world.setSwingCue(0);
+      this.world.hudOverlay.setTimingRing(null);
+      touchPad.setShotPreview(null);
       return;
     }
     const lead = PRESS_LEAD_FRAMES;
@@ -227,6 +241,15 @@ export class GameRoot extends Component {
     } else if (fc > lead + 8) {
       this.swingCueArmed = true;
     }
+    // 时机环喂给渲染层:收缩环长在球上(按拍预告的球上版),甜区圈画在判定区心
+    const TR = C.timingRing;
+    this.world.hudOverlay.setTimingRing({
+      zx: z.x, zy: z.y, zr: z.r,
+      progress: clamp(1 - (fc - lead) / TR.spanFrames, 0, 1),
+      locked: fc <= lead,
+    });
+    // 球种预告:按真实求解器预演这一拍,徽标写在击球键上方(挥拍中瞄准还能改,不掐)
+    touchPad.setShotPreview(Player.previewKind(human, ball));
   }
 
   /** 慢放总闸(见 config.fx.slowmoEnabled):关掉时两处 world.slowmo() 与赛点常驻微慢放全不发,世界恒速 */
@@ -501,6 +524,17 @@ export class GameRoot extends Component {
           if (praise && (e.heat as number) === (C.heat.fireAt || 3)) {
             this.world.float(e.x as number, (e.y as number) - 38, "手感火热!", "#ff6a1f", 21, 46);
           }
+          // 跳杀:空中高球必然扣杀的专属飘字(dy 更高,与档位字叠开)
+          // 真人看「跳杀!!」学成因,AI 打出来只当对手的高光,不飘教学字
+          if (praise && e.jumpSmash && !R.players[hitterIdx]?.isAI) {
+            const K = C.fx as unknown as Record<string, FloatLabel>;
+            const lab = K.floatJumpSmash;
+            this.world.float(e.x as number, (e.y as number) + lab.dy, lab.text, lab.color, lab.size, lab.life, -1, lab.plate);
+          }
+          // 量化时机条:真人每拍命中都在击球点上方画一拍(grade 带符号,早=左 晚=右)
+          if (praise && !R.players[hitterIdx]?.isAI && typeof e.timingGrade === "number") {
+            this.world.hudOverlay.showTimingBar(e.x as number, (e.y as number) - 64, e.timingGrade);
+          }
           // 放网提示 + 球种标签:非扣杀类技术球一闪即逝的类型提示(老 game.js#L308-313)
           if (e.kind === "netshot") this.world.float(e.x as number, (e.y as number) - 22, "放网", "#cfe0ff", 13, 28);
           if (praise && e.kind !== "smash") {
@@ -519,6 +553,11 @@ export class GameRoot extends Component {
           } else if (e.rally === 15) {
             this.world.float(C.world.w / 2, 72, "★ 15 拍神仙之战!!! ★", "#00f0ff", 24, 52);
             this.sfx.cheer(1); this.world.whiteFlash(0.3); this.world.shake(5);
+          }
+          // 连击压力:回合拖长 → 对手开始下滑。给玩家一个"拖长回合有回报"的可见信号
+          // (训练场右半边是喂球机不是对手,不报;分级飘字位置与上面 6 拍里程碑错开)
+          if (R.mode !== "drill" && e.rally === C.aiPressure.cueRally && R.players.some((q) => q.isAI)) {
+            this.world.float(C.world.w / 2, 96, "对手体力下降!", "#8ef2a3", 20, 44);
           }
           if (e.timingHint) {
             this.world.float(e.x as number, (e.y as number) - 44, e.timingHint === "early" ? "早了!" : "晚了!", "#ff9664", 14, 36);

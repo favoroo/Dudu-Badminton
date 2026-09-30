@@ -321,6 +321,24 @@ export const CFG = {
     driveDeg: 28,      // 剩下的里再按角度分平抽与高远
   },
 
+  // ===== 球种预告徽标(画在击球键上方,input/touchpad.ts)=====
+  // previewKind(player.ts)按真实求解器预演这一拍,徽标把结果写在拇指上方:
+  // 「这一拍大概率是扣杀/放网」不再靠碰。颜色与 game-root 的球种飘字同系。
+  shotBadge: {
+    size: 12,          // 徽标字号
+    dyK: 1.38,         // 徽标圆心 = 击球键心上方 r × 此倍率(键外,不压图标)
+    a: 0.95,           // 不透明度
+    outline: "#07070d",// 深描边:亮场上白字/彩字都要先过这一层才读得出
+    kinds: {
+      smash:   { text: "扣杀", color: "#ff5500" },
+      slash:   { text: "劈吊", color: "#ff9f1c" },
+      lob:     { text: "挑高", color: "#8ef2a3" },
+      netshot: { text: "放网", color: "#cfe0ff" },
+      drive:   { text: "平抽", color: "#7dd3fc" },
+      clear:   { text: "高远", color: "#c0d8ff" },
+    } as Record<string, { text: string; color: string }>,
+  },
+
   // 出射角锚点:[击球点离地高度, θ]。这张表就是「滞空时间表」——
   // 落点由求解器反解速度保证,所以想改**某一类球**的快慢(只抬杀球、只抬高球)改这里。
   // 想整体放慢/加快别动这张表,走 config.pace 的球速档位:那套时间膨胀不改变落点,
@@ -493,10 +511,23 @@ export const CFG = {
     beamA: 0.22,                // 列光底部不透明度(向上三段渐隐)
     urgentFrames: 45,           // 距落地 ≤ 此帧数算「快到了」(只抬列光与环速,不再改亮度)
 
+    // 意图对照:风/颤抖关里「你瞄的点」与「球真落点」不是一回事,过去落点圈画的是前者
+    // (b.shot.landX 是反解出的意图,不含侧风),于是提示自己在骗人。现在圈画真落点,
+    // 另用一枚暗十字标注意图,中间拉一根箭头 —— 一眼看见「风把这拍搬走了多少」。
+    driftArrowMin: 14,      // 漂移小于这个像素数就不画对照(免得静风关多出两个噪点)
+    driftArrowW: 5,         // 箭头粗头宽(尖端收在真落点)
+    intentCrossLen: 13,     // 意图十字臂长
+    intentCrossW: 2.2,      // 意图十字臂宽
+    intentCrossAlpha: 0.42, // 意图十字透明度(比真落点圈低一档:让真的那层喊话)
+
     // 轨迹预测虚线:把「这一拍会走哪条弧」提前画出来,读球不用靠猜。
     // 刻意压得比地面标识低一档(半透明 + 冷白,不抢金/橙的落点圈),
     // 且沿弧长分三段向落点方向淡出 —— 起点跟着球走,末端交给落点圈去喊。
     pathHorizon: 90,            // 前瞻帧数上限( loftByHeight 那张表里最滞空的一档约 70 帧,留余量)
+    // 低重力关的弧按 1/√gravityMul 变长:反重力 0.22 档实测要 ≈149 帧才看到落点,
+    // 只按上面那个固定值会**静默截断** —— 弧画到一半收笔、落点圈干脆不出现,玩家以为没这功能。
+    // 上限也顺带放开(dashBuf 得跟着加长,否则虚线段自己先满)。
+    pathHorizonMax: 240,
     pathA: 0.30,                // 靠球那端的不透明度
     pathW: 2.2,                 // 线宽
     dashOn: 7, dashOff: 9,      // 虚线段长 / 间隔(px);间隔略大于段长 = 更透气
@@ -505,19 +536,47 @@ export const CFG = {
 
   // 甜蜜点:命中时刻在 active 窗口中的位置
   // coreRatio 换算成手感 = ±(active/2 × coreRatio) 帧的起手容错(见 Player.qualityAt):
-  // 0.34 → ±2.7 帧(咬中间 6 帧,偏紧);0.50 → ±4 帧(咬中间 9 帧,约 133ms)
+  // 0.55 → ±4.4 帧(咬中间 9 帧,约 147ms)。原 0.50 的甜蜜窗实测偏「碰运气」——
+  // 特殊击球重做的方向是「成因可见、可主动复现」,容错先放宽一档。
   sweet: {
-    coreRatio: 0.50,   // 窗口中心 50% 算甜蜜
+    coreRatio: 0.55,   // 窗口中心 55% 算甜蜜
     powerBonus: 1.16,
     errBonus: 0.55,    // 非甜蜜点的落点误差倍率
     powerDeg: 5,       // 在 q 压平之外再压的弧度(度):逼 solver 用更快初速补同一落点
   },
 
-  // 完美击球:甜蜜点正中心再收一档(窗口约 2.4 帧 ≈ 40ms),是天花板操作的专属回报:
-  // 落点零误差(瞄哪打哪、绝不出界)+ 最高初速上限 + 最顶级的一整套反馈
+  // 完美击球:甜蜜点正中心再收一档(0.30 → 约 4.8 帧 ≈ 80ms),是天花板操作的专属回报:
+  // 落点零误差(瞄哪打哪、绝不出界)+ 最高初速上限 + 最顶级的一整套反馈。
+  // 原 0.15(约 2.4 帧 ≈ 40ms)的手感是「完美从来不是打出来的,是撞出来的」。
   perfect: {
-    coreRatio: 0.15,   // qRaw ≥ 0.85
+    coreRatio: 0.30,   // qRaw ≥ 0.70
     powerDeg: 9,       // 比甜蜜点更狠的压弧度
+  },
+
+  // ===== 跳杀:空中 + 击球点够高 = 必然扣杀 =====
+  // 旧规则里扣不扣杀由 classify 按角度/速度反推,玩家只能「碰」出来;现在成因前置:
+  // 起跳 + 高球(离地 ≥ minHeight)直接定性为扣杀并给力度加成 —— 「跳起来打高球 = 杀球」
+  // 这条直觉规则对真人与 AI 同样生效。闪现扣杀(空中折跃)天然走同一通道。
+  jumpSmash: {
+    minHeight: 105,    // 击球点离地至少此高(px,与 shotClass.smashH 同源)才触发
+    speedBoost: 2.5,   // 初速加成(px/step,与 sweet/perfect boost 同预算,封顶在 maxSpeed 差额)
+    powerDeg: 6,       // 额外压弧度(度)
+    maxLoftDeg: 8,     // 强制压弧上限:跳杀不允许挑高,弧度先夹到这里再进求解器
+  },
+
+  // ===== 时机环(画在球上,渲染层 render/hud-overlay.ts)=====
+  // 按拍预告的「球上版」:按钮辉光在拇指底下,盯球的玩家看不见 —— 收缩环直接长在球上。
+  // 环从 fromMul×球半径 收到贴球,收满 = 该按了(fc ≤ PRESS_LEAD_FRAMES,按后第 9 帧质量峰);
+  // 同时在判定区心画「甜区圈」告诉玩家该把人带到哪儿。数值与 swingCue 同读一处 lead。
+  timingRing: {
+    spanFrames: 34,     // 收缩行程帧数:fc 从 span+lead 收到贴球,慢球有完整倒数、快球环速自然变快
+    fromMul: 5.2,       // 起始半径 = 球半径 × 此倍率
+    ringW: 2.6,         // 环线宽
+    a: 0.85,            // 环峰值不透明度
+    lockA: 0.95,        // 贴球(fc ≤ lead)白闪环不透明度
+    lockW: 3.4,         // 贴球白闪环线宽
+    zoneA: 0.55,        // 甜区圈描边不透明度(乘时机环进度提亮)
+    zoneFillA: 0.08,    // 甜区圈淡填充
   },
 
   // ===== 连击热手:同一分内连续 sweet/perfect 累积热度 =====
@@ -529,6 +588,16 @@ export const CFG = {
     speedBonusMax: 1.5,  // 热度加成封顶
     maxStreak: 8,        // 热度计数上限(防无限增长)
     fireAt: 3,           // 热度到此换「火热」球残影 + 飘字提示
+    // 热手火苗刻度(画在 render/hud-overlay.ts 左上角):heat < fireAt 不画,
+    // 点火后按 heat 数亮格 —— 「离火力全开还差几格」一眼可读
+    gauge: {
+      x: 26, y: 44,      // 左上角锚点(世界坐标,左上为原点向下)
+      cellW: 13,         // 单格火苗宽
+      cellH: 18,         // 单格火苗高
+      gap: 4,            // 格间距
+      litA: 0.92,        // 已点燃格不透明度
+      emberA: 0.3,       // 未点燃槽位余烬不透明度(总槽位数 = max(heat, fireAt))
+    },
   },
 
   // 双打:两人同侧,空当判定阈值要按整场纵深算;进攻倾向也更高,否则回合打不完
@@ -589,6 +658,61 @@ export const CFG = {
     },
     // 引导动画小画布:Cocos 版仍保留这个定义,引导页相机与画布只认这一处尺寸
     canvas: { w: 470, h: 300 },
+  },
+
+  // ===== 关卡环境机制(风 / 颤抖 / 磁轨 …) =====
+  // 闯关的"机制"之所以曾经过得毫无存在感,根子在于数值散落在逻辑与渲染里:
+  // 风力周期写在 rules、颤抖频率与磁轨带宽写在 physics、遮蔽盒写在 world,
+  // 于是没有一处能被界面读到,也没有一个数能被回归脚本钉住。这一段是**唯一出处**:
+  // 物理施加、界面演出、文案真值三边都从这里读,改一个数三处一起动。
+  // (关卡"用不用"某个机制仍然写在 campaign.ts 的 modifiers 里 —— 那是创意,不是旋钮)
+  env: {
+    // —— 侧风 ——
+    // 周期是这个机制能不能被读懂的关键:一拍滞空约 60-80 步,一个完整来回要
+    // 明显长于此,风才近似"每拍一个方向"(读得出);短于此就成了逐帧乱摆(读不成)。
+    windOscRate: 0.016,      // rad/步 → 2π/此值 ≈ 393 步 ≈ 6.6s 一个来回
+    windDefaultBase: 0.18,   // 关卡设了 oscillate 却没设 windX 时的基准幅度(px/步²)
+    windLookahead: 60,       // 风向标"预读针"往前看的步数 ≈ 一记典型回球的滞空
+    windFullScale: 0.20,     // 风向标满量程(px/步²),用来把实时风力折成指针偏角
+    windMinDrift: 60,        // 反"把机制修没"的下限:解算口径里一拍至少被吹走这么多 px
+    windGustAt: 0.13,        // 算"起风"的风力门槛(基准幅度的比例感,超了才通报)
+    windGustFrames: 24,      // 门槛要连续满足这么多步才算一次阵风(防一句话刷屏)
+    windGustCooldown: 150,   // 两次阵风通报的最小间隔步数
+
+    // —— 风 → 画面的换算 ——
+    // 装饰风(椰树/浪花/网头彩带)与真风必须**同一个符号说话**:叶簇往左摆而球往右偏,
+    // 玩家读出的是"动画在随机动",机制照样看不见。
+    ambience: {
+      k: 150,          // 每 1 px/步² 加速度折成多少 px 画面位移(0.18 → ≈27px)
+      idle: 0.35,      // 有环境机制时,原装饰风(那两条 sin)压到几成 —— 让真风主导
+      streakCount: 9,  // 沙滩风丝条数(出生定形,逐帧只平移)
+      streakLen: 46,   // 风丝基准长度 px
+      streakA: 0.30,   // 风丝不透明度
+    },
+
+    // —— 破损球的颤抖 ——
+    // 相位一律取 envPhase()(见 physics 的 tickEnv),于是"抖成什么样"是可复算的:
+    // 曾经的 envTick 被渲染层每帧前瞻推进上百次,抖出来的东西看着随机、其实既不可
+    // 预测也不可复现 —— 那是 bug 不是机制。
+    // ⚠ 定标的坑(踩过,别再按连续系统估):这里是**每步给速度加 A·sin(ωt) 的离散冲量**,
+    //   等效速度偏置 ≈ A/ω,再乘滞空帧数 —— **频率越低累积越狠**。按稳态响应 a/ω² 估会整个估反:
+    //   ω=0.105 那组本意是"轻抖",实测把落点铺开 314px(半场才 390px),玩家读到的就是纯随机。
+    //   下面这组由 tools/env-check.ts §5 钉在 40-110px 这条"看得见、但学得会"的带里
+    //   (常重力实测 71px / 低重力 107px)。改这四个数一定要重跑那一条。
+    erratic: {
+      speedGate: 1,    // 慢于这个速度不抖(球落地前的爬行段不该再被推)
+      freqY: 0.30, ampY: 0.30,
+      freqX: 0.24, ampX: 0.155,
+      descRamp: 1.7,   // 下降段(球尾下坠)抖动倍率 —— 兑现"后半程失速急坠"那句文案
+    },
+
+    // —— 擦网磁轨 ——
+    laser: {
+      above: 55,       // 触发带上沿:网顶往上这么多 px(文案要说的是这个窗口,不是"50px")
+      below: 15,       // 触发带下沿:网带往下这么多 px
+      speedMul: 1.75,  // 横向抽速倍率
+      vyMul: 0.8,      // 竖直分量倍率(压平 = 更凶的直线)
+    },
   },
 
   fx: {
@@ -799,8 +923,8 @@ export const CFG = {
     // 径向环白闪被顶替,只留低强度整屏提亮。普通档白闪走原通道不变。
     slashCutinFrames: 9,       // 斩劈闪时长(模拟帧)
     slashCutinAng: 14,         // 斜带倾角(度)
-    slashCutinBandW: 0.38,     // 带宽/屏宽比
-    slashCutinAlpha: 0.85,     // 带峰值 alpha
+    slashCutinBandW: 0.30,     // 带宽/屏宽比(收窄让中央球路透出来)
+    slashCutinAlpha: 0.55,     // 带峰值 alpha(底板只做衬底,不糊死画面)
     slashCutinStagger: 0.22,   // 三带错相位
     slashCutinColors: ["#e60012", "#07070d", "#ffffff"],        // sweetSmash 带色(P5 红黑)
     slashCutinColorsFire: ["#e60012", "#ff6a1f", "#ffe14d"],    // fire 带色(红橙金)
@@ -814,6 +938,10 @@ export const CFG = {
     floatPopFrames: 6,         // 弹入用时(模拟步)
     floatRiseEase: 1.8,        // 上浮减速指数(>1 起得快落得缓)
     floatFadeK: 0.5,           // 全程淡出起点(1=一出现就开始淡)
+    // 飘字底板强度:底板只是文字的衬底,dim=1 为实心原版,<1 整体调淡 ——
+    // 压低后斜切黑片/星芒只剩骨架感,不会盖过飞行中的球
+    floatPlateDim: 0.55,       // 底板所有 alpha 的全局乘数
+    floatPlatePadScale: 0.85,  // 底板外扩尺寸乘数(1=原版,越小底板越紧凑)
     // 夸奖档位的文案/字号/寿命:原先硬编码在 game-root 的 drain 里(六档各一行),
     // 挪进配置后"这一档给多大的字"与别的特效旋钮一处对齐
     // plate = P5 飘字底板:star 尖刺星芒衬底(最高两档)/ slant 斜切黑片(次档)/ 无底板
@@ -833,6 +961,8 @@ export const CFG = {
     floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, dy: -34, plate: "star" },
     floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, dy: -30, plate: "slant" },
     floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, dy: -26, plate: "slant" },
+    // 跳杀(空中高球必然扣杀)专属飘字:dy 更高,叠在扣杀档位字之上不互相盖
+    floatJumpSmash:        { text: "跳杀!!",     color: "#ff8a3d", size: 26, life: 46, dy: -50, plate: "slant" },
   },
 
   // BGM:原版是 WebAudio 现场合成的自适应背景音乐(零音频文件);
@@ -874,9 +1004,48 @@ export const CFG = {
     downIcon: "#ffe14d", downIconA: 0.96,       // 按下图标(245)
     pressScale: 0.9,       // 按下缩放:比 UI 按钮 zoomScale 0.94 更狠一点(游戏键要「墩」)
     edgePad: 12,           // 圆心到屏边最小间隙:6 太贴边,拇指容易蹭到系统手势区
+    // 设备自适应缩放的上下限(算在 touchpad.padScale)。搬到 config 的理由与
+    // touchAim.commitPx 同源:这个文件 import cc,node 侧读不到,而冷却读数的排版
+    // 断言要用「最小档按钮到底多大」(tools/pad-cd-check.ts ④)。
+    scaleMin: 0.9, scaleMax: 1.25,
     label: "#ffffff", labelA: 0.62,   // 键名文字(「击球」「跨步」,乘 padAlpha)
     labelOutline: "#0a0d18",          // 键名描边:亮场(海滩)上白字没描边会糊掉
     labelSize: 13,                    // 键名字号
+
+    // --- 技能键的「冷却读数」(算法与笔画在 input/pad-cd.ts,回归 tools/pad-cd-check.ts) ---
+    // 透明度滑杆能压到 0.2。原本冷却的墨底/进度环/图标一律乘这个值,于是滑杆拉到
+    // 最低时 0.58 的墨底只剩 0.116 —— 玩家看到的不是「这个技能还剩 3 秒」,
+    // 而是「这颗键按不动,是不是坏了」。滑杆管的是**按键别碍眼**,不该把状态指示
+    // 一起抹掉:冷却是信息,不是装饰。所以这一层的浓度只跟随滑杆一部分(keep),
+    // 留一个读数下限;就绪态(底色/描边/图标)照旧完全跟随滑杆。
+    cd: {
+      keep: 0.82,                 // 有效 alpha = padAlpha + (1 - padAlpha) * keep(0=完全随滑杆)
+      fill: "#0e121a", fillA: 0.66,     // 冷却/锁定中的键底
+      edge: "#334155", edgeA: 0.9,      // 冷却/锁定中的描边(亮场要靠它撑出形状)
+      lockedIcon: "#64748b", lockedIconA: 0.7,   // 「就绪但当前局势不给放」时的图标(此时不画倒计时)
+      sweep: "#05070c", sweepA: 0.72,    // 剩余冷却的扇形墨底
+      ringW: 4.5,                 // 就绪进度环粗(按技能专属色上彩)
+      ringA: 0.96,
+      head: "#ffffff", headA: 1, headW: 7, headSpan: 0.42,  // 扫掠前沿亮点:扇形与环的交界
+      num: "#ffffff", numA: 1, numOutline: 2,               // 键心「还剩几秒」(Label)
+      numK: 0.5,                    // 倒计时字号 = numK × 按钮半径 —— 跟图标一样随半径缩放,不写死
+      numY: 0.08,                   // 倒计时圆心高度比例:往上让开键名标签那一带(断言④)
+      numOutlineColor: "#0a0d18",
+      numMin: 0.1,                  // 冷却中最低读数:宁显示 0.1 也不显示 0.0(0.0 = 看着像就绪)
+      stepTol: 0.008,               // cdRatio 变化超过这个才重画(0.015 时 6 秒档的扫掠会跳格)
+      // --- 「就绪但当前局势不给放」三态(笔画在 input/pad-cd.ts,原因文案在 skills.blockText)---
+      // 冷却中 = 扇形墨底 + 倒计时;门槛未满足 = 键上斜杠 + 键上方红字原因;就绪 = 呼吸辉光
+      slashColor: "#8a8f9e",        // 门槛斜杠颜色(灰:是「局势不让」,不是「出错」)
+      slashInset: 0.44,             // 斜杠端点内缩比例(端点在 r×(1-inset) 处)
+      slashW: 3.5,                  // 斜杠线宽
+      slashA: 0.8,                  // 斜杠不透明度
+      hintSize: 11,                 // 键上方原因文字字号
+      hintDyK: 1.42,                // 原因文字圆心 = 键心上方 r × 此倍率
+      hintColor: "#ff8a8a",         // 原因文字颜色(暖红:不是报错,是「差一点」)
+      hintA: 0.95,                  // 原因文字不透明度
+      rejectFlash: "#ff5555",       // 按下被拒的冲击环颜色
+      readyPulseK: 0.11,            // 就绪呼吸:循环 tween 单程秒数的系数(秒 = k × 10)
+    },
   },
 
   // ===== 摇杆上推代跳(仅 joystick 模式;数值是底圈半径的比例,与设备 scale 无关) =====
@@ -1009,13 +1178,24 @@ export const CFG = {
         name: "时空减速",
         shortName: "时空",
         tag: "领域掌控",
-        desc: "开启 1.5 秒子弹时间，球速与对手大幅减慢，从容完美反击",
+        desc: "开启 1.5 秒子弹时间，球速与对手大幅减慢，自身高速敏捷穿梭，从容反击",
         unlockLevel: 5,
         cooldownFrames: 270, // 4.5s
         accent: "#06b6d4",
         icon: "focus",
       },
     ],
+    // 技能键「就绪但门槛未满足」的原因文案(skills.skillBlockReason 判定,touchpad 键上方显示)
+    blockText: {
+      needGround: "落地再按",
+      swinging: "挥拍中",
+      lunging: "跨步中",
+      buffing: "附魔中",
+      notIncoming: "球没过来",
+      lowBall: "球不够高",
+      pulling: "牵引中",
+      focusing: "领域中",
+    },
     // 各技能专属机制数值
     smash: {
       buffDuration: 240,    // 附魔激活后持续 4 秒(未击球时维持)
@@ -1057,6 +1237,8 @@ export const CFG = {
       duration: 90,         // 持续 90 帧 = 1.5 秒
       ballSlow: 0.35,       // 球速减速至 35%
       rivalSlow: 0.40,      // 对手移速减速至 40%
+      playerSpeedMul: 4.2,  // 施法者时空领域内移速倍率(对抗 slowmo 0.35 并赋予超速跑位,现实体感达平时 1.47 倍)
+      playerAccelMul: 4.5,  // 施法者起步加速度倍率(起步瞬时响应,高速变向不拖泥带水)
       castPunch: 1.035,     // 时空张开镜头推近
       castShake: 4,         // 时空波纹震颤
       castFlash: 0.40,      // 青碧色时空闪光
@@ -1069,7 +1251,10 @@ export const CFG = {
   // contact/contactDrift:球从「第一次降到可击高度」的点滑行到落点的水平距离
   // 超过 drift(平飘球,常见于网前短球/平抽)时,改等球下落穿过 contact 截面
   // 再接 —— 按过截面点站位,球会落在身后死角;陡坠球滑行小,维持原截点。
-  aiReach: { stand: 140, attack: 182, jump: 236, contact: 72, contactDrift: 48 },
+  // scramble*:够不到时的「扑救俯冲」表现(只给渲染读,不改判定区/不影响平衡)—— AI 判定
+  // 这一球赶不上时置 scrambleT,人物做一次前倾伸臂的鱼跃,读作「拼了但没够到」。
+  aiReach: { stand: 140, attack: 182, jump: 236, contact: 72, contactDrift: 48,
+    scrambleFrames: 16, scrambleLean: 9, scrambleDip: 14 },
 
   // ===== AI 预判(read):它每记来球只「认定」一次站位偏差,之后一路认账 =====
   // 旧写法是每次重规划(tick 帧一次)重掷 ±aimErr —— 均值归零,几次重规划下来
@@ -1086,16 +1271,33 @@ export const CFG = {
     hardMax: 1,         // 系数上限(误差封顶就是 diffs.read)
   },
 
+  // ===== AI 连击压力:回合越长,这档 AI 越容易看走眼(拟人化「体力/心态下滑」) =====
+  // 用户反馈「AI 怎么都能接住、回合越拖越稳」—— 误差只跟球速/跑位距离挂钩,没有回合长度这一维。
+  // 这里补上:rally 到 startAt 起累积,再走 span 拍满压(P=1),满压时:
+  //   readErr 放大 (1+readMul) 倍 · 时机误差 +timingAdd 帧 · 跑位降速 speedMul
+  // 不碰物理与判定区几何 —— 「慢球仍能对拉」的性质不变,只是长回合后半段开始漏。
+  // 每档吃多少由 diffs.crush 闸门决定:入门全吃(拖长回合是玩家的回报),
+  // 顶档只沾一点(crush 大了会顶穿 ai-check 的「大师得分率 ≤45%」红线)。
+  aiPressure: {
+    startAt: 7,        // 回合拍数到这儿开始累积(前 7 拍照常对拉)
+    span: 13,          // 再 +13 拍达到满压
+    readMul: 0.95,     // 满压时 readErr 额外放大的比例(1.0 = 翻倍)
+    timingAdd: 4,      // 满压时额外时机误差(帧,正 = 更易漏)
+    speedMul: 0.10,    // 满压时跑位降速比例(腿沉了:不是接不到,是慢半拍)
+    cueRally: 7,       // 玩家可见反馈触发拍数(game-root 飘「对手体力下降!」)
+  },
+
   // AI 难度:全部走同一套挥拍机制,只是**看走眼更狠、判定区更窄、出手更不准**
   // read=站位认定误差(px) · zone=单打判定区缩放(双打再与 doubles.aiZone 取 min)
   // shotErr=出球落点误差(px,进 player.buildShot 的误差预算,会下网/出界)
   // composure=情绪修正闸门(0=落后不会变强;见 ai.ts emotionModifiers)
+  // crush=连击压力闸门(0=完全不吃压力;见 ai.ts rallyPressure) · notice=接球反应延迟帧(拟人)
   // 回滚成旧行为(逐项精确复现):read 填回 92/66/20 并把 aiRead 的 readFloor 设 1、
-  // zone 全 1、shotErr 全 0、composure 全 1 —— 但 read 不抵消这条一改就回不去。
+  // zone 全 1、shotErr 全 0、composure 全 1、crush 全 0、notice 全 0 —— 但 read 不抵消这条一改就回不去。
   diffs: {
-    easy:   { label: "简单", tick: 20, speed: 0.74, read: 95, readFloor: 0.22, zone: 0.82, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0 },
-    normal: { label: "普通", tick: 14, speed: 0.88, read: 55, readFloor: 0.40, zone: 0.91, shotErr: 22, timingErr: 6, aggr: 0.40, composure: 0.5 },
-    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 20, readFloor: 0.62, zone: 0.98, shotErr: 8,  timingErr: 2, aggr: 0.58, composure: 1 },
+    easy:   { label: "简单", tick: 20, speed: 0.74, read: 95, readFloor: 0.22, zone: 0.82, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 1.0, notice: 5 },
+    normal: { label: "普通", tick: 14, speed: 0.88, read: 55, readFloor: 0.40, zone: 0.91, shotErr: 22, timingErr: 6, aggr: 0.40, composure: 0.5, crush: 1.0, notice: 3 },
+    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 20, readFloor: 0.62, zone: 0.98, shotErr: 8,  timingErr: 2, aggr: 0.58, composure: 1, crush: 0.3, notice: 2 },
   },
 
   // ===== 生涯成长:赛后奖励 / 等级 / 皮肤经济(纯数值,逻辑在 career.ts) =====

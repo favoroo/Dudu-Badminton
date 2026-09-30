@@ -10,9 +10,10 @@ import { CFG } from "../core/config";
 import { Career } from "../core/career";
 import type { SettleResult } from "../core/career";
 import type { DrillResult } from "../core/drill";
+import type { StageDef } from "../core/campaign";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, slantPath, skewOf } from "./ui-arcade";
+import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, slantPath, skewOf, textW } from "./ui-arcade";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -32,11 +33,19 @@ export interface SettlePayload {
   badge: SettleBadge | null;
   /** 六格战报:比赛看全场数据,训练看这一份账 */
   stats: SettleStat[];
+  /**
+   * 闯关模式才有:这一屏的行动钮要按「本关 / 下一关」重排。
+   * next = 打完这关之后的下一关(全 20 关通完则为 null),由 UIManager 从关卡表算好喂进来。
+   */
+  campaign?: { stageNo: number; stageTitle: string; next: StageDef | null } | null;
 }
 
 /** 经验条动画:分段 = 每级一段(可能跨级连升) */
 interface ExpSeg { lv: number; from: number; to: number; need: number }
 interface ExpAnim { segs: ExpSeg[]; total: number; elapsed: number; done: boolean; shownSeg: number }
+
+/** 一颗行动钮:文案 + 字号 + 是否主钮 + 点下去干什么(宽度由文案量出来) */
+interface Act { text: string; size: number; primary?: boolean; run: () => void }
 
 const BAR_W = 320;
 const DUR = 1.25; // 经验条整体滚动时长(s),段数多时按比例加快由 tick 内兜底
@@ -67,7 +76,8 @@ export class SettlePanel {
   private barFill: Graphics;
   private barWrap: Node;
   private newsLine: Label;
-  private againLabel: Label | null;
+  /** 底部行动钮容器(整排随场景重建,见 buildActions) */
+  private actionRow!: Node;
   private anim: ExpAnim | null = null;
   private payload: SettlePayload | null = null;
   private cMax = new Color();
@@ -172,23 +182,90 @@ export class SettlePanel {
     this.newsLine.overflow = Label.Overflow.SHRINK;
     this.newsLine.lineHeight = 20;
 
-    // ---------- 按钮 ----------
-    const again = kit.button(this.card, "", 240, 52, { style: "primary", size: 18 });
-    again.setPosition(-128, -190, 0);
-    // 文案随模式在 show() 里设置(老 index.html:「再来一局」/「再练一次」)
-    this.againLabel = again.getChildByName("label")?.getComponent(Label) ?? null;
-    again.on(Button.EventType.CLICK, () => {
-      kit.sfx.play("ui");
-      this.hide();
-      kit.restartCurrent();
+    // ---------- 行动钮:整排在 show() 里按场景新建 ----------
+    // 为什么不建三颗再按状态开关:uiButton 的底块是「一次绘制」的 Graphics,
+    // 原生(JSB)侧 onDisable 会清掉渲染数据、重显不重传 → 藏过的那颗会变成只剩字的透明钮
+    // (见 ui-arcade.retainedDraw)。结算一屏建一次整排,几个节点的代价,
+    // 换「任何一套按钮组合都不会隐身」,而且按钮个数/文案本来就要随模式变。
+    this.actionRow = new Node("actions");
+    this.actionRow.layer = this.card.layer;
+    this.actionRow.addComponent(UITransform).setContentSize(CW, 60);
+    this.actionRow.setPosition(0, -190, 0);
+    this.actionRow.setParent(this.card);
+  }
+
+  /**
+   * 底部行动钮:闯关通关时「下一关」顶到最左当主钮;全 20 关通完自动退回「返回主菜单」。
+   * 宽度按实测文案量、超宽再等比缩回卡片内 —— 三颗钮的文案长短差得很多(第 1 关 vs 第 20 关)。
+   */
+  private buildActions(p: SettlePayload): void {
+    this.actionRow.removeAllChildren();
+    const camp = p.campaign;
+
+    const toMenu = (primary = false): Act => ({
+      text: "返回主菜单", size: 16, primary,
+      run: () => { this.kit.sfx.play("back"); this.hide(); this.kit.quitToMenu(); },
     });
-    const toMenu = kit.button(this.card, "返回主菜单", 240, 52, { size: 17 });
-    toMenu.setPosition(128, -190, 0);
-    toMenu.on(Button.EventType.CLICK, () => {
-      kit.sfx.play("back");
-      this.hide();
-      kit.quitToMenu();
+    const retry = (text: string): Act => ({
+      text, size: 18, primary: true,
+      run: () => { this.kit.sfx.play("ui"); this.hide(); this.kit.restartCurrent(); },
     });
+
+    const acts: Act[] = [];
+    let caption = "";
+    const replay = (size: number): Act => ({
+      text: "重打本关", size,
+      run: () => { this.kit.sfx.play("ui"); this.hide(); this.kit.restartCurrent(); },
+    });
+    if (camp && p.won && camp.next) {
+      const next = camp.next;
+      acts.push({
+        text: `下一关 ▶ 第 ${next.stageNo} 关`, size: 16, primary: true,
+        run: () => { this.kit.sfx.play("ui"); this.hide(); this.kit.startCampaignStage(next); },
+      });
+      acts.push(replay(15));
+      acts.push(toMenu());
+      // 关名塞进按钮会把整排撑出卡片(「热带沙尘暴」那关实测 586 > 可用 520),
+      // 所以另起一行小字报「下一关是什么玩法」。
+      caption = `第 ${next.stageNo} 关「${next.title}」· ${next.deathmatch ? "一球生死战" : `抢 ${next.targetScore} 分`}`;
+    } else if (camp && p.won) {
+      // 第 20 关打完:没有下一关可去了,主钮交回菜单
+      acts.push(toMenu(true));
+      acts.push(replay(16));
+      caption = `全部 20 关已通关 · 「${camp.stageTitle}」是最后一关,想冲三星随时重打`;
+    } else if (camp) {
+      acts.push(retry(`再战第 ${camp.stageNo} 关`));
+      acts.push(toMenu());
+    } else if (p.kind === "drill") {
+      acts.push(retry("再练一次"));
+      acts.push(toMenu());
+    } else {
+      acts.push(retry("再来一局"));
+      acts.push(toMenu());
+    }
+
+    const GAP = 14;
+    // 宽度按实测文案走:20 关的关卡名长短不一,写死会把长文案挤出按钮底块
+    const laid = acts.map((a) => ({
+      a, w: Math.min(300, Math.max(acts.length >= 3 ? 128 : 240, Math.round(textW(a.text, a.size) + 46))),
+    }));
+    let total = laid.reduce((s, x) => s + x.w, 0) + GAP * (laid.length - 1);
+    if (total > CW - 32) {
+      // 兜底:文案再长也挤回卡片内(缩到下限 112 时三颗仍远宽于 528)
+      const k = (CW - 32 - GAP * (laid.length - 1)) / laid.reduce((s, x) => s + x.w, 0);
+      for (const x of laid) x.w = Math.max(112, Math.floor(x.w * k));
+      total = laid.reduce((s, x) => s + x.w, 0) + GAP * (laid.length - 1);
+    }
+    let x = -total / 2;
+    for (const { a, w } of laid) {
+      const n = this.kit.button(this.actionRow, a.text, w, 52, { style: a.primary ? "primary" : "ghost", size: a.size });
+      n.setPosition(x + w / 2, caption ? 12 : 0, 0);
+      n.on(Button.EventType.CLICK, () => a.run());
+      x += w + GAP;
+    }
+    if (caption) {
+      this.kit.label(this.actionRow, caption, 12, this.kit.pal.dim).node.setPosition(0, -28, 0);
+    }
   }
 
   /** 战报六格:格数固定 6,节点复用,只换文案与颜色 */
@@ -259,8 +336,8 @@ export class SettlePanel {
     this.sub.node.active = !match;
     this.score.string = `${p.scores[0]} : ${p.scores[1]}`;
     this.sub.string = p.drill ? `${p.drill.def ? p.drill.def.label : ""} ${stars(p.drill.stars)}` : "";
-    // 主行动按钮文案:比赛「再来一局」,训练「再练一次」(老 btnAgain/btnDrillAgain)
-    if (this.againLabel) this.againLabel.string = match ? "再来一局" : "再练一次";
+    // 行动钮:比赛「再来一局」、训练「再练一次」、闯关通关「下一关 ▶ …」(老 btnAgain)
+    this.buildActions(p);
     // 荣誉称号:比赛模式才显示(老 .matchBadge)
     this.renderBadge(match ? p.badge : null);
     this.renderStats(p.stats);

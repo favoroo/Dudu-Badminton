@@ -42,7 +42,7 @@ import { SettleBadge, SettlePanel, SettlePayload, SettleStat } from "./settle-pa
 import { CareerPanel } from "./career-panel";
 import { DrillPanel } from "./drill-panel";
 import { CampaignPanel } from "./campaign-panel";
-import type { StageDef } from "../core/campaign";
+import { CampaignManager, type StageDef } from "../core/campaign";
 import { SettingsPanel } from "./settings-panel";
 import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
@@ -408,6 +408,7 @@ export class UIManager extends Component {
       won: R.winner === "left",
       badge: this.matchBadge(),
       stats: this.statRows("match", null),
+      campaign: null,
     });
   }
 
@@ -539,11 +540,25 @@ export class UIManager extends Component {
       const stage = R.activeStage;
       const won = R.winner === "left";
       let badge = this.matchBadge();
+      // 闯关结算要知道「下一关是谁」:按钮文案、点了开哪一关都从这儿出。
+      // 判据用「本关的编号 +1」而不是「全局第一个没通的」—— 回头重打第 1 关时,
+      // 后者会报第 4 关,那是大厅的「继续闯关」该说的话,不是这颗钮的。
+      let campaign: SettlePayload["campaign"] = null;
       if (isCamp && stage) {
-        badge = {
-          title: won ? `★ 关卡突破 · ${stage.title} (${stage.badge})` : `挑战失败 · ${stage.title}`,
-          color: won ? PAL.accent : PAL.dim,
+        const after = CampaignManager.getStageByNo(stage.stageNo + 1);
+        campaign = {
+          stageNo: stage.stageNo,
+          stageTitle: stage.title,
+          next: won && after && CampaignManager.isStageUnlocked(after.stageNo) ? after : null,
         };
+        if (won) {
+          badge = {
+            title: `★ 关卡突破 · ${stage.title} (${stage.badge})`,
+            color: PAL.accent,
+          };
+        } else {
+          badge = { title: `挑战失败 · ${stage.title}`, color: PAL.dim };
+        }
       }
       return {
         kind,
@@ -554,6 +569,7 @@ export class UIManager extends Component {
         won,
         badge,
         stats: this.statRows("match", null),
+        campaign,
       };
     }
     const drill = cap && cap.drill ? cap.drill : (Drill.cur() ? Drill.result() : null);

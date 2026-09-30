@@ -142,6 +142,21 @@ export interface AiState {
   tauntCd: number;
   celebrateT: number;
   frustrateT: number;
+  /**
+   * 本回合连击压力 0..1:rally 越长越大(乘档位 crush 闸门)。
+   * 放大 readErr / 加时机误差 / 降跑速,让长回合后半段开始漏 —— 见 ai.ts rallyPressure。
+   */
+  pressure: number;
+  /** 接球反应延迟剩余帧:新来球刚起时先愣几帧再启动(拟人,帧数 = diffs.notice) */
+  noticeT: number;
+  /** 扑救俯冲剩余帧(>0 = 正做「够不到也要扑一下」的表现;只给渲染读,不改判定) */
+  scrambleT: number;
+  /** 已计入的挥空数:ai.ts 用它检测「这一帧扑空了」→ 触发中途沮丧 */
+  whiffsSeen: number;
+  /** 本记来球是否已经做过一次绝望挥拍(每拍至多一次,防连打) */
+  panicSwung: boolean;
+  /** 本记来球是否已判定为「怎么都赶不上」(供扑救俯冲表现读取) */
+  hopeless: boolean;
 }
 
 /** 球员。字段与 Rules/Player 的既有用法一一对应,渲染层也只读这里 */
@@ -278,6 +293,8 @@ export interface HitOpt {
   heat?: number;
   /** 跨步后特殊击球窗口内命中(buildShot 叠加 shotBoost + shotPowerDeg) */
   lungeShot?: boolean;
+  /** 跳杀:空中 + 击球点够高(C.jumpSmash.minHeight)= 必然扣杀 + 力度加成 */
+  jumpSmash?: boolean;
   /** 发球等场景直接指定落点深度(绕过瞄准表) */
   forced?: { depth: number };
 }
@@ -303,6 +320,13 @@ export interface ShotResult {
   heat?: number;
   /** 跨步后窗口内击球:力度强化标记(渲染层给专属飘字/反馈档位) */
   lungeShot?: boolean;
+  /** 跳杀:空中 + 击球点够高触发的必然扣杀(飘字/专属特效读它) */
+  jumpSmash?: boolean;
+  /**
+   * 带符号时机档(只给真人,恒上报):0 = 踩在窗口正中,负 = 偏早,正 = 偏晚,
+   * 绝对值 = 距正中占半窗的比例。量化时机条与「早了/晚了」共用这一个数。
+   */
+  timingGrade?: number;
   /** 时机教学:命中了但不甜时提示该往哪边调(只给真人) */
   timingHint?: "early" | "late";
   /** 瞄准档位:挥拍时提交的落点瞄准("deep"=深球压底线 / "near"=短球放网 / "mid"=不指定);

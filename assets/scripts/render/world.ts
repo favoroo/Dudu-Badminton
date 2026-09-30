@@ -12,6 +12,7 @@ import { Settings } from "../core/settings";
 import { clamp, lerp, rand } from "../core/utils";
 import { Ball, GameEvent, Player, SkinDef } from "../core/types";
 import { Rules } from "../core/rules";
+import { Physics } from "../core/physics";
 import { drawPlayer, drawShuttle, setSwingArcSink, drawSwingArcGhost, SwingArcFx, LungeGhost, drawLungeGhost, FlashGhost, drawFlashGhost } from "./sprites";
 import { pal, withAlpha } from "./palette";
 import { courtRenderer, CourtThemeItem } from "./court";
@@ -417,11 +418,13 @@ export class WorldView {
     item.plateG.node.active = plate !== "none";
     item.node.angle = 0;
     if (plate !== "none") {
-      const pad = plate === "star" ? 44 : 24;
+      // 底板强度/外扩都由 config.fx 下发(floatPlateDim/floatPlatePadScale):
+      // 衬底只保 P5 骨架感,不让黑片/星芒盖过球
+      const pad = (plate === "star" ? 44 : 24) * (C.fx.floatPlatePadScale ?? 1);
       const w = measureTextW(text, size) + pad;
       const h = size * 1.7;
       item.plateG.clear();
-      drawFloatPlate(item.plateG, w, h, plate, pal(color), rand(-0.05, 0.05));
+      drawFloatPlate(item.plateG, w, h, plate, pal(color), rand(-0.05, 0.05), C.fx.floatPlateDim ?? 1);
       item.node.angle = rand(-3, 3);
     }
     item.node.active = true;
@@ -528,6 +531,15 @@ export class WorldView {
     this.root.setScale(this.camZ, this.camZ, 1);
     this.root.setPosition(px + this.shakeX, py + this.shakeY, 0);
 
+    // 关卡侧风接进球场:椰树叶簇、浪花、网头彩带、漂浮粒子从此与球受到的那一下**同源同向**。
+    // 从前 court.ts 里只有一条自己编的 sin×cos 装饰风,和 EnvModifier 半点关系都没有 ——
+    // 第 1 关的风把球横推一百多像素,海滩照样按自己的节奏摆,玩家看到的动画和挨的那一下
+    // 不是同一件事,机制因此等于隐形(用户原话:"完全没有动画效果提示")。
+    // 有风时把装饰项压到 ambience.idle,免得两个符号打架读成"动画在随机动"。
+    const envMod = Physics.getEnvModifier();
+    const windNow = envMod ? Physics.windAt(Physics.envPhase()) : 0;
+    courtRenderer.setWind(windNow * C.env.ambience.k, windNow !== 0 ? C.env.ambience.idle : 1);
+
     // 动态球场重绘(包含球网弹性晃动、看台荧光棒、海浪、霓虹粒子等)
     this.redrawCourt(rallyCount);
 
@@ -536,7 +548,7 @@ export class WorldView {
       this.drawForbiddenZone(g, stage.modifiers.player.forbiddenNetZone);
     }
 
-    // 跨步高速突进流风残影采样
+    // 跨步高速突进与时空超速移动流风残影采样
     for (const p of players) {
       if (p.lungeT >= 0 && (p.lungeT % (C.lunge.ghostInterval || 2) === 0)) {
         this.lungeGhosts.push({
@@ -548,6 +560,17 @@ export class WorldView {
           lungeLegExt: 0.9,
           lungeDirRel: p.lungeDir ? p.lungeDir * p.facing : 1,
           color: "#38bdf8",
+        });
+      } else if (p.focusT && p.focusT > 0 && Math.abs(p.vx) > 2.5 && (p.focusT % 3 === 0)) {
+        this.lungeGhosts.push({
+          x: p.x,
+          y: p.y,
+          facing: p.facing,
+          life: 12,
+          maxLife: 12,
+          lungeLegExt: 0.5,
+          lungeDirRel: p.vx > 0 ? p.facing : -p.facing,
+          color: "#06b6d4",
         });
       }
     }

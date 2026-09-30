@@ -1,5 +1,6 @@
 // ============================================================
-// 画布内世界提示:落点预测圈、训练头顶时机条、赛点霓虹旗标。
+// 画布内世界提示:落点预测圈、时机环(球上收缩环+甜区圈)、量化时机条、
+// 热手火苗刻度、训练头顶时机条、赛点霓虹旗标。
 // 自老版 canvas 工程 src/render/hud.js 逐行移植 —— 比分/发球权等 DOM 层信息
 // 在 ui/hud.ts,这里只画「长在球场上」的东西。
 //
@@ -9,6 +10,7 @@
 // ============================================================
 import { Color, Graphics, Label, Layers, Node, Tween, tween, UITransform, Vec3 } from "cc";
 import { CFG } from "../core/config";
+import { clamp } from "../core/utils";
 import { Physics } from "../core/physics";
 import { Settings } from "../core/settings";
 import { Rules } from "../core/rules";
@@ -16,6 +18,7 @@ import { Drill } from "../core/drill";
 import { meter, winU, targetZoneFor } from "./drill-anim";
 import type { Viewport } from "./world";
 import { pal, withAlpha } from "./palette";
+import { drawCrossMark, drawTaper } from "./p5kit";
 
 const C = CFG;
 const CO = C.court;
@@ -42,10 +45,21 @@ export class HudOverlay {
   // predictPath 写世界坐标点 → px/py 存换算后的 Graphics 坐标 → dashBuf 存切好的虚线段
   // (每段 5 个 float:x0,y0,x1,y1,透明度档)。虚线段数上限 ≈ 弧长/(dash+gap),
   // 800/5=160 段足够最远的那条弧,写满就提前收笔,不会越界。
-  private pathBuf = new Float32Array((C.landing.pathHorizon + 2) * 2);
-  private px = new Float32Array(C.landing.pathHorizon + 2);
-  private py = new Float32Array(C.landing.pathHorizon + 2);
-  private dashBuf = new Float32Array(800);
+  private pathBuf = new Float32Array((C.landing.pathHorizonMax + 2) * 2);
+  private px = new Float32Array(C.landing.pathHorizonMax + 2);
+  private py = new Float32Array(C.landing.pathHorizonMax + 2);
+  private dashBuf = new Float32Array(1400);
+  /** 每帧只积分**一次**真弧,落点圈与虚线共用(从前一个 linear 外推、一条 90 步前瞻,
+   *  两套口径算出的"落点"能差出半个半场 —— 那正是第 1 关"风把球吹走"完全读不出来的原因) */
+  private pathN = 0;
+  private pathEnd = 3;          // 0 落地 / 1 撞网 / 2 出海侧 / 3 被截断(未知)
+  private pathLandX = 0;
+  private endBuf = new Int8Array(1);
+  // ---------- 时机环状态(game-root.updateSwingCue 每帧喂;null = 无来球不画)----------
+  // progress: 收缩进度 0..1(1 = 收满贴球);locked: fc ≤ 最佳按拍帧的白闪档
+  private ring: { zx: number; zy: number; zr: number; progress: number; locked: boolean } | null = null;
+  // ---------- 量化时机条(真人每拍命中后短暂显示;grade 带符号,-=早 +=晚)----------
+  private timingBars: { x: number; y: number; grade: number; life: number; max: number }[] = [];
 
   constructor(parent: Node, vp: Viewport) {
     this.vp = vp;
@@ -68,7 +82,10 @@ export class HudOverlay {
 
     // ---------- 落点预测(六层叠画,见 config.landing 的注释)----------
     // 设置页的「落点预测圈」开关掐这一处:只关预测圈,拍数徽标与训练时机条不受影响
-    if (b && b.live && !b.held && b.shot && Settings.hintLanding) this.landingMarker(R, t);
+    if (b && b.live && !b.held && b.shot && Settings.hintLanding) {
+      this.integrateOnce(b.x, b.y, b.vx, b.vy);
+      this.landingMarker(R, t);
+    }
 
     // ---------- 训练场:把引导页那根时机条搬到球员头顶 + 目标落点与迎击位 ----------
     if (R.mode === "drill") {
@@ -78,6 +95,125 @@ export class HudOverlay {
 
     // ---------- 赛点霓虹旗标 ----------
     this.matchPointFlag(R, t);
+
+    // ---------- 时机环(球上收缩环 + 判定区甜区圈;game-root 喂了状态才画)----------
+    // 与落点圈共用「落点预测圈」开关:都是操作引导,设置里关掉就一起收
+    if (b && b.live && !b.held && this.ring && Settings.hintLanding) {
+      this.timingRingDraw(b);
+    }
+    // ---------- 量化时机条(真人命中后短暂显示,自带寿命)----------
+    this.timingBarDraw();
+    // ---------- 热手火苗刻度(左上角,点火才出现)----------
+    this.heatGauge(R);
+  }
+
+  /** game-root.updateSwingCue 每帧喂时机环状态;null = 无来球 */
+  setTimingRing(s: { zx: number; zy: number; zr: number; progress: number; locked: boolean } | null): void {
+    this.ring = s;
+  }
+
+  /** 真人命中后在击球点上方画一拍量化时机条(grade ∈ [-1,1],负=早 正=晚) */
+  showTimingBar(wx: number, wy: number, grade: number): void {
+    this.timingBars.push({ x: wx, y: wy, grade, life: 40, max: 40 });
+    if (this.timingBars.length > 4) this.timingBars.shift();
+  }
+
+  // ---------- 时机环:甜区圈(该把人带到哪)+ 球上收缩环(该什么时候按)----------
+  // 判定区心在脚下、球在空中,两处各画各的,玩家视角里「圈套着球收进来 = 按拍」。
+  private timingRingDraw(b: NonNullable<typeof Rules.R.ball>): void {
+    const s = this.ring!;
+    const TR = C.timingRing;
+    const g = this.g;
+    // ① 甜区圈:判定区心,暗衬 + 金描边 + 淡填充;随收缩进度提亮(越近越要盯)
+    const zx = this.vp.x(s.zx);
+    const zy = this.vp.y(s.zy);
+    g.fillColor = withAlpha("#000000", 0.3);
+    g.circle(zx, zy, s.zr);
+    g.fill();
+    g.fillColor = withAlpha(pal("#ffe14d"), TR.zoneFillA * (0.5 + 0.5 * s.progress));
+    g.circle(zx, zy, s.zr);
+    g.fill();
+    g.strokeColor = withAlpha(pal("#ffe14d"), TR.zoneA * (0.35 + 0.65 * s.progress));
+    g.lineWidth = 1.8;
+    g.circle(zx, zy, s.zr);
+    g.stroke();
+    // ② 球上收缩环:从 fromMul×球半径收到贴球;收满(fc ≤ lead)换白闪 =「就是现在」
+    const cx = this.vp.x(b.x);
+    const cy = this.vp.y(b.y);
+    const br = C.shuttle.radius;
+    if (s.locked) {
+      g.strokeColor = withAlpha("#ffffff", TR.lockA);
+      g.lineWidth = TR.lockW;
+      g.circle(cx, cy, br + 3);
+      g.stroke();
+    } else {
+      const r = br * TR.fromMul - br * (TR.fromMul - 1.25) * s.progress;
+      g.strokeColor = withAlpha(pal("#00f0ff"), TR.a);
+      g.lineWidth = TR.ringW;
+      g.circle(cx, cy, r);
+      g.stroke();
+    }
+  }
+
+  // ---------- 量化时机条:左右 = 早/晚,中央白段 = 完美,金段 = 甜蜜 ----------
+  // 命中后挂在击球点上方淡出 —— 「这一拍差在哪」用位置说话,不用读字。
+  private timingBarDraw(): void {
+    if (!this.timingBars.length) return;
+    const g = this.g;
+    const w = 64;
+    const h = 7;
+    const goldHalf = C.sweet.coreRatio / 2;   // 甜蜜段半宽(条的比例坐标,1 = 半条)
+    const whiteHalf = C.perfect.coreRatio / 2; // 完美段半宽
+    for (const tb of this.timingBars) {
+      tb.life--;
+      const a = Math.min(1, tb.life / (tb.max * 0.4));
+      const cx = this.vp.x(tb.x);
+      const cy = this.vp.y(tb.y);
+      g.fillColor = withAlpha("#000000", 0.55 * a);
+      g.rect(cx - w / 2 - 2, cy - h / 2 - 2, w + 4, h + 4);
+      g.fill();
+      g.fillColor = withAlpha(pal("#ffe14d"), 0.5 * a);
+      g.rect(cx - w * goldHalf, cy - h / 2, w * goldHalf * 2, h);
+      g.fill();
+      g.fillColor = withAlpha("#ffffff", 0.78 * a);
+      g.rect(cx - w * whiteHalf, cy - h / 2, w * whiteHalf * 2, h);
+      g.fill();
+      g.strokeColor = withAlpha("#ffffff", 0.5 * a);
+      g.lineWidth = 1;
+      g.rect(cx - w / 2, cy - h / 2, w, h);
+      g.stroke();
+      const mx = cx + w / 2 * clamp(tb.grade, -1, 1);
+      const inSweet = Math.abs(tb.grade) <= C.sweet.coreRatio;
+      g.fillColor = withAlpha(inSweet ? "#00f0ff" : "#ff8a8a", 0.95 * a);
+      g.rect(mx - 1.6, cy - h / 2 - 3, 3.2, h + 6);
+      g.fill();
+    }
+    this.timingBars = this.timingBars.filter((tb) => tb.life > 0);
+  }
+
+  // ---------- 热手火苗刻度:左上角一排锯齿小火苗,亮格数 = 当前连击热度 ----------
+  // heat < fireAt(还没点火热档)不画;出现后 8 格总槽常驻 —— 离火力全开还差几格一眼可读。
+  // 固定三角形,P5 小火苗语义(锯齿,出生定形,无逐帧 rand)。
+  private heatGauge(R: typeof Rules.R): void {
+    const p = R.players[0];
+    if (!p || p.isAI || p.heat <= 0) return;
+    const G = C.heat.gauge;
+    const fireAt = C.heat.fireAt;
+    const g = this.g;
+    const x0 = this.vp.x(G.x);
+    const y0 = this.vp.y(G.y);
+    for (let i = 0; i < C.heat.maxStreak; i++) {
+      const cx = x0 + i * (G.cellW + G.gap);
+      const lit = i < p.heat;
+      const a = lit ? G.litA : G.emberA;
+      const hex = lit ? (i < fireAt ? "#ff6a1f" : "#ffe14d") : "#3a2a1a";
+      g.fillColor = withAlpha(pal(hex), a);
+      g.moveTo(cx, y0);
+      g.lineTo(cx + G.cellW * 0.5, y0 - G.cellH);
+      g.lineTo(cx + G.cellW, y0);
+      g.close();
+      g.fill();
+    }
   }
 
   // ---------- 落点预测:衬底 / 光斑 / 收缩准星环 / 双描边主圈 / 列光 / 下箭头 ----------
@@ -91,28 +227,28 @@ export class HudOverlay {
     const g = this.g;
     const b = R.ball;
     if (!b || !b.shot) return;
-    const land = b.shot.landX;
+    // ⚠ 落点取自真弧(truth 口径),不再读 b.shot.landX。
+    //   shot.landX 是**意图** —— 反解出来的、不含侧风与颤抖的那个落点(双打分工 ai.ts 的
+    //   claimX、训练场"你瞄没瞄进目标区"都靠它保持稳定,不能改成逐帧变动的真值)。
+    //   从前落点圈就画在这个意图上,于是风关里"圈在 A、球落 B":提示比没提示更误导。
+    const land = this.pathLandX;
+    if (this.pathEnd === 3) return;   // 前瞻被截断 = 不知道落在哪,宁可不画也不画个假的
     if (land <= CO.left - 60 || land >= CO.right + 60) return;   // 飞出镜头外就不画
 
     const shot = b.shot;
     const isSmash = shot.kind === "smash";
     const willOut = land < CO.left || land > CO.right;
-    const willNet = shot.intoNet;
-    const real = !willOut && !willNet;          // 这拍真会落在这儿(值得催)
+    const willNet = this.pathEnd === 1;      // 撞网也按真弧判(shot.intoNet 只是出球那一刻的意图)
+    const real = !willOut && !willNet;        // 这拍真会落在这儿(值得催)
 
     // 这一侧有没有真人守(2p 两边都是真人 → 两边都满档)
     const side = land < CO.netX ? "left" : "right";
     const mine = R.players.some((p) => !p.isAI && p.side === side);
 
-    // 距落地还剩几帧:y/vy 与 x/vx 各估一个取更早的那个 ——
-    // vx 被空气阻力一路拖慢,x 估子偏乐观;平飘球的 y 估子会过早。取 min 最保守。
-    let remain = -1;
-    if (b.vy > 0.2) remain = (CO.groundY - 2 - b.y) / b.vy;
-    const dx = land - b.x;
-    if (Math.abs(b.vx) > 0.2 && dx * b.vx > 0) {
-      const ex = Math.abs(dx) / Math.abs(b.vx);
-      remain = remain < 0 ? ex : Math.min(remain, ex);
-    }
+    // 距落地还剩几帧:前瞻本来就是按真积分一步步推到落地的,步数即帧数 ——
+    // 从前这里用 y/vy、x/vx 各做一次线性外推再取 min,在风/低重力/颤抖关会系统性估偏
+    // (阻力与横推都不是线性的),现在直接吃 pathN。
+    const remain = this.pathEnd === 0 || this.pathEnd === 1 ? this.pathN - 1 : -1;
     // urgentFrames 与 remain 都是「剩余帧」量,故意不随球速档位折算:
     // 不折 = 落点圈在真实时间里同样提前催(见 core/pace.ts 头注释的「不缩放清单」)
     const urg = real ? Math.max(0, Math.min(1, 1 - Math.max(0, remain) / L.urgentFrames)) : 0;
@@ -127,8 +263,23 @@ export class HudOverlay {
     const lineY = this.vp.y(CO.groundY + 2);   // 地面线(Graphics 里向上为正)
     const cy = lineY - ry;                     // 光斑顶边贴线,主体画在近景地胶上
 
+    // 意图对照:你瞄的那点画一枚暗十字,再用一根 taper 把它拉到风真正送它去的地方。
+    // 这一对字形是整套"风能不能玩起来"的核心 —— 玩家一眼看见「我打的是这里,
+    // 风把它搬到了那里」,顺风收力/逆风发力这种决策才有落点可依据,而不是靠猜。
+    const intentX = shot.landX;
+    const drift = land - intentX;
+    if (intentX != null && Math.abs(drift) >= L.driftArrowMin
+      && intentX > CO.left - 60 && intentX < CO.right + 60) {
+      const ix = this.vp.x(intentX);
+      const gy = this.vp.y(CO.groundY + 2);
+      drawCrossMark(g, ix, gy - 5, L.intentCrossLen, L.intentCrossW, 0.34,
+        pal("#e9e4d6"), L.intentCrossAlpha * dim);
+      drawTaper(g, ix, gy - 5, this.vp.x(land), gy - 5, L.driftArrowW,
+        pal(drift > 0 ? "#8fe3ff" : "#ffd28f"), 0.62 * dim);
+    }
+
     // ⓪ 轨迹预测虚线:先画,让地面那几层压在它之上(线头收在落点圈里,不越过它喊话)
-    this.landingPath(b.x, b.y, b.vx, b.vy, dim);
+    this.landingPath(dim);
 
     // ① 落点列光:盯球时不必移开视线就能读出落点 x(三段叠近似垂直渐隐)
     if (real) {
@@ -210,10 +361,18 @@ export class HudOverlay {
   // 所以这条弧就是球真正会走的那条;渲染层绝不另抄一份积分,否则改一次手感要同步两处。
   // cc Graphics 没有 setLineDash → 按累计弧长自己切段;整条线沿弧长分三档降透明度,
   // 靠球那端最实、往落点方向淡出,末端交给落点圈喊,这条线只负责「读出这条弧的形状」。
-  private landingPath(bx: number, by: number, vx: number, vy: number, dim: number): void {
+  /** 真弧积分一次(truth 口径),把终点/终止原因留给落点圈用 */
+  private integrateOnce(bx: number, by: number, vx: number, vy: number): void {
+    const steps = Physics.pathStepsFor(Physics.getEnvModifier());
+    this.pathN = Physics.predictPath(bx, by, vx, vy, steps, this.pathBuf, this.endBuf);
+    this.pathEnd = this.endBuf[0];
+    this.pathLandX = this.pathBuf[(this.pathN - 1) * 2];
+  }
+
+  private landingPath(dim: number): void {
     const L = C.landing;
     const g = this.g;
-    const n = Physics.predictPath(bx, by, vx, vy, L.pathHorizon, this.pathBuf);
+    const n = this.pathN;
     if (n < 2) return;
     const fade = L.pathFade;
 

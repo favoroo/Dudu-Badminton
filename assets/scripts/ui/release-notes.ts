@@ -11,6 +11,7 @@
 // 输出的是「物理行」而不是「逻辑行」:折行后每行自带 indent / h / lead,
 // 弹窗按 y 累加摆放即可,行宽 w 已保证 <= textW 可用宽 —— 溢出在类型上就不可能。
 // ============================================================
+import { textUnits, type Measure } from "./text-metrics";
 
 /** 行类型:小节标题(`### x`)/ 列表项(`- x`、`1. x`)/ 普通段落 */
 export type NoteKind = "section" | "item" | "para";
@@ -45,8 +46,8 @@ export interface NoteLayout {
   height: number;
 }
 
-/** 量字宽:(文本, 字号) → 世界单位宽度 */
-export type Measure = (text: string, size: number) => number;
+/** 量字宽:(文本, 字号) → 世界单位宽度 —— 尺子在 text-metrics,这里只转出 */
+export type { Measure };
 
 /**
  * 排版常量 —— 折行可用宽、行高、缩进都从这里出,
@@ -172,39 +173,6 @@ export function parseReleaseNotes(md: string): NoteLine[] {
 
 // ---------- 折行 ----------
 
-/**
- * 切成「不可断单元」:中日韩与全角标点逐字可断(它们本来就没有空格),
- * 拉丁词/数字/URL 连成一块,空格是断点。
- * 只按空格断行的话,一整句中文会被当成一个单元 —— 那是溢出最常见的来路。
- */
-function units(text: string): string[] {
-  const out: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === " ") {
-      out.push(" ");
-      i++;
-      continue;
-    }
-    if (isWide(ch)) {
-      out.push(ch);
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j < text.length && text[j] !== " " && !isWide(text[j])) j++;
-    out.push(text.slice(i, j));
-    i = j;
-  }
-  return out;
-}
-
-/** 码位 > 0x2e80 视作 CJK / 全角(含中文标点),可逐字断行 */
-function isWide(ch: string): boolean {
-  return ch.charCodeAt(0) > 0x2e80;
-}
-
 /** 合并相邻同样式片段,一行内 strong 段不会碎成一堆 label */
 function mergeSpans(spans: NoteSpan[]): NoteSpan[] {
   const out: NoteSpan[] = [];
@@ -217,7 +185,8 @@ function mergeSpans(spans: NoteSpan[]): NoteSpan[] {
 }
 
 /**
- * 逻辑行 → 物理行。
+ * 逻辑行 → 物理行。单元切分规则与 wrapText 共用 text-metrics 的 textUnits(一把尺),
+ * 这里多做一件「按 span 保留加粗」的事。
  * 单元逐个装进当前行,装不下就换行;单个单元比整行还宽(裸长 URL)时按字硬切,
  * 保证「任何输入都不横向溢出」是算法性质,不是对文案的假设。
  */
@@ -225,7 +194,7 @@ function wrapLine(line: NoteLine, measure: Measure): NoteLine[] {
   const size = line.kind === "section" ? NOTE.headSize : NOTE.size;
   const avail = noteTextW(line.indent);
   const flat: { unit: string; strong: boolean }[] = [];
-  for (const span of line.spans) for (const u of units(span.text)) flat.push({ unit: u, strong: span.strong });
+  for (const span of line.spans) for (const u of textUnits(span.text)) flat.push({ unit: u, strong: span.strong });
 
   const rows: { spans: NoteSpan[]; w: number }[] = [];
   let spans: NoteSpan[] = [];

@@ -86,8 +86,8 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     title: "海风突变",
     subtitle: "CROSSWIND SHIFT",
     badge: "狂暴阵风",
-    desc: "热带海岛刮起强劲多变的侧风，球体在空中会被横向气流猛烈推移，落点飘忽不定！",
-    hint: "顺风击球容易出界，多打网前小球；逆风时大力起跳抽球，让球越过球网！",
+    desc: "强劲侧风把球往旁边推：海面的风丝与椰梢往哪边倒、风向标的黄针就往哪边指，球也被推向哪边。风每隔几秒换一次方向。",
+    hint: "黄针是当前风，青针是你出手那一拍的风。顺风收力、逆风发力压深；两针合拢时落点最可控。",
     targetScore: 3,
     aiDiff: "easy",
     modifiers: {
@@ -544,6 +544,22 @@ export const CampaignManager = {
       if ((prog.records[k].clears || 0) > 0) count++;
     }
     return count;
+  },
+
+  getStageByNo(stageNo: number): StageDef | null {
+    return CAMPAIGN_STAGES.find((s) => s.stageNo === stageNo) ?? null;
+  },
+
+  /**
+   * 「下一关」= 已解锁但还没通关里编号最小的那一关;全 20 关都通了返回 null。
+   * 解锁是线性的(过第 N 关开第 N+1 关),所以按编号正序扫第一个 clears===0 就够。
+   * 大厅的直达条与结算页的「下一关」按钮共用这一条判据 —— 两边不能各算各的。
+   */
+  getNextStage(): StageDef | null {
+    for (const s of CAMPAIGN_STAGES) {
+      if (this.isStageUnlocked(s.stageNo) && (this.getStageRec(s.id).clears || 0) === 0) return s;
+    }
+    return null;
   },
 
   recordStageClear(

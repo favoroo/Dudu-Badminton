@@ -128,6 +128,15 @@ const fadeTags = new Map<Node, number>();
 const fadedOut = new WeakSet<Node>();
 
 /**
+ * 组件是不是藏在「自己已经淡出收起」的子树里(祖先 = top 时不算)。
+ * cancelFade 放行整棵子树时要靠它跳过这些区域,见下面的注释。
+ */
+function parkedInside(top: Node, n: Node | null): boolean {
+  for (let p = n; p && p !== top; p = p.parent) if (fadedOut.has(p)) return true;
+  return false;
+}
+
+/**
  * 面板退场统一收尾:淡出 + 轻缩,完了把交互件禁用。
  * 曾经所有面板 hide 都是瞬间 active=false —— 进有 rise/slam,出却是硬切。
  * 退场比进场快(0.15s),别让人等;BlockInputEvents 立即失效,
@@ -148,11 +157,22 @@ const fadedOut = new WeakSet<Node>();
  *   否则关掉的面板就是屏幕上一块隐形挡板,底下的虚拟按键与暂停键一起失灵
  *   (无限练习弹窗曾把整局按键打死,见 endless-dialog.setDimLive)。
  * 做不到挂卸的,就学 career/drill/settings:退场动画放完后 destroy。
+ *
+ * 同一套坑在**面板里的小弹窗**上会再来一遍:fadeOutHide 只管「这一棵」,
+ * 而父面板 show() 的 cancelFade(this.root) 管的是「整棵子树」。两层收起状态叠在
+ * 一起时,放行必须跳过自己还收着的子树(parkedInside),退场必须无条件收触摸
+ * (禁用写在短路判断之前) —— 少一条,那层弹窗的整屏遮罩就常驻在隐形面板之上,
+ * 把大厅所有卡片与 ✕ 一起打死。要更省事就学 settings 的编辑器:每次新建、收完 destroy。
  */
 export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {
-  if (fadedOut.has(node)) { onDone?.(); return; }
+  // ⚠ 收触摸排在短路判断**之前**:短路只该省掉「重播一遍淡出动画」,
+  // 不该顺手省掉「把交互件收走」。写在那道 return 之后的话,同一个节点第二次
+  // hide 就是空操作 —— 而它可能在两次之间被父面板的 cancelFade 整树点亮过
+  // (见 cancelFade 的 parkedInside),结果隐形遮罩常驻,底下所有按钮点不动
+  // (用户报的「闯关成功后返回再进大厅,什么都点不了」正是这一条)。
   for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = false;
   for (const b of node.getComponentsInChildren(Button)) b.enabled = false;
+  if (fadedOut.has(node)) { onDone?.(); return; }
   const op = node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
   Tween.stopAllByTarget(node);
   Tween.stopAllByTarget(op);
@@ -184,9 +204,12 @@ export function cancelFade(node: Node): void {
     op.opacity = 255;
   }
   Tween.stopAllByTarget(node);
-  // 从隐藏态恢复:把退场时禁用的交互件全部开回(首次显示时它们从未被禁,开了也无副作用)
-  for (const b of node.getComponentsInChildren(Button)) b.enabled = true;
-  for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = true;
+  // 从隐藏态恢复:把退场时禁用的交互件全部开回(首次显示时它们从未被禁,开了也无副作用)。
+  // 但**不碰自己还收着的子树**:面板 show() 的 cancelFade(this.root) 是整树放行,
+  // 顺手复活面板里那层已经淡出收起的弹窗,它的整屏 BlockInputEvents 就变成一块
+  // 看不见、又吃触摸的挡板(Opacity 0 不参与命中判定,只有 active=false 才不吃)。
+  for (const b of node.getComponentsInChildren(Button)) if (!parkedInside(node, b.node)) b.enabled = true;
+  for (const b of node.getComponentsInChildren(BlockInputEvents)) if (!parkedInside(node, b.node)) b.enabled = true;
 }
 
 /**

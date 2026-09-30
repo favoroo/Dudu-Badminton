@@ -163,6 +163,9 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   let mv = 0;
   let axisCap = 1;
   const isSliderActive = targetX !== undefined;
+  const inFocus = (p.focusT ?? 0) > 0;
+  const focusSpeedMul = inFocus ? (C.skills.focus.playerSpeedMul ?? 4.2) : 1;
+  const focusAccelMul = inFocus ? (C.skills.focus.playerAccelMul ?? 4.5) : 1;
 
   if (isSliderActive) {
     const dx = targetX - p.x;
@@ -175,7 +178,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
       const dir = dx > 0 ? 1 : -1;
       const dist = Math.abs(dx);
       // 减速缓冲带:若距离小于 slowDownDist,按比例线性收缩速度上限,避免超调与来回震荡
-      const slowDist = SC?.slowDownDist ?? 22;
+      const slowDist = (SC?.slowDownDist ?? 22) * (inFocus ? 2.5 : 1);
       axisCap = dist < slowDist ? Math.max(0.2, dist / slowDist) : 1;
       mv = dir * axisCap;
     }
@@ -210,6 +213,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     }
   }
 
+  let maxV = PL.vmax;
   if ((p.flashHoldT ?? 0) > 0) {
     // 闪现悬空:人已经定在球的下风高点,这一拍不接受任何移动输入(摇杆/滑轨的拇指稍一动
     // 就把人从球底下拽走,那又是"闪到了却打不到"),横向速度一并清零。
@@ -221,16 +225,18 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   } else if (!p.forbiddenWarn || p.forbiddenWarn <= 0) {
     // 真人侧多乘一层「移速档位」(core/gait.ts),AI 不叠这层 —— 它已经有 diffs.speed 写进
     // p.speedMul,两层叠一起会让难度档和玩家设置互相污染,回归就在测玩家偏好。
+    // 时空减速(focus)激活时赋予倍率加成:对抗世界 slowmo 0.35 并赋予超速移动能力。
     // accel 与 vmax 同比例乘:只提极速不提起步会显得"推起来肉";
     // 跨步冲量与跳跃弹道故意不跟着乘(lunge.speed / jumpV 是另一套手感)。
-    const accelMul = mod?.accelMul ?? 1;
-    const vmaxMul = mod?.vmaxMul ?? 1;
+    const accelMul = (mod?.accelMul ?? 1) * focusAccelMul;
+    const vmaxMul = (mod?.vmaxMul ?? 1) * focusSpeedMul;
     const staminaMul = p.isExhausted ? 0.65 : 1;
-    const sm = p.speedMul * (p.isAI ? 1 : Gait.s) * vmaxMul * staminaMul;
-    const maxV = PL.vmax * sm * axisCap;
-    const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * sm * accelMul;
+    const smBase = p.speedMul * (p.isAI ? 1 : Gait.s) * staminaMul;
+    maxV = PL.vmax * smBase * vmaxMul * axisCap;
+    const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * smBase * accelMul;
     const fMul = mod?.frictionMul ?? 1;
-    const friction = p.onGround ? (fMul < 0.5 ? Math.max(0.94, PL.groundFriction + (1 - fMul) * 0.1) : PL.groundFriction) : PL.airFriction;
+    const baseFriction = p.onGround ? (fMul < 0.5 ? Math.max(0.94, PL.groundFriction + (1 - fMul) * 0.1) : PL.groundFriction) : PL.airFriction;
+    const friction = inFocus && mv === 0 ? Math.min(baseFriction, 0.68) : baseFriction;
     if (mv !== 0) p.vx += mv * accel;
     else p.vx *= friction;
     if (mv !== 0) {
@@ -241,9 +247,19 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   if (Math.abs(p.vx) < 0.04) p.vx = 0;
   // 横向安全钳制:跨步是叠加冲量,跑动中爆发可达 vmax+speed,钳制要留够余量。
   // 跑动那一项按同一层 sm 放大(移速档「极快」时真人 vmax 13.8 + 跨步 15 + 3 才够,
-  // 不放大就会把跨步冲量凭空削掉一截);AI 侧 sm 即 diffs.speed,与旧值同量级。
-  const xvCap = Math.max(12, PL.vmax * p.speedMul * (p.isAI ? 1 : Gait.s) + LG.speed + 3);
-  p.x += clamp(p.vx, -xvCap, xvCap);
+  // 不放大就会把跨步冲量凭空削掉一截);时空减速高速也确保容纳。
+  const xvCap = Math.max(12, Math.max(PL.vmax * p.speedMul * (p.isAI ? 1 : Gait.s) + LG.speed + 3, maxV + 3));
+  if (isSliderActive && targetX !== undefined) {
+    const stepVx = clamp(p.vx, -xvCap, xvCap);
+    if ((p.x - targetX) * (p.x + stepVx - targetX) <= 0) {
+      p.x = targetX;
+      p.vx = 0;
+    } else {
+      p.x += stepVx;
+    }
+  } else {
+    p.x += clamp(p.vx, -xvCap, xvCap);
+  }
 
   // 侧视球场:始终面向球网,拍面方向 = 出球方向
   p.facing = p.side === "left" ? 1 : -1;
@@ -438,7 +454,9 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   p.heat = hot ? Math.min(heatBefore + 1, C.heat.maxStreak) : 0;
 
   const lungeShot = p.lungeShotT > 0;
-  const shot = buildShot(p, ball, { q, sweet, perfect, dEdge, heat: hot ? heatBefore : 0, lungeShot });
+  // 跳杀:空中 + 击球点够高 = 必然扣杀并加力(真人与 AI 同一通道;闪现折跃天然满足)
+  const jumpSmash = !p.onGround && (CO.groundY - ball.y) >= C.jumpSmash.minHeight;
+  const shot = buildShot(p, ball, { q, sweet, perfect, dEdge, heat: hot ? heatBefore : 0, lungeShot, jumpSmash });
   // 球体接触瞬间形变:按档位设压扁比
   ball.sqPrev = ball.sq;
   ball.sq = (shot.kind === "smash")
@@ -450,10 +468,14 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   p.hitRecoil = (shot.kind === "smash")
     ? (C.fx.recoilSmash || 6)
     : (C.fx.recoilNormal || 3);
-  // 时机教学:命中了但不甜、且在窗口里偏了半程以上,告诉玩家该往哪边调
-  // (只给真人;AI 的时机误差是难度参数,不该"被教学")
-  if (!p.isAI && qRaw < 0.5) {
-    shot.timingHint = p.swingT < SW.windup + (SW.active - 1) / 2 ? "early" : "late";
+  // 时机教学:真人恒上报带符号时机档(0=正中,负=早,正=晚),量化时机条每拍都画;
+  // 没踩进甜蜜窗时再给「早了/晚了」文字提示 —— 踩准了就不打扰
+  if (!p.isAI) {
+    const half = SW.active / 2;
+    shot.timingGrade = clamp(((p.swingT - SW.windup - 0.5) - (SW.active - 1) / 2) / half, -1, 1);
+    if (!sweet) {
+      shot.timingHint = shot.timingGrade < 0 ? "early" : "late";
+    }
   }
   if (shot.kind === "smash") {
     p.smashGlow = 10;
@@ -498,19 +520,27 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   const lungeShot = !!opt.lungeShot;
   const heatBoost = Math.min((opt.heat || 0) * C.heat.speedBonus, C.heat.speedBonusMax);
   const sm = Skills.modifyShot(p, opt);
+  const jm = !!opt.jumpSmash;
   const boost = Math.min(
     (perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0) + heatBoost
-      + sm.speedBoost,
+      + sm.speedBoost + (jm ? C.jumpSmash.speedBoost : 0),
     C.shuttle.maxSpeed - C.shot.speedMax);
-  const powerDeg = (perfect ? C.perfect.powerDeg : sweet ? C.sweet.powerDeg : 0)
+  let powerDeg = (perfect ? C.perfect.powerDeg : sweet ? C.sweet.powerDeg : 0)
     + sm.powerDeg;
+  // 跳杀:空中高球必然扣杀 —— 弧度先夹到压弧上限(力度已并入上方 boost 预算)
+  if (jm) {
+    powerDeg += C.jumpSmash.powerDeg;
+  }
   let loft = clamp(Physics.loftFor(depth, h, q) - powerDeg, C.shot.loftMinDeg, C.shot.loftMaxDeg);
+  if (jm) {
+    loft = Math.min(loft, C.jumpSmash.maxLoftDeg);
+  }
   if (sm.forceSmash) {
     loft = Math.min(loft, 10);
   }
 
   const shot = Physics.solveShot(ball.x, ball.y, dir, depth, loft, boost);
-  if (sm.forceSmash) {
+  if (sm.forceSmash || jm) {
     shot.kind = "smash";
   }
   if (shot.kind === "smash") p.stats.smashes++;
@@ -525,10 +555,23 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     hitter: p,
     heat: p.heat,
     lungeShot,
+    jumpSmash: jm,
     // 瞄准档位只在字符串瞄准(真人路径 mid/deep/near)时有意义;AI 直接给数值深度,不上报
     aim: typeof p.swingAim === "string" ? p.swingAim : undefined,
     skillKind: sm.skillKind,
   };
 }
 
-export const Player = { create, update, tryHit, buildShot, depthOf, strikeZone, ballInZone, setPlayerModifier, getPlayerModifier };
+/**
+ * 球种预告:按真实 buildShot 通道预演「这一拍打出去是什么球种」,给击球键上方的徽标用。
+ * 用甜蜜点下限当基准质量(预告回答的是「踩准了会打出什么」),落点误差的随机项仍在 ——
+ * 预告与实打共用同一条代码路径,config 怎么改都不会出现「徽标一套判定、实球另一套」。
+ * 跳杀成因前置:空中 + 高球直接报扣杀,不等求解器反推。
+ */
+function previewKind(p: PlayerEntity, ball: Ball): ShotResult["kind"] {
+  if (!p.onGround && (CO.groundY - ball.y) >= C.jumpSmash.minHeight) return "smash";
+  const q = 1 - C.sweet.coreRatio;
+  return buildShot(p, ball, { q, sweet: true, dEdge: 0, heat: 0 }).kind;
+}
+
+export const Player = { create, update, tryHit, buildShot, previewKind, depthOf, strikeZone, ballInZone, setPlayerModifier, getPlayerModifier };

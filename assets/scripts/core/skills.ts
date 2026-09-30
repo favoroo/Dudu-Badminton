@@ -102,6 +102,45 @@ export function canActivate(p: Player, ball: Ball): boolean {
   }
 }
 
+/**
+ * 技能键「就绪但门槛未满足」的可读原因(冷却是另一态,走倒计时,不在这里报)。
+ * 文案住在 config.skills.blockText —— UI 只显示,不自己猜判据。
+ * 返回 null = 无需解释(完全就绪 / 还在冷却)。
+ */
+export function skillBlockReason(p: Player, ball: Ball | null): string | null {
+  if (!p || !p.skill) return null;
+  const s = p.skill;
+  if (s.cd > 0) return null;
+  if (canActivate(p, ball as Ball)) return null;
+  const T = C.skills.blockText as Record<string, string>;
+  switch (s.id) {
+    case "lunge":
+      if (!p.onGround) return T.needGround;
+      if (p.swingT >= 0) return T.swinging;
+      if (p.lungeT >= 0) return T.lunging;
+      return null;
+    case "smash":
+      return T.buffing;
+    case "flash": {
+      if (!ball || !ball.live || ball.held || ball.flying) return T.notIncoming;
+      if (ball.lastHitter === p.side) return T.notIncoming;
+      if ((p.flashHoldT ?? 0) > 0 || (p.flashStrikeT ?? 0) > 0) return T.swinging;
+      if (p.swingT >= 0) return T.swinging;
+      const inCourt = p.side === "left" ? ball.x < CO.netX - 8 : ball.x > CO.netX + 8;
+      if (!inCourt) return T.notIncoming;
+      return T.lowBall;
+    }
+    case "magnet":
+      if (!ball || !ball.live || ball.held || ball.flying) return T.notIncoming;
+      if (p.swingT >= 0) return T.swinging;
+      return T.pulling;
+    case "focus":
+      return T.focusing;
+    default:
+      return null;
+  }
+}
+
 /** 触发技能激活, 返回是否成功 */
 export function activate(p: Player, ball: Ball, dir?: number): boolean {
   if (!p || !p.skill) return false;
@@ -319,6 +358,7 @@ export const Skills = {
   initSkillState,
   resetPoint,
   canActivate,
+  skillBlockReason,
   activate,
   update,
   modifyShot,

@@ -26,6 +26,13 @@
 // 第二道闸在 ui-manager.ts:凡 this.menu.hide() 的入口,方法体内必须也有 this.menu.show()
 //   —— 浮在 MENU 之上的一屏不挂任何 Rules 状态,状态没有变化沿 onState 就不会再跑,
 //      菜单只能由面板的关闭回调命令式请回来(少这一句 = 关完只剩一座空球场,卡死)。
+// 第三道闸在 ui-arcade.ts:fadeOutHide / cancelFade 这一对是**两层收起状态**的交接口 ——
+//   面板整棵收(fadeOutHide root)、面板里的小弹窗自己也收(fadeOutHide dialog),
+//   而重显时只有 root 的 cancelFade 会跑。两条契约少一条,那层弹窗的整屏遮罩就会被
+//   父面板顺手放行:opacity 0 不参与命中判定,于是它成了一块看不见的挡板
+//   (用户报的「闯关成功返回再进大厅,什么都点不动」正是这一条)。判定:
+//     4) fadeOutHide 里「禁用交互件」必须排在 fadedOut 短路 return **之前**;
+//     5) cancelFade 里每一句 b.enabled = true 都必须过 parkedInside(跳过自己还收着的子树)。
 // 另附 --selftest:每条规则各拿一个改动前的真实写法当反例,确认这套正则会报警
 // (规则脚本最怕的是悄悄全绿)。
 //
@@ -146,6 +153,52 @@ function auditMenuReturn(raw: string): string[] {
   return issues;
 }
 
+/** 取 `export function name(` 到最近的行首 `}` 之间的函数体 */
+function fnBody(src: string, name: string): string {
+  const i = src.indexOf(`export function ${name}(`);
+  if (i < 0) return "";
+  const j = src.indexOf("\n}", i);
+  return j < 0 ? src.slice(i) : src.slice(i, j + 2);
+}
+
+/**
+ * 第三道闸:fadeOutHide / cancelFade 的契约(见文件头)。
+ * 这两条管的是「面板里还有一层自己收起的子树」—— 大厅的战前简报就是这种结构,
+ * 而它是常驻面板(hide 只淡出、不 deactivate),放行只能靠 cancelFade 整树扫一遍。
+ */
+function auditFadeHelpers(raw: string): string[] {
+  const src = stripComments(raw);
+  const issues: string[] = [];
+
+  const hide = fnBody(src, "fadeOutHide");
+  if (!hide) {
+    issues.push("ui-arcade.fadeOutHide 找不到了(改名/挪走请同步这条检查)");
+  } else {
+    const disableAt = hide.indexOf("b.enabled = false");
+    const shortAt = hide.indexOf("fadedOut.has(node)");
+    if (shortAt >= 0 && !(disableAt >= 0 && disableAt < shortAt)) {
+      issues.push("ui-arcade.fadeOutHide: 「禁用交互件」没排在 fadedOut 短路 return 之前 —— "
+        + "同一个节点第二次 hide 就成空操作,而它可能在两次之间被父面板的 cancelFade 整树点亮,"
+        + "那层 opacity 0 的整屏遮罩会继续吞掉所有点击(闯关大厅点不动的根因)");
+    }
+  }
+
+  const cancel = fnBody(src, "cancelFade");
+  if (!cancel) {
+    issues.push("ui-arcade.cancelFade 找不到了(改名/挪走请同步这条检查)");
+  } else {
+    const lines = cancel.split("\n").filter((l) => l.includes("b.enabled = true"));
+    if (!lines.length) issues.push("ui-arcade.cancelFade: 没有放行交互件的语句了?面板重显会点不动");
+    const bare = lines.filter((l) => !l.includes("parkedInside"));
+    if (bare.length) {
+      issues.push("ui-arcade.cancelFade: 放行 Button/BlockInputEvents 没过 parkedInside —— "
+        + "父面板 show() 会顺手复活自己已经淡出收起的子弹窗(战前简报那层整屏遮罩),"
+        + `隐形挡板重新长出:${bare.map((l) => l.trim()).join(" / ")}`);
+    }
+  }
+  return issues;
+}
+
 let bad = 0;
 const ok = (cond: boolean, msg: string): void => {
   if (cond || verbose) console.log(`${cond ? "✓" : "✗"} ${msg}`);
@@ -180,6 +233,36 @@ if (selftest) {
   const returnGood = `\n  private openFoo(): void {\n    this.menu.hide();\n    this.fooPanel.show(() => { this.fooPanel.hide(); this.menu.show(); });\n  }\n`;
   ok(auditMenuReturn(returnBad).length === 1, `反例(关完没人请回主菜单)被报警`);
   ok(auditMenuReturn(returnGood).length === 0, `正例(关闭回调里请回主菜单)全绿`);
+
+  // 第三道闸的两条反例 = 修好之前的真实写法(用户报的大厅卡死就是这两句凑一起的后果)
+  const fadeBad = [
+    `export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {`,
+    `  if (fadedOut.has(node)) { onDone?.(); return; }`,
+    `  for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = false;`,
+    `  for (const b of node.getComponentsInChildren(Button)) b.enabled = false;`,
+    `  tween(op).to(dur, { opacity: 0 }).start();`,
+    `}`,
+    `export function cancelFade(node: Node): void {`,
+    `  fadedOut.delete(node);`,
+    `  for (const b of node.getComponentsInChildren(Button)) b.enabled = true;`,
+    `  for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = true;`,
+    `}`,
+  ].join("\n");
+  const fadeGood = [
+    `export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {`,
+    `  for (const b of node.getComponentsInChildren(BlockInputEvents)) b.enabled = false;`,
+    `  for (const b of node.getComponentsInChildren(Button)) b.enabled = false;`,
+    `  if (fadedOut.has(node)) { onDone?.(); return; }`,
+    `  tween(op).to(dur, { opacity: 0 }).start();`,
+    `}`,
+    `export function cancelFade(node: Node): void {`,
+    `  fadedOut.delete(node);`,
+    `  for (const b of node.getComponentsInChildren(Button)) if (!parkedInside(node, b.node)) b.enabled = true;`,
+    `  for (const b of node.getComponentsInChildren(BlockInputEvents)) if (!parkedInside(node, b.node)) b.enabled = true;`,
+    `}`,
+  ].join("\n");
+  ok(auditFadeHelpers(fadeBad).length === 2, `反例(短路在前 + 放行不分子树)两条都被报警`);
+  ok(auditFadeHelpers(fadeGood).length === 0, `正例(无条件收触摸 / 放行跳过收起子树)全绿`);
 }
 
 const files = readdirSync(UI_DIR).filter((f) => f.endsWith(".ts")).sort();
@@ -196,7 +279,11 @@ const mgr = join(UI_DIR, "ui-manager.ts");
 const mgrIssues = existsSync(mgr) ? auditMenuReturn(readFileSync(mgr, "utf8")) : ["ui-manager.ts 找不到"];
 ok(mgrIssues.length === 0, mgrIssues.length ? mgrIssues.join("\n  ") : "ui-manager.ts: 每个收起主菜单的入口都留了归途");
 
+const arcade = join(UI_DIR, "ui-arcade.ts");
+const fadeIssues = existsSync(arcade) ? auditFadeHelpers(readFileSync(arcade, "utf8")) : ["ui-arcade.ts 找不到"];
+ok(fadeIssues.length === 0, fadeIssues.length ? fadeIssues.join("\n  ") : "ui-arcade.ts: fadeOutHide 无条件收触摸、cancelFade 放行跳过已收起子树");
+
 console.log(judged === 0
   ? "✗ 一个面板都没扫到 —— UI 目录路径不对?"
-  : `${bad === 0 ? "✓" : "✗"} 面板退场卫生:${judged} 个 fadeOutHide 收 root 的面板 + 主菜单归途 1 项,${bad} 处问题`);
+  : `${bad === 0 ? "✓" : "✗"} 面板退场卫生:${judged} 个 fadeOutHide 收 root 的面板 + 主菜单归途 + 淡出契约 2 条,${bad} 处问题`);
 process.exit(judged === 0 || bad > 0 ? 1 : 0);

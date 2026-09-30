@@ -10,7 +10,6 @@
 import { CFG } from "./config";
 import { clamp, approach, rand } from "./utils";
 import { Physics } from "./physics";
-import { Pace } from "./pace";
 import { Player as Pl } from "./player";
 import { Rules, RulesState } from "./rules";
 import { Skills } from "./skills";
@@ -27,30 +26,40 @@ function fresh(): AiState {
     tauntCd: 0,           // 挑衅动作冷却
     celebrateT: 0,        // 庆祝动作剩余帧
     frustrateT: 0,        // 沮丧动作剩余帧
+    pressure: 0,          // 连击压力 0..1(rally 越长越大,见 rallyPressure)
+    noticeT: 0,           // 接球反应延迟剩余帧(新来球先愣几帧再启动)
+    scrambleT: 0,         // 扑救俯冲剩余帧(够不到时的表现,只给渲染读)
+    whiffsSeen: 0,        // 已计入的挥空数(检测中途扑空 → 沮丧)
+    panicSwung: false,    // 本记来球是否已绝望挥拍过(每拍至多一次)
+    hopeless: false,      // 本记来球是否已判定赶不上(供扑救表现读取)
   };
 }
 
 // 状态挂在球员身上:同一个 AI 可以驱动两个球员(也方便 AI vs AI 回归测试)
-function reset(p: Player): void { p.ai = fresh(); }
+// whiffsSeen 用当前挥空数打底:p.stats 跨分累计而 ai 状态每分重建,不预热会误报一次"扑空"
+function reset(p: Player): void { p.ai = fresh(); p.ai.whiffsSeen = p.stats.whiffs; }
 
 const D = (p: Player) => (p.aiDiff ? C.diffs[p.aiDiff] : C.diffs.normal);
 
-interface FutureLike { x: number; y: number; vx: number; vy: number }
-
 // 把球往前推 n 步(不改原对象)
-// 阻尼与重力都从物理层/档位层取,**不许在这里抄第二份积分常数**:球速档位把重力改成
-// gravity·s² 后,照原值预测会让 AI 的接球截面与 entryLead 整体错位(慢档里表现为"明明
-// 来得及却不动")。Physics.drag 内部含速度封顶,与真实单步积分一字不差。
-function future(ball: FutureLike, n: number): FutureLike[] {
-  let { x, y, vx, vy } = ball;
-  const out: FutureLike[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = Physics.drag(Math.hypot(vx, vy));
-    vx *= d; vy *= d; vy += Pace.g;
-    x += vx; y += vy;
-    out.push({ x, y, vx, vy });
+// 这里**不再自己抄一份循环**。从前它只算阻尼与 Pace.g,不认重力倍率、不认侧风、
+// 不认颤抖 —— 于是风关和低重力关里 AI 是按"另一条球路"跑位的:球实际往右飘,
+// 它往左等。接别人的球必须按真弧来(Physics.future 默认口径 truth),风是"打"的
+// 技巧、不该变成"接"的运气;AI 自己出球照旧走 solveShot 的 aim 口径,跟玩家一样
+// 会被风吹偏 —— 不对称只留在"读别人的球"这一侧。
+// 阻尼/速度封顶/环境量的折算全部由 physics 负责,本层不许再出现积分数值。
+const future = Physics.future;
+
+/**
+ * 球还有几帧落到地面(-1 = 在预测窗口内不落地)。
+ * 「绝望挥拍」用它决定什么时候补那一杆空拍:球将落地时起手,挥空动画正好压在球落地那一刻。
+ */
+function landFrames(ball: Ball): number {
+  const pts = future(ball, 150);
+  for (let i = 0; i < pts.length; i++) {
+    if (pts[i].y >= CO.groundY - 2) return i;
   }
-  return out;
+  return -1;
 }
 
 /**
@@ -133,27 +142,41 @@ function zoneHome(p: Player): number {
   return p.homeX;
 }
 
+/**
+ * 连击压力 P∈[0,1]:本回合 rally 越长越大,再乘本档 crush 闸门。
+ * 这是「回合拖长 → AI 开始漏」的唯一来源,不碰物理/判定区几何:
+ * 只放大 readErr、加时机误差、略降跑速,所以「慢球仍能对拉」的性质不变。
+ * rally 与 HUD 的「x N 连击」大字同源(rules.R.rally),前 startAt 拍照常不吃压力。
+ */
+function rallyPressure(d: ReturnType<typeof D>): number {
+  const AP = C.aiPressure;
+  return clamp(clamp((Rules.R.rally - AP.startAt) / AP.span, 0, 1) * d.crush, 0, 1);
+}
+
 interface EmotionMods { aggr: number; timingErr: number; speed: number }
 
 // 情绪修正:落后时更激进(认真起来),领先时略放松
 // composure 是档位闸门(0=情绪只改表情,不改强度):旧结构让 AI **落后时跑得更快、
 // 时机更准**,于是玩家越落后面对的是越强的对手 —— 与「入门档要能得分」正面冲突。
 // aggr 不闸:输了才认真猛扣是看得见的性格,而且不加难度。
+// 连击压力(pr)另走一条:把情绪往「急躁/沮丧」压 + 额外时机误差 + 降跑速 —— 见 rallyPressure。
 function emotionModifiers(p: Player, S: AiState, d: ReturnType<typeof D>): EmotionMods {
   const R = Rules.R;
   const myIdx = p.side === "left" ? 0 : 1;
   const myScore = R.scores[myIdx];
   const oppScore = R.scores[1 - myIdx];
   const diff = myScore - oppScore;
-  // 情绪目标:落后 → 负(沮丧/认真),领先 → 正(亢奋/放松)
-  const targetEmotion = clamp(diff / 5, -1, 1);
+  const pr = S.pressure;   // 连击压力 0..1(已乘本档 crush)
+  const AP = C.aiPressure;
+  // 情绪目标:落后 → 负(沮丧/认真),领先 → 正(亢奋/放松);长回合把目标再往沮丧压一点
+  const targetEmotion = clamp(diff / 5 - pr * 0.5, -1, 1);
   S.emotion = approach(S.emotion, targetEmotion, 0.08);
   const c = d.composure;
   // 返回修正后的难度参数
   return {
     aggr: d.aggr * (1 - S.emotion * 0.25),        // 落后时更激进(+25%),领先时更保守(-25%)
-    timingErr: d.timingErr * (1 + S.emotion * 0.2 * c), // 落后时更准(-20%),领先时更松(+20%)
-    speed: d.speed * (1 + S.emotion * 0.08 * c),  // 落后时跑更快
+    timingErr: d.timingErr * (1 + S.emotion * 0.2 * c) + pr * AP.timingAdd, // 落后更准 + 长回合手抖
+    speed: d.speed * (1 + S.emotion * 0.08 * c) * (1 - pr * AP.speedMul),   // 落后跑更快·长回合腿沉
   };
 }
 
@@ -180,12 +203,21 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   const S = p.ai || (p.ai = fresh());
   const inp: PlayerInput = { left: false, right: false, jumpPressed: false, jumpHeld: false, swingAim: null, lungePressed: false };
   const d = D(p);
-  const em = emotionModifiers(p, S, d);  // 情绪修正后的参数
+  S.pressure = rallyPressure(d);         // 连击压力:本回合 rally 越长越大(先算,情绪修正要吃它)
+  const em = emotionModifiers(p, S, d);  // 情绪 + 压力修正后的参数
 
   // 冷却/动作计时
   if (S.tauntCd > 0) S.tauntCd--;
   if (S.celebrateT > 0) S.celebrateT--;
   if (S.frustrateT > 0) S.frustrateT--;
+  if (S.scrambleT > 0) S.scrambleT--;
+  // 中途扑空:挥空数涨了 → 短促沮丧(情绪动作,不改强度)。p.stats 跨分累计,
+  // ai 状态每分重建,所以 whiffsSeen 在 reset() 里用当前值打底(否则每分会误报一次)。
+  if (p.stats.whiffs > S.whiffsSeen) {
+    S.whiffsSeen = p.stats.whiffs;
+    // 拼了没够到(panicSwung)比普通扑空更懊恼 —— frustrateT 只喂渲染,不改强度
+    if (S.frustrateT <= 0 && Math.random() < (S.panicSwung ? 0.9 : 0.5)) S.frustrateT = 22;
+  }
 
   // ---------- 发球 ----------
   if (ball.held && ball.owner === p) {
@@ -228,20 +260,24 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     S.wantSmash = Math.random() < aggr;          // 本回合是否处于进攻心态
     const ladder = S.wantSmash ? [C.aiReach.attack, C.aiReach.stand, 92] : [C.aiReach.stand, 92];
     let ic: Intercept | null = null;
+    let reachable = false;
     for (const topH of ladder) {
       const c = intercept(p, ball, topH, topH > C.aiReach.attack - 4 ? 0 : C.aiReach.contact);
       const jumping = topH > C.aiReach.attack - 4;
       const need = (jumping ? C.player.jumpApex : 0) + 6;
-      if (c.t >= runTo(c.x) + need) { ic = c; S.wantSmash = jumping || S.wantSmash; break; }
+      if (c.t >= runTo(c.x) + need) { ic = c; S.wantSmash = jumping || S.wantSmash; reachable = true; break; }
     }
     if (!ic) ic = intercept(p, ball, 90, C.aiReach.contact);
+    // 「怎么都赶不上」:连最低拦截点都来不及到位 —— 用来触发扑救俯冲表现 + 绝望挥拍(不改判定)
+    S.hopeless = !reachable;
     // 站位偏差:**每记来球只认定一次**,之后每次重规划都沿用同一个数。
     // 旧写法在这里重掷 ±d.aimErr,均值归零 → 几次重规划下来收敛到真实落点,
     // 92px 等于没写(用户反馈「入门 AI 怎么都能接住」的头号根因)。认定之后它就
     // 一路全速跑向自己那个错的点,最后差一点够不到 —— 这才是「看走眼」。
+    // 连击压力在这里加码:回合越往后,这一掷的误差越大(rallyPressure 见上)。
     if (!S.readRolled) {
       S.readRolled = true;
-      S.readErr = (Math.random() * 2 - 1) * d.read * readHardness(p, ball, ic, d);
+      S.readErr = (Math.random() * 2 - 1) * d.read * (1 + S.pressure * C.aiPressure.readMul) * readHardness(p, ball, ic, d);
     }
     const err = S.readErr;
     const lo = p.side === "left" ? CO.wallL : CO.netX + CO.netPad;
@@ -256,7 +292,15 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     S.wantSmash = false;
     S.ic = null;
     S.chasing = false;
+    S.panicSwung = false;                   // 新来球:绝望挥拍额度复位
+    S.hopeless = false;
+    S.noticeT = d.notice;                   // 球在对面手/飞向别处时,把"愣神"预置好
   }
+
+  // ---------- 反应延迟(拟人) ----------
+  // 新来球成立的前几帧先愣着不动也不挥:真人看到对手出拍也要反应时间,不是逐帧盯球。
+  // 放在重规划之后、跑位之前 —— targetX 照常算好,只是这几帧先不执行。
+  if (incoming && S.noticeT > 0) { S.noticeT--; return inp; }
 
   // ---------- 跑位 ----------
   const dx = S.targetX - p.x;
@@ -341,6 +385,26 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   }
   const depth = chooseDepth(p, Rules.rivalsOf(p), CO.groundY - ball.y, S.wantSmash);
   if (lead >= 0 && p.swingT < 0 && S.swingLead !== null && lead <= S.swingLead) inp.swingAim = depth;
+
+  // ---------- 够不到也要扑一下:鱼跃俯冲(只做表现) ----------
+  // 旧行为:赶不上的球 AI 就杵在 targetX 上看它落地 —— 用户反馈的「接不到时站在那不动」。
+  // 这里在判定「怎么都赶不上」且球快落地时置 scrambleT,渲染层据此做一次前倾伸臂的鱼跃
+  // (sprites.ts),game-root 在置位那一帧补一记扑空音效。
+  // **刻意不产生真实挥拍**:真挥拍会命中那些"看着赶不上、其实被 entryLead 的低估 velocity
+  // 判成 -1"的球 —— 实测入门档接发率会从 86% 抬到 100%,那是借表现之名改平衡。
+  // 表现归表现:这里不写 inp,人物照旧够不到,只是不再呆站着。
+  if (incoming && S.chasing && ball.live && !ball.held && p.swingT < 0) {
+    const mine = p.side === "left" ? ball.x < CO.netX : ball.x > CO.netX;
+    const inCourt = ball.x > CO.left && ball.x < CO.right;
+    if (mine && inCourt && S.hopeless && S.scrambleT <= 0) {
+      const lf = landFrames(ball);
+      // 球快落地了才扑(扑太早像在演)
+      if (lf >= 0 && lf <= C.aiReach.scrambleFrames) {
+        S.scrambleT = C.aiReach.scrambleFrames;
+        S.panicSwung = true;   // 供"拼了没够到"的沮丧加权(仅表现)
+      }
+    }
+  }
 
   return inp;
 }

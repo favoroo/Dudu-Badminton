@@ -419,6 +419,15 @@ export class CourtRenderer {
   // 物理与时间状态
   private time = 0;
   private windX = 0;
+  /**
+   * 关卡侧风的画面位移(px)与装饰风倍率,由 WorldView 每帧喂 **Physics.windAt(envPhase())** 进来。
+   * 从前这个类只有一条自己的 `sin(t*0.005)*cos(t*0.013)*3.5`,与 EnvModifier 毫无关系:
+   * 第 1 关的风把球横推一百多像素,椰树/浪花/网头彩带照样按那条跟它无关的正弦摆 ——
+   * 玩家看到的"动画"和挨的"这一下"不是同一件事,于是机制依旧等于隐形。
+   * 现在两者同源同向:球往哪儿偏,场上的漂浮物就往哪儿偏。
+   */
+  private envWindPx = 0;
+  private decorK = 1;
   private netShakeAmp = 0;
   private netHitY = CO.netTopY + 18;
   private netShakeTime = 0;
@@ -429,6 +438,9 @@ export class CourtRenderer {
   private arenaSigns: string[] = [];
   private boards: ArenaBoard[] = [];
   private dusts: DustParticle[] = [];
+  /** 海滩风丝:位置/长度在 buildAll 里用那颗私有种子**定形**,逐帧只平移与改透明度 ——
+   *  逐帧 rand 会把它们抖成噪点(与 p5kit 头注释同一条规矩) */
+  private windStreaks: { x: number; y: number; len: number; spd: number; k: number }[] = [];
   private arenaFlashes: ArenaFlash[] = [];
   private arenaTowels: ArenaTowler[] = [];
 
@@ -737,6 +749,18 @@ export class CourtRenderer {
       });
     }
 
+    // 3.5 海滩风丝(数量/长度取自 CFG.env.ambience,与全场景同一颗种子定形)
+    this.windStreaks = [];
+    for (let i = 0; i < C.env.ambience.streakCount; i++) {
+      this.windStreaks.push({
+        x: rnd() * TOTAL_W - EXT_W,
+        y: 150 + rnd() * 250,                  // 海面上空到沙滩上空的带,不压着地胶
+        len: C.env.ambience.streakLen * (0.55 + rnd() * 0.9),
+        spd: 0.5 + rnd() * 1.4,
+        k: 0.5 + rnd() * 0.9,                  // 每根丝吃多少比例的真风位移 → 层次感
+      });
+    }
+
     // 4. 竹林道场
     this.dojoMountains = [
       { cx: 220, cy: 260, rx: 190, ry: 75 },
@@ -856,6 +880,16 @@ export class CourtRenderer {
     return next as CourtThemeItem;
   }
 
+  /**
+   * 喂入关卡侧风。render 层不许自己算风:风力/相位都在 core,这里只接换算好的像素位移。
+   * @param envPx   Physics.windAt(envPhase()) × CFG.env.ambience.k(带符号,与球受推同向)
+   * @param decorK  装饰风倍率:有风时压到 ambience.idle,让真风主导画面的"往哪边倒"
+   */
+  setWind(envPx: number, decorK: number): void {
+    this.envWindPx = envPx;
+    this.decorK = decorK;
+  }
+
   hitNet(hitY?: number, power = 1.0): void {
     this.netShakeAmp = Math.min(2.0, this.netShakeAmp + power);
     this.netHitY = hitY != null && hitY >= CO.netTopY ? hitY : CO.netTopY + 18;
@@ -882,7 +916,9 @@ export class CourtRenderer {
     const glow = clamp(rallyCount / 18, 0, 1);
     const t = this.time;
     // 统一风力系统 — 所有漂浮粒子共享风向
-    this.windX = Math.sin(t * 0.005) * Math.cos(t * 0.013) * 3.5;
+    // 装饰项(那条跟关卡无关的正弦)与真风**相加**,并在有风时把装饰项压到 CFG.env.ambience.idle:
+    // 两边都给满幅的话,符号会互相打乱,叶簇看着像在随机动,而不是"风往这边走"。
+    this.windX = Math.sin(t * 0.005) * Math.cos(t * 0.013) * 3.5 * this.decorK + this.envWindPx;
 
     if (this.currentTheme === "beach") {
       this.drawBeach(g, vp, t, glow);
@@ -1536,6 +1572,30 @@ export class CourtRenderer {
     // 【专属延展细节】：近景浅水潮汐湿润光斑 (wy: 620~700)
     for (let bx = -EXT_W + 100; bx < TOTAL_W; bx += 260) {
       fillEllipse(g, vp, bx, 650, 90, 18, colRgba(254, 240, 138, 0.12));
+    }
+
+    // 10. 海风风丝 —— 第 1 关「海风突变」的动画提示
+    //     风从前只住在 physics 的每步积分里,画面一格都不动:球被横推一百多像素,
+    //     玩家只知道"我打飞了",不知道为什么。这些白条吃的是**同一个** windX
+    //     (draw() 里那行合成把 EnvModifier 折成画面位移),所以丝往哪边飘、飘多狠,
+    //     与球被推走多少是同一件事的两种画法。风停了它们就不动 —— 不是"照飘不误"的假动画。
+    const AW = C.env.ambience;
+    const fullWind = Math.max(0.001, Math.abs(C.env.windDefaultBase) * AW.k);
+    const wLean = this.windX / fullWind;
+    const wAbs = Math.min(1, Math.abs(wLean));
+    if (wAbs > 0.02) {
+      const dirS = wLean >= 0 ? 1 : -1;
+      g.lineWidth = 1.6;
+      for (const st of this.windStreaks) {
+        let sx = st.x + this.windX * st.k + time * st.spd * 0.02 * dirS;
+        sx = ((sx + EXT_W) % TOTAL_W) - EXT_W;
+        const a = AW.streakA * (0.35 + 0.65 * wAbs) * (0.55 + 0.45 * Math.sin(time * 0.05 + st.y));
+        const len = st.len * (0.6 + 0.8 * wAbs);
+        g.strokeColor = colRgba(255, 252, 235, Math.max(0, a));
+        g.moveTo(sx, st.y);
+        g.lineTo(sx + len * dirS, st.y + len * 0.06);   // 顺风侧略微下压,读起来是被吹着走
+        g.stroke();
+      }
     }
 
     // 9. 沙滩防滑编织织带标线

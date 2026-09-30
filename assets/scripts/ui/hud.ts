@@ -10,6 +10,7 @@ import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransf
 import { CFG } from "../core/config";
 import { Rules } from "../core/rules";
 import { Drill } from "../core/drill";
+import { Physics } from "../core/physics";
 import type { RulesState } from "../core/rules";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
@@ -18,6 +19,10 @@ import {
   drawSlantShadow, fadeOutHide, popScore, retainedDraw, safePad, skewOf, slashIn, slantPath, textW,
 } from "./ui-arcade";
 import { rand } from "../core/utils";
+
+// 风向标牌面尺寸(斜切底 + 两根针都要用同一把尺)
+const WG_W = 132;
+const WG_H = 22;
 
 export class Hud {
   readonly root: Node;
@@ -40,6 +45,15 @@ export class Hud {
   private modeTag: Label;
   private modeTagNode: Node;
   private lastModeTag = "";
+  // 风向标(闯关侧风关):黄针=此刻的风、青针=出手那一拍的风。
+  // 第 1 关的现场反馈是「海风完全没有方向提示,我根本不知道怎么利用」——
+  // 风当时只住在 physics 的每步积分里,界面一行都不读,玩家挨了打也不知道是谁打的。
+  private windGauge: Node;
+  private windGaugeG: Graphics;
+  private windLabel: Label;
+  private windWasOn = false;
+  private windPaintKey = NaN;
+  private windLastTxt = "";
   // 连击徽章(右上角小牌:大数字 + 「连击」小字 + 档位进度条)
   private combo: Node;
   private comboBgG: Graphics;
@@ -192,6 +206,32 @@ export class Hud {
     tagNode.setParent(this.root);
     this.modeTagNode = tagNode;
 
+    // ---------- 风向标(闯关侧风关:第 1 关「海风突变」的唯一读数入口) ----------
+    // 为什么必须有这块:侧风会把球横推 ~150px(半场才 390px),但从前界面上一个像素都不提,
+    // 玩家只看到"我瞄的线外、球却飞出去了",于是把机制读成随机惩罚 —— 用户原话是
+    // 「我根本不知道这个海风要怎么利用,一点游戏性都没有」。
+    // 两根针而不是数字:数字要读、要换算,而"往哪边推、正在往哪边转"是看一眼就会的东西。
+    //   黄实针 = 此刻的风      青虚针 = 出手那一拍(约 60 步后)的风
+    // 两针的夹角就是"风正在往哪儿转",于是"等哪一拍出手"这件事第一次变得可执行。
+    const wgNode = new Node("wind-gauge");
+    wgNode.layer = this.root.layer;
+    wgNode.addComponent(UITransform).setContentSize(WG_W, WG_H);
+    const wgBg = new Node("wg-bg");
+    wgBg.layer = this.root.layer;
+    wgBg.addComponent(UITransform).setContentSize(WG_W, WG_H);
+    this.windGaugeG = wgBg.addComponent(Graphics);
+    wgBg.setParent(wgNode);
+    this.windLabel = kit.label(wgNode, "海风", 11, ARCADE.paper, { align: 0 });
+    this.windLabel.node.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
+    this.windLabel.node.setPosition(-WG_W / 2 + 6, -WG_H - 1, 0);
+    const wgW = wgNode.addComponent(Widget);
+    wgW.isAlignLeft = true; wgW.left = safeLeft;
+    wgW.isAlignTop = true; wgW.top = 50 + safeTop;      // 压在局别标签下面,不与状态行/发球旗抢位
+    wgW.updateAlignment();
+    wgNode.setParent(this.root);
+    wgNode.active = false;                               // 非侧风关不占屏幕
+    this.windGauge = wgNode;
+
     // ---------- 连击徽章(右上角,暂停键正下方;锯齿星芒卡,档位变色) ----------
     // 不用 Widget 右对齐:边缘对齐对「锚点≠0.5 + 宽度动态」的节点补偿不可靠,
     // 实测徽章溢出屏幕右缘。节点保持默认中心锚,sync 每帧按可视区右缘手动收边。
@@ -323,6 +363,93 @@ export class Hud {
   }
 
   /** 局别标签底块:左缘贴在 Widget 的 left 上,只往右长(文字已锚到左缘) */
+
+  /**
+   * 风向标:黄针=此刻的风,青针=出手那一拍(约 windLookahead 步后)的风。
+   * 数值一律来自 Physics.windAt(envPhase()) —— 与球真正受到的那个力同一个来源,
+   * 不在 UI 里再算一份正弦(那就是第五份积分,只是这次飘的是指针)。
+   */
+  private syncWind(R: RulesState): void {
+    const stage = R.mode === "campaign" ? R.activeStage : null;
+    const base = stage?.modifiers.physics?.windX ?? 0;
+    const on = !!stage && base !== 0;
+    if (on !== this.windWasOn) {
+      this.windWasOn = on;
+      this.windGauge.active = on;
+      if (on) this.windPaintKey = NaN;          // 重新亮起来要先画一次
+    }
+    if (!on) return;
+
+    const E = CFG.env;
+    const ph = Physics.envPhase();
+    const cur = Physics.windAt(ph) / E.windFullScale;
+    // oscillate 决定这关的风会不会**变向**:恒定侧风没有"未来"可读,
+    // 硬摆一根预读针等于画一根永远和实针重合的假针
+    const osc = !!stage?.modifiers.physics?.windOscillate;
+    const ahead = osc ? Physics.windAt(ph + E.windLookahead) / E.windFullScale : cur;
+    // 指针量化到 1/16:连续值每帧都在动,但玩家读的是"往哪边、多大力",
+    // 量化既不丢信息,又省掉每帧一次 Graphics.clear + 十余条路径
+    const key = Math.round(cur * 16) * 1000 + Math.round(ahead * 16) + (osc ? 0 : 999999);
+    if (key !== this.windPaintKey) {
+      this.windPaintKey = key;
+      this.paintWind(cur, ahead, osc);
+    }
+    const txt = Math.abs(cur) < 0.16
+      ? (osc ? "风平 · 落点可控" : "侧风恒定 · 落点可控")
+      : !osc
+        ? (cur > 0 ? "恒定顺风 → 收力" : "恒定逆风 → 发力")
+        : cur > 0
+        ? "顺风 → 收力,别打越线"
+        : "逆风 → 发力,压深才过网";
+    if (txt !== this.windLastTxt) { this.windLastTxt = txt; this.windLabel.string = txt; }
+  }
+
+  /** 一根针:头在中心、尖朝受力方向(斜切三角,不用圆头线段 —— P5 拒绝光滑) */
+  private drawWindNeedle(g: Graphics, u: number, reach: number, halfW: number, hex: string, alpha: number): void {
+    const len = u * reach;
+    if (Math.abs(len) < 2.5) {
+      g.fillColor = col(hex, alpha);
+      g.circle(0, 0, 2.6);
+      g.fill();
+      return;
+    }
+    g.fillColor = col(hex, alpha);
+    g.moveTo(0, -halfW);
+    g.lineTo(0, halfW);
+    g.lineTo(len, 0);          // 尖端:风力越大伸得越远
+    g.close();
+    g.fill();
+    // 尾迹:反方向一小段,读起来像被风吹出去的丝
+    g.strokeColor = col(hex, alpha * 0.5);
+    g.lineWidth = 1.4;
+    g.moveTo(-len * 0.32, 0);
+    g.lineTo(0, 0);
+    g.stroke();
+  }
+
+  private paintWind(cur: number, ahead: number, osc: boolean): void {
+    const g = this.windGaugeG;
+    if (!g) return;
+    const W = WG_W, H = WG_H;
+    const sk = skewOf(H, 10);
+    g.clear();
+    drawSlantShadow(g, W, H, sk, 4, 4, 0.5);
+    drawSlantPanel(g, W, H, sk, { alpha: 0.92, face: ARCADE.navy, edge: ARCADE.cyan, edgeA: 0.6 });
+    // 零刻度:中线 + 两侧满偏刻线,给"这根针偏了多少"一个参照
+    g.strokeColor = col(ARCADE.line, 0.95);
+    g.lineWidth = 1;
+    g.moveTo(0, -H / 2 + 3); g.lineTo(0, H / 2 - 3); g.stroke();
+    const reach = W / 2 - 14;
+    g.strokeColor = col(ARCADE.paper, 0.28);
+    g.moveTo(-reach, -H / 2 + 5); g.lineTo(-reach, H / 2 - 5); g.stroke();
+    g.moveTo(reach, -H / 2 + 5); g.lineTo(reach, H / 2 - 5); g.stroke();
+    // 先画预读(青、半透)再画实时(黄、实心):实时针压在上面的层级是对的
+    if (osc) this.drawWindNeedle(g, Math.max(-1, Math.min(1, ahead)), reach, H * 0.20, ARCADE.cyan, 0.55);
+    this.drawWindNeedle(g, Math.max(-1, Math.min(1, cur)), reach, H * 0.26, ARCADE.acid, 0.96);
+    // 撕纸下沿:让这块读数牌和 HUD 其余构件同一套形状语言
+    drawSawtooth(g, W - 4, 4, 9, ARCADE.ink, 0.8, "down", 0, -H / 2 - 2);
+  }
+
   private paintModeTagPlate(txt: string): void {
     const g = this.modeTagBg;
     if (!g) return;
@@ -406,6 +533,9 @@ export class Hud {
       this.lastModeTag = tag;
       this.paintModeTagPlate(tag);
     }
+
+    // ---------- 风向标(侧风关才亮) ----------
+    this.syncWind(R);
 
     // ---- 比分 / 训练进度 ----
     if (drill) {

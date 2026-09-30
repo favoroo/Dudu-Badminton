@@ -25,13 +25,34 @@ const NET_HIT_Y = CO.netTopY - C.shuttle.radius * 0.5;
 
 export interface EnvModifier {
   windX: number;
+  /** 风是否周期性变向。曾经这个开关住在 rules(就地改写 windX),
+   *  于是 getEnvModifier() 读到的是瞬时值、关卡声明值反倒要靠字面量兜回来。
+   *  现在 windX 恒为**基准幅度**,由 windAt(phase) 折出任一时刻的风,谁都能算同一句真话。 */
+  windOscillate: boolean;
   gravityMul: number;
   dragMul: number;
   erratic: boolean;
   laserRail: boolean;
 }
 
+/**
+ * 积分口径 —— 这个区分是整个环境机制能不能玩起来的关键,别顺手把它抹平:
+ *
+ * "truth"  认全部环境量(风、颤抖都算)。给**眼睛和拦截**用:落点圈、虚线弧、AI 接球。
+ *          球真正会走的这条线,必须和画出来的这条线一字不差。
+ * "aim"    只认重力/阻尼/磁轨,**故意不认侧风与颤抖**。给出球解算用。
+ *          反解是「给定落点求初速」:让它去补偿风,每一拍就都精准落在瞄的地方 ——
+ *          看着是修好了,其实把"看风下手的余地"整个解没了,机制当场归零。
+ *          重力/阻尼/磁轨反过来要认:低重力该读成"球飘得更远、滞空更久"(手感),
+ *          不该读成"每一拍都莫名其妙出界"(bug);磁轨是纯几何确定量,认它才打得出电浆炮。
+ */
+export type IntegrateIntent = "truth" | "aim";
+
 let activeModifier: EnvModifier | null = null;
+// 环境相位的**唯一**时钟。只有 tickEnv 能推进,而只有 Rules.step 调 tickEnv。
+// 曾经的坑:predictPath/flightFramesTo 这些"给 UI 前瞻用"的循环也在调 step,于是
+// 渲染每帧把时钟白推上百步 —— 颤抖的相位被吹成伪随机,看着像"飘忽不定",
+// 实际既不可预测也不可复现,连回归都写不出断言。时钟归一之后抖成什么样是算得出的。
 let envTick = 0;
 
 export function setEnvModifier(mod: EnvModifier | null): void {
@@ -43,11 +64,26 @@ export function getEnvModifier(): EnvModifier | null {
   return activeModifier;
 }
 
+/** 推进环境时钟。整个仓库只有 rules 的主循环该调它。 */
+export function tickEnv(n = 1): void { envTick += n; }
+
+/** 读当前环境相位(步) */
+export function envPhase(): number { return envTick; }
+
+/** 某一时刻的风(px/步²,带符号:+X 方向)。传 envPhase()+k 就是"k 步之后的风" —— 可预判的全部根据。 */
+export function windAt(phase: number): number {
+  const m = activeModifier;
+  if (!m || m.windX === 0) return 0;
+  return m.windOscillate ? Math.sin(phase * C.env.windOscRate) * m.windX : m.windX;
+}
+
 // 单步阻尼因子(纯函数:球壳与 AI 的球路预测共用,免得改一次手感要同步两处)
 function dragOf(sp: number): number {
   const dragMul = activeModifier ? activeModifier.dragMul : 1;
   return Math.max(DMIN, 1 - K * Math.min(sp, Pace.vmax) * dragMul);
 }
+
+const gravMul = (): number => (activeModifier ? activeModifier.gravityMul : 1);
 
 /** 物理层只依赖球的运动学字段(结构化类型,Ball 天然满足) */
 export interface BallLike {
@@ -87,38 +123,54 @@ function capSpeed(b: BallLike): number {
 
 // 单步积分(二次阻力:快球急停、慢球下坠,接近真实羽毛球)
 // 重力走 Pace.g(球速档位),阻尼走 dragOf —— 与 trace/AI 预测同一条式子
-function step(b: BallLike): void {
+// **全仓库只有这一份积分实现**:trace/predictPath/future 全是它的包装。
+// 曾经四处各抄一份循环、口径还不一样(风与重力有人认有人不认),结果就是
+// 「在 A 点画落点圈、把球打到 B 点」—— 改一次手感要同步四处的老账。
+function integrate(b: BallLike, intent: IntegrateIntent, phase: number): void {
   b.px = b.x; b.py = b.y;
+  const E = C.env;
   const sp = capSpeed(b);
   const d = dragOf(sp);
   b.vx *= d;
   b.vy *= d;
-  const g = Pace.g * (activeModifier ? activeModifier.gravityMul : 1);
-  b.vy += g;
+  b.vy += Pace.g * gravMul();
 
-  if (activeModifier) {
-    envTick++;
-    if (activeModifier.windX !== 0) {
-      b.vx += activeModifier.windX;
+  const m = activeModifier;
+  if (!m) { b.x += b.vx; b.y += b.vy; return; }
+
+  if (intent === "truth") {
+    b.vx += windAt(phase);
+    if (m.erratic && sp > E.erratic.speedGate) {
+      // 下降段抖得更凶:球尾失速那一坠才是要玩家留容错的,拍着胸口说"随机急坠"却
+      // 实现成等幅正弦,文案就是在骗人。
+      const ramp = b.vy > 0 ? E.erratic.descRamp : 1;
+      b.vy += Math.sin(phase * E.erratic.freqY) * E.erratic.ampY * ramp;
+      b.vx += Math.cos(phase * E.erratic.freqX) * E.erratic.ampX;
     }
-    if (activeModifier.erratic && sp > 1) {
-      b.vy += Math.sin(envTick * 0.45) * 0.35;
-      b.vx += Math.cos(envTick * 0.35) * 0.2;
-    }
-    if (activeModifier.laserRail) {
-      const crossedNet = (b.px < CO.netX && b.x >= CO.netX) || (b.px > CO.netX && b.x <= CO.netX);
-      if (crossedNet && b.y >= CO.netTopY - 55 && b.y <= CO.netTopY + 15) {
-        b.vx *= 1.75;
-        b.vy *= 0.8;
-        if ("laserBoosted" in b) {
-          (b as { laserBoosted?: boolean }).laserBoosted = true;
-        }
+  }
+  // 磁轨两个口径都认(几何确定量,认它才打得出"贴网电浆炮";不认则每拍贴网球都变出其不意的出界)
+  // ⚠ 判带必须在**位置更新之后**:从前这段写在 b.x += b.vx 之前,而步首刚做过
+  //   b.px = b.x,于是 crossedNet 拿两个相等的数比"有没有越过网面" —— 恒假,
+  //   「1.75 倍速电浆重炮」从上线那天起一次都没触发过(不是没画,是根本没生效)。
+  //   高度也改成按穿越点的插值 y 判带,而不是"这一步开始时球在哪"。
+  b.x += b.vx;
+  b.y += b.vy;
+
+  if (m.laserRail) {
+    const yn = yAtNet(b.px, b.py, b.x, b.y);
+    if (yn !== null && yn >= CO.netTopY - E.laser.above && yn <= CO.netTopY + E.laser.below) {
+      b.vx *= E.laser.speedMul;
+      b.vy *= E.laser.vyMul;
+      if ("laserBoosted" in b) {
+        (b as { laserBoosted?: boolean }).laserBoosted = true;
       }
     }
   }
+}
 
-  b.x += b.vx;
-  b.y += b.vy;
+/** 推进真实球。默认 truth;phase 默认取当前环境时钟,前瞻类自己传。 */
+export function step(b: BallLike, intent: IntegrateIntent = "truth", phase: number = envPhase()): void {
+  integrate(b, intent, phase);
 }
 
 // 线段与球网平面的交点 y;未过网返回 null
@@ -130,61 +182,107 @@ function yAtNet(px: number, py: number, x: number, y: number): number | null {
 }
 
 // 无头模拟:给定初速,看它落在哪 / 是否下网
-function trace(x0: number, y0: number, vx: number, vy: number, maxSteps = 260): TraceResult {
-  let x = x0, y = y0, px = x0, py = y0;
-  let apex = y0, netY: number | null = null;
-  const g = Pace.g;
-  const vmax = Pace.vmax;
+// **不再自己抄一份循环** —— 与真实球共用 integrate(),否则改一次手感要同步两处,
+// 而"落点圈画在 A、球打到 B"就是这么来的。
+// 默认 intent="aim"(不补偿侧风与颤抖):反解要的是"我想打哪儿",让它去补风就等于
+// 把风这个机制解没了。想看真相传 "truth"。
+const tscratch: BallLike = { x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0 };
+
+function trace(
+  x0: number, y0: number, vx: number, vy: number, maxSteps = 260,
+  intent: IntegrateIntent = "aim", phase0: number = envPhase(),
+): TraceResult {
+  const s = tscratch;
+  s.x = x0; s.y = y0; s.px = x0; s.py = y0; s.vx = vx; s.vy = vy;
+  let apex = y0;
+  let netY: number | null = null;
+  const hit = (): boolean => netY !== null && netY > NET_HIT_Y;
   for (let i = 1; i <= maxSteps; i++) {
-    const sp = Math.hypot(vx, vy);
-    const d = dragOf(sp);
-    if (sp > vmax) { const s = vmax / sp; vx *= s; vy *= s; }
-    vx *= d; vy *= d; vy += g;
-    px = x; py = y; x += vx; y += vy;
-    if (y < apex) apex = y;
-    const yn = yAtNet(px, py, x, y);
+    integrate(s, intent, phase0 + i);
+    if (s.y < apex) apex = s.y;
+    const yn = yAtNet(s.px, s.py, s.x, s.y);
     if (yn !== null && netY === null) netY = yn;
-    if (y >= CO.groundY - 2) {
-      return { landX: x, landY: CO.groundY - 2, steps: i, apex, netY, lvx: vx, lvy: vy, hitNet: netY !== null && netY > NET_HIT_Y };
+    if (s.y >= CO.groundY - 2) {
+      return { landX: s.x, landY: CO.groundY - 2, steps: i, apex, netY, lvx: s.vx, lvy: s.vy, hitNet: hit() };
     }
-    if (x < -80 || x > C.world.w + 80) {
-      return { landX: x, landY: y, steps: i, apex, netY, lvx: vx, lvy: vy, hitNet: netY !== null && netY > NET_HIT_Y };
+    if (s.x < -80 || s.x > C.world.w + 80) {
+      return { landX: s.x, landY: s.y, steps: i, apex, netY, lvx: s.vx, lvy: s.vy, hitNet: hit() };
     }
   }
-  return { landX: x, landY: y, steps: maxSteps, apex, netY, lvx: vx, lvy: vy, hitNet: netY !== null && netY > NET_HIT_Y };
+  return { landX: s.x, landY: s.y, steps: maxSteps, apex, netY, lvx: s.vx, lvy: s.vy, hitNet: hit() };
 }
 
-/** predictPath 的复用的单步状态(模块级,避免每帧造对象;非重入 —— 内部只调 step) */
+/** predictPath 复用的单步状态(模块级,避免每帧造对象;非重入 —— 内部只调 integrate) */
 const scratch: BallLike = { x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0 };
+/** future 复用的单步状态(同上;与 predictPath 不会互相嵌套) */
+const fscratch: BallLike = { x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0 };
 
 /**
- * 前瞻积分:从给定的运动学状态起,按**同一个 step()** 往前推最多 maxSteps 帧,
+ * 前瞻积分:从给定的运动学状态起,按**同一个 integrate(truth)** 往前推最多 maxSteps 帧,
  * 或直到落地 / 撞网为止。落点与撞网判据与 trace() 一字不差,所以「预测的这条弧」
  * 就是球真正会走的那条 —— 渲染层不许再自己抄一份积分,否则改一次手感就要同步两处。
  * 点写进调用方持有的 out(x,y 交替,世界坐标;含起点),返回写入的点数。
  * 零 GC:缓冲由调用方(每帧复用同一块)持有。
+ *
+ * 相位**本地推进、绝不回写环境时钟**:这个函数每渲染帧可能被调用上百步,从前它调的
+ * 正是带 envTick++ 的 step(),于是"颤抖球"的相位被前瞻吹成伪随机 —— 看着飘忽,实则
+ * 既不可预测也不可复现。前瞻只读时钟,推进它的是 rules。
+ * @param outEnd 可选,长度 ≥1 的 Int8Array:0=落地 1=撞网 2=飞出海侧 3=被前瞻/缓冲截断(未知)
  */
-function predictPath(x0: number, y0: number, vx0: number, vy0: number, maxSteps: number, out: Float32Array): number {
+function predictPath(
+  x0: number, y0: number, vx0: number, vy0: number, maxSteps: number,
+  out: Float32Array, outEnd?: Int8Array,
+): number {
   const s = scratch;
   s.x = x0; s.y = y0; s.px = x0; s.py = y0; s.vx = vx0; s.vy = vy0;
+  const phase0 = envPhase();
   let n = 0;
+  let end = 3;
   out[n * 2] = x0; out[n * 2 + 1] = y0; n++;
   const cap = (out.length >> 1) - 1;
   for (let i = 0; i < maxSteps && n <= cap; i++) {
-    step(s);
+    integrate(s, "truth", phase0 + i + 1);
     const yn = yAtNet(s.px, s.py, s.x, s.y);
     if (yn !== null && yn > NET_HIT_Y) {           // 撞网:线停在网面上,不许画穿过去
       out[n * 2] = CO.netX; out[n * 2 + 1] = yn; n++;
-      break;
+      end = 1; break;
     }
     if (s.y >= CO.groundY - 2) {                   // 落地:停在触地点(与 trace 同一条判据)
       out[n * 2] = s.x; out[n * 2 + 1] = CO.groundY - 2; n++;
-      break;
+      end = 0; break;
     }
-    if (s.x < -80 || s.x > C.world.w + 80) break;  // 飞出世界边界
+    if (s.x < -80 || s.x > C.world.w + 80) { end = 2; break; }  // 飞出世界边界
     out[n * 2] = s.x; out[n * 2 + 1] = s.y; n++;
   }
+  if (outEnd) outEnd[0] = end;
   return n;
+}
+
+/**
+ * 前瞻要跑多少帧才够看到落点。低重力关的弧长随 1/√g 变滞空 ——
+ * 写死一个帧数会在反重力关**静默截断**(弧画到一半就没落点圈了),所以按档位算。
+ */
+function pathStepsFor(env: EnvModifier | null, base = C.landing.pathHorizon): number {
+  const g = env ? Math.max(0.05, env.gravityMul) : 1;
+  return Math.min(C.landing.pathHorizonMax, Math.ceil(base / Math.sqrt(g)));
+}
+
+/**
+ * 把球往前推 n 步(不改原对象)。AI 的接球截面与提前量都读它。
+ * 从前这份住在 ai.ts 里自己抄了一遍循环、且不认环境与速度封顶,于是 AI 在风关
+ * 和低重力关是" aiming blind "地跑位。**口径给 truth**:接别人的球必须按真弧来,
+ * 风是"打"的技巧、不该变成"接"的运气;出球解算照旧走 aim,玩家与 AI 一样被风吹偏。
+ */
+function future(b: BallLike, n: number, intent: IntegrateIntent = "truth"): { x: number; y: number; vx: number; vy: number }[] {
+  const s = fscratch;
+  s.x = b.x; s.y = b.y; s.px = b.x; s.py = b.y; s.vx = b.vx; s.vy = b.vy;
+  const phase0 = envPhase();
+  const out: { x: number; y: number; vx: number; vy: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    integrate(s, intent, phase0 + i + 1);
+    out.push({ x: s.x, y: s.y, vx: s.vx, vy: s.vy });
+  }
+  return out;
 }
 
 // 「能过网」不能只看是否撞上球网:二分解出的是**临界角**,不夹余量就正好贴着网带擦过去,
@@ -488,21 +586,26 @@ function checkNet(b: BallLike): NetHit | null {
 export function flightFramesTo(ball: BallLike, tx: number, ty: number, r: number, horizon: number): number | null {
   const b: BallLike = { x: ball.x, y: ball.y, px: ball.px, py: ball.py, vx: ball.vx, vy: ball.vy };
   const r2 = r * r;
+  const phase0 = envPhase();
   for (let i = 0; i <= horizon; i++) {
     const dx = b.x - tx, dy = b.y - ty;
     if (dx * dx + dy * dy <= r2) return i;
-    step(b);
+    integrate(b, "truth", phase0 + i + 1);    // 本地推相位:UI 前瞻不许拨环境时钟
   }
   return null;
 }
 
 export const Physics = {
-  step, trace, solveShot, classify, checkNet, predictPath,
+  step, trace, solveShot, classify, checkNet, predictPath, future, pathStepsFor,
   loftFor, baseLoft, aimLoft,
   racketHead, swingTotal, reachRadius, strikeOffset, swingArc, swingPose,
   setEnvModifier, getEnvModifier,
-  /** 单步阻尼因子(含速度封顶):AI 的球路预测用,不许再自己抄一遍积分 */
-  drag: dragOf,
+  /** 环境相位时钟:只有 rules 的主循环能推进(tickEnv),其余一律只读 */
+  tickEnv, envPhase,
+  /** 某一时刻的风(px/步²,带符号)。传 envPhase()+k 就是 k 步之后的风 —— 风向标的预读针。 */
+  windAt,
+  // drag 已从公开面上摘掉:唯一用户是 AI 自己抄的那份积分,现已统一进 future(truth)。
+  // 留个口子就会有第五份循环,而四份循环口径不一致正是"落点圈骗人"的根因。
   get gravity() { return Pace.g; },
   get netHitY() { return NET_HIT_Y; },
 };

@@ -173,11 +173,13 @@ const PLATE_INK = "07070d";
  * 飘字底板:
  *  slant = 斜切黑片 + 档位色描边(漫画对话框的地基);
  *  star  = 双层尖刺星芒衬底(外层档位色半透,内层白,错半步相位)。
- * w/h 为文字盒外扩后的底板尺寸;rot 只用于 star 的相位错开。
+ * w/h 为文字盒外扩后的底板尺寸;rot 只用于 star 的相位错开;
+ * dim 为强度乘数(1=实心原版,<1 整体调淡,由 config.fx.floatPlateDim 下发)——
+ * 底板只做衬底,压低 alpha 才不盖过飞行中的球。
  */
 export function drawFloatPlate(
   g: Graphics, w: number, h: number, style: FloatPlateStyle,
-  color: Color, rot = 0,
+  color: Color, rot = 0, dim = 1,
 ): void {
   if (style === "slant") {
     const skew = h * Math.tan(PLATE_SKEW_DEG * Math.PI / 180);
@@ -189,17 +191,17 @@ export function drawFloatPlate(
       g.lineTo(-w / 2 - s, h / 2);
       g.close();
     };
-    g.fillColor = withAlpha(pal_(PLATE_INK), 0.85);
+    g.fillColor = withAlpha(pal_(PLATE_INK), 0.85 * dim);
     trace();
     g.fill();
-    g.strokeColor = withAlpha(color, 0.9);
+    g.strokeColor = withAlpha(color, 0.9 * dim);
     g.lineWidth = 2;
     trace();
     g.stroke();
   } else if (style === "star") {
     const r = w / 2;
-    drawStarburst(g, 0, 0, r, r * 0.55, 10, color, 0.42, rot);
-    drawStarburst(g, 0, 0, r * 0.74, r * 0.38, 10, pal_("ffffff"), 0.30, rot + Math.PI / 10);
+    drawStarburst(g, 0, 0, r, r * 0.55, 10, color, 0.42 * dim, rot);
+    drawStarburst(g, 0, 0, r * 0.74, r * 0.38, 10, pal_("ffffff"), 0.30 * dim, rot + Math.PI / 10);
   }
 }
 

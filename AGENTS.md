@@ -30,9 +30,13 @@
 | 作者通道(测试拉满档) | 主菜单连点**同一个**球馆 tab 6 下 → 等级满 + 金币 99999,**只在内存生效、本局不落盘**(重开退回原档,每次进应用要重新连点)。参数 `CFG.author`(发版想关掉置 `enabled: false`)、手势判定 `main-menu.ts` 的 `authorTap()`、执行与沙箱 `career.maxOut()` / `career.sandboxed()` |
 | 更新弹窗/更新说明排版 | [update-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/update-dialog.ts) + 折行算法 [release-notes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/release-notes.ts) |
 | 改「调整位置」顶栏排版 | [editor-strip.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/editor-strip.ts)(纯函数,回归见 `tools/strip-check.ts`)+ [settings-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settings-panel.ts) 消费它 |
+| 改闯关大厅/进度/「下一关」 | 关卡表与 `getNextStage()`·`getStageByNo()` 在 [campaign.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/campaign.ts);大厅(直达条、卡片「▶ 下一关」印章、tab 自动聚焦)在 [campaign-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/campaign-panel.ts);结算页那颗「下一关 ▶ 第 N 关」在 [settle-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settle-panel.ts) 的 `buildActions()`(按钮整排按场景重建);验收 `node .tools-build/tools/campaign-check.js` |
+| 改闯关「战前简报」弹窗排版 | [brief-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/brief-layout.ts)(纯函数:折行 + 堆块 + 弹窗按内容长高,回归见 `tools/brief-check.ts`、出图 `tools/brief-preview.ts`)+ [campaign-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/campaign-panel.ts) 只照坐标摆 |
 | 改虚拟按键能放在哪儿 | [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 的 `clampDelta`(唯一约束 = 整块留在可视区内) |
+| 改技能键的冷却读数 | 浓度/几何/文案全在 [pad-cd.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/pad-cd.ts)(零 cc 依赖:`cdAlpha`·`cdArcs`·`cdText`·`drawCooldown`),取值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `padSkin.cd` 段,[touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 只照参数摆笔 + 挂键心秒数 Label,剩余秒数由 `game-root.ts` 喂;回归 `node .tools-build/tools/pad-cd-check.js`、出图 `node .tools-build/tools/pad-cd-preview.js` |
 | 改 AI 难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `diffs` 段(`read`=每记球只认定一次的站位误差 / `zone`=CPU 判定区 / `shotErr`=出球误差 / `composure`=落后是否变强),生效逻辑在 [ai.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/ai.ts),落档到球员在 `rules.ts` 的 `applyAiTier()`;验收 `node .tools-build/tools/ai-check.js`(三档胜负口径) |
 | 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、出图 `node .tools-build/tools/flash-preview.js` |
+| 改技能配置弹窗排版 | [skill-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-layout.ts)(纯函数:详情板折行 + 右对齐块按实测宽倒推 + 面板竖排留缝,回归见 `tools/skill-check.ts`)+ [skill-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-dialog.ts) 只照坐标摆 —— 卡片只留「标签/名字/CD/装备」,完整说明在底部详情板,点卡片切换 |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
 | 改启动图/应用图标 | [make-app-icons.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-app-icons.py) 出图标母版 → [make-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-splash.py) 派生启动图 → [apply-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/apply-splash.py) 注入构建(比例见 [splash-config.json](file:///Users/a1/Documents/01Code/dudu-cocos/tools/splash-config.json)) |
@@ -102,6 +106,14 @@ node .tools-build/tools/flash-check.js
 node .tools-build/tools/flash-check.js --selftest
 node .tools-build/tools/flash-preview.js --out .tools-build/flash-preview   # 折跃六帧出图
 
+# 4.7 闯关进度与「下一关」判据(exit 0;大厅直达条、卡片「▶ 下一关」印章、
+#     结算页「下一关 ▶ 第 N 关」三处全押在 CampaignManager.getNextStage/getStageByNo 上,
+#     算歪不会崩、只会安静地不好用。断言:20 关表自洽(编号连续/四场景各 5 关/章节↔场景
+#     对应/文案与奖励齐活)、逐关推进严格 +1、回头重打不推进、全通返回 null、
+#     tab 自动聚焦不藏关。改 campaign.ts 关卡表或那两个判据都要跑)
+node .tools-build/tools/campaign-check.js
+node .tools-build/tools/campaign-check.js --selftest   # 五份改坏的关卡表必须被报警
+
 # 5. AI 对 AI 整机冒烟(exit 0)
 node .tools-build/tools/sim-check.js
 
@@ -113,9 +125,45 @@ node .tools-build/tools/notes-check.js
 node .tools-build/tools/strip-check.js
 node .tools-build/tools/strip-check.js --selftest   # 反例必须被报警,防规则脚本悄悄全绿
 
+# 6.6 闯关「战前简报」弹窗排版回归(exit 0;20 关全表逐关排版 —— 文案长短差 3 倍,
+#     手调坐标 + Label 不换行曾把说明糊到弹窗外、三条三星目标互相重叠。
+#     断言:不出内边距 / 不压字 / 框高 <= 红线(再高顶穿大厅面板)/ 块结构不跑偏。
+#     改 campaign.ts 任一关的 desc·hint·starsGoal,或改 brief-layout 的字号行高间距,都要跑)
+node .tools-build/tools/brief-check.js
+node .tools-build/tools/brief-check.js --selftest   # 反例必须被报警
+node .tools-build/tools/brief-preview.js --out .tools-build/brief-preview   # 出 SVG,再用 headless Chrome 光栅化 eyeball(青色游标 = 算出来的行尾)
+
+# 6.8 技能配置弹窗排版回归(exit 0;卡片只有 118 宽,而五句说明实测 198~321px ——
+#     Label 没设 overflow 时 contentSize 一律被忽略,五句各按一条无限宽的行画,
+#     互相盖字(用户拍的现场图)。现在说明整条搬进底部 652 宽详情板,15 号字一行读完。
+#     断言:面板竖排(标题/卡片/详情板/完成)互不压字且都在面板内 / 卡片内竖排各留其位
+#     (这条就是"说明为什么塞不回卡片")/ 5 技能 × 解锁与否 × 装备与否全组合不出内容列、
+#     四项不压字、需求板高 <= 现高(= 切换技能时面板尺寸不变的算术保证)/ 说明不超行数上限。
+#     改 config.ts 技能表任一 desc·cooldownFrames·unlockLevel,或改 skill-layout 的字号
+#     行高间距,都要跑)
+node .tools-build/tools/skill-check.js
+node .tools-build/tools/skill-check.js --selftest   # 反例(旧版真实写法 + 手挑坐标)必须被报警
+node .tools-build/tools/skill-check.js --preview    # 打详情板行表
+
+# 6.9 技能键「冷却读数」回归(exit 0;用户现场:「透明度调低之后冷却都看不太清了」——
+#     旧写法冷却层每一笔直接乘 Settings.padAlpha,滑杆 0.2 时墨底只剩 0.116,
+#     合成到亮场上和就绪态那颗键亮度只差 10%,读出来就是「这颗键坏了」。
+#     现在浓度走 cdAlpha(留 0.8 下限),外加键心「还剩几秒」。
+#     断言:①滑杆全程浓度下限 ②按引擎真实的 sRGB 通道合成比亮度(冷却态压得下去、
+#     环与数字提得起来)③三段弧全按递减排且名义跨度 = 实际跨度(见坑 8)④键心数字
+#     随半径缩放、不与键名标签叠字、不出圆 ⑤冷却中永不显示 0.0。
+#     改 config.ts padSkin.cd 任一值、改 pad-cd.ts、或动 touchpad 的冷却分支,都要跑)
+node .tools-build/tools/pad-cd-check.js
+node .tools-build/tools/pad-cd-check.js --selftest   # 旧写法(线性浓度 / 递增弧度 / 写死字号)必须被报警
+node .tools-build/tools/pad-cd-preview.js --out .tools-build/pad-cd-preview   # 三档透明度 × 两种背景出图,末列是旧写法对照
+
 # 7. 面板退场的触摸卫生(exit 0;遮罩/可视窗那种裸 TOUCH 监听不随 hide 卸掉,
-#    关掉的面板就成一块隐形挡板 —— 曾把无限模式整局按键打死)
+#    关掉的面板就成一块隐形挡板 —— 曾把无限模式整局按键打死。
+#    另钉 ui-arcade 两条契约:fadeOutHide 收触摸必须排在 fadedOut 短路之前、
+#    cancelFade 放行必须跳过自己已淡出收起的子树 —— 少一条,闯关大厅重开就是
+#    「什么都点不动」(opacity 0 不参与命中判定,只有 active=false 才不吃))
 node .tools-build/tools/ui-hide-check.js
+node .tools-build/tools/ui-hide-check.js --selftest   # 反例(修好之前的真实写法)必须被报警
 
 # 7.5 击打/轨迹/球体特效预览与几何断言(exit 0;NaN 坐标、丝带点数上限、粒子预算、
 #     羽片拆片、滞后角追踪各有一条断言兜着 —— 特效改坏了先在 node 里出图看,别上真机猜)
@@ -149,6 +197,7 @@ Android 构建流程见 [.agents/skills/export-apk/SKILL.md](file:///Users/a1/Do
 5. **名牌文字用 Label(世界坐标),球衣号已去除** — sprites.ts 画不了字,径向渐变用描边环近似。
 6. **老仓库有意差异(不是 bug)** — rules 拖尾改为 `setTrailHook()` 注入;config `serve` 段原版定义两次已合并。
 7. **改 Android 应用名要改构建脚本** — 手机安装界面显示的名字是「嘟嘟羽毛球」,由 `.agents/skills/export-apk/scripts/build.sh` 每次构建用 sed 注入到产物 `build/android/proj/res/values/strings.xml`。源文件 `native/engine/android/res/values/strings.xml` 是**空的**,在那儿改没用(会被覆盖且不生效)。版本号联动规则见 dudu-release skill。
+8. **`Graphics.arc` 传 `a1 > a0` 画不出那一段,画的是它的补集** — 引擎 `cocos/2d/assembler/graphics/helper.ts` 在 `counterclockwise=false` 时执行 `while (da > 0) da -= PI*2`,把 da 规范进 `(-2π, 0]`。所以想要「从 a 扫过 b」的短弧,要么把角度排成**递减**(终点 < 起点,`pad-cd.ts` 的 `cdArcs` 就是这么排的),要么传 `counterclockwise=true`。踩中的症状是「100° 的弧变成 260° 的一圈」,不报错也不 NaN。另两条同源的:`fill()` **不清路径**(只有下一个路径指令才推进 pathOffset),所以 `circle(); fill(); stroke();` 是一笔两用;而 `tools/cc-stub.ts` 的记录型 Graphics 会清,预览里同一形状要记两遍。UI 本地 y 向上 ⇒ 12 点是 `+π/2`,`-π/2` 是正下方。
 
 ## 尚未移植
 

@@ -17,7 +17,9 @@ import { CampaignManager, StageDef } from "./campaign";
 
 const C = CFG;
 const CO = C.court;
-let frameTick = 0;
+// 拖尾抽稀计数(每两步画一次)。故意与环境相位时钟分开:那是物理相位,这是一根
+// 表现层的节流指针,混用会让"隔步画拖尾"跟风的正弦同相,看起来像拖尾在呼吸。
+let trailTick = 0;
 
 // 表现层钩子:球速够快时每隔一步被调一次,画拖尾是它的事,不是这里的事
 let trailHook: ((b: Ball) => void) | null = null;
@@ -107,6 +109,10 @@ function makeBall(): Ball {
     x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0,
     live: false, held: true, owner: null,
     lastHitter: null, crossed: false, netted: false, shot: null,
+    // 磁轨充能标记必须是**建好的键**:physics 用 `in` 判断能不能写(前瞻用的 scratch
+    // 对象上没有它,不该被顺手改脏)。从前这里从不建键,于是那条 guard 恒假 ——
+    // 「电浆充能」整个机制在数据层就没落地过,更没人画过它。
+    laserBoosted: false,
     sq: 1, sqPrev: 1,
     flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
   };
@@ -211,7 +217,10 @@ function startCampaign(stage: StageDef): void {
   CampaignManager.recordAttempt(stage.id);
 
   Physics.setEnvModifier({
-    windX: stage.modifiers.physics?.windX ?? 0,
+    // oscillate 却没有 windX 时兜 config 那个基准,别在逻辑里写字面量 ——
+    // 从前这里 `|| 0.18` 抄了一份,改 config 不会跟着动,而且没人知道还有个隐藏默认值
+    windX: stage.modifiers.physics?.windX ?? (stage.modifiers.physics?.windOscillate ? C.env.windDefaultBase : 0),
+    windOscillate: !!stage.modifiers.physics?.windOscillate,
     gravityMul: stage.modifiers.physics?.gravityMul ?? 1,
     dragMul: stage.modifiers.physics?.dragMul ?? 1,
     erratic: !!stage.modifiers.physics?.erratic,
@@ -264,7 +273,11 @@ function startCampaign(stage: StageDef): void {
 
   if (stage.isMatchPointStart) {
     R.scores = [10, 10];
-    R.deuce = true;
+    // 这里从前还顺手 R.deuce = true,后果是第 20 关从第一拍起 HUD 就印
+    // 「平分 · 净胜 2 分」并砸 DEUCE 横幅 —— 而这一关真正的规则是**丢一分即败**
+    // (见下面 score() 的 deathmatch 分支)。赛点判定改吃关卡 targetScore 之后,
+    // 10:10 不再是赛点、11:10 才是,紧张层该来的时候照样来。
+    R.deuce = false;
   } else {
     R.scores = [0, 0];
     R.deuce = false;
@@ -339,6 +352,8 @@ function applyShot(ball: Ball, shot: ShotLike): void {
     vx: shot.vx, vy: shot.vy, heat: shot.hitter.heat, lungeShot: !!shot.lungeShot,
     aim: shot.aim ?? null,
     skillKind: shot.skillKind || null,
+    jumpSmash: !!shot.jumpSmash,
+    timingGrade: shot.timingGrade,
   });
 }
 
@@ -362,6 +377,12 @@ function separate(): void {
 // ---------- 单步 ----------
 function step(inputs: PlayerInput[]): void {
   if ((C.frozen as string[]).includes(R.state)) return;
+  // 环境相位时钟**只在这里推进**:整仓库唯一一处。从前 physics.step 自己 ++,
+  // 于是 UI 前瞻(predictPath / flightFramesTo,每渲染帧上百步)把颤抖球的相位吹成
+  // 伪随机 —— 看着"飘忽不定",其实既不可预判也不可复现,那是 bug 不是机制。
+  // 放进球update之前:发球蓄力与每分停顿期间风照吹(风向标因此有连续节奏可追);
+  // hitstop/慢放期间主循环不调 Rules.step,指针与球一起定格,不会自己走。
+  Physics.tickEnv();
 
   const ball = R.ball as Ball;
   for (const p of R.players) {
@@ -477,19 +498,15 @@ function step(inputs: PlayerInput[]): void {
   }
 
   // 球飞行
-  if (R.mode === "campaign" && R.activeStage?.modifiers.physics?.windOscillate) {
-    const baseW = R.activeStage.modifiers.physics.windX || 0.18;
-    const currentMod = Physics.getEnvModifier();
-    if (currentMod) {
-      currentMod.windX = Math.sin(frameTick * 0.02) * baseW;
-    }
-  }
+  // 风不再在这里就地改写 activeModifier.windX(从前它把"关卡声明的基准幅度"覆盖成
+  // 瞬时正弦值,于是 getEnvModifier() 读回来的不是关卡那个数,兜底还得靠字面量 0.18)。
+  // 现在 windX 恒为基准,任一时刻的风由 physics 按环境相位算 —— 界面与物理读同一句真话。
   Physics.step(ball);
   // 球体形变恢复:每帧向 1 逼近,击球瞬间的压扁逐渐回到正常
   ball.sqPrev = ball.sq;
   ball.sq = approach(ball.sq, 1, C.fx.ballSquashRecovery || 0.15);
   const minTrailSpeed = (ball.shot && (ball.shot.sweet || ball.shot.perfect)) ? 4 : 6;
-  if (frameTick++ % 2 === 0 && Math.hypot(ball.vx, ball.vy) > minTrailSpeed) {
+  if (trailTick++ % 2 === 0 && Math.hypot(ball.vx, ball.vy) > minTrailSpeed) {
     trailHook && trailHook(ball);
   }
 
@@ -697,10 +714,18 @@ function isPlaying(state: MatchState = R.state): boolean {
   return state === "SERVE" || state === "RALLY" || state === "POINT";
 }
 
+// 这一局的"获胜分"。闯关每关各有 targetScore(3/4/5/12),其余模式吃全局 winScore。
+// 从前赛点判定两处都写死 C.scoring.winScore=11,而抢 3 分的关卡比分永远到不了 10,
+// 于是**整个闯关模式永远不判赛点**:赛点斩劈横幅、暗角、BGM 紧张层、赛点慢放、赛末哨
+// 在 19 个关卡里全部静默 —— HUD 印错 "TO 11" 只是这一条最容易看见的症状。
+function winTarget(): number {
+  return R.mode === "campaign" && R.activeStage ? R.activeStage.targetScore : C.scoring.winScore;
+}
+
 // 赛点判定:任一方距获胜只差 1 分(供 BGM/HUD/镜头切紧张模式)
 function isMatchPoint(): boolean {
   if (R.mode === "drill" || R.mode === "endless") return false;
-  const w = C.scoring.winScore;
+  const w = winTarget();
   const s0 = R.scores[0], s1 = R.scores[1];
   // 平分期间:领先 1 分即赛点(下一分可能赢)
   if (R.deuce) return Math.abs(s0 - s1) >= 1 && Math.max(s0, s1) >= w - 1;
@@ -711,7 +736,7 @@ function isMatchPoint(): boolean {
 // 赛点归属信息
 function matchPointInfo(): { active: boolean; side: TeamSide | "both" | null; label: string } {
   if (R.mode === "drill" || R.mode === "endless") return { active: false, side: null, label: "" };
-  const w = C.scoring.winScore;
+  const w = winTarget();
   const s0 = R.scores[0], s1 = R.scores[1];
   if (R.deuce) {
     // 平分期间:领先方有赛点;同分则无
@@ -747,7 +772,7 @@ const statsOf = (s: TeamSide): TeamStats => {
 };
 
 export const Rules = {
-  R, newMatch, startCampaign, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint,
+  R, newMatch, startCampaign, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint, winTarget,
   applyAiTier,
   teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf, setTrailHook,
 };
