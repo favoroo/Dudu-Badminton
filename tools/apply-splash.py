@@ -5,7 +5,8 @@ apply-splash.py — 将自定义启动画面注入 Cocos 构建输出的 setting
 用法:
   python3 tools/apply-splash.py [source_image]
 
-默认使用 vibe_images/ 下的启动画面源图。
+默认使用 tools/splash-source.png —— 那张图由 `python3 tools/make-splash.py`
+从 app 图标母版派生,改图标后要重新生成,别手动画。
 在每次 Cocos 构建后运行此脚本，确保 splash 不被引擎默认值覆盖。
 """
 
@@ -21,9 +22,11 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SRC = ROOT / "tools" / "splash-source.png"
 CONFIG_FILE = ROOT / "tools" / "splash-config.json"
+LOGO_PX = 768          # logo 编码边长;1080p 屏上显示约 880px 高,接近 1:1
+LOGO_QUALITY = 92      # 再往上(95+)体积翻倍、暗部台阶却几乎没差
 
 # 读取配置
-config = {"displayRatio": 0.8, "totalTime": 2000, "autoFit": True}
+config = {"displayRatio": 4.4, "totalTime": 2000, "autoFit": True}
 if CONFIG_FILE.exists():
     with open(CONFIG_FILE) as f:
         saved = json.load(f)
@@ -39,15 +42,22 @@ if not src_path.exists():
     sys.exit(1)
 
 # 生成 base64 logo
+# 尺寸/质量见上面两个常量。这里必须**保持长宽比**缩放:引擎按图片宽高比反算
+# logoWidth/logoHeight,拉成方的会把球压扁。
 img = Image.open(src_path).convert("RGB")
-img_small = img.resize((512, 512), Image.LANCZOS)
+img.thumbnail((LOGO_PX, LOGO_PX), Image.LANCZOS)
 buf = io.BytesIO()
-img_small.save(buf, "JPEG", quality=85, optimize=True)
+img.save(buf, "JPEG", quality=LOGO_QUALITY, optimize=True)
 b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 data_uri = f"data:image/jpeg;base64,{b64}"
 
-# 采样边缘色作为背景
-corners = [img_small.getpixel((x, y)) for x, y in [(5,5),(505,5),(5,505),(505,505)]]
+# 采样边缘色作为背景 —— 从**编码后的字节**取,不是从原图取:
+# 底色是整屏平铺的,logo 图边缘若与它差上几点,手机上就是一圈清清楚楚的方框缝。
+shown = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+w, h = shown.size
+pad = max(1, min(w, h) // 128)
+corners = [shown.getpixel((x, y)) for x, y in
+           [(pad, pad), (w - 1 - pad, pad), (pad, h - 1 - pad), (w - 1 - pad, h - 1 - pad)]]
 avg = tuple(sum(c[i] for c in corners) / 4 / 255 for i in range(3))
 
 # 注意: background.type 只能是 "custom"(必须带 base64 图片)或其它(用 color 纯色填充)。

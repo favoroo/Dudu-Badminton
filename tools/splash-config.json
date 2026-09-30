@@ -1,14 +1,15 @@
 {
   "splashSource": "tools/splash-source.png",
+  "_doc": {
+    "源图": "tools/splash-source.png 由 `python3 tools/make-splash.py` 从 app 图标母版派生(与桌面图标同一张画),不要手改或另找图。",
+    "displayRatio": "不是百分比。引擎画 logo 的高度 = 0.185 × 屏高 × displayRatio,4.4 → 方块占屏高 81%、球本体约 45%;旧值 0.8 只占 15%,手机上小到读不出来。想更大就往上加,方块超出屏幕上下沿的只是同色底,裁掉看不出来(球离上下沿还很远,见 make-splash.py 的算式)。",
+    "bgColor": "这里不配底色 —— apply-splash.py 取 logo 图**编码后**的四角均色平铺整屏,保证图边缘与全屏底色无缝。",
+    "totalTime": "splash 时长(ms),引擎在这段时间里做首屏加载。"
+  },
   "config": {
-    "displayRatio": 0.8,
+    "displayRatio": 4.4,
     "totalTime": 2000,
     "watermarkLocation": "default",
-    "autoFit": true,
-    "bgColor": {
-      "r": 19,
-      "g": 21,
-      "b": 23
-    }
+    "autoFit": true
   }
 }

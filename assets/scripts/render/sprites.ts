@@ -1,8 +1,10 @@
 // ============================================================
-// 角色与羽毛球:3/4 斜侧卡通小人 + 阵营色球衣 + 挥拍弧光 + 球头朝速度方向
+// 角色与羽毛球:3/4 斜侧卡通小人 + 阵营色球衣 + 挥拍弧光 + 球头**滞后追踪**速度方向
 // —— 自老版 canvas 工程 src/render/sprites.js 逐行移植,姿势/插值/动画数值零改动。
 // 视角约定:躯干/腿/双臂/头全部按「面向球网的 3/4 斜侧」画,靠 facing 镜像。
 // 曾经正面躯干配侧面手臂,两套视角语汇打架,这是当年重构的根因。
+// 羽毛球本体见文件末尾 drawShuttle:裙摆按环向弧长拆成独立羽片,姿态由渲染层的
+// shuttle-motion 提供(滞后角/翻滚/受力外扩),不再是一整块五边形贴在那儿。
 //
 // canvas → cc.Graphics 的移植约定:
 //  * 老代码的 save/translate/rotate/scale 变换栈展开为「帧」对象(Frame):
@@ -23,6 +25,7 @@ import { Player, Ball, FaceKind, SkinDef, SwingStyle, Theme } from "../core/type
 import { Physics } from "../core/physics";
 import { lerp, clamp, TAU, D2R } from "../core/utils";
 import { pal, withAlpha } from "./palette";
+import { ShuttleMotion, shuttleWobble, TIER_FIRE, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "./shuttle-motion";
 
 const LineCap = Graphics.LineCap;
 const LineJoin = Graphics.LineJoin;
@@ -1544,8 +1547,24 @@ function glowStroke(g: Graphics, f: Frame, pts: Pt[], color: string, glowW: numb
   g.stroke();
 }
 
-export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | null, cueGlow = 0): void {
+/**
+ * 羽毛球本体。
+ *
+ * 2026-09 精修(分级炫技 P0):老版本裙摆是**一整块五边形 + 5 条直线羽轴**,朝向写死
+ * `atan2(vy,vx)`,于是变向那一帧整只球"啪"地翻面、羽片一动不动 —— 像个贴着速度矢量的
+ * 图标,而不是一只在空气里飞的球。现在:
+ *  * 朝向改用渲染层的**滞后角**(shuttle-motion:弹性追踪 + 过冲回正);
+ *  * 裙摆拆成 `fx.shuttleFeathers` 片独立羽毛,按绕飞行轴的角度投影出横向位置与
+ *    视宽(正对观众最宽、 silhouette 处退化成边),前后两遍绘制保证遮挡关系;
+ *  * 翻滚相位驱动羽片明暗与球头高光 —— 无贴图也读得出自转;
+ *  * 受力外扩(被抽到的那一下裙摆炸开)+ 压扁回弹过冲 + 命中整球 pop;
+ *  * 档位辉光:甜区青、扣杀金、甜蜜重扣烧白核、连击火热羽尖染色。
+ * `motion` 为 null 时(生涯预览/训练引导的静态球)退回老的硬对齐与零颤动,预览图不会歪。
+ */
+export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | null, cueGlow = 0,
+  motion: ShuttleMotion | null = null): void {
   const bb = b as RBall;
+  const F = C.fx;
   const sk = {
     cap: skin?.cap ?? SHUTTLE_DEFAULT.cap,
     band: skin?.band ?? SHUTTLE_DEFAULT.band,
@@ -1554,12 +1573,18 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
   };
   const bx = bb.rx ?? b.x, by = bb.ry ?? b.y;
   const sp = Math.hypot(b.vx, b.vy);
-  // 球头朝运动方向;静止时朝下
-  const ang = sp > 0.35 ? Math.atan2(b.vy, b.vx) : Math.PI / 2;
-  // 球体形变:击球瞬间沿飞行方向压扁,体积守恒(垂直方向膨胀)
-  const sq = bb.sqR ?? b.sq ?? 1;
-  const sqX = sq;                    // 沿飞行方向压缩
-  const sqY = 1 / Math.sqrt(Math.max(0.4, sq));  // 垂直方向膨胀,保持视觉体积
+  // 球头朝运动方向;静止时朝下。比赛里的球走滞后角(有记忆,会变向过冲)
+  const ang = motion ? motion.ang : (sp > 0.35 ? Math.atan2(b.vy, b.vx) : Math.PI / 2);
+  const roll = motion ? motion.roll : 0.9;
+  const splay = motion ? motion.splay : 0;
+  const tier = motion ? motion.tier : 0;
+  // 球体形变:击球瞬间沿飞行方向压扁,体积守恒(垂直方向膨胀),再叠回弹过冲与命中 pop
+  const sqRaw = clamp(bb.sqR ?? b.sq ?? 1, 0.35, 1.5);
+  const wob = motion ? shuttleWobble(motion, sqRaw) : 0;
+  const pop = 1 + (motion ? motion.pop : 0);
+  const sq = clamp(sqRaw + wob, 0.3, 1.6);
+  const sqX = sq * pop;                   // 沿飞行方向压缩
+  const sqY = pop / Math.sqrt(Math.max(0.4, sq));  // 垂直方向膨胀,保持视觉体积
   const S = shuttleFrame(vp, bx, by, ang, sqX, sqY);
 
   g.lineCap = LineCap.ROUND;
@@ -1586,27 +1611,109 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
     }
   }
 
-  // 球托(软木)
-  g.fillColor = pal(sk.cap);
-  polyPath(g, ellipsePts(S, 3, 0, 5.2, 5.2), true);
+  // 档位背光:这拍打进甜区/扣杀/连击火热,球身上就长期带一层对应颜色的 rim
+  // (与拖尾档位同源 —— 玩家不看残影也能从球本身认出"这拍不一样")
+  if (tier >= TIER_SWEET) {
+    const rimCol = tier >= TIER_SMASH ? C.colors.smash.glow : C.colors.sweet.neonCyan;
+    const a = tier >= TIER_SWEET_SMASH ? 0.2 : 0.14;
+    g.strokeColor = withAlpha(pal(rimCol), a);
+    g.lineWidth = S.lw(1.9);
+    polyPath(g, ellipsePts(S, -5, 0, 10.5, 8), true);
+    g.stroke();
+    g.strokeColor = withAlpha(pal(C.colors.sweet.core), a * 0.9);
+    g.lineWidth = S.lw(0.8);
+    polyPath(g, ellipsePts(S, -5, 0, 10.5, 8), true);
+    g.stroke();
+  }
+
+  // ---- 裙摆:拆片羽毛,绕飞行轴投影 ----
+  const n = Math.max(3, Math.round(F.shuttleFeathers || 7));
+  const baseX = -1.2, baseR = 3.2;
+  const tipR = 8.4 + splay * 2.8;         // 受力炸开:裙口张开
+  const tipX = -15 - splay * 1.8;         // 以及被拉长一点(羽片向后甩)
+  const midX = (baseX + tipX) * 0.5;
+  // 底衬:老的那块梯形仍在,但降透明度当"裙体阴影",羽片缝隙不再露背景
+  g.fillColor = withAlpha(pal(sk.skirt), 0.34);
+  polyPath(g, [S.pt(baseX, -baseR), S.pt(tipX, -tipR), S.pt(tipX, tipR), S.pt(baseX, baseR)], true);
   g.fill();
+
+  // 两遍绘制:背向观众的半边先画(暗、窄),朝观众的半边压在前面 → 有遮挡关系
+  // 羽片视宽按**环向弧长**投影算(2πR/n × |cosφ|):正对观众的那片刚好盖住自己那份
+  // 扇区、侧面那片收成一条线 —— 这样 7 片铺满锥面不留缝,也不会像几把扇子叠在一起。
+  const arcTip = (TAU * tipR) / n;
+  const arcBase = (TAU * baseR) / n;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < n; i++) {
+      const phi = roll + (i * TAU) / n;
+      const depth = Math.cos(phi);                     // >0 = 朝观众
+      if (pass === 0 ? depth > 0 : depth <= 0) continue;
+      const s = Math.sin(phi);
+      // 颤动:相位随翻滚推进,慢球几乎不颤(没有气流),被抽到的那一下幅度最大
+      const flut = Math.sin(roll * 2.4 + i * 1.15) * (F.featherFlex || 0.5) * (0.3 + splay);
+      const y0 = s * baseR;
+      // splay 越大裙口张得越开;羽尖位置不许越过锥面(s+颤动一起夹),否则 silhouette 会长刺
+      const y1 = clamp(s + flut * 0.16, -1, 1) * tipR;
+      const face = Math.abs(depth);                    // 正对观众 = 宽,侧面 = 成一条线
+      const midY = y0 + (y1 - y0) * 0.5;
+      const rMid = (baseR + tipR) * 0.5;
+      const belly = 0.5 + splay * 0.45;                // 羽面鼓起
+      const hw0 = Math.max(0.1, Math.min(0.16 + arcBase * 0.52 * face, baseR - Math.abs(y0)));
+      const hwM = Math.max(0.1, Math.min(0.16 + arcTip * 0.52 * face + belly, rMid - Math.abs(midY)));
+      const hw1 = Math.max(0.12, Math.min(0.16 + arcTip * 0.52 * face, tipR - Math.abs(y1)));
+      const alpha = (pass === 0 ? 0.38 : 0.62) + 0.3 * Math.max(0, depth);
+      g.fillColor = withAlpha(pal(sk.skirt), alpha);
+      polyPath(g, [
+        S.pt(baseX, y0 - hw0), S.pt(midX, midY - hwM), S.pt(tipX, y1 - hw1),
+        S.pt(tipX, y1 + hw1), S.pt(midX, midY + hwM), S.pt(baseX, y0 + hw0),
+      ], true);
+      g.fill();
+      // 中肋:羽轴(三点采样折线,不再是一条直线段)
+      g.strokeColor = withAlpha(pal(sk.vein), alpha * 0.9);
+      g.lineWidth = S.lw(0.7);
+      polyPath(g, [S.pt(baseX + 0.4, y0), S.pt(midX, midY + flut * 0.05), S.pt(tipX, y1)], false);
+      g.stroke();
+    }
+  }
+
+  // 羽尖烧色:扣杀/甜蜜重扣/火热档,裙口那一段压一层焰色(越狠越明显)
+  if (tier >= TIER_SMASH) {
+    const heatHex = tier >= TIER_FIRE ? C.colors.smash.dark : C.colors.smash.flame;
+    const heatA = tier >= TIER_FIRE ? 0.42 : 0.24;
+    const k = F.shuttleHeatRim || 0.55;                 // 从裙口往里烧多少
+    const hx0 = tipX + (midX - tipX) * k;
+    const hin = baseR + (tipR - baseR) * (1 - k);       // 内缘半径(沿锥面收)
+    g.fillColor = withAlpha(pal(heatHex), heatA);
+    polyPath(g, [S.pt(hx0, -hin), S.pt(tipX, -tipR), S.pt(tipX, tipR), S.pt(hx0, hin)], true);
+    g.fill();
+  }
+
+  // 裙口一圈:投影后是椭圆(不是半弧),描出来才有"开口"的体积感
+  g.strokeColor = withAlpha(pal("#ffffff"), 0.88);
+  g.lineWidth = S.lw(1.1);
+  polyPath(g, ellipsePts(S, tipX, 0, 1.9 + splay * 0.6, tipR), true);
+  g.stroke();
+
+  // ---- 球托(软木):两圆错位的月牙暗面 → 有体积,不再是一张贴纸 ----
+  const capR = 5.2;
+  // 背光侧压一道深色(用角色描线同款近黑,低透明),再盖亮面 —— 软木是圆的
+  g.fillColor = withAlpha(pal(HEAD), 0.3);
+  polyPath(g, ellipsePts(S, 2.2 - Math.cos(roll) * 0.8, Math.sin(roll) * 0.5, capR, capR), true);
+  g.fill();
+  g.fillColor = pal(sk.cap);
+  polyPath(g, ellipsePts(S, 3.4, 0, capR * 0.97, capR * 0.97), true);
+  g.fill();
+  // 甜蜜重扣/火热:球心烧白(击球点残留的炽核)
+  if (tier >= TIER_SWEET_SMASH) {
+    g.fillColor = withAlpha(pal(C.colors.sweet.core), tier >= TIER_FIRE ? 0.55 : 0.4);
+    polyPath(g, ellipsePts(S, 2.6, 0, 3.4, 3.4), true);
+    g.fill();
+  }
+  // 腰线(软木与羽毛交界的胶带)
   g.fillColor = pal(sk.band);
   polyPath(g, arcPts(S, 3, 0, 5.2, -1.05, 1.05, false), true);
   g.fill();
-  // 球托高光(canvas fillRect(1.5,-3.6,1.6,2) 在旋转缩放帧里 → 四角变换)
-  fillRectTr(g, S, 1.5, -3.6, 1.6, 2, withAlpha(pal("#ffffff"), 0.55));
-  // 羽毛裙(朝后展开)
-  g.fillColor = pal(sk.skirt);
-  polyPath(g, [
-    S.pt(-1, -3.4), S.pt(-14, -8.6), S.pt(-16, 0), S.pt(-14, 8.6), S.pt(-1, 3.4),
-  ], true);
-  g.fill();
-  g.strokeColor = pal(sk.vein);
-  g.lineWidth = S.lw(0.9);
-  for (let i = -2; i <= 2; i++) lineSeg(g, S, -1.5, i * 1.5, -15, i * 3.6);
-  g.stroke();
-  g.strokeColor = withAlpha(pal("#ffffff"), 0.9);
-  g.lineWidth = S.lw(1.2);
-  polyPath(g, arcPts(S, -13.5, 0, 8.8, -0.95, 0.95, false), false);
-  g.stroke();
+  // 高光随翻滚绕球头转一圈 —— 静止也有细节,动起来就是自转
+  const hlY = -3.4 + Math.sin(roll) * 1.15;
+  fillRectTr(g, S, 1.6 + Math.cos(roll) * 0.8, hlY, 1.6, 2,
+    withAlpha(pal("#ffffff"), 0.42 + 0.2 * Math.max(0, Math.cos(roll))));
 }

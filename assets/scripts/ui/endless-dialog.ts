@@ -48,6 +48,7 @@ export class EndlessDialog {
   readonly root: Node;
   private kit: UiKit;
   private card: Graphics;
+  private dim: Node;
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -56,11 +57,8 @@ export class EndlessDialog {
     this.root.active = false;
 
     // 半透明全屏暗底,点击遮罩关闭
-    const dim = kit.dim(this.root, 0.42, 0.76);
-    dim.on(Node.EventType.TOUCH_START, () => {
-      kit.sfx.play("ui");
-      this.hide();
-    });
+    this.dim = kit.dim(this.root, 0.42, 0.76);
+    this.dim.on(Node.EventType.TOUCH_START, this.onDimTap, this);
 
     // 扫描线氛围
     kit.atmosphere(this.root);
@@ -154,7 +152,14 @@ export class EndlessDialog {
     slamIn(this.card.node);
   }
 
+  /** 点击遮罩关闭:必须随 hide 卸掉,否则关掉的面板成隐形挡板 */
+  private onDimTap(): void {
+    this.kit.sfx.play("ui");
+    this.hide();
+  }
+
   hide(): void {
+    this.dim.off(Node.EventType.TOUCH_START, this.onDimTap, this);
     fadeOutHide(this.root);
   }
 }

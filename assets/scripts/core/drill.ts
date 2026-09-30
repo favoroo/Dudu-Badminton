@@ -9,10 +9,16 @@
 // 依赖方向是单向的:rules 只读 C.drill,绝不引用 Drill,否则就成环。
 // ============================================================
 import { CFG, DRILLS } from "./config";
+import { Pace } from "./pace";
 import { Rules, RulesState } from "./rules";
 import { DrillDef, Player, PlayerInput } from "./types";
 
 const C = CFG;
+
+// 关卡表里的 minSteps/maxSteps 是**基准帧**(s=1 时标定的),而 s.steps 是当前球速档位下
+// 的世界帧 —— 慢档里同一条空间轨迹要用更多帧走完(滞空 ÷s)。先折回基准单位再比,否则
+// 「平抽快挡」会在玩家打出完全合格的一拍时判他「球速过慢」,drill-check 直接 exit 1。
+const baseSteps = (n: number): number => Pace.refFrames(n);
 
 let def: DrillDef | null = null;   // 当前关卡(DRILLS 里的一条)
 let acc: DrillAcc | null = null;   // 本次训练的账本
@@ -120,8 +126,10 @@ function matches(d: DrillDef | null, e: DrillEndFact | null): boolean {
   if (d.maxDepth != null && (s.depth == null || s.depth > d.maxDepth)) return false;
   if (d.minLandX != null && (s.landX == null || s.landX < d.minLandX)) return false;
   if (d.maxLandX != null && (s.landX != null && s.landX > d.maxLandX)) return false;
-  if (d.minSteps != null && (s.steps == null || s.steps < d.minSteps)) return false;
-  if (d.maxSteps != null && (s.steps != null && s.steps > d.maxSteps)) return false;
+  // 帧判据一律折回基准帧再比(见文件头 baseSteps 那条注释)
+  const st = s.steps == null ? null : baseSteps(s.steps);
+  if (d.minSteps != null && (st == null || st < d.minSteps)) return false;
+  if (d.maxSteps != null && (st != null && st > d.maxSteps)) return false;
   if (d.minContact != null && (s.contactH == null || s.contactH < d.minContact)) return false;
   if (d.maxContact != null && s.contactH != null && s.contactH > d.maxContact) return false;
   return true;
@@ -167,7 +175,7 @@ function diagnoseFail(d: DrillDef | null, e: DrillEndFact | null): string {
       return "未放成短球！上网左滑轻放";
 
     case "drive":
-      if (d.maxSteps != null && s.steps != null && s.steps > d.maxSteps) return "球速过慢！需平抽快速推击";
+      if (d.maxSteps != null && s.steps != null && baseSteps(s.steps) > d.maxSteps) return "球速过慢！需平抽快速推击";
       if (d.minDepth != null && s.depth != null && s.depth < d.minDepth) return "深度不足！需发力平抽推深";
       if (kind !== "drive" && kind !== "slash") return "弧度不合！中场不跳右滑平抽";
       return "平抽需快而深！不跳右滑击球";
@@ -181,7 +189,7 @@ function diagnoseFail(d: DrillDef | null, e: DrillEndFact | null): string {
   // 2. 通用兜底检查
   if (d.minLandX != null && s.landX != null && s.landX < d.minLandX) return "落点偏短！需推到底线";
   if (d.minDepth != null && s.depth != null && s.depth < d.minDepth) return "回球太浅！需推向深区";
-  if (d.maxSteps != null && s.steps != null && s.steps > d.maxSteps) return "球速偏慢！动作需干脆";
+  if (d.maxSteps != null && s.steps != null && baseSteps(s.steps) > d.maxSteps) return "球速偏慢！动作需干脆";
   return "击球动作不符本关要求";
 }
 

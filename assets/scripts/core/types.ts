@@ -166,7 +166,7 @@ export interface Player {
   /** 跨步后特殊击球窗口倒计时(>0=窗口内,每帧递减,跨步触发时重置为 C.lunge.shotWindow) */
   lungeShotT: number;
   stats: { hits: number; smashes: number; sweets: number; perfects: number; whiffs: number };
-  /** rules.step 每步记下的输入快照(调试/回放用) */
+  /** rules.step 每步记下的输入快照(调试用) */
   lastInp?: PlayerInput;
   racketSkin?: SkinDef;
   /** 完整人物皮肤定义:theme 只传三色,发型/头饰/纹样/光环等设计字段从这里读 */

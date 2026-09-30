@@ -15,11 +15,12 @@
 
 /** 一笔里的路径指令(与 cc.Graphics 的建模一致:指令流 + stroke/fill 收尾) */
 export interface StubCmd {
-  t: "M" | "L" | "Z" | "E" | "R";
-  x?: number; y?: number;      // M / L
-  cx?: number; cy?: number;    // E(圆心)
+  t: "M" | "L" | "Z" | "E" | "R" | "Q" | "B";
+  x?: number; y?: number;      // M / L / Q,B 的终点
+  cx?: number; cy?: number;    // E 的圆心 / Q,B 的第一个控制点
   rx?: number; ry?: number;    // E(半径)
   w?: number; h?: number;      // R(宽高)
+  dx?: number; dy?: number;    // B 的第二个控制点
 }
 
 export interface StubOp {
@@ -75,6 +76,28 @@ export class Graphics {
   circle(cx: number, cy: number, r: number): void { this.ellipse(cx, cy, r, r); }
   rect(x: number, y: number, w: number, h: number): void { this._cmds.push({ t: "R", x, y, w, h }); }
   roundRect(x: number, y: number, w: number, h: number, _r: number): void { this.rect(x, y, w, h); }
+  fillRect(x: number, y: number, w: number, h: number): void { this.rect(x, y, w, h); }
+  /**
+   * 二次曲线:fx._drawStar 的四瓣星芒靠它,丝带/球体的曲线笔画也随时可能用。
+   * SVG 有原生 Q/C,这里只把指令记下来,展开成点列时再采样(见 opPoints)。
+   */
+  quadraticCurveTo(cx: number, cy: number, x: number, y: number): void {
+    this._cmds.push({ t: "Q", cx, cy, x, y });
+  }
+  bezierCurveTo(cx: number, cy: number, dx: number, dy: number, x: number, y: number): void {
+    this._cmds.push({ t: "B", cx, cy, dx, dy, x, y });
+  }
+  /** cc 的 arc 扫向与 canvas 相反;sprites/world 全部自采样,不走这条路。
+   *  这里按「cc 语义 = 增角扫」实现,只兜底,别依赖它画关键形状。 */
+  arc(cx: number, cy: number, r: number, a0: number, a1: number, ccw = false): void {
+    const steps = 24;
+    const span = ccw ? (a1 - a0) : (a1 - a0);
+    for (let i = 0; i <= steps; i++) {
+      const th = a0 + span * (i / steps);
+      const x = cx + r * Math.cos(th), y = cy + r * Math.sin(th);
+      if (i === 0) this.moveTo(x, y); else this.lineTo(x, y);
+    }
+  }
 
   stroke(): void {
     this.ops.push({
@@ -94,12 +117,15 @@ export class Graphics {
   clear(): void { this.ops = []; this._cmds = []; }
 }
 
-/** 把一条 op 的路径指令展开成点列(供几何断言用;R 给四角,E 给采样环) */
+/** 把一条 op 的路径指令展开成点列(供几何断言用;R 给四角,E 给采样环,Q/B 采样曲线) */
 export function opPoints(op: StubOp): { x: number; y: number }[] {
   const out: { x: number; y: number }[] = [];
+  let px = 0, py = 0;
   for (const c of op.cmds) {
-    if (c.t === "M" || c.t === "L") out.push({ x: c.x as number, y: c.y as number });
-    else if (c.t === "R") {
+    if (c.t === "M" || c.t === "L") {
+      px = c.x as number; py = c.y as number;
+      out.push({ x: px, y: py });
+    } else if (c.t === "R") {
       const x = c.x as number, y = c.y as number, w = c.w as number, h = c.h as number;
       out.push({ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h });
     } else if (c.t === "E") {
@@ -108,6 +134,28 @@ export function opPoints(op: StubOp): { x: number; y: number }[] {
         const th = (i / 36) * Math.PI * 2;
         out.push({ x: cx + rx * Math.cos(th), y: cy + ry * Math.sin(th) });
       }
+    } else if (c.t === "Q") {
+      const cx = c.cx as number, cy = c.cy as number, x = c.x as number, y = c.y as number;
+      for (let i = 1; i <= 8; i++) {
+        const t = i / 8, u = 1 - t;
+        out.push({
+          x: u * u * px + 2 * u * t * cx + t * t * x,
+          y: u * u * py + 2 * u * t * cy + t * t * y,
+        });
+      }
+      px = x; py = y;
+    } else if (c.t === "B") {
+      const c1x = c.cx as number, c1y = c.cy as number;
+      const c2x = c.dx as number, c2y = c.dy as number;
+      const x = c.x as number, y = c.y as number;
+      for (let i = 1; i <= 8; i++) {
+        const t = i / 8, u = 1 - t;
+        out.push({
+          x: u * u * u * px + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * x,
+          y: u * u * u * py + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * y,
+        });
+      }
+      px = x; py = y;
     }
   }
   return out;
@@ -128,6 +176,10 @@ export function opsToSvg(ops: StubOp[]): string {
         if (rx <= 0 || ry <= 0) continue;
         d += `M${f(cx - rx)} ${f(cy)}A${f(rx)} ${f(ry)} 0 1 0 ${f(cx + rx)} ${f(cy)}`
           + `A${f(rx)} ${f(ry)} 0 1 0 ${f(cx - rx)} ${f(cy)}Z`;
+      } else if (c.t === "Q") {
+        d += `Q${f(c.cx)} ${f(c.cy)} ${f(c.x)} ${f(c.y)}`;
+      } else if (c.t === "B") {
+        d += `C${f(c.cx)} ${f(c.cy)} ${f(c.dx)} ${f(c.dy)} ${f(c.x)} ${f(c.y)}`;
       }
     }
     if (!d) continue;

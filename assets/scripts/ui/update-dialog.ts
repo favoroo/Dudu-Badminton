@@ -7,11 +7,20 @@
 // 来自 update-service 里的原生流式下载器(Java 线程 + 150ms 轮询)。
 // 万一设备上的旧包没有这套原生下载器(反射失败回退 XHR),那时拿不到字节,
 // 界面就诚实进入"不确定态":呼吸条 + 已用时长,绝不编一个百分比糊人。
+//
+// 更新说明为什么不能"一个 Label 塞整段":
+// Release 正文是 markdown,原样进 Label 就是 v0.0.7 那次事故 —— `##`、`**SHA-256**:**`
+// 连同 64 位哈希一起糊在标题和进度条上。现在改成:release-notes.ts 先把语法清洗成
+// 带样式的物理行(折行宽度、行高、缩进都在那边算死),这里逐行摆独立 Label,
+// 卡片高度跟着内容伸缩;内容超过可视高度时日志框开 Mask 裁切 + 拖动滚动。
+// 于是「溢出」在结构上不再可能发生:要么框变高,要么内容可滚动,没有第三种。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, sys, UITransform, Vec2 } from "cc";
+import { Button, Color, EventTouch, Graphics, Label, Mask, Node, sys, UITransform, Vec2 } from "cc";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { cancelFade, drawArcadePanel, drawHardShadow, fadeOutHide, slamIn, textW } from "./ui-arcade";
+import { cancelFade, drawArcadePanel, drawChevron, drawHardShadow, fadeOutHide, retainedDraw, slamIn, textW } from "./ui-arcade";
+import { buildNotes, fitNotesBox, NOTE, NOTE_BOX } from "./release-notes";
+import type { NoteLine } from "./release-notes";
 import { DownloadProgress, UpdateInfo, UpdateService } from "../core/update-service";
 
 /** 进度条轨道几何(与 ui-arcade 面板宽度配套) */
@@ -19,12 +28,21 @@ const TRACK_X = -190;
 const TRACK_W = 380;
 const TRACK_H = 14;
 
-/** 更新日志框:白名单式精简 + 按字宽精确折行,行数即框高,绝不溢出 */
-const NOTE_W = 390;
-const NOTE_LINE_H = 16;
-const NOTE_MAX_LINES = 6;
-const NOTE_BOX_MIN = 96;
-const NOTE_BOX_MAX = 112;
+/** 卡片宽度 */
+const CARD_W = 480;
+/** 卡顶 → 日志框顶缘:标题 40 / 版本 66 / 大小 86 + 13 间隙 */
+const HEAD_H = 99;
+/** 日志框底缘 → 卡底:进度条区 + 按钮区 */
+const FOOT_H = 149;
+/** 日志框可视高区间(与折行同一把尺,见 release-notes.NOTE_BOX) */
+const BOX_MIN_H = NOTE_BOX.minH;
+const BOX_W = NOTE.boxW;
+/** 裁切窗比框再缩一点,圆角里不贴字 */
+const VIEW_INSET = 5;
+
+/** 小节标记条 / 列表圆点的落点 */
+const MARK_W = 3;
+const DOT_R = 2;
 
 /** 字节数 → 人话;小于 1 MB 用 KB,免得显示 0.0 MB */
 function fmtSize(bytes: number): string {
@@ -32,67 +50,6 @@ function fmtSize(bytes: number): string {
   if (b < 1024) return `${Math.round(b)} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/**
- * Release 正文(markdown)→ 弹窗友好的纯文本行:
- * 跳过一级标题与 SHA-256 行;`### 小节` → 「小节」;`- 项` → `· 项`;
- * 剥掉 **加粗** / `代码` 标记。弹窗里只留干货,语法噪音一概不出现。
- */
-function notesToLines(md: string): string[] {
-  const out: string[] = [];
-  for (const raw of md.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    // 一级/二级标题里带版本号的当文档标题,跳过(版本号弹窗上方已有)
-    if (/^#{1,2}\s+.*\d+\.\d+\.\d+/.test(line)) continue;
-    if (/^SHA-256/i.test(line.replace(/[*`\s]/g, ""))) continue;
-    const head = line.match(/^#{2,6}\s+(.+)$/);
-    if (head) {
-      out.push(`「${head[1].replace(/[*`_]/g, "").trim()}」`);
-      continue;
-    }
-    const item = line.match(/^[-*+]\s+(.+)$/);
-    const text = (item ? item[1] : line).replace(/[*`_]/g, "").trim();
-    if (text) out.push(item ? `· ${text}` : text);
-  }
-  return out;
-}
-
-/**
- * 按字宽逐字折行 —— 与 textW 同一把尺,行数即所见,
- * 折行宽度留 6px 安全边,估值宁早勿晚,保证 Label 不横向溢出。
- */
-function wrapNoteLine(s: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let w = 0;
-  for (const ch of s) {
-    const cw = textW(ch, 13);
-    if (w + cw > NOTE_W - 6) {
-      out.push(cur);
-      cur = ch;
-      w = cw;
-    } else {
-      cur += ch;
-      w += cw;
-    }
-  }
-  out.push(cur);
-  return out;
-}
-
-/** 精简 → 折行 → 最多 NOTE_MAX_LINES 行,超限末行补省略号;返回带 \n 的最终文案 */
-function noteFit(md: string): string {
-  const lines: string[] = [];
-  for (const seg of notesToLines(md)) lines.push(...wrapNoteLine(seg));
-  const shown = lines.slice(0, NOTE_MAX_LINES);
-  if (lines.length > NOTE_MAX_LINES && shown.length > 0) {
-    let last = shown[shown.length - 1];
-    while (textW(`${last}…`, 13) > NOTE_W && last.length > 1) last = last.slice(0, -1);
-    shown[shown.length - 1] = `${last}…`;
-  }
-  return shown.join("\n");
 }
 
 /** 剩余时间 → 人话 */
@@ -107,11 +64,19 @@ export class UpdateDialog {
   readonly root: Node;
   private kit: UiKit;
   private card: Graphics;
+  private title: Label;
   private notesBoxG: Graphics;
   private notesBoxNode: Node;
+  /** 日志可视窗:挂 Mask,只在需要滚动时启用 */
+  private viewport: Node;
+  private mask: Mask;
+  /** 日志内容:标记(色条/圆点)画在这层的 Graphics 上,文字是它的子 Label */
+  private content: Node;
+  private contentG: Graphics;
+  private hintUp: Node;
+  private hintDown: Node;
   private verLabel: Label;
   private sizeLabel: Label;
-  private notesLabel: Label;
   private progressNode: Node;
   private progressFill: Graphics;
   private progressLabel: Label;
@@ -125,6 +90,14 @@ export class UpdateDialog {
   private downloadedPath = "";
   /** 每轮下载/关窗都自增:在途的进度回调靠它判断自己是否已经过期 */
   private session = 0;
+  /** 滚动状态:内容比可视窗高才有意义 */
+  private scrollable = false;
+  /** 可视窗的裸拖动手势是否挂在身上(只允许在弹窗亮着时挂,理由见 setDragLive) */
+  private dragLive = false;
+  private scrollMin = 0;
+  private scrollMax = 0;
+  private dragFromY: number | null = null;
+  private dragBaseY = 0;
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -135,67 +108,67 @@ export class UpdateDialog {
     // 半透明全屏暗底
     kit.dim(this.root, 0.4, 0.74);
 
-    // 居中卡片
-    this.card = kit.panel(this.root, 480, 360, {
-      r: 16,
-      bg: P.panel,
-      bgAlpha: 0.98,
-      stroke: P.accent,
-      strokeAlpha: 0.5,
-    });
+    // 居中卡片(高度随更新说明伸缩,show 时重绘)
+    this.card = kit.panel(this.root, CARD_W, BOX_MIN_H + HEAD_H + FOOT_H, { r: 16 });
     this.card.node.setPosition(0, 0, 0);
 
     // 标题
-    const title = kit.label(this.card.node, "发现新版本", 24, P.accent, { outline: P.ink, outlineW: 2 });
-    title.enableShadow = true;
-    title.shadowColor = new Color(0, 0, 0, 130);
-    title.shadowOffset = new Vec2(0, -4);
-    title.node.setPosition(0, 140, 0);
+    this.title = kit.label(this.card.node, "发现新版本", 24, P.accent, { outline: P.ink, outlineW: 2 });
+    this.title.enableShadow = true;
+    this.title.shadowColor = new Color(0, 0, 0, 130);
+    this.title.shadowOffset = new Vec2(0, -4);
 
     // 版本标签
     this.verLabel = kit.label(this.card.node, "v0.0.0", 14, P.cyan);
-    this.verLabel.node.setPosition(0, 114, 0);
 
     // 安装包大小
     this.sizeLabel = kit.label(this.card.node, "大小: -- MB", 12, P.dim);
-    this.sizeLabel.node.setPosition(0, 94, 0);
 
-    // 更新日志背景底框(高度随公告行数自适应,show 时重绘)
-    const notesBox = kit.panel(this.card.node, 420, NOTE_BOX_MIN, {
-      r: 8,
-      bg: P.panelLight,
-      bgAlpha: 0.6,
-      stroke: P.line,
-      strokeAlpha: 0.15,
-    });
-    notesBox.node.setPosition(0, 24, 0);
+    // 更新日志底框(高度随公告行数自适应,show 时重绘)
+    const notesBox = kit.panel(this.card.node, BOX_W, BOX_MIN_H, { r: 8 });
     this.notesBoxG = notesBox;
     this.notesBoxNode = notesBox.node;
 
-    // 更新日志文本:RESIZE_HEIGHT + 显式 \n 折行(行高锁 NOTE_LINE_H,行数即框高)
-    this.notesLabel = kit.label(notesBox.node, "更新内容", 13, P.text, { align: 0 });
-    this.notesLabel.overflow = Label.Overflow.RESIZE_HEIGHT;
-    this.notesLabel.lineHeight = NOTE_LINE_H;
-    this.notesLabel.node.getComponent(UITransform)?.setContentSize(NOTE_W, NOTE_BOX_MIN - 14);
-    this.notesLabel.node.setPosition(0, 0, 0);
+    // 可视窗 + 内容层:内容高于窗口时由 Mask 裁切,拖动 content 滚动
+    this.viewport = new Node("notes-view");
+    this.viewport.layer = this.root.layer;
+    this.viewport.addComponent(UITransform).setContentSize(BOX_W - VIEW_INSET * 2, BOX_MIN_H - VIEW_INSET * 2);
+    this.mask = this.viewport.addComponent(Mask);
+    this.mask.type = Mask.Type.GRAPHICS_RECT;
+    this.mask.enabled = false;
+    this.viewport.setParent(this.notesBoxNode);
+
+    this.content = new Node("notes-content");
+    this.content.layer = this.root.layer;
+    this.content.addComponent(UITransform).setContentSize(BOX_W, BOX_MIN_H);
+    this.contentG = this.content.addComponent(Graphics);
+    this.content.setParent(this.viewport);
+
+    // 滚动提示箭头:挂在框上而不是可视窗里,免得跟着内容一起被裁掉
+    this.hintUp = this.makeHint(90);
+    this.hintDown = this.makeHint(-90);
+    this.hintUp.setParent(this.notesBoxNode);
+    this.hintDown.setParent(this.notesBoxNode);
+    this.setDragLive(true);
 
     // 进度条容器
     this.progressNode = new Node("progress-box");
     this.progressNode.layer = this.root.layer;
     this.progressNode.setParent(this.card.node);
-    this.progressNode.setPosition(0, -56, 0);
-    this.progressNode.active = false;
 
     // 进度条底框
     const progBg = new Node("progress-bg");
     progBg.layer = this.root.layer;
     const bgG = progBg.addComponent(Graphics);
-    bgG.fillColor = col(P.panelLight, 0.9);
-    bgG.strokeColor = col(P.line, 0.3);
-    bgG.lineWidth = 1;
-    bgG.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
-    bgG.fill();
-    bgG.stroke();
+    // progressNode 会在「待下载 / 下载中」之间整块开关,底框得能重放(见 ui-arcade.retainedDraw)
+    retainedDraw(bgG, () => {
+      bgG.fillColor = col(P.panelLight, 0.9);
+      bgG.strokeColor = col(P.line, 0.3);
+      bgG.lineWidth = 1;
+      bgG.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
+      bgG.fill();
+      bgG.stroke();
+    });
     progBg.setParent(this.progressNode);
 
     // 进度条填充
@@ -218,11 +191,9 @@ export class UpdateDialog {
       fg: P.ink,
       size: 16,
     });
-    this.updateBtn.setPosition(-106, -132, 0);
     this.updateBtnLabel = this.updateBtn.children[0].getComponent(Label)!;
 
     this.cancelBtn = kit.button(this.card.node, "稍后再说", 190, 50, { size: 16 });
-    this.cancelBtn.setPosition(106, -132, 0);
     this.cancelBtnLabel = this.cancelBtn.children[0].getComponent(Label)!;
 
     this.updateBtn.on(Button.EventType.CLICK, () => {
@@ -235,6 +206,160 @@ export class UpdateDialog {
       this.onCancelClicked();
     });
   }
+
+  /** 滚动提示:一个旋转过的箭标节点(90 = 朝上,-90 = 朝下) */
+  private makeHint(angle: number): Node {
+    const n = new Node("scroll-hint");
+    n.layer = this.root.layer;
+    n.addComponent(UITransform).setContentSize(20, 20);
+    const g = n.addComponent(Graphics);
+    drawChevron(g, 7, this.kit.pal.dim, 0.85, 2);
+    n.angle = angle;
+    n.active = false;
+    return n;
+  }
+
+  // ---------- 排版 ----------
+
+  /** 卡片底:与 kit.panel(uiPanel)同构,只是高度每次重算 */
+  private paintCard(h: number): void {
+    const g = this.card;
+    this.card.node.getComponent(UITransform)!.setContentSize(CARD_W, h);
+    g.clear();
+    drawHardShadow(g, CARD_W, h, 16, 6, 6, 0.45);
+    drawArcadePanel(g, CARD_W, h, 16, 0.93);
+  }
+
+  /** 更新日志底框重绘 */
+  private paintNotesBox(h: number): void {
+    const P = this.kit.pal;
+    const g = this.notesBoxG;
+    this.notesBoxNode.getComponent(UITransform)!.setContentSize(BOX_W, h);
+    g.clear();
+    drawHardShadow(g, BOX_W, h, 8, 6, 6, 0.45);
+    drawArcadePanel(g, BOX_W, h, 8, 0.93);
+    g.fillColor = col(P.panelLight, 0.6);
+    g.roundRect(-BOX_W / 2, -h / 2, BOX_W, h, 8);
+    g.fill();
+    g.strokeColor = col(P.line, 0.15);
+    g.lineWidth = 1;
+    g.roundRect(-BOX_W / 2, -h / 2, BOX_W, h, 8);
+    g.stroke();
+  }
+
+  /** 清空内容层(每次 show 重建 Label:更新说明一轮对话最多看几次,不值得做对象池) */
+  private clearNotes(): void {
+    for (const child of this.content.children.slice()) {
+      child.removeFromParent();
+      child.destroy();
+    }
+    this.contentG.clear();
+  }
+
+  /** 一行文字:按 span 从左往右排,anchor 压到 (0, .5) 才和 textW 量出来的宽度对得上 */
+  private addNoteLine(line: NoteLine, cy: number): void {
+    const P = this.kit.pal;
+    const isHead = line.kind === "section";
+    const size = isHead ? NOTE.headSize : NOTE.size;
+    let x = -BOX_W / 2 + NOTE.padX + line.indent;
+    const g = this.contentG;
+    if (isHead) {
+      g.fillColor = col(P.accent, 0.9);
+      g.roundRect(-BOX_W / 2 + NOTE.padX, cy - 6, MARK_W, 12, MARK_W / 2);
+      g.fill();
+    } else if (line.kind === "item") {
+      g.fillColor = col(P.dim, 0.9);
+      g.circle(-BOX_W / 2 + NOTE.padX + DOT_R, cy, DOT_R);
+      g.fill();
+    }
+    for (const span of line.spans) {
+      const label = this.kit.label(this.content, span.text, size, this.spanColor(span.strong, isHead), { align: 0 });
+      label.node.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
+      label.node.setPosition(x, cy, 0);
+      x += textW(span.text, size);
+    }
+  }
+
+  /** 小节 = 强调色;正文 = 纸白;md 的 **加粗** 用强调色顶上(原生无粗体字面,靠颜色分层) */
+  private spanColor(strong: boolean, isHead: boolean): string {
+    const P = this.kit.pal;
+    if (isHead) return P.accent;
+    return strong ? P.accent : P.text;
+  }
+
+  /**
+   * 按更新说明重排整张卡:内容高 → 框高 → 卡高 → 各元素锚位。
+   * 框高封顶后还剩内容 = 可滚动,封顶前 = 卡片变高,两条路都不允许文字出框。
+   */
+  private renderNotes(md: string): void {
+    const layout = buildNotes(md, textW);
+    const fit = fitNotesBox(layout.height);
+    const boxH = fit.boxH;
+    const cardH = boxH + HEAD_H + FOOT_H;
+    const top = cardH / 2;
+    const bottom = -cardH / 2;
+    const boxCY = top - HEAD_H - boxH / 2;
+
+    this.paintCard(cardH);
+    this.title.node.setPosition(0, top - 40, 0);
+    this.verLabel.node.setPosition(0, top - 66, 0);
+    this.sizeLabel.node.setPosition(0, top - 86, 0);
+    this.paintNotesBox(boxH);
+    this.notesBoxNode.setPosition(0, boxCY, 0);
+    this.progressNode.setPosition(0, bottom + 124, 0);
+    this.updateBtn.setPosition(-106, bottom + 48, 0);
+    this.cancelBtn.setPosition(106, bottom + 48, 0);
+
+    // 可视窗与裁切
+    const viewH = boxH - VIEW_INSET * 2;
+    this.viewport.getComponent(UITransform)!.setContentSize(BOX_W - VIEW_INSET * 2, viewH);
+    this.scrollable = fit.scrollable;
+    this.mask.enabled = this.scrollable;
+
+    // 内容层:比窗口高就按窗口顶部对齐往下排;框被撑到最小高以上时整块垂直居中
+    const contentH = Math.max(boxH, layout.height);
+    const blockH = Math.min(contentH, layout.height);
+    this.content.getComponent(UITransform)!.setContentSize(BOX_W, contentH);
+    this.clearNotes();
+    let y = contentH / 2 - (contentH - blockH) / 2 - NOTE.padY;
+    for (const line of layout.lines) {
+      y -= line.lead;
+      this.addNoteLine(line, y - line.h / 2);
+      y -= line.h;
+    }
+
+    this.scrollMax = this.scrollable ? (contentH - viewH) / 2 : 0;
+    this.scrollMin = -this.scrollMax;
+    this.setScrollY(this.scrollMax);   // 打开时从第一条说明看起
+  }
+
+  /** 设滚动位并刷新箭头:钳到 [min, max],到顶/到底就把对应箭头收掉 */
+  private setScrollY(v: number): void {
+    const y = Math.max(this.scrollMin, Math.min(this.scrollMax, v));
+    this.content.setPosition(0, y, 0);
+    const boxH = this.notesBoxNode.getComponent(UITransform)!.height;
+    this.hintUp.setPosition(BOX_W / 2 - 16, boxH / 2 - 12, 0);
+    this.hintDown.setPosition(BOX_W / 2 - 16, -boxH / 2 + 12, 0);
+    this.hintUp.active = this.scrollable && y < this.scrollMax - 1;
+    this.hintDown.active = this.scrollable && y > this.scrollMin + 1;
+  }
+
+  private onDragStart(e: EventTouch): void {
+    if (!this.scrollable) return;
+    this.dragFromY = e.getUILocation().y;
+    this.dragBaseY = this.content.position.y;
+  }
+
+  private onDragMove(e: EventTouch): void {
+    if (!this.scrollable || this.dragFromY === null) return;
+    this.setScrollY(this.dragBaseY + (e.getUILocation().y - this.dragFromY));
+  }
+
+  private onDragEnd(): void {
+    this.dragFromY = null;
+  }
+
+  // ---------- 进度 ----------
 
   /**
    * 唯一进度入口:原生下载器每 150ms 回一次真实字节,XHR 心跳每 250ms 回一次。
@@ -294,27 +419,34 @@ export class UpdateDialog {
     this.cancelBtnLabel.string = "稍后再说";
   }
 
-  /** 更新日志底框重绘:高度跟行数走,底缘固定在 -31(进度条 -56 之上留 18) */
-  private paintNotesBox(lines: number): void {
-    const P = this.kit.pal;
-    const h = Math.min(NOTE_BOX_MAX, Math.max(NOTE_BOX_MIN, lines * NOTE_LINE_H + 18));
-    const g = this.notesBoxG;
-    this.notesBoxNode.getComponent(UITransform)!.setContentSize(420, h);
-    this.notesBoxNode.setPosition(0, -31 + h / 2, 0);
-    g.clear();
-    drawHardShadow(g, 420, h, 8, 6, 6, 0.45);
-    drawArcadePanel(g, 420, h, 8, 0.93);
-    g.fillColor = col(P.panelLight, 0.6);
-    g.roundRect(-210, -h / 2, 420, h, 8);
-    g.fill();
-    g.strokeColor = col(P.line, 0.15);
-    g.lineWidth = 1;
-    g.roundRect(-210, -h / 2, 420, h, 8);
-    g.stroke();
+  /**
+   * 日志可视窗的拖动手势随弹窗亮/关挂卸。
+   *
+   * 与无限练习弹窗同一件事:`fadeOutHide` 的隐藏不 deactivate,只关掉子树里的
+   * Button / BlockInputEvents 组件,而裸 `Node.EventType.TOUCH_*` 监听照旧接活;
+   * 引擎派发默认吞噬触摸(见 UIEvent.preventSwallow 注释),所以关掉的弹窗会在屏幕
+   * 正中留一块隐形的「日志窗」挡板,把落在它范围内的按键全吃掉。
+   */
+  private setDragLive(on: boolean): void {
+    if (this.dragLive === on) return;
+    this.dragLive = on;
+    const T = Node.EventType;
+    if (on) {
+      this.viewport.on(T.TOUCH_START, this.onDragStart, this);
+      this.viewport.on(T.TOUCH_MOVE, this.onDragMove, this);
+      this.viewport.on(T.TOUCH_END, this.onDragEnd, this);
+      this.viewport.on(T.TOUCH_CANCEL, this.onDragEnd, this);
+    } else {
+      this.viewport.off(T.TOUCH_START, this.onDragStart, this);
+      this.viewport.off(T.TOUCH_MOVE, this.onDragMove, this);
+      this.viewport.off(T.TOUCH_END, this.onDragEnd, this);
+      this.viewport.off(T.TOUCH_CANCEL, this.onDragEnd, this);
+    }
   }
 
   show(info: UpdateInfo): void {
     cancelFade(this.root);
+    this.setDragLive(true);
     this.session++;
     this.currentInfo = info;
     this.isDownloading = false;
@@ -322,9 +454,7 @@ export class UpdateDialog {
 
     this.verLabel.string = `新版本: ${info.tagName}`;
     this.sizeLabel.string = info.fileSizeText ? `安装包大小: ${info.fileSizeText}` : "安装包大小: 未知";
-    const fitted = noteFit(info.releaseNotes || "修复已知问题，优化游戏体验。");
-    this.notesLabel.string = fitted;
-    this.paintNotesBox(fitted.split("\n").length);
+    this.renderNotes(info.releaseNotes || "");
 
     this.progressFill.clear();
     this.progressNode.active = false;
@@ -340,6 +470,8 @@ export class UpdateDialog {
       UpdateService.instance.cancelDownload();
       this.isDownloading = false;
     }
+    // 拖动手势先卸干净:淡出期间那块隐形日志窗不该还拦着触摸
+    this.setDragLive(false);
     fadeOutHide(this.root);
   }
 

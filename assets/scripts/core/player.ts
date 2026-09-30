@@ -5,6 +5,7 @@
 import { CFG } from "./config";
 import { clamp, lerp, approach, sweptHit } from "./utils";
 import { Physics } from "./physics";
+import { Gait } from "./gait";
 import { Ball, Player as PlayerEntity, PlayerInput, ShotResult } from "./types";
 
 // 本模块导出的 Player(值:移动/挥拍/命中的 API)与 types 的 Player 实体(类型)
@@ -153,8 +154,13 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   } else if (isSliderActive && axisCap === 0) {
     // 精准定点刹停达成:vx 已置零,无需摩擦
   } else {
-    const maxV = PL.vmax * p.speedMul * axisCap;
-    const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * p.speedMul;
+    // 真人侧多乘一层「移速档位」(core/gait.ts),AI 不叠这层 —— 它已经有 diffs.speed 写进
+    // p.speedMul,两层叠一起会让难度档和玩家设置互相污染,回归就在测玩家偏好。
+    // accel 与 vmax 同比例乘:只提极速不提起步会显得"推起来肉";
+    // 跨步冲量与跳跃弹道故意不跟着乘(lunge.speed / jumpV 是另一套手感)。
+    const sm = p.speedMul * (p.isAI ? 1 : Gait.s);
+    const maxV = PL.vmax * sm * axisCap;
+    const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * sm;
     if (mv !== 0) p.vx += mv * accel;
     else p.vx *= p.onGround ? PL.groundFriction : PL.airFriction;
     if (mv !== 0) {
@@ -162,15 +168,17 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     }
   }
   if (Math.abs(p.vx) < 0.04) p.vx = 0;
-  // 横向安全钳制:跨步是叠加冲量,跑动中爆发可达 vmax+speed,钳制要留够余量
-  const xvCap = Math.max(12, PL.vmax + LG.speed + 3);
+  // 横向安全钳制:跨步是叠加冲量,跑动中爆发可达 vmax+speed,钳制要留够余量。
+  // 跑动那一项按同一层 sm 放大(移速档「极快」时真人 vmax 13.8 + 跨步 15 + 3 才够,
+  // 不放大就会把跨步冲量凭空削掉一截);AI 侧 sm 即 diffs.speed,与旧值同量级。
+  const xvCap = Math.max(12, PL.vmax * p.speedMul * (p.isAI ? 1 : Gait.s) + LG.speed + 3);
   p.x += clamp(p.vx, -xvCap, xvCap);
 
   // 侧视球场:始终面向球网,拍面方向 = 出球方向
   p.facing = p.side === "left" ? 1 : -1;
 
-  const minX = p.side === "left" ? CO.wallL : CO.netX + 10;
-  const maxX = p.side === "left" ? CO.netX - 10 : CO.wallR;
+  const minX = p.side === "left" ? CO.wallL : CO.netX + CO.netPad;
+  const maxX = p.side === "left" ? CO.netX - CO.netPad : CO.wallR;
   if (p.x < minX) { p.x = minX; p.vx = Math.max(0, p.vx); }
   if (p.x > maxX) { p.x = maxX; p.vx = Math.min(0, p.vx); }
 

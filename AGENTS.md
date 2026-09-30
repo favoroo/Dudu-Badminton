@@ -20,11 +20,18 @@
 | 调手感/数值 | [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) |
 | 理解分层铁律 | [types.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/types.ts) 顶部注释 |
 | 改物理/弹道 | [physics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/physics.ts) |
+| 改球速/接球难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `pace` 段,生效逻辑在 [pace.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/pace.ts)(时间膨胀:重力 ×s²、速度类 ×s、阻力不动);玩家开关在设置页「球速」滑杆(存 `Settings.paceTier`,下一球起生效);量化诊断 `tools/reach-check.ts` |
+| 改人物移速 | 档位表在 `config.ts` 的 `gait` 段,生效逻辑在 [gait.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/gait.ts);**只乘真人的 accel+vmax**(AI 走 `diffs.speed`,两层不叠),跨步冲量/跳跃/摩擦不参与;**即时生效**(不等下一球);设置页「移速」滑杆(存 `Settings.gaitTier`),组合矩阵见 `tools/reach-check.ts` §5 |
 | 改角色姿势/外观 | [sprites.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/sprites.ts) |
+| 改击打/轨迹/球体特效 | 数值全在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `fx` 段;丝带 [ribbon.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/ribbon.ts) + 球体运动学 [shuttle-motion.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/shuttle-motion.ts) + 粒子 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts) + 缓动 [easing.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/easing.ts);出图验收 `node .tools-build/tools/fx-preview.js` |
 | 主循环/事件分发 | [game-root.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/game-root.ts) |
 | UI 面板/菜单 | [ui-manager.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-manager.ts) |
+| 更新弹窗/更新说明排版 | [update-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/update-dialog.ts) + 折行算法 [release-notes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/release-notes.ts) |
+| 改「调整位置」顶栏排版 | [editor-strip.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/editor-strip.ts)(纯函数,回归见 `tools/strip-check.ts`)+ [settings-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settings-panel.ts) 消费它 |
+| 改虚拟按键能放在哪儿 | [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 的 `clampDelta`(唯一约束 = 整块留在可视区内) |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
+| 改启动图/应用图标 | [make-app-icons.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-app-icons.py) 出图标母版 → [make-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-splash.py) 派生启动图 → [apply-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/apply-splash.py) 注入构建(比例见 [splash-config.json](file:///Users/a1/Documents/01Code/dudu-cocos/tools/splash-config.json)) |
 | 跑回归测试 | `tools/` 下脚本(见下文) |
 | 查历史改动/排查问题 | [CHANGELOG.md](CHANGELOG.md)(Agent 变更日志,仅本地) |
 | 构建配置 | [build-android.json](file:///Users/a1/Documents/01Code/dudu-cocos/build-android.json) / [build-web-mobile.json](file:///Users/a1/Documents/01Code/dudu-cocos/build-web-mobile.json) |
@@ -68,10 +75,33 @@ node .tools-build/tools/drill-check.js
 # 4. AI 接发成功率回归(改 AI/物理/数值必跑;阈值防回退)
 node .tools-build/tools/serve-check.js
 
+# 4.5 反应预算与输入画像(exit 0;把「手机接不到球」统一成帧的账:
+#     §1 球速档位是否真的只改时间不改空间 —— 有人砍 shot.speedMax 来放慢会在这里红,
+#     §2 各档判定区放宽多少,§3 slack(剩帧−跑位帧−提前量),§4 键盘/摇杆/滑轨三画像
+#     跑位帧与横滑提交延迟,§5 移速档 × 球速档的组合矩阵(挑"手机合适"就照这张表)。
+#     改 pace/gait/physics/player 输入相关数值后必跑)
+node .tools-build/tools/reach-check.js
+
 # 5. AI 对 AI 整机冒烟(exit 0)
 node .tools-build/tools/sim-check.js
 
-# 6. 全量类型检查(零错误)
+# 6. 更新弹窗「更新说明」折行/溢出回归(exit 0)
+node .tools-build/tools/notes-check.js
+
+# 6.5 「调整位置」顶栏排版回归(exit 0;透明度滑杆曾被重置/完成两颗按钮压在底下,
+#     用户看到的是「没有透明度滑杆」—— 一行六件事别手调绝对坐标,见 editor-strip.ts)
+node .tools-build/tools/strip-check.js
+node .tools-build/tools/strip-check.js --selftest   # 反例必须被报警,防规则脚本悄悄全绿
+
+# 7. 面板退场的触摸卫生(exit 0;遮罩/可视窗那种裸 TOUCH 监听不随 hide 卸掉,
+#    关掉的面板就成一块隐形挡板 —— 曾把无限模式整局按键打死)
+node .tools-build/tools/ui-hide-check.js
+
+# 7.5 击打/轨迹/球体特效预览与几何断言(exit 0;NaN 坐标、丝带点数上限、粒子预算、
+#     羽片拆片、滞后角追踪各有一条断言兜着 —— 特效改坏了先在 node 里出图看,别上真机猜)
+node .tools-build/tools/fx-preview.js --out .tools-build/fx-preview   # 单页: closeups / trails / impacts
+
+# 8. 全量类型检查(零错误)
 npx tsc -p tools/tsconfig.check.json
 ```
 

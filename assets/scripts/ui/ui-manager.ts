@@ -23,7 +23,6 @@ import {
 } from "cc";
 import { CFG, DRILLS } from "../core/config";
 import { Settings } from "../core/settings";
-import { replay } from "../core/replay";
 import { installStorageBackend } from "../game/host";
 import { Rules } from "../core/rules";
 import { Career } from "../core/career";
@@ -36,7 +35,6 @@ import { courtRenderer, CourtThemeItem } from "../render/court";
 import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawVeil, drawVignette, textW, TOUCH_MIN } from "./ui-arcade";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
-import { BootIntro } from "./boot-intro";
 import { Hud } from "./hud";
 import { PausePanel } from "./pause-panel";
 import { SettleBadge, SettlePanel, SettlePayload, SettleStat } from "./settle-panel";
@@ -301,14 +299,9 @@ export class UIManager extends Component {
   private settingsPanel: SettingsPanel | null = null;
   private capture: SettleCapture | null = null;
   private prevSt = "";
-  private overWaitingReplay = false;
   private toastNode: Node | null = null;
   private toastLabel: Label | null = null;
   private toastOp: UIOpacity | null = null;
-  /** 开机演出只播一次的闸(冷启动判定见 start 的 coldBoot) */
-  private bootIntroPlayed = false;
-  /** 一次性旗标:下次 onState("MENU") 是演出交棒,菜单走免黑罩入场 */
-  private introHandoff = false;
 
   start(): void {
     // 阶段 2 的 game-root 直开一局「单人·普通」;UI 层接管后本次启动必须先落菜单
@@ -338,23 +331,9 @@ export class UIManager extends Component {
     this.endlessDialog = new EndlessDialog(root, this.kit);
     this.bridgeCareerSettle();
 
-    // UI 音复用同一批烘焙 WAV(resources 缓存共享)。冷启动把开机演出挂在
-    // 音效就绪回调上 —— 演出的关键帧音效才一定出声;done 无论成败必调,不会卡住开场。
-    // 演出期间用 prevSt 闸住状态轮询:菜单的 onState("MENU") 等演出交棒后再放行,
-    // 菜单的 rise 入场正好压在演出淡出的残影背后,两层动画一次看完。
+    // UI 音复用同一批烘焙 WAV(resources 缓存共享)。
     // 只 load 这一次:重复调用会往节点上再挂一个 AudioSource。
-    this.sfx.load(this.node, coldBoot ? () => this.playBootIntro() : undefined);
-  }
-
-  /** 冷启动开机演出(每次场景启动至多一次):结束后放行状态轮询进主菜单 */
-  private playBootIntro(): void {
-    if (this.bootIntroPlayed) return;
-    this.bootIntroPlayed = true;
-    this.prevSt = "MENU";                          // 闸:轮询看到「无变化」
-    BootIntro.play(this.node, this.sfx, () => {
-      this.introHandoff = true;
-      this.prevSt = "";                            // 放行:下一帧 onState("MENU") → menu.show
-    });
+    this.sfx.load(this.node);
   }
 
   // ---------- 对外统一接口(正式契约) ----------
@@ -448,18 +427,8 @@ export class UIManager extends Component {
   update(dt: number): void {
     const R = Rules.R;
     if (R.state !== this.prevSt) {
-      if (R.state === "OVER" && replay.isPending()) {
-        this.overWaitingReplay = true;
-      } else {
-        this.overWaitingReplay = false;
-        this.onState(R.state);
-        this.prevSt = R.state;
-      }
-    }
-    if (this.overWaitingReplay && !replay.isPending()) {
-      this.overWaitingReplay = false;
-      this.onState("OVER");
-      this.prevSt = "OVER";
+      this.onState(R.state);
+      this.prevSt = R.state;
     }
     this.hud.sync(R);
     this.settlePanel.tick(dt);
@@ -476,11 +445,9 @@ export class UIManager extends Component {
     this.endlessDialog?.hide();
     switch (st) {
       case "MENU": {
-        const fromIntro = this.introHandoff;
-        this.introHandoff = false;
         this.pausePanel.hide();
         this.settlePanel.hide();
-        this.menu.show(fromIntro);
+        this.menu.show();
         this.hud.setPlaying(false);
         break;
       }

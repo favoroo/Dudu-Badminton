@@ -12,7 +12,7 @@ import type { SettleResult } from "../core/career";
 import type { DrillResult } from "../core/drill";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { cancelFade, drawMenuCard, fadeOutHide } from "./ui-arcade";
+import { cancelFade, drawMenuCard, fadeOutHide, retainedDraw } from "./ui-arcade";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -130,12 +130,15 @@ export class SettlePanel {
     this.barWrap.layer = this.card.layer;
     this.barWrap.setPosition(24, -82, 0);
     this.barBg = this.barWrap.addComponent(Graphics);
-    this.barBg.fillColor = col(P.panelLight, 0.85);
-    this.barBg.strokeColor = col(P.line, 0.2);
-    this.barBg.lineWidth = 2;
-    this.barBg.roundRect(-BAR_W / 2, -7, BAR_W, 14, 7);
-    this.barBg.fill();
-    this.barBg.stroke();
+    // 2p 友谊赛不发奖励时整条会 active=false,再显示就得重画(原生侧 onDisable 清渲染数据)
+    retainedDraw(this.barBg, () => {
+      this.barBg.fillColor = col(P.panelLight, 0.85);
+      this.barBg.strokeColor = col(P.line, 0.2);
+      this.barBg.lineWidth = 2;
+      this.barBg.roundRect(-BAR_W / 2, -7, BAR_W, 14, 7);
+      this.barBg.fill();
+      this.barBg.stroke();
+    });
     const fillN = new Node("fill");
     fillN.layer = this.card.layer;
     fillN.setPosition(0, 0, 0);
@@ -181,7 +184,8 @@ export class SettlePanel {
         cell.layer = this.card.layer;
         cell.addComponent(UITransform).setContentSize(CELL_W, CELL_H);
         const g = cell.addComponent(Graphics);
-        drawMenuCard(g, CELL_W, CELL_H, 9, { edge: 0, bar: 0, alpha: 0.6 });
+        // 格子按「这一局有没有这条数据」逐个开关(见下面 cell.active),底块得能重放
+        retainedDraw(g, () => drawMenuCard(g, CELL_W, CELL_H, 9, { edge: 0, bar: 0, alpha: 0.6 }));
         this.kit.label(cell, "", 20, P.text).node.setPosition(0, 8, 0);   // 大数
         this.kit.label(cell, "", 12, P.dim).node.setPosition(0, -13, 0);  // 标签
         cell.setParent(this.statLayer);

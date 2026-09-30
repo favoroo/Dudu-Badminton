@@ -1,6 +1,8 @@
 // ============================================================
-// 生涯中心面板:等级/金币总览 + 皮肤商店(购买/装备) + 履历统计 + 实时小人预览
+// 生涯中心面板:等级/金币总览 + 皮肤商店(点选试穿 → 按钮成交) + 履历统计 + 实时小人预览
 // 纯代码构建 UI 节点,复刻老项目 src/ui-career.js 的完整交互。
+// 与老项目的一处**有意差异**:老版是桌面键盘(方向键选中 + Enter 成交),触摸端把两步压成了
+// 一tap 直接扣金币 —— 皮肤买了不能退,误触代价是真的,所以这里拆回「点卡片只选中 / 按按钮才成交」。
 // 依赖:Career(逻辑层)、CFG.skins(配置)、Sprites.drawPlayer/drawShuttle(渲染)
 // ============================================================
 import {
@@ -13,7 +15,8 @@ import { Ball, Player, SkinDef, SkinKind, Theme } from "../core/types";
 import { drawPlayer, drawRacketStill, drawShuttle, hueColor, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
-import { drawHardShadow, drawMenuCard, drawVeil, fadeOutHide, makeCoinIcon, pressFx, slamIn, textW, uiIconButton } from "./ui-arcade";
+import { drawArcadeButton, drawHardShadow, drawMenuCard, drawVeil, fadeOutHide, makeCoinIcon, pressFx, retainedDraw, slamIn, textW, uiIconButton } from "./ui-arcade";
+import type { BtnStyle } from "./ui-arcade";
 
 const { ccclass } = _decorator;
 
@@ -40,6 +43,8 @@ function gridCols(n: number): number {
 const PW = 880, PH = 470;
 const CARD_W = 96, CARD_H = 130, GAP = 8;
 const GRID_W = 520, PREVIEW_W = 320, CONTENT_H = 330;
+/** 动作按钮:商店里唯一花钱的地方(点卡片只试穿,按一下才扣金币) */
+const ACT_W = 260, ACT_H = 44;
 /** 训练评级满分:六关各三星(原来是硬编码的 18) */
 const DRILL_STARS_MAX = DRILLS.length * 3;
 
@@ -209,7 +214,9 @@ function drawTrailHint(g: Graphics, vp: Viewport, s: SkinDef): void {
     petal: ["#ff8fb8", "#ffb7d0", "#ffe0ec"],
   };
   for (let i = 0; i < 5; i++) {
-    const d = 16 + i * 10;                       // 球后距离(预览局部 px)
+    // 球后距离(预览局部 px):2.5 倍缩放下 1.73 的斜率会把尾点一路甩到 -212,
+    // 越过试衣间下沿(那一段现在归动作按钮)甚至出面板底 —— 收短到 5 颗全落在画面区内。
+    const d = 11 + i * 5;
     const a = Math.max(0.08, 0.55 - i * 0.11);
     const wx = -d, wy = d * 1.73;                // dummyBall 速度 (1,-1.73) 的反方向
     let col: Color;
@@ -256,6 +263,9 @@ export class CareerPanel extends Component {
     this._hintLabel = null;
     this._previewGfx = null;
     this._previewName = null;
+    this._actNode = null;
+    this._actGfx = null;
+    this._actLabel = null;
     this._gridNode = null;
     this._statsNode = null;
     this._previewArea = null;
@@ -306,6 +316,9 @@ export class CareerPanel extends Component {
   private _hintLabel: Label | null = null;
   private _previewGfx: Graphics | null = null;
   private _previewName: Label | null = null;
+  private _actNode: Node | null = null;
+  private _actGfx: Graphics | null = null;
+  private _actLabel: Label | null = null;
   private _gridNode: Node | null = null;
   private _statsNode: Node | null = null;
   private _previewArea: Node | null = null;
@@ -452,16 +465,35 @@ export class CareerPanel extends Component {
     this._previewArea = right;
 
     const prevBg = right.addComponent(Graphics);
-    drawRR(prevBg, PREVIEW_W, CONTENT_H, 12, new Color(15, 18, 28, 220),
-      new Color(159, 176, 216, 80), 1.5);
+    // 切到「履历」页时这块整列会 active=false,再切回来得重画(原生侧 onDisable 会清渲染数据)
+    retainedDraw(prevBg, () => {
+      drawRR(prevBg, PREVIEW_W, CONTENT_H, 12, new Color(15, 18, 28, 220),
+        new Color(159, 176, 216, 80), 1.5);
+    });
 
     // 预览 Graphics
     const gfxNode = mkNode("gfx", right, PREVIEW_W, CONTENT_H - 30);
     gfxNode.setPosition(0, 10, 0);
     this._previewGfx = gfxNode.addComponent(Graphics);
 
-    // 预览名称
-    this._previewName = mkLabel(right, "prevName", "", 16, COL.white, { y: -CONTENT_H / 2 + 18, w: PREVIEW_W - 20, align: 1 });
+    // 预览名称:贴在人物脚下、动作按钮上方(按钮要落在拇指够得着的下沿)
+    this._previewName = mkLabel(right, "prevName", "", 16, COL.white, { y: -CONTENT_H / 2 + 87, w: PREVIEW_W - 20, align: 1 });
+
+    // 动作按钮 —— 商店唯一的成交入口。
+    // 点卡片只「选中」(换试衣间 + 换按钮文案),金币只有按这里才动:
+    // 皮肤买了不能退,一tap 就扣钱的手感在触摸端就是误触。
+    const act = mkNode("action", right, ACT_W, ACT_H);
+    act.setPosition(0, -CONTENT_H / 2 + 35, 0);
+    this._actNode = act;
+    this._actGfx = act.addComponent(Graphics);
+    // 切到履历页时 previewArea 整块会 active=false,回到商店时靠 retainedDraw 重放底块
+    retainedDraw(this._actGfx, () => this._drawActionFace());
+    this._actLabel = mkLabel(act, "actionTxt", "", 17, COL.white, { y: 0, w: ACT_W - 20, align: 1 });
+    const actBtn = act.addComponent(Button);
+    actBtn.transition = Button.Transition.SCALE;
+    actBtn.zoomScale = 0.95;
+    actBtn.target = act;
+    act.on(Button.EventType.CLICK, () => this._act());
   }
 
   // ----- 底部提示 -----
@@ -593,9 +625,10 @@ export class CareerPanel extends Component {
         ov.fill();
       }
 
-      // 点击(先注册业务回调再补按压反馈:重建网格销毁卡片时动画不会晚到一步)
+      // 点击 = 只选中:右侧试衣间马上换人,下方按钮改口径;金币不动
+      // (先注册业务回调再补按压反馈:重建网格销毁卡片时动画不会晚到一步)
       const idx = i;
-      card.on(Node.EventType.TOUCH_END, () => this._confirm(idx));
+      card.on(Node.EventType.TOUCH_END, () => this._select(idx));
       pressFx(card);
     });
   }
@@ -624,12 +657,59 @@ export class CareerPanel extends Component {
     }
   }
 
-  // ========== 确认(购买/装备) ==========
+  // ========== 选中 / 成交 ==========
 
-  private _confirm(index: number) {
+  /** 点卡片只做「选中」:试衣间换人、按钮换文案,金币一分不动 */
+  private _select(index: number) {
+    if (this._kind === "stats") return;
+    if (!this._list()[index]) return;
+    this._sel = index;
+    this._elapsed = 0;
+    this._buildGrid();
+    this._drawLivePreview();
+    this._updateAction();
+  }
+
+  /** 按钮此刻该说什么 —— 买不成时把「为什么不行」直接写在按钮上,不用点了才知道 */
+  private _actView(): { text: string; style: BtnStyle; fg: Color } {
+    const kind = this._kind;
+    if (kind === "stats") return { text: "", style: "ghost", fg: COL.dimGray };
+    const s = this._list()[this._sel];
+    if (!s) return { text: "", style: "ghost", fg: COL.dimGray };
+
+    const p = Career.profile();
+    if (p.equipped[kind] === s.id) return { text: "✓ 已经装备", style: "ghost", fg: COL.green };
+    if (Career.owns(s.id)) return { text: "装备上身", style: "ghost", fg: COL.white };
+    if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, style: "ghost", fg: COL.dimGray };
+    if (p.coins < s.price) return { text: `金币不足 · 还差 ${s.price - p.coins}`, style: "ghost", fg: COL.dimGray };
+    // acid 面上要用深字(与老 .btn.primary 同)
+    const acidFg = new Color(20, 16, 10, 255);
+    if (s.price === 0) return { text: "免费领取", style: "primary", fg: acidFg };
+    return { text: `购买 · ${s.price} 金币`, style: "primary", fg: acidFg };
+  }
+
+  /** 底块单独走一遍,好让 retainedDraw 的重放和状态刷新用同一张脸 */
+  private _drawActionFace() {
+    const g = this._actGfx;
+    if (!g || !g.isValid) return;
+    g.clear();
+    drawArcadeButton(g, ACT_W, ACT_H, this._actView().style);
+  }
+
+  private _updateAction() {
+    const v = this._actView();
+    if (this._actLabel) {
+      this._actLabel.string = v.text;
+      this._actLabel.color = v.fg;
+    }
+    this._drawActionFace();
+  }
+
+  /** 唯一的成交入口:按钮点按与键盘 Enter 走同一条道 */
+  private _act() {
     const kind = this._kind;
     if (kind === "stats") return;
-    const s = this._list()[index];
+    const s = this._list()[this._sel];
     if (!s) return;
 
     const p = Career.profile();
@@ -645,7 +725,6 @@ export class CareerPanel extends Component {
       if (r.ok) this._showToast(`入手「${s.name}」并已装备!`);
       else this._showToast(r.reason ?? "购买失败");
     }
-    this._sel = index;
     this._elapsed = 0;
     this._refresh();
   }
@@ -854,6 +933,7 @@ export class CareerPanel extends Component {
       if (this._gridNode) this._gridNode.active = true;
       if (this._previewArea) this._previewArea.active = true;
       this._buildGrid();
+      this._updateAction();
       // 只留一条真有信息量的:换球是全场生效的,其余标签页看名字就懂
       this._hintLabel.string = this._kind === "shuttle" ? "换球后全场生效" : "";
     }
@@ -898,7 +978,7 @@ export class CareerPanel extends Component {
       this._moveSel(1); return;
     }
     if (code === KeyCode.ENTER || code === KeyCode.SPACE) {
-      this._confirm(this._sel); return;
+      this._act(); return;
     }
     if (code === KeyCode.ESCAPE || code === KeyCode.KEY_Q || code === KeyCode.KEY_B) {
       this._onCloseCb?.();
@@ -914,5 +994,6 @@ export class CareerPanel extends Component {
     this._elapsed = 0;
     this._buildGrid();
     this._drawLivePreview();
+    this._updateAction();
   }
 }

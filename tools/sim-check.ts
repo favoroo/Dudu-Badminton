@@ -9,6 +9,7 @@ import { Rules } from "../assets/scripts/core/rules";
 import { AI } from "../assets/scripts/core/ai";
 import { Drill } from "../assets/scripts/core/drill";
 import { Career } from "../assets/scripts/core/career";
+import { Pace } from "../assets/scripts/core/pace";
 import { PlayerInput } from "../assets/scripts/core/types";
 
 let failures = 0;
@@ -50,10 +51,13 @@ console.log("=== Part A:1p · 普通 AI 对 AI 完整一局 ===");
 {
   Rules.newMatch("1p", "normal");
   makeAllAI();
-  // 上限 15 个模拟分钟,11 分制打不完就是有问题。
+  // 上限 15 个「基准分钟」,11 分制打不完就是有问题。
   // (原 6 分钟;ai.ts 接球截面修复后 AI 对平飘球不再白送站位失误,
   //  AI vs AI 回合整体变长 —— 实测 11 分约需 5-6 模拟分钟,留足余量)
-  const MAX_STEPS = 60 * 60 * 15;
+  // 球速档位是时间膨胀:慢档里同一拍的空间轨迹不变、但要 1/s 倍的帧走完,
+  // 所以回合的**帧数**天然按 1/s 涨。上限跟着 ÷s 折算,才是在测「这局还打不打得完」,
+  // 而不是在测「玩家有没有把球速调慢」;打印里同时给折回基准的分钟数,长度是否失控一眼可见。
+  const MAX_STEPS = Math.round(60 * 60 * 15 / Pace.s);
   let steps = 0, totalHits = 0, serves = 0, scores = 0;
   while (steps < MAX_STEPS && Rules.R.state !== "OVER") {
     const R = Rules.R;
@@ -82,7 +86,8 @@ console.log("=== Part A:1p · 普通 AI 对 AI 完整一局 ===");
   assert(serves >= 10, `发球次数应 ≥10(实际 ${serves})`);
   assert(scores >= 10, `得分事件应 ≥10(实际 ${scores})`);
   assert(R.longestRally >= 1, `最长回合应 ≥1(实际 ${R.longestRally})`);
-  console.log(`  用时 ${steps} 步(${(steps / 60).toFixed(0)} 模拟秒) · 发球 ${serves} · 得分 ${scores} · 最长回合 ${R.longestRally} 拍`);
+  console.log(`  用时 ${steps} 步(${(steps / 60).toFixed(0)} 模拟秒 · 折回基准 ${(steps * Pace.s / 60).toFixed(0)} 秒)`
+    + ` · 档 ${Pace.id()}(s=${Pace.s.toFixed(2)}) · 发球 ${serves} · 得分 ${scores} · 最长回合 ${R.longestRally} 拍`);
 
   // 赛后结算链路:AI 对 AI 也算「带 CPU 的比赛」,应正常发奖
   const st = Rules.statsOf("left");

@@ -11,13 +11,15 @@
 // ============================================================
 import { Color, Graphics } from "cc";
 import { CFG } from "../core/config";
-import { TAU, rand, randi, lerp } from "../core/utils";
+import { TAU, rand, randi, clamp } from "../core/utils";
 import { withAlpha } from "./palette";
+import { easeOutCubic, easeOutQuart, fadePow } from "./easing";
+import { TIER_SMASH, TIER_SWEET_SMASH } from "./shuttle-motion";
 
 const C = CFG;
 const CO = C.court;
 const PI = Math.PI;
-const { sin, cos } = Math;
+const { sin, cos, atan2, hypot } = Math;
 
 // ---------- Viewport (重声明,避免与 world.ts 循环导入) ----------
 interface Viewport {
@@ -84,6 +86,7 @@ let pN = 0;
 const rx   = new Float32Array(MAX_R);
 const ry   = new Float32Array(MAX_R);
 const rr   = new Float32Array(MAX_R);   // 当前半径
+const rr0  = new Float32Array(MAX_R);   // 起始半径(缓动基准;老代码只用 lerp 一步到位)
 const rr1  = new Float32Array(MAX_R);   // 目标半径
 const rlf  = new Int32Array(MAX_R);     // life(递增)
 const rmx  = new Int32Array(MAX_R);     // max
@@ -169,45 +172,56 @@ export class FXSystem {
   // 公开接口
   // ==============================================================
 
-  /** 扣杀冲击波:星芒 + 扩散环 + 爆散 + 定向划线 + 速度线 + 火花扇 */
-  smash(hx: number, hy: number, angle: number): void {
+  /**
+   * 扣杀冲击波:星芒 + 扩散环 + 爆散 + 定向划线 + 速度线 + 火花扇。
+   *
+   * 老实现一上来就是 4 道彩环(白/金/青/橙)+ 4 组爆散 + 30 条放射速度线 ——
+   * 在 960×540 的画面里那四环直接铺成一面"靶子",把球本身盖掉,而且每一档都是
+   * 同一面靶子,读不出"这拍更狠"。现在:环收到 2 道(高潮档才 3 道)、星芒 2~3 颗、
+   * 速度线按档位给强度并统一收短,把"狠"让给粒子形态与丝带,而不是数量。
+   */
+  smash(hx: number, hy: number, angle: number, tier = TIER_SMASH): void {
     const dir = cos(angle) >= 0 ? 1 : -1;
+    const big = tier >= TIER_SWEET_SMASH;        // 甜蜜重扣 / 连击火热
+    // 粒子总量下调(分级炫技要的是"每粒更精"):倍率进 config,
+    // 换来同屏峰值离 MAX_P=500 更远 —— 不需要靠"特效档次"开关保帧。
+    const bc = (n: number) => Math.max(3, Math.round(n * (C.fx.burstSmashK ?? 0.5)));
 
-    // 1) 3 颗星芒(sparkle):白/金/青,静止脉动
+    // 1) 星芒:白 + 金,顶档再加一颗青
     this._sparkle(hx, hy, COL_WHITE, 34, 20);
     this._sparkle(hx, hy, COL_GOLD,  50, 24);
-    this._sparkle(hx, hy, COL_CYAN,  40, 18);
+    if (big) this._sparkle(hx, hy, COL_CYAN, 40, 18);
 
-    // 2) 4 道扩散环
-    this._ring(hx, hy, 8,  110, 20, 5,   COL_WHITE,  false);
-    this._ring(hx, hy, 16, 160, 26, 4,   COL_GOLD,   false);
-    this._ring(hx, hy, 24, 200, 32, 3,   COL_CYAN,   false);
-    this._ring(hx, hy, 30, 230, 36, 2.5, COL_ORANGE,  false);
+    // 2) 扩散环:起始半径错开 = 一层层往外推的波纹(顶档多一道)
+    this._ring(hx, hy, 6,  92,  18, 4.5, COL_WHITE, false);
+    this._ring(hx, hy, 14, 142, 26, 3.2, COL_GOLD,  false);
+    if (big) this._ring(hx, hy, 22, 196, 32, 2.6, COL_CYAN, false);
 
-    // 3) 4 组爆散粒子
-    this._burst(hx, hy, 44, COL_GOLD,   12, 34);
-    this._burst(hx, hy, 26, COL_WHITE,  14, 26);
-    this._burst(hx, hy, 22, COL_CYAN,    9, 30);
-    this._burst(hx, hy, 18, COL_ORANGE,  8, 28);
+    // 3) 爆散粒子(顶档多一组橙)
+    this._burst(hx, hy, bc(44), COL_GOLD,   12, 34);
+    this._burst(hx, hy, bc(26), COL_WHITE,  14, 26);
+    this._burst(hx, hy, bc(22), COL_CYAN,    9, 30);
+    if (big) this._burst(hx, hy, bc(18), COL_ORANGE, 8, 28);
 
-    // 4) 20 条定向划线(沿 angle 扇形展开)
-    for (let i = 0; i < 20; i++) {
-      const a = angle + (i / 20 - 0.5) * 1.1;
+    // 4) 定向划线(沿 angle 扇形展开;20 → 14,每片改成刀形比多撒几颗更值钱)
+    for (let i = 0; i < 14; i++) {
+      const a = angle + (i / 14 - 0.5) * 1.1;
       const spd = rand(18, 30);
       const ci = i % 3 === 0 ? COL_CYAN : i % 3 === 1 ? COL_GOLD : COL_WHITE;
       this._particle(hx, hy, cos(a) * dir * spd, sin(a) * rand(9, 20),
         0.03, 0.98, 18, 18, 3, 0, 0, ci, SH_STREAK);
     }
 
-    // 5) 速度线
-    this._speedLines(hx, hy, 1.0);
+    // 5) 速度线:按出球方向收带,强度随档位(普通扣杀不再和完美重扣一样满屏)
+    this._speedLines(hx, hy, big ? 1.0 : 0.6, angle);
 
     // 6) 方向火花扇
-    this._dirSparks(hx, hy, angle, 1.5);
+    this._dirSparks(hx, hy, angle, big ? 1.5 : 1.1);
   }
 
-  /** 甜区光晕:星芒 + 环 + 爆散 + 划线(无速度线/火花扇) */
-  sweet(sx: number, sy: number): void {
+  /** 甜区光晕:星芒 + 环 + 爆散 + 划线(无速度线/火花扇)。angle = 出球方向,缺省右向 */
+  sweet(sx: number, sy: number, angle = 0): void {
+    const bc = (n: number) => Math.max(2, Math.round(n * (C.fx.burstSmashK ?? 0.5)));
     // 2 颗星芒
     this._sparkle(sx, sy, COL_WHITE, 20, 15);
     this._sparkle(sx, sy, COL_GOLD,  32, 18);
@@ -217,16 +231,16 @@ export class FXSystem {
     this._ring(sx, sy, 8, 82, 22, 2.5, COL_GOLD,  false);
 
     // 3 组爆散
-    this._burst(sx, sy, 24, COL_GOLD,  8, 24);
-    this._burst(sx, sy, 16, COL_WHITE, 10, 18);
-    this._burst(sx, sy, 10, COL_CYAN,   6, 20);
+    this._burst(sx, sy, bc(24), COL_GOLD,  8, 24);
+    this._burst(sx, sy, bc(16), COL_WHITE, 10, 18);
+    this._burst(sx, sy, bc(10), COL_CYAN,   6, 20);
 
-    // 10 条定向划线(较窄扇形)
+    // 10 条定向划线(较窄扇形,跟着出球方向走 —— 原来是固定朝右的扇)
     for (let i = 0; i < 10; i++) {
-      const a = (i / 10 - 0.5) * 0.8;
+      const a = angle + (i / 10 - 0.5) * 0.8;
       const spd = rand(12, 20);
       const ci = i % 2 === 0 ? COL_WHITE : COL_GOLD;
-      this._particle(sx, sy, cos(a) * spd, sin(a) * rand(4, 11),
+      this._particle(sx, sy, cos(a) * spd, sin(a) * spd,
         0.02, 0.98, 12, 12, 2.2, 0, 0, ci, SH_STREAK);
     }
   }
@@ -268,14 +282,18 @@ export class FXSystem {
   }
 
   /** 普通击球接触小火花:一小撮白金粒子,让平抽/高远的对拉每拍都有「打到了」的手感 */
-  miniSpark(hx: number, hy: number): void {
-    for (let i = 0; i < 6; i++) {
-      const a = rand(0, TAU);
+  miniSpark(hx: number, hy: number, angle = 0): void {
+    const n = C.fx.miniSparkCount ?? 4;
+    for (let i = 0; i < n; i++) {
+      // 朝出球方向的窄扇(而不是全向撒):普通拍也读得出"这拍往哪去了"
+      const a = angle + rand(-1.1, 1.1);
       const spd = rand(2.5, 7);
       this._particle(hx, hy, cos(a) * spd, sin(a) * spd,
         0.08, 0.92, randi(7, 12), 12,
-        rand(1.2, 2.2), 0, 0, i < 2 ? COL_GOLD : COL_WHITE, SH_SQUARE);
+        rand(1.4, 2.6), rand(0, PI / 4), rand(-0.08, 0.08), i < 2 ? COL_GOLD : COL_WHITE, SH_SQUARE);
     }
+    // 一道极小的环:普通档不再是"只有几粒灰"(分级炫技的地板抬高半格)
+    this._ring(hx, hy, 3, 26, 10, 1.6, COL_WHITE, false);
   }
 
   /** 羽毛飘落:count 片白羽从 (x,y) 散落,重力+风阻+湍流 */
@@ -396,18 +414,20 @@ export class FXSystem {
 
   /** 静止星芒闪光(老 sparkle) */
   private _sparkle(sx: number, sy: number, ci: number, size: number, life: number): void {
-    this._particle(sx, sy, 0, 0, 0, 1, life, life, size, rand(0, PI / 4), 0, ci, SH_STAR);
+    const s = size * (C.fx.sparkleScale ?? 1);
+    this._particle(sx, sy, 0, 0, 0, 1, life, life, s, rand(0, PI / 4), 0, ci, SH_STAR);
   }
 
-  /** 扩散环(老 ring) */
+  /** 扩散环(老 ring)。目标半径统一乘 fx.ringScale —— 见该键注释 */
   private _ring(
     rrx: number, rry: number, r0: number, r1: number,
     max: number, w: number, ci: number, flat: boolean,
   ): void {
     if (rN >= MAX_R) return;
     const i = rN;
+    const k = C.fx.ringScale ?? 1;
     rx[i] = rrx; ry[i] = rry;
-    rr[i] = r0; rr1[i] = r1;
+    rr[i] = r0 * k; rr0[i] = r0 * k; rr1[i] = r1 * k;
     rlf[i] = 0; rmx[i] = max;
     rw[i] = w; rcol[i] = ci;
     rflat[i] = flat ? 1 : 0;
@@ -430,15 +450,29 @@ export class FXSystem {
     swN++;
   }
 
-  /** 速度线(老 speedLines) */
-  private _speedLines(cx: number, cy: number, intensity: number): void {
-    const n = Math.round((C.fx.speedLineCount || 30) * intensity);
-    const life = C.fx.speedLineLife || 8;
+  /**
+   * 速度线(老 speedLines)。
+   * 老写法是"从落点向四周均匀放射",跟球实际怎么飞的没关系 —— 重扣明明是斜着砸下来,
+   * 四周却同时出现一圈放射线,读起来像爆炸而不像"快"。
+   * 现在按传入的 `bias`(出球方向)把 `fx.speedLineBias` 比例的线收到那条轴带附近,
+   * 其余仍散布四周保住"全场一紧"的氛围。
+   */
+  private _speedLines(cx: number, cy: number, intensity: number, bias?: number): void {
+    const F = C.fx;
+    const n = Math.round((F.speedLineCount || 30) * intensity);
+    const life = F.speedLineLife || 8;
+    const biasK = F.speedLineBias ?? 0.72;
+    const reach = F.speedLineReach ?? 0.5;      // 老值 150~320 会横穿半屏,统一收短
+    const hasBias = bias !== undefined && Number.isFinite(bias);
     for (let i = 0; i < n; i++) {
       if (slN >= MAX_SL) return;
-      const a = rand(0, TAU);
-      const startD = rand(150, 320);
-      const endD   = rand(20, 60);
+      // biased:贴着出球反方向的窄带(线往击球点收 = 球"撞"进来的读感)
+      const inBand = hasBias && i < n * biasK;
+      const a = inBand
+        ? (bias as number) + PI + rand(-0.42, 0.42)
+        : rand(0, TAU);
+      const startD = (inBand ? rand(170, 360) : rand(150, 320)) * reach;
+      const endD   = rand(20, 60) * reach;
       const idx = slN;
       slx1[idx] = cx + cos(a) * startD;
       sly1[idx] = cy + sin(a) * startD;
@@ -511,9 +545,14 @@ export class FXSystem {
   }
 
   private _stepRings(): void {
+    const easeK = C.fx.ringEaseK ?? 0.42;
     for (let i = rN - 1; i >= 0; i--) {
       rlf[i]++;
-      rr[i] = lerp(rr[i], rr1[i], 0.28);
+      // 冲击环的形状规律:先"炸"出去、再慢下来。老写法是 lerp 固定 0.28 一步到位,
+      // 于是每一道环都是同一种匀速膨胀,层与层之间读不出先后。
+      const t = rlf[i] / rmx[i];
+      const u = Math.pow(clamp(t, 0, 1), easeK);
+      rr[i] = rr0[i] + (rr1[i] - rr0[i]) * easeOutQuart(u);
       if (rlf[i] >= rmx[i]) {
         this._popRing(i);
       }
@@ -597,7 +636,7 @@ export class FXSystem {
   private _popRing(i: number): void {
     const last = rN - 1;
     if (i !== last) {
-      rx[i]=rx[last]; ry[i]=ry[last]; rr[i]=rr[last]; rr1[i]=rr1[last];
+      rx[i]=rx[last]; ry[i]=ry[last]; rr[i]=rr[last]; rr0[i]=rr0[last]; rr1[i]=rr1[last];
       rlf[i]=rlf[last]; rmx[i]=rmx[last]; rw[i]=rw[last];
       rcol[i]=rcol[last]; rflat[i]=rflat[last];
     }
@@ -660,7 +699,7 @@ export class FXSystem {
   private _drawMarks(g: Graphics, vp: Viewport): void {
     const gy = CO.groundY + 2;
     for (let i = 0; i < mkN; i++) {
-      const a = mklf[i] / mkmx[i];
+      const a = easeOutCubic(mklf[i] / mkmx[i]);
       const alpha = a * 0.8;
       const ci = mkout[i] ? COL_RED : COL_WHITE;
       g.strokeColor = withAlpha(CLUT[ci], alpha);
@@ -675,7 +714,7 @@ export class FXSystem {
   private _drawShockwaves(g: Graphics, vp: Viewport): void {
     for (let i = 0; i < swN; i++) {
       if (swdl[i] > 0) continue;
-      const a = swlf[i] / swmx[i];
+      const a = easeOutCubic(swlf[i] / swmx[i]);
       const vx = vp.x(swx[i]);
       const vy = vp.y(swy[i]);
       const r = swr[i];
@@ -695,55 +734,108 @@ export class FXSystem {
   }
 
   // ---------- 扩散环 ----------
+  /**
+   * 双道同半径描边:宽而暗的一道当晕 + 窄而亮的一道当芯(sprites.glowStroke 的同款
+   * 辉光近似 —— Cocos 2D 没有 additive/blur)。alpha 走 easeOutCubic:
+   * 单环硬边读起来像"画了个圈",有晕才像"炸开了一下"。
+   */
   private _drawRings(g: Graphics, vp: Viewport): void {
+    const F = C.fx;
+    const haloK = F.ringHaloK ?? 2.8;
+    const haloA = F.ringHaloA ?? 0.24;
     for (let i = 0; i < rN; i++) {
-      const a = 1 - rlf[i] / rmx[i];   // 从亮到暗
-      const alpha = a * 0.9;
-      g.strokeColor = withAlpha(CLUT[rcol[i]], alpha);
-      g.lineWidth = rw[i];
+      const t = rlf[i] / rmx[i];
+      const a = easeOutCubic(1 - t) * 0.9;
       const vx = vp.x(rx[i]);
       const vy = vp.y(ry[i]);
-      if (rflat[i]) {
-        g.ellipse(vx, vy, rr[i], rr[i] * 0.32);
-      } else {
-        g.circle(vx, vy, rr[i]);
-      }
+      const r = rr[i];
+      const rY = rflat[i] ? r * 0.32 : r;
+      g.lineWidth = rw[i] * haloK * (0.35 + 0.65 * (1 - t));
+      g.strokeColor = withAlpha(CLUT[rcol[i]], a * haloA);
+      g.ellipse(vx, vy, r, rY);
+      g.stroke();
+      g.lineWidth = Math.max(0.6, rw[i] * (0.45 + 0.55 * (1 - t)));
+      g.strokeColor = withAlpha(CLUT[rcol[i]], a);
+      g.ellipse(vx, vy, r, rY);
       g.stroke();
     }
   }
 
   // ---------- 粒子(方块/星芒/划线) ----------
+  /**
+   * 粒子成形(分级炫技 P2)。
+   * 老实现:每个粒子都是一个**轴对齐的 g.rect 方块**,prot(旋转量)存了却从没用过,
+   * 划线更是无视自己的速度方向、永远画成 2px 的水平条 —— 一堆正方形飘在屏幕上,
+   * 就是"简单粗暴"最直观的样子。现在:
+   *  * 全部按真实运动方向拉成菱形/柳叶形(blade),快的粒子更长,慢下来的自然收圆;
+   *  * alpha 走 ease-out 幂曲线(前段亮、尾段散),尺寸随寿命收缩,不再"啪地消失";
+   *  * 星芒加一层低透明辉光底,近似 shadowBlur 的那点柔边。
+   */
   private _drawParticles(g: Graphics, vp: Viewport): void {
+    const F = C.fx;
+    const fadeK = F.partFadeK ?? 1.55;
+    const shrink = F.partShrink ?? 0.45;
+    const lenK = F.streakLenK ?? 1.7;
+    const taper = F.streakTaper ?? 0.28;
     for (let i = 0; i < pN; i++) {
-      const a = plife[i] / pmax[i];
+      const raw = plife[i] / pmax[i];
+      const a = fadePow(raw, fadeK);
       const ci = pcol[i];
       const shape = psh[i];
+      const spd = hypot(pvx[i], pvy[i]);
 
       if (shape === SH_STAR) {
-        // 星芒:脉动尺寸
+        // 星芒:脉动尺寸 + 辉光底
         const sz = psz[i] * (0.4 + 0.6 * sin(a * PI));
+        this._drawGlow(g, vp, px[i], py[i], sz * 0.9, CLUT[ci], a * 0.18);
         this._drawStar(g, vp, px[i], py[i], sz, prot[i], CLUT[ci], a);
       } else if (shape === SH_STREAK) {
-        // 划线:速度反向细长矩形
-        const vxP = vp.x(px[i]);
-        const vyP = vp.y(py[i]);
-        const len = Math.abs(pvx[i]) * 1.6;
-        if (len < 0.5) continue;
-        g.fillColor = withAlpha(CLUT[ci], a);
-        // 在 viewport 空间, streak 向左延伸(与 vx 方向相反)
-        const sx = pvx[i] >= 0 ? vxP - len : vxP;
-        g.rect(sx, vyP - 1, len, 2);
-        g.fill();
+        // 划线:沿**真实速度方向**的柳叶形(头宽尾尖),不再是无视角度的水平条
+        const ang = spd > 0.01 ? atan2(pvy[i], pvx[i]) : prot[i];
+        const len = Math.max(1.2, spd * lenK) * (shrink + (1 - shrink) * raw);
+        const hw = psz[i] * 0.5 * (taper + (1 - taper) * raw);
+        this._blade(g, vp, px[i], py[i], ang, len, hw, hw * taper, CLUT[ci], a);
       } else {
-        // 方块
-        const sz = psz[i];
-        const vxP = vp.x(px[i]);
-        const vyP = vp.y(py[i]);
-        g.fillColor = withAlpha(CLUT[ci], a);
-        g.rect(vxP - sz * 0.5, vyP - sz * 0.5, sz, sz);
-        g.fill();
+        // 方块 → 沿速度拉长的菱形;几乎不动的(扬尘)就保持小方片
+        const sz = psz[i] * (shrink + (1 - shrink) * raw);
+        const ang = spd > 0.05 ? atan2(pvy[i], pvx[i]) : prot[i];
+        const stretch = 1 + clamp(spd * 0.16, 0, 2.2);
+        this._blade(g, vp, px[i], py[i], ang, sz * stretch, sz * 0.5, sz * 0.3, CLUT[ci], a);
       }
     }
+  }
+
+  /**
+   * 一片"刀形"粒子:中心 (cx,cy),沿 ang 方向长 len,头半宽 wHead、尾半宽 wTail。
+   * Cocos 的 Graphics 没有 rotate,四角在局部算完再逐个过 Viewport(同彩带/羽毛的做法)。
+   */
+  private _blade(g: Graphics, vp: Viewport, cx: number, cy: number,
+    ang: number, len: number, wHead: number, wTail: number, color: Color, alpha: number): void {
+    if (alpha <= 0.006 || len < 0.4) return;
+    const c = cos(ang), s = sin(ang);
+    const hx = cx + c * len * 0.5, hy = cy + s * len * 0.5;     // 头(顺风侧)
+    const tx = cx - c * len * 0.5, ty = cy - s * len * 0.5;     // 尾
+    // 法向(-s, c)
+    g.fillColor = withAlpha(color, alpha);
+    g.moveTo(vp.x(hx - s * wHead), vp.y(hy + c * wHead));
+    g.lineTo(vp.x(cx - s * wHead * 0.6), vp.y(cy + c * wHead * 0.6));
+    g.lineTo(vp.x(tx - s * wTail), vp.y(ty + c * wTail));
+    g.lineTo(vp.x(tx + s * wTail), vp.y(ty - c * wTail));
+    g.lineTo(vp.x(cx + s * wHead * 0.6), vp.y(cy - c * wHead * 0.6));
+    g.lineTo(vp.x(hx + s * wHead), vp.y(hy - c * wHead));
+    g.close();
+    g.fill();
+  }
+
+  /** 极软的辉光底:两层同心圆(近似 shadowBlur;只在星芒上花这点钱) */
+  private _drawGlow(g: Graphics, vp: Viewport, cx: number, cy: number, r: number,
+    color: Color, alpha: number): void {
+    if (alpha <= 0.006 || r < 0.6) return;
+    const x = vp.x(cx), y = vp.y(cy);
+    g.fillColor = withAlpha(color, alpha * 0.5);
+    g.circle(x, y, r * 1.7); g.fill();
+    g.fillColor = withAlpha(color, alpha);
+    g.circle(x, y, r); g.fill();
   }
 
   /** 星芒:4 个 quadraticCurveTo 经中心到旋转顶点 */
@@ -773,13 +865,24 @@ export class FXSystem {
   }
 
   // ---------- 速度线 ----------
+  /**
+   * 速度线收带:线自己往击球点冲(endD 一侧),而不是原地一条静止的线段;
+   * 宽度与 alpha 一起按 ease-out 收,最后一帧不会"啪"地断掉。
+   */
   private _drawSpeedLines(g: Graphics, vp: Viewport): void {
-    g.lineWidth = 1.5;
+    const F = C.fx;
+    const baseW = F.speedLineWidth ?? 2.2;
     g.lineCap = Graphics.LineCap.ROUND;
     for (let i = 0; i < slN; i++) {
-      const a = (sllf[i] / slmx[i]) * 0.6;
+      const raw = sllf[i] / slmx[i];
+      const a = easeOutCubic(raw) * 0.66;
+      if (a <= 0.006) continue;
+      const t = (1 - raw) * 0.55;                       // 外端向内收 55%
+      const x1 = slx1[i] + (slx2[i] - slx1[i]) * t;
+      const y1 = sly1[i] + (sly2[i] - sly1[i]) * t;
       g.strokeColor = withAlpha(CLUT[slcol[i]], a);
-      g.moveTo(vp.x(slx1[i]), vp.y(sly1[i]));
+      g.lineWidth = Math.max(0.6, baseW * raw);
+      g.moveTo(vp.x(x1), vp.y(y1));
       g.lineTo(vp.x(slx2[i]), vp.y(sly2[i]));
       g.stroke();
     }

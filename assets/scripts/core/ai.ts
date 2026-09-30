@@ -5,6 +5,7 @@
 import { CFG } from "./config";
 import { clamp, approach, rand } from "./utils";
 import { Physics } from "./physics";
+import { Pace } from "./pace";
 import { Player as Pl } from "./player";
 import { Rules, RulesState } from "./rules";
 import { AiState, Ball, Intercept, Player, PlayerInput } from "./types";
@@ -29,13 +30,15 @@ const D = (p: Player) => (p.aiDiff ? C.diffs[p.aiDiff] : C.diffs.normal);
 interface FutureLike { x: number; y: number; vx: number; vy: number }
 
 // 把球往前推 n 步(不改原对象)
+// 阻尼与重力都从物理层/档位层取,**不许在这里抄第二份积分常数**:球速档位把重力改成
+// gravity·s² 后,照原值预测会让 AI 的接球截面与 entryLead 整体错位(慢档里表现为"明明
+// 来得及却不动")。Physics.drag 内部含速度封顶,与真实单步积分一字不差。
 function future(ball: FutureLike, n: number): FutureLike[] {
   let { x, y, vx, vy } = ball;
   const out: FutureLike[] = [];
   for (let i = 0; i < n; i++) {
-    const sp = Math.hypot(vx, vy);
-    const d = Math.max(C.shuttle.dragMin, 1 - C.shuttle.dragK * Math.min(sp, C.shuttle.maxSpeed));
-    vx *= d; vy *= d; vy += C.shuttle.gravity;
+    const d = Physics.drag(Math.hypot(vx, vy));
+    vx *= d; vy *= d; vy += Pace.g;
     x += vx; y += vy;
     out.push({ x, y, vx, vy });
   }
@@ -202,8 +205,8 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     }
     if (!ic) ic = intercept(p, ball, 90, C.aiReach.contact);
     const err = (Math.random() * 2 - 1) * d.aimErr;
-    const lo = p.side === "left" ? CO.wallL : CO.netX + 10;
-    const hi = p.side === "left" ? CO.netX - 10 : CO.wallR;
+    const lo = p.side === "left" ? CO.wallL : CO.netX + CO.netPad;
+    const hi = p.side === "left" ? CO.netX - CO.netPad : CO.wallR;
     // 双打:落点归队友就回防区待命,别两个人叠在一起
     const claimX = ball.shot && ball.shot.landX != null ? ball.shot.landX : ic.x;
     S.chasing = Rules.shouldChase(p, claimX);

@@ -98,6 +98,52 @@ export const CFG = {
     maxSteps: 4,       // 单帧最多补几步(切后台回来不追帧)
   },
 
+  // ===== 球速档位(时间膨胀):玩家可改的唯一物理旋钮,生效逻辑在 core/pace.ts =====
+  // s = 每帧位移相对量(<1 = 更慢)。pace.ts 的缩放是「重力 ×s²、速度类 ×s、阻力系数不动」,
+  // 所以**空间轨迹逐点不变**(落点/弧度/过网余量都不动),只是滞空帧数 ÷s。
+  // 因此下面 shuttle/shot 的数值仍然是「s=1 基准」的原值 —— 不要在它们身上乘档,
+  // 更不要靠砍 shot.speedMax 来放慢(那会让低点深球够不到底线,实测 798→696→611)。
+  // 存 id 不存索引:往表里插一档不会让老存档的索引指错。
+  pace: {
+    default: "standard",       // 出货默认 = 比上一版整体慢 8%(用户反馈手机接不到球)
+    min: 0.5, max: 1.4,        // 运行时兜底夹取(手改存档 / 以后加档)
+    // 表序必须从慢到快单调(settings-check 有断言):设置页那根滑杆按下标定位,反了会拖反方向。
+    // 已有五档的 id 与系数**别改**:玩家存档存的是 id,改系数等于改了人家设好的档。
+    // 两头各留了两档"试验档":越靠边, Euler 离散的落点漂移越大(xfast 1.16 档实测 mean 1.6px /
+    // max 15.3px,extreme 0.60 档 mean 1.7 / max 13.8),mean 才是牙齿 —— 缩放方式一错就漂到 12px 量级。
+    // 再往外扩先看 tools/reach-check.ts §1 的数,别为了"更慢"直接把档砍到飞。
+    tiers: [
+      { id: "extreme",  s: 0.60, label: "极慢", note: "慢 40%:滞空 ×1.67,基本打不死人,当试验档" },
+      { id: "xslow",    s: 0.70, label: "超慢", note: "慢 30%:很从容,回合会明显变长" },
+      { id: "vslow",    s: 0.80, label: "很慢", note: "慢 20%:回合变长,已经很好接" },
+      { id: "slow",     s: 0.86, label: "偏慢", note: "慢 14%:再给一拍反应时间" },
+      { id: "standard", s: 0.92, label: "标准", note: "慢 8%:比上一版好接,落点一点没变" },
+      { id: "fast",     s: 1.00, label: "原速", note: "上一版的节奏,一点没放慢" },
+      { id: "vfast",    s: 1.08, label: "偏快", note: "快 8%:手感熟到想再压一档" },
+      { id: "xfast",    s: 1.16, label: "很快", note: "快 16%:比上一版还凶,练反应用" },
+    ],
+  },
+
+  // ===== 人物移速档位(真人侧):第二个手感旋钮,生效逻辑在 core/gait.ts =====
+  // 球速档调的是「留给玩家几帧」,这一档调的是「这几帧里他能覆盖多少地面」——
+  // 两摊账互相补偿,所以分开给两个旋钮,别合成一根"难度"滑杆(那就读不出动了什么)。
+  // 只乘 accel 与 vmax 这一对(起步和极速同比例,才是"步子大了");跨步冲量 lunge.speed、
+  // 跳跃 jumpV/gravity、摩擦 groundFriction 都不跟着动,更不作用于 AI(AI 有 diffs.speed)。
+  // 与 pace 的区别:gait 即时生效(移动速度不影响已在飞的球),不等下一球。
+  gait: {
+    default: "standard",       // 出货默认 = 现在的速度(上一轮已从 8.6 提到 9.2,不再默认加码)
+    min: 0.6, max: 1.8,        // 运行时兜底夹取(手改存档 / 以后加档)
+    // 表序必须从慢到快单调(settings-check 有断言):滑杆按下标定位,反了会拖反方向。
+    tiers: [
+      { id: "vslow",    s: 0.70, label: "很慢", note: "慢 30%:飘着走,当对照用" },
+      { id: "slow",     s: 0.85, label: "偏慢", note: "慢 15%:手机-thumb 容易过头的那一档" },
+      { id: "standard", s: 1.00, label: "标准", note: "现在的速度,一点没改" },
+      { id: "fast",     s: 1.15, label: "偏快", note: "快 15%:够得着更深的球" },
+      { id: "vfast",    s: 1.30, label: "很快", note: "快 30%:半场基本两步到底" },
+      { id: "xfast",    s: 1.50, label: "极快", note: "快 50%:再快就飘,先看 reach-check §5" },
+    ],
+  },
+
   // 面板态:这些状态下主循环不推进世界(只跑渲染和面板自己的动画)。
   // 原先这个集合在四处各抄了一份字面量(主循环推进守卫 / Rules.step / Rules.pause /
   // togglePause),加一个训练面板态就要同时改四处,漏任何一处都会出鬼事:
@@ -121,6 +167,10 @@ export const CFG = {
     shortServeR: 588,
     wallL: 44,         // 球员可达边界(比底线更宽,允许救界外球)
     wallR: 916,
+    // 网前留白:两侧球员都不得进网这个距离内。player.ts 的夹取、AI 走位、滑轨的
+    // 可达区间三处都要同一个数 —— 滑轨是按「人能站到哪」画刻度的,抄两份就会
+    // 出现「轨的端点指向人到不了的位置」。
+    netPad: 10,
   },
 
   // 球馆主题皮肤列表
@@ -198,11 +248,28 @@ export const CFG = {
     netBumpTries: 5,
   },
 
+  // ===== 球种定性阈值(给飘字/音效/丝带档位/生涯奖励贴标签,不参与任何判定) =====
+  // 原先这些数硬编码在 physics.classify 里(违反「数值只进 config」),搬过来。
+  // 速度阈值是**基准单位**(s=1 的 px/step):classify 收到的是 pace.ts 折回基准后的速度,
+  // 所以标签不随球速档位漂移 —— 慢档里同一记重杀仍叫「重杀」,不会念成「劈吊」。
+  shotClass: {
+    smashDeg: 15,      // 压角小于此 + 击球点够高 + 球够快 = 重杀
+    smashH: 105,
+    smashSpeed: 16,
+    slashDeg: 22,      // 压角小于此 + 击球点次高 = 劈吊
+    slashH: 92,
+    lobDeg: 55,        // 挑得比这更高就是挑高/高远一类
+    netDepth: 0.3,     // 落点深浅小于此 = 网前小球
+    driveDeg: 28,      // 剩下的里再按角度分平抽与高远
+  },
+
   // 出射角锚点:[击球点离地高度, θ]。这张表就是「滞空时间表」——
-  // 落点由求解器反解速度保证,所以想整体放慢或加快回球,改这里最直接。
+  // 落点由求解器反解速度保证,所以想改**某一类球**的快慢(只抬杀球、只抬高球)改这里。
+  // 想整体放慢/加快别动这张表,走 config.pace 的球速档位:那套时间膨胀不改变落点,
+  // 而这张表一动,不同球种的滞空比例就变了,训练场各关的达成率会跟着重排。
   // 低球被迫挑高(约 70 帧,有时间回位),高球可以压平(约 30 帧,还来得及反应)。
-  // 想放慢只抬 h≥80 段(快球才是来不及反应的来源);低段别动 —— 低点球已够慢,
-  // 再抬弧只会让低点深球够不着底线(speedMax cap 下防守深度会崩,实测 798→696)。
+  // 低段别动 —— 低点球已够慢,再抬弧只会让低点深球够不着底线
+  // (speedMax cap 下防守深度会崩,实测 798→696)。
   loftByHeight: [
     [0, 74], [40, 66], [80, 52], [110, 36], [150, 22], [200, 6], [250, -6],
   ],
@@ -271,6 +338,51 @@ export const CFG = {
   // shuttleGlowR = 外晕基准半径(px);shuttleGlowMax = 峰值亮度上限;
   // 阈值 0.9 对应 |fc-lead| ≤ 1 帧(ramp 14 时约 3 帧 ≈ 50ms)的「就是现在」白环闪烁。
   swingCue: { rampFrames: 14, arriveRadius: 0.5, horizonFrames: 40, shuttleGlowR: 20, shuttleGlowMax: 0.9 },
+
+  // ===== 落点预测提示(数值只住这里,画在 render/hud-overlay.ts)=====
+  // 原实现是压在地面亮线上的一只 15×5.5 细圈,亮度还在 0.18~0.42 之间慢呼吸 ——
+  // 金色压在球馆那条暖白地面线上、橙色压在沙滩的金沙上,亮底对亮色等于没画。
+  // 现在拆成六层,每层各解决一个「看不见」的成因:
+  //   ① backing 暗衬底 —— 不靠「颜色够亮」取胜,先垫出一块暗底,四套主题一律有对比;
+  //   ② spot 地贴光斑 —— 同心叠层近似径向渐变(Graphics 没有渐变);
+  //   ③ ring 收缩准星环 —— 只留一道,亮度按 sin 两端 ease(见下方「安静档」说明);
+  //   ④ 主圈双描边 —— 主题色外描 + 白芯内描,任何底色都读得出轮廓;
+  //   ⑤ beam 落点列光 —— 盯着球的时候不用移开视线就能读出落点 x;
+  //   ⑥ chevron 下箭头 —— 把「就在这里」指到线上一格。
+  // 【安静档】显眼这件事已经全部交给尺寸 + 暗衬底 + 白芯双描边,不靠动效撑:
+  //   主圈/光斑/箭头一律恒定亮度(原 0.16rad/帧的呼吸涨落删掉),准星环从 2 道错峰减到
+  //   1 道、周期 34→50 帧、峰值 0.9→0.5,且透明度用 sin(π·ph) 两端 ease ——
+  //   原来环收到最亮(0.9)那一帧突然跳回 0.1 消失,那个 pop 才是「一直在闪」。
+  //   临落只剩环速 50→34 帧与列光微抬这两处缓变,不再有周期性明暗脉动。
+  // 落在真人守的那一侧给满档(该动手了),纯 AI 一侧(自己刚打出去的球)收一档不抢戏;
+  // 预计出界/撞网的球反过来压暗放慢 —— 这类球不该让人冲过去。
+  landing: {
+    rx: 30, ry: 9,              // 普通球光斑半径(原 15×5.5 的约两倍)
+    smashRx: 36, smashRy: 11,   // 扣杀档:又大又红,一眼分清是不是该跳
+    outRx: 26, outRy: 8,        // 预计出界档(收着画)
+    backing: 1.2,               // 暗衬底半径 = 光斑半径 × 此倍率
+    backingA: 0.45,             // 暗衬底不透明度(纯黑压深)
+    spotA: 0.26,                // 光斑中心不透明度(恒定,不再随呼吸涨落)
+    glowLayers: 3,              // 光斑同心层数
+    rings: 1,                   // 同屏准星环数量(2 道错峰实测就是「一直闪」的元凶)
+    ringFrom: 2.2,              // 准星环起始半径 = rx × 此倍率
+    ringPeriodSlow: 50,         // 一个收缩循环的帧数(球还远)
+    ringPeriodFast: 34,         // 临落时的帧数(只稍微催一点,不再压到 15)
+    ringA: 0.5,                 // 准星环峰值不透明度(出现在收到一半那一刻)
+    ringW: 2,                   // 准星环线宽(恒定;原先随收缩加粗也在制造 punch)
+    beamH: 168, beamW: 22,      // 列光:从地面线往上多高、底部多宽
+    beamA: 0.22,                // 列光底部不透明度(向上三段渐隐)
+    urgentFrames: 45,           // 距落地 ≤ 此帧数算「快到了」(只抬列光与环速,不再改亮度)
+
+    // 轨迹预测虚线:把「这一拍会走哪条弧」提前画出来,读球不用靠猜。
+    // 刻意压得比地面标识低一档(半透明 + 冷白,不抢金/橙的落点圈),
+    // 且沿弧长分三段向落点方向淡出 —— 起点跟着球走,末端交给落点圈去喊。
+    pathHorizon: 90,            // 前瞻帧数上限( loftByHeight 那张表里最滞空的一档约 70 帧,留余量)
+    pathA: 0.30,                // 靠球那端的不透明度
+    pathW: 2.2,                 // 线宽
+    dashOn: 7, dashOff: 9,      // 虚线段长 / 间隔(px);间隔略大于段长 = 更透气
+    pathFade: [1, 0.66, 0.4],   // 沿弧长三等分的透明度衰减
+  },
 
   // 甜蜜点:命中时刻在 active 窗口中的位置
   // coreRatio 换算成手感 = ±(active/2 × coreRatio) 帧的起手容错(见 Player.qualityAt):
@@ -365,10 +477,6 @@ export const CFG = {
     // 曾因用户反馈「重击卡住不好操控」关过一段时间;操纵问题已由 hitstop 期间
     // 保留输入边沿(keepEdges)解决,重新打开赛点演出与扣杀庆祝慢放。
     slowmoEnabled: true,
-    // 精彩即时回放总闸:已重构成零 GC 预分配环形缓冲,且仅在死球/得分结算阶段播放(绝不对打中倒带);
-    // 回放期间轻触屏幕任意处或按键均可即刻跳过。
-    // 运行时真值统一由 Settings.replayMode 控制("off" | "matchpoint" | "all")。
-    replayEnabled: true,
     // hitstop 定格帧数 = 真实帧数(主循环在定格段不乘慢放系数),换算 ms ≈ 帧数 × 16.7。
     // 顶档压在 7 帧:够读出「啪」的一下,又不会把手指按下去的那段时间整段吃掉。
     hitstopCap: 7,          // 定格帧总闸:任何来源(六档/发球/擦网/挥空)都不许超过
@@ -461,6 +569,104 @@ export const CFG = {
     shotLabelLob:    { text: "挑高", color: "#b8f0c8", size: 13, life: 28 },
     shotLabelSlash:  { text: "劈吊", color: "#ffd48a", size: 13, life: 28 },
     shotLabelClear:  { text: "高远", color: "#c0d8ff", size: 13, life: 28 },
+
+    // ============================================================
+    // 特效精细化(分级炫技):球体运动学 / 锥形拖尾丝带 / 粒子成形 / 镜头与飘字
+    // 设计主线:普通档克制,甜区→扣杀→甜蜜重扣→连击火热逐级加码 ——
+    // 每档只改"幅度"不改"有没有",玩家一眼能看出这拍打进了甜区。
+    // 这一整段只作用于渲染层:不改 squash 档位、hitstop、慢放等任何模拟数值。
+    // ============================================================
+
+    // 一、羽毛球本体运动学(阻力对齐 + 翻滚 + 羽片颤动),全部渲染层局部状态
+    shuttleAlignK: 0.30,       // 滞后角追踪刚度:球头追速度方向的弹性常数
+    shuttleAlignDamp: 0.66,    // 角速度阻尼:<1 才有"甩过头再被拽回"的拖转
+    shuttleRollK: 0.0055,      // 翻滚角速度 = 此值 × 速度(弧度/渲染帧)
+    featherSplayK: 0.075,      // 受力外扩:速度突变(击球那一下)决定裙摆炸开量
+    featherSplayDecay: 0.88,   // 外扩收拢速率(空气把羽片收回)
+    featherFlex: 0.5,          // 羽片相位摆幅(弧度):裙摆"呼吸"
+    shuttleFeathers: 7,        // 裙摆分片羽毛数(老代码是一整块五边形)
+    shuttleWobK: 0.13,         // 压扁回弹的过冲振幅(相对 sq)
+    shuttleWobDamp: 0.74,      // 回弹振荡衰减
+    shuttleWobFreq: 0.62,      // 回弹振荡角频率(弧度/帧)
+    shuttlePopSmash: 0.10,     // 扣杀命中瞬间的整体 scale pop
+    shuttlePopDecay: 0.7,      // scale pop 每渲染帧保留的余量比例
+    shuttleHeatRim: 0.55,      // 火热档羽尖染火的比例(裙摆外缘烧色)
+
+    // 二、飞行轨迹:锥形丝带(取代"每个采样点叠 3~4 个同心圆")
+    // 寿命基准仍复用上面的 trailLen / trailSweetLen(按档位取基数 × lenMul),
+    // 免得出现"改了不生效"的假旋钮;单位 = 模拟步(1/60s)。
+    trailMax: 56,              // 丝带采样点上限(环形缓冲容量,也是绘制预算上限)
+    trailSpacing: 4.5,         // 距离采样间隔(世界单位):扣杀不再稀疏、搓球不再扎堆
+    trailMinSpeed: 2.2,        // 低于此速度不入点(搓球末段/死球滚动不该拖出长尾)
+    trailHeadW: 2.6,           // 头部半宽基数(击球点一侧)
+    trailTailW: 0.55,          // 尾部半宽(收尖)
+    trailTaperK: 0.7,          // 宽度收缩指数:<1 = 前段粗、后段收得快
+    trailAlphaK: 1.5,          // 淡出指数:>1 尾段掉得快,读起来像被风吹散
+    trailHeadR: 4.6,           // 头部亮核半径(扣在球头位置,替代原来的白雾圆)
+    trailCurlDrop: 0.55,       // 慢球(搓/吊/放网)尾端打卷量:形态倍率 <0.7 时叠加
+    trailTiers: {
+      normal:     { lenMul: 0.85, widthMul: 0.8, bands: 4, curl: 0,    layers: [
+        { hex: "#cfe0ff", wMul: 1.0,  aMul: 0.30 }, { hex: "#ffffff", wMul: 0.44, aMul: 0.60 } ] },
+      sweet:      { lenMul: 1.0,  widthMul: 1.0, bands: 5, curl: 0,    layers: [
+        { hex: "#00f0ff", wMul: 1.3,  aMul: 0.26 }, { hex: "#ffe14d", wMul: 0.52, aMul: 0.52 } ] },
+      smash:      { lenMul: 1.3,  widthMul: 1.3, bands: 6, curl: 0,    layers: [
+        { hex: "#ff6a1f", wMul: 1.35, aMul: 0.30 }, { hex: "#ffe14d", wMul: 0.62, aMul: 0.55 },
+        { hex: "#ffffff", wMul: 0.26, aMul: 0.86 } ] },
+      sweetSmash: { lenMul: 1.55, widthMul: 1.5, bands: 6, curl: 0,    layers: [
+        { hex: "#00f0ff", wMul: 1.5,  aMul: 0.28 }, { hex: "#ff6a1f", wMul: 0.92, aMul: 0.50 },
+        { hex: "#ffffff", wMul: 0.3,  aMul: 0.92 } ] },
+      fire:       { lenMul: 1.9,  widthMul: 1.7, bands: 7, curl: 0.2,  layers: [
+        { hex: "#ff4d4d", wMul: 1.6,  aMul: 0.32 }, { hex: "#ff6a1f", wMul: 1.02, aMul: 0.50 },
+        { hex: "#ffe14d", wMul: 0.5,  aMul: 0.74 }, { hex: "#ffffff", wMul: 0.24, aMul: 0.95 } ] },
+    },
+    // 球种形态倍率:高远/发球留长线,搓/吊几乎不留尾并在末端打卷
+    trailShotShape: {
+      smash: 1.0, drive: 0.95, clear: 1.15, lob: 1.05, slash: 0.6, netshot: 0.42,
+    },
+    // 设计款球皮的残影风格:只换层配色与头部形状,不再叠同心圆(皮肤不降级)
+    trailSkin: {
+      star:    { hexes: ["#7ecbff", "#d8ecff", "#ffffff"], head: "star" },
+      flame:   { hexes: ["#ff4d26", "#ff9a3d", "#ffe14d"], head: "ember" },
+      petal:   { hexes: ["#ffb7d0", "#ff8fb8", "#ffe0ec"], head: "petal" },
+      rainbow: { hexes: [], head: "hue" },   // 空表 = 逐点转色相,色相步进见下
+    },
+    trailRainbowStep: 16,      // 星河羽:每点色相推进(度)
+    trailHeadTwinkle: 0.25,    // 星芒头闪烁的相位角速度(弧度/帧)
+
+    // 三、粒子成形(方块→定向拉长、线性→ease-out、单环→双环辉光)
+    partFadeK: 1.55,           // 粒子 alpha 幂指数(>1 前段亮、尾段散)
+    partShrink: 0.45,          // 退出时尺寸收缩下限(0=完全缩没)
+    streakLenK: 1.7,           // 划线长度 = 速度模长 × 此值(现在只按 |vx| 算)
+    streakTaper: 0.28,         // 划线尾端相对头端的宽度比
+    ringEaseK: 0.42,           // 扩散环 easeOutQuart 的幂修正(越大越早到外圈)
+    ringHaloK: 2.8,            // 双环外晕的宽度倍率
+    ringHaloA: 0.24,           // 双环外晕的 alpha 倍率
+    ringScale: 0.55,           // 所有扩散环的目标半径倍率:老值(最大 230)在 960×540 的
+                               // 画面里糊成一整面"靶心",压到一半才像打在球上的那一下
+    sparkleScale: 0.62,        // 星芒尺寸倍率(同上:白/金/青三颗叠一起太大就互相糊色)
+    speedLineReach: 0.42,      // 速度线外端距离倍率(原来 150~320,线横穿半屏)
+    speedLineBias: 0.72,       // 速度线沿入射方向的比例(其余仍四周散射)
+    speedLineWidth: 1.9,       // 速度线基础线宽(改成锥形四边形后的头宽)
+    burstSmashK: 0.5,          // 扣杀爆散粒子数量倍率(每粒更精,总数下降)
+    miniSparkCount: 4,         // 普通拍接触火星粒数(原 6)
+
+    // 四、镜头与飘字(白闪径向化、震屏阻尼正弦、飘字弹入)
+    flashRadial: 0.6,          // 白闪径向化的峰值强度(边缘亮/中心透,不糊住球)
+    flashRings: 16,            // 径向近似的描边环数
+    shakeFreq: 0.8,            // 震屏阻尼正弦角频率(弧度/模拟步);振幅仍按既有 0.85 几何衰减,
+                               // 主轴方向由 world.shake(amt, vert, dirAng) 的来球方向给定
+    floatPopBack: 1.7,         // 飘字弹入过冲(easeOutBack 参数)
+    floatPopFrames: 6,         // 弹入用时(模拟步)
+    floatRiseEase: 1.8,        // 上浮减速指数(>1 起得快落得缓)
+    floatFadeK: 0.5,           // 全程淡出起点(1=一出现就开始淡)
+    // 夸奖档位的文案/字号/寿命:原先硬编码在 game-root 的 drain 里(六档各一行),
+    // 挪进配置后"这一档给多大的字"与别的特效旋钮一处对齐
+    floatTierPerfectSmash: { text: "完美重扣!!", color: "#ffe14d", size: 30, life: 56, dy: -32 },
+    floatTierPerfect:      { text: "✦ PERFECT ✦", color: "#00f0ff", size: 24, life: 50, dy: -30 },
+    floatTierSweetSmash:   { text: "黄金重扣!!", color: "#ffe14d", size: 28, life: 52, dy: -30 },
+    floatTierSmash:        { text: "扣杀!!",     color: "#ffe14d", size: 26, life: 48, dy: -28 },
+    floatTierSweet:        { text: "✦ SWEET! ✦", color: "#ffe14d", size: 20, life: 42, dy: -26 },
+    floatTierGood:         { text: "好球",       color: "#ffffff", size: 16, life: 34, dy: -24 },
   },
 
   // BGM:原版是 WebAudio 现场合成的自适应背景音乐(零音频文件);
@@ -521,6 +727,15 @@ export const CFG = {
     doubleTapMaxDist: 36, // 双击判定最大像素距离(防大幅滑动中误判)
     arriveEps: 1.5,       // 定点平滑刹停吸附精度(像素)
     slowDownDist: 22,     // 减速缓冲区间(像素):进入此区间按比例减速,平滑定点不冲过头
+  },
+
+  // ===== 触屏击球手势:横滑提交深浅的参数(画在 input/touchpad.ts,断言在 tools/reach-check.ts) =====
+  // 击球键按下即起拍(与键盘 KEY_DOWN 同帧),深浅要等手指横移过 commitPx 才写进
+  // pad.swingSwipe —— 这就是「触屏比键盘多花的那几帧」。原本它是 touchpad.ts 里的
+  // 字面量 15,而那个文件 import cc,node 侧读不到,断言就写不出来;值一字未改,
+  // 只是搬回它该住的地方(数值只进 config)。
+  touchAim: {
+    commitPx: 15,       // 横移超过这么多像素即提交深/浅(约按钮半径的 1/3)
   },
 
   // 键位表(桌面端按 e.code 绑定,跨布局稳定;每项可给多个候选)

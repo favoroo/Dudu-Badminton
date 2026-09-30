@@ -91,6 +91,9 @@ declare module "cc" {
     isAlignBottom: boolean; bottom: number;
     isAlignLeft: boolean; left: number;
     isAlignRight: boolean; right: number;
+    /** 水平/垂直居中(滑轨的「屏幕底边中点」参考系用);引擎真类型里也是这两名 */
+    isAlignHorizontalCenter: boolean; horizontalCenter: number;
+    isAlignVerticalCenter: boolean; verticalCenter: number;
     updateAlignment(): void;
   }
   export class Label extends Component {
@@ -210,6 +213,25 @@ declare module "cc" {
 
   /** 挡住触摸穿透到下层节点(全屏遮罩用) */
   export class BlockInputEvents extends Component {}
+
+  /**
+   * 矩形/图形裁罩(更新弹窗的日志滚动区用)。
+   * 真机上 GRAPHICS_RECT 会自造一个 Graphics 画 contentSize 大小的矩形写模板缓冲,
+   * 所以只要 contentSize 对了就裁得对,调用方不必自己画。
+   */
+  export class Mask extends Component {
+    static Type: typeof MaskType;
+    type: MaskType;
+    inverted: boolean;
+    segments: number;
+    alphaThreshold: number;
+  }
+  export enum MaskType {
+    GRAPHICS_RECT = 0,
+    GRAPHICS_ELLIPSE = 1,
+    GRAPHICS_STENCIL = 2,
+    SPRITE_STENCIL = 3,
+  }
 
   export class Tween<T = unknown> {
     to(time: number, props: Record<string, number | Vec3>, opts?: { easing?: string }): Tween<T>;

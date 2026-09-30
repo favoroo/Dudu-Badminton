@@ -331,17 +331,13 @@ export class MainMenu {
     this.soundLabel.color = col(muted ? "#626f96" : ARCADE.acid);
   }
 
-  /**
-   * fromIntro = 从开机演出交棒而来:演出淡出本身就是「从黑渐透」,
-   * 再叠一层黑罩会闪两次黑,故跳过 dim-cover,卡片直接压在残影背后 rise。
-   */
-  show(fromIntro = false): void {
+  show(): void {
     cancelFade(this.root);
     this.root.active = true;
     this.refresh();
 
     // 暗底「从黑渐透」入场:先叠一层纯黑遮罩,再淡出 → 球场渐渐显出来
-    if (this.dimNode && !fromIntro) {
+    if (this.dimNode) {
       const cover = new Node("dim-cover");
       cover.layer = this.dimNode.layer;
       cover.addComponent(UITransform).setContentSize(CFG.world.w, CFG.world.h);

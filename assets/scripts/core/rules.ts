@@ -8,6 +8,7 @@
 import { CFG } from "./config";
 import { approach, rand } from "./utils";
 import { Physics } from "./physics";
+import { Pace } from "./pace";
 import { Player as Pl } from "./player";
 import { AI } from "./ai";
 import { Ball, DiffKey, GameEvent, Player, PlayerInput, TeamSide } from "./types";
@@ -170,6 +171,10 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
 }
 
 function beginPoint(): void {
+  // 球速档位在这里落地(而不是面板改完立刻生效):此刻刚 makeBall、场上没有飞行中的球,
+  // 换重力不会让谁的残程拐一下。训练场每球重喂也走这条路,所以「改完下一球就是新档」
+  // 在对局与训练场里同时成立。
+  Pace.commit();
   const mates = teamOf(R.server);
   const s = mates[R.serveIdx % mates.length];
   R.serverPlayer = s;

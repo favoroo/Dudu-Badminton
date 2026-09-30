@@ -65,21 +65,22 @@
    重新构建即清除。
 9. 编辑器当前**未运行**;重开会自动加载工程并自动打开 main 场景(scene-opener)。
    扩展日志在启动 stdout;构建日志示例 `--build "platform=web-mobile;debug=true;startScene=<场景uuid>"`。
-10. 回放期间(完美重扣)主循环冻结逻辑与一切 FX 走时,快照逐帧驱动渲染——
-    触发时残余的慢动作会让回放自然半速播放,是老版同款电影感,不是 bug。
+10. 精彩即时回放已于 2026-09-30 整条链路删除(core/replay.ts、设置项 replayMode、
+    转播水印/暗角、全屏跳过挡板)—— 用户判定它对体验没有提升。慢动作(slowmo)与
+    hitstop 定格不受影响,仍在 config.fx.slowmoEnabled 总闸下。
 
 ## 当前游戏形态
 
 完整产品形态:主菜单/暂停/结算/生涯商店/训练场/设置/更新弹窗全套 UI;4 套球场主题
 (arena/beach/cyber/dojo)+ 看台/灯光/晃网;六档打击阶梯(hitstop/震屏/镜头 punch/白闪)、
-赛点重锤慢动作 + 长回合金晕 + 赛点红晕氛围暗角;完美重扣即时回放(任意键/点按跳过);
+赛点重锤慢动作 + 长回合金晕 + 赛点红晕氛围暗角;
 球残影四风格 + 挥拍弧光残影;自适应分层 BGM;AI 情绪/赛后称号/多拍里程碑/发球博弈;
 Android 应用内更新(APK 原生流式下载器 + 多源回退)。
 
 ## 下一步(建议顺序)
 
 1. **表现层验收**:真实浏览器打开 127.0.0.1:8899,验证镜头 punch/慢动作/白闪/氛围暗角/
-   完美重扣回放/弧光残影/球残影四风格的手感与观感。
+   完美重扣打击反馈/弧光残影/球残影四风格的手感与观感。
 2. **输入实测**:键盘/鼠标点虚拟按键各验一次(重点:KeyCode 值假设)。
 3. **微信小游戏构建**(构建面板/CLI 出 wechatgame 包;注册 AppID;个人主体发布需 ICP 备案;
    包体:代码+音效 ~1MB,主包 4MB 限制无压力)。
@@ -94,7 +95,7 @@ Android 应用内更新(APK 原生流式下载器 + 多源回退)。
 | src/render/court.js | render/court.ts(4 主题/看台/灯光/晃网) | ✅ |
 | src/render/hud.js / drill-anim.js | render/hud-overlay.ts / drill-anim | ✅ |
 | src/fx.js | render/fx.ts + world.ts 镜头四件套/白闪/氛围暗角 | ✅ |
-| src/replay.js | core/replay.ts + game-root 集成 + 转播水印 | ✅ |
+| src/replay.js | — | ❌ 已删除(回放对体验无提升) |
 | src/input.js + 触屏 | input/ 三件套 | ✅ 待实测 |
 | src/audio.js + bgm.js | game/sfx.ts + game/bgm.ts + 烘焙 WAV | ✅ |
 | src/ui*.js | ui/ 全套面板 + ui-arcade | ✅ |

@@ -13,7 +13,8 @@
 // 用法(先 npx tsc -p tools/tsconfig.json 编译):
 //   node .tools-build/tools/settings-check.js
 import { setStorageBackend, type KVStorage } from "../assets/scripts/core/utils";
-import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, JOYSTICK_LIMIT, JOYSTICK_BASE, SLIDER_BASE, SLIDER_LIMIT, PAD_ACTIONS } from "../assets/scripts/core/settings";
+import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, JOYSTICK_LIMIT, JOYSTICK_BASE, SLIDER_BASE, SLIDER_LIMIT, PAD_ACTIONS, railGeo } from "../assets/scripts/core/settings";
+import { CFG } from "../assets/scripts/core/config";
 
 // ---------- 假后端 ----------
 
@@ -47,7 +48,6 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(s.sfxOn && s.bgmOn, "默认音效与音乐都开");
   ok(s.hintLanding && s.hintShake && s.hintFloat, "默认三个画面提示都开");
   ok(s.hapticOn, "默认触觉反馈开");
-  ok(s.replayMode === "matchpoint", "默认回放模式为 matchpoint(赛点回放)");
   ok(near(s.padAlpha, 0.8), `默认透明度 ${s.padAlpha}`);
   ok(near(s.sfxVol, 0.8) && near(s.bgmVol, 0.6), `默认音量 sfx=${s.sfxVol} bgm=${s.bgmVol}`);
   for (const a of PAD_ACTIONS) {
@@ -78,6 +78,11 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(near(st.v.pad.left.r, PAD_LIMIT.rMax), `r 越上限夹到 ${PAD_LIMIT.rMax}`);
   st.setPad("jump", { r: 1 });
   ok(near(st.v.pad.jump.r, PAD_LIMIT.rMin), `r 越下限夹到 ${PAD_LIMIT.rMin}`);
+  // 「顶部移不动」的回归哨兵:旧上限 ±240/±180 会把这种合法拖动悄悄吞掉。
+  // 现在能放到哪儿由视口决定(在 touchpad 里夹),Settings 只管坏档。
+  st.setPad("left", { dx: 500, dy: 400 });
+  ok(st.v.pad.left.dx === 500 && st.v.pad.left.dy === 400,
+    `dy=400 / dx=500 原样保留(旧上限会夹到 ±180/±240,实得 ${st.v.pad.left.dy}/${st.v.pad.left.dx})`);
 
   st.setPart({ sfxVol: 5, bgmVol: -3, hintShake: "nonsense" as unknown as boolean });
   ok(near(st.v.sfxVol, 1), "音量 >1 夹到 1");
@@ -123,8 +128,8 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
 
   // ---------- 跳跃键换簇的老档迁移(v<2) ----------
   // 老档里 jump 的 dx/dy 是相对**右下角**的位移,新基准在**左下角**,照原值套过去
-  // 会飞到屏幕正中甚至屏外。位移上限本来夹在 ±240/±180,老值全都合法 —— 只有"簇变了"
-  // 这件事在数值上检测不出来,必须靠版本号。半径与簇无关,要保留用户调过的大小。
+  // 会飞到屏幕正中甚至屏外。位移上限只是坏档护栏(PLACE_GUARD,手指拖不到那么远),
+  // 老值全都合法 —— 只有"簇变了"这件事在数值上检测不出来,必须靠版本号。半径与簇无关,要保留用户调过的大小。
   const legacyJump = sanitize({
     pad: { jump: { dx: -60, dy: 142, r: 55 }, left: { dx: 8, dy: 0, r: 44 } },
   });
@@ -281,12 +286,23 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   freshKV();
   const st = new SettingsStore();
   st.init();
-  st.setJoystick({ dx: 999, dy: 0, r: 200 });
+  // 输入必须大过护栏(PLACE_GUARD=2000)才谈得上「越界」—— 以前这里是 999,
+  // 因为上限只有 200;位移上限退化成坏档护栏后,999 已经是个合法位置了。
+  st.setJoystick({ dx: 99999, dy: 0, r: 200 });
   ok(st.v.joystick.dx === JOYSTICK_LIMIT.maxDx && st.v.joystick.r === JOYSTICK_LIMIT.rMax,
     "setJoystick 也夹越界值");
-  st.setSlider({ dx: 999, dy: 0, r: 200 });
+  st.setSlider({ dx: 99999, dy: 0, r: 200 });
   ok(st.v.slider.dx === SLIDER_LIMIT.maxDx && st.v.slider.r === SLIDER_LIMIT.rMax,
     "setSlider 也夹越界值");
+
+  // 自由摆放:位移上限只是坏档护栏,不再充当「能拖到哪儿」的手感上限。
+  // 护栏必须大过任何机型的可视区(FIXED_HEIGHT 高恒 540,半高 270;宽最宽按 1.25 倍
+  // padScale 封顶算 600)—— 否则玩家往上拖会被静默吃掉,又变成「顶部移不动」那个 bug。
+  ok(PAD_LIMIT.maxDy >= 540 && PAD_LIMIT.maxDx >= 1200,
+    `按钮位移护栏(±${PAD_LIMIT.maxDx}/±${PAD_LIMIT.maxDy})覆盖得住最宽的可视区`);
+  ok(JOYSTICK_LIMIT.maxDy >= 540, `摇杆位移护栏 ±${JOYSTICK_LIMIT.maxDy} 覆盖得住`);
+  ok(SLIDER_LIMIT.maxDy >= 540, `滑轨纵向护栏 ±${SLIDER_LIMIT.maxDy} 覆盖得住`);
+  ok(JOYSTICK_LIMIT.maxDx === PAD_LIMIT.maxDx, "摇杆与按钮同一套护栏,不再各夹各的");
 
   st.setPart({ moveMode: "slider" });
   ok(st.v.moveMode === "slider", "setPart 能设为 slider 模式");
@@ -294,13 +310,90 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(st.v.moveMode === "buttons", "setPart 能翻 moveMode");
   st.setPart({ moveMode: "nonsense" as never });
   ok(st.v.moveMode === "buttons", "moveMode 收到垃圾值 → 保持原值不动");
+}
 
-  st.setPart({ replayMode: "all" });
-  ok(st.v.replayMode === "all", "setPart 能翻 replayMode 到 all");
-  st.setPart({ replayMode: "off" });
-  ok(st.v.replayMode === "off", "setPart 能翻 replayMode 到 off");
-  st.setPart({ replayMode: "nonsense" as never });
-  ok(st.v.replayMode === "off", "replayMode 收到垃圾值 → 保持原值不动");
+// ---------- ⑫ 滑轨 ↔ 球场 1:1 对位(滑轨模式的全部卖点都压在这几条上) ----------
+
+{
+  const CO = CFG.court;
+  const G = railGeo();
+
+  // 轨长必须等于「人能站的那段地」,不多不少:比 player.ts 的夹取同源(wallL ~ netX-netPad)
+  ok(G.minX === CO.wallL && G.maxX === CO.netX - CO.netPad,
+    `可达区间取的是 [${CO.wallL}, ${CO.netX - CO.netPad}],与 player.ts 同源`);
+  ok(G.span === G.maxX - G.minX, `轨心行程 span=${G.span} == 可达区间长度`);
+
+  // readSlider 的映射式:targetX = centerUiX + thumbX + world.w/2(夹进可达区间)。
+  // 斜率必须是 1 —— 手指挪 1px 人就挪 1px,这是"精准"两个字的定义。
+  const target = (thumbX: number): number =>
+    Math.min(G.maxX, Math.max(G.minX, G.centerUiX + thumbX + CFG.world.w / 2));
+  ok(target(0) === (G.minX + G.maxX) / 2, `轨心正下方 = 区间中点 x=${target(0)}`);
+  ok(target(-G.span / 2) === G.minX, "滑块推到最左端 → 人贴可达左界(wallL)");
+  ok(target(G.span / 2) === G.maxX, "滑块推到最右端 → 人贴网前(netX-netPad)");
+  ok(target(37) - target(12) === 25, "映射斜率恒为 1:手指挪 25px = 人挪 25px");
+  // 轨心相对屏幕中心:左半场在屏幕中线左边,所以必为负
+  ok(G.centerUiX < 0 && Math.abs(G.centerUiX) < CFG.world.w / 2,
+    `轨心 x=${G.centerUiX.toFixed(1)} 落在屏幕左半内,不会被推出屏`);
+
+  // 水平锁死:dx 不是自由轴,老档里的 dx 一律夹回 0(升级后不会带着偏移量的轨进场)
+  ok(SLIDER_LIMIT.maxDx === 0, "SLIDER_LIMIT.maxDx == 0:滑轨水平锁死,只能上下拖");
+  const legacy = sanitize({ slider: { dx: -180, dy: 30, r: 30 } });
+  ok(legacy.slider.dx === 0, "老档存的 slider.dx 会被夹回 0,不污染对位");
+  ok(legacy.slider.dy === 30 && legacy.slider.r === 30, "dy/r 照原样读,只锁水平");
+}
+
+// ---------- ⑬ 球速档位(paceTier):唯一能改写物理的玩家偏好,坏值一律不许进物理 ----------
+
+{
+  freshKV();
+  const P = CFG.pace;
+
+  // 表自洽:默认档必须真的在表里,且每档系数落在夹取区间内。
+  // 这条最值钱 —— 「加了一档忘了夹」「把 default 的 id 打错字」都是静默灾难
+  // (打错字时 paceTierById 会悄悄退到表头那一档,玩家改档却看着生效了)。
+  ok(P.tiers.some((t) => t.id === P.default), `默认档 "${P.default}" 在档位表里`);
+  ok(P.tiers.every((t) => t.s >= P.min && t.s <= P.max),
+    `每档系数都落在夹取区间 [${P.min}, ${P.max}] 内`);
+  ok(P.tiers.every((t) => Number.isFinite(t.s) && t.s > 0), "每档系数都是正有限数(0 会让物理除零)");
+  ok(new Set(P.tiers.map((t) => t.id)).size === P.tiers.length, "档位 id 不重复");
+  // 面板用 step=1 的滑杆按下标定位,所以「慢 → 快」必须按表序单调,否则拖反方向
+  ok(P.tiers.every((t, i) => i === 0 || t.s > P.tiers[i - 1].s), "档位按表序从慢到快单调(滑杆方向才不会反)");
+
+  // 缺字段 → 默认档:老存档升级就靠这一条自动吃到新出货档,不需要版本号
+  ok(sanitize(null).paceTier === P.default, "空档 → 默认档(老存档自动吃新默认,不写迁移)");
+  ok(sanitize({ pad: {} }).paceTier === P.default, "带 pad 的老档也没有 paceTier → 同样补默认");
+  ok(sanitize({ paceTier: "nonsense" }).paceTier === P.default, "paceTier 垃圾值 → 退回默认档");
+  const pick = P.tiers[P.tiers.length - 1].id;
+  ok(sanitize({ paceTier: pick }).paceTier === pick, `显式存的 "${pick}" 照读`);
+
+  // ---------- 移速档位(gaitTier):同一套纪律,另一摊账 ----------
+  const G = CFG.gait;
+  ok(G.tiers.some((t) => t.id === G.default), `移速默认档 "${G.default}" 在档位表里`);
+  ok(G.tiers.every((t) => t.s >= G.min && t.s <= G.max),
+    `移速每档系数都落在夹取区间 [${G.min}, ${G.max}] 内`);
+  ok(new Set(G.tiers.map((t) => t.id)).size === G.tiers.length, "移速档位 id 不重复");
+  ok(G.tiers.every((t, i) => i === 0 || t.s > G.tiers[i - 1].s), "移速档位按表序从慢到快单调");
+  // 标准档必须是恒等:这一档存在的意义就是"什么都不改"的参照,漂了整张表就读不出动了什么
+  const std = G.tiers.find((t) => t.id === G.default);
+  ok(!!std && std.s === 1, `移速默认档系数 = 1(实得 ${std ? std.s : "无此档"}):它是参照,不是隐性加码`);
+  ok(sanitize(null).gaitTier === G.default, "空档 → 移速默认档(与 paceTier 同一套缺字段语义)");
+  ok(sanitize({ gaitTier: "nonsense" }).gaitTier === G.default, "gaitTier 垃圾值 → 退回默认档");
+  ok(sanitize({ paceTier: "xslow", gaitTier: "vfast" }).gaitTier === "vfast", "显式存的 gaitTier 照读");
+
+  // 写盘回读 + setPart 的消毒(面板那根滑杆每次拖动都走这条)
+  const st = new SettingsStore();
+  st.init();
+  st.setPart({ paceTier: "fast" });
+  st.flush();
+  const again = new SettingsStore();
+  ok(again.init().paceTier === "fast", "setPart 改档后 flush → 重开读回同值");
+  st.setPart({ paceTier: "垃圾" as never });
+  ok(st.v.paceTier === "fast", "setPart 收到垃圾值 → 保持原档不动(不会突然变慢/变快)");
+  st.setPart({ gaitTier: "vfast" });
+  st.flush();
+  ok(new SettingsStore().init().gaitTier === "vfast", "setPart 改移速档后 flush → 重开读回同值");
+  st.setPart({ gaitTier: "垃圾" as never });
+  ok(st.v.gaitTier === "vfast", "gaitTier 垃圾值 → 保持原档不动");
 }
 
 console.log(`\n${bad === 0 ? "全部通过" : `${bad} 项失败`}`);

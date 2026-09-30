@@ -7,8 +7,9 @@
 // 非递归,于是挂在子节点上的 6 个 BGM stem 从来没被静音过。现在改成
 // 「谁用谁读 Settings」,真值只有一份,谁都够得着,不需要跨层摸私有字段。
 //
-// 为什么只 import ./utils(不碰 cc):tools/tsconfig.json 只编
-// assets/scripts/core/**,这个文件要能在 node 下被 settings-check 直接跑。
+// 为什么只 import ./utils 与 ./config(不碰 cc):tools/tsconfig.json 只编
+// assets/scripts/core/**,这个文件要能在 node 下被 settings-check 直接跑 —— 滑轨的
+// 对位几何也从这里出,这样「轨长 == 可达区间」能在回归里被断言住。
 //
 // 按键布局存的是「相对默认位的位移 dx/dy + 绝对半径 r」,不是屏幕绝对坐标:
 // 设计分辨率是 FIXED_HEIGHT —— 高恒 540、宽随长宽比变(16:9 是 960,20:9 是
@@ -16,6 +17,7 @@
 // Widget 吸附屏幕角落,簇内相对位移能同时穿越长宽比变化与安全区变化。
 // ============================================================
 import { clamp, load, save } from "./utils";
+import { CFG } from "./config";
 
 /**
  * 触屏击球键合并为单个 "swing" 按钮,通过滑动手势区分深浅:
@@ -61,7 +63,8 @@ export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swing", "swin
  * 触屏移动方式:
  *   "joystick" —— 左半屏一个虚拟摇杆,推多少走多少,能做小碎步与缓冲;
  *                 **往上推即起跳**,所以这个模式下右簇只有三键、没有跳跃键。
- *   "slider"   —— 左半屏一个精准滑轨,滑到哪里角色就平滑移到对应位置精准刹停;
+ *   "slider"   —— 一条与左半场 1:1 对位的精准滑轨:轨就画在球场正下方,长度、水平
+ *                 位置都和球员可达区间等长对齐,手指在哪人就在哪(见 railGeo);
  *                 支持**上滑跳跃**与**双击跳跃**。
  *   "buttons"  —— 老式「左 / 右」两个按钮,离散全速。
  *                 没摇杆可推,跳跃退回左簇那个实体键(PAD_BASE.jump)。
@@ -70,27 +73,55 @@ export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swing", "swin
 export type MoveMode = "joystick" | "buttons" | "slider";
 
 /**
- * 精彩即时回放模式:
- *   "off"        —— 关闭回放
- *   "matchpoint" —— 仅在赛点绝杀时慢动作回放
- *   "all"        —— 扣杀得分与赛点绝杀均进行慢动作回放
+ * 位移上限 PLACE_GUARD 只是**坏档护栏**,不是手感限制:能拖到哪儿由视口决定
+ * (input/touchpad.ts 的 clampDelta —— 控件整块不许出可视区)。取 2000 设计像素,
+ * 任何机型半屏都到不了这个量级,它拦的只有手改 JSON 传进来的离谱值。
+ * 半径给一个手指可点又不至于糊屏的区间;透明度 0.2~1.0(1.0 = 完全不透明)。
  */
-export type ReplayMode = "off" | "matchpoint" | "all";
-
-/** 位移按簇内相对值夹,半径给一个手指可点又不至于糊屏的区间;透明度 0.2~1.0(1.0 = 完全不透明) */
-export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: 240, maxDy: 180, alphaMin: 0.2, alphaMax: 1.0 };
+export const PLACE_GUARD = 2000;
+export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: PLACE_GUARD, maxDy: PLACE_GUARD, alphaMin: 0.2, alphaMax: 1.0 };
 
 /** 摇杆本体默认:底圈圆心在左簇内的位置(与 PAD_BASE.left 同参考系)+ 底圈半径 */
 export const JOYSTICK_BASE = { x: 78, y: 78, r: 68 };
 
 /** 摇杆半径可调范围,比普通按钮大一档;手指捏得住又不糊左半屏 */
-export const JOYSTICK_LIMIT = { rMin: 46, rMax: 96, maxDx: 200, maxDy: 160 };
+export const JOYSTICK_LIMIT = { rMin: 46, rMax: 96, maxDx: PLACE_GUARD, maxDy: PLACE_GUARD };
 
-/** 滑轨本体默认:底座中心在左簇内的位置(与 PAD_BASE.left 同参考系)+ 胶囊轨半高半径 */
-export const SLIDER_BASE = { x: 125, y: 64, w: 220, h: 56, r: 28 };
+/**
+ * 滑轨本体默认。**没有 x,也没有 w** —— 这两样不再是自由量:
+ * 轨是左半场在地面上的投影,长度与水平位置都由 railGeo() 从 CFG.court 算出来,
+ * 一动就和脚下的场地线对不上,「手指在哪人就在哪」这个承诺也就没了。
+ * 所以滑轨只保留两个可调量:高度 y(屏幕底边中点参考系,设计像素)与粗细 r。
+ */
+export const SLIDER_BASE = { y: 64, r: 28 };
 
-/** 滑轨半径(半高)可调范围 */
-export const SLIDER_LIMIT = { rMin: 20, rMax: 44, maxDx: 200, maxDy: 160 };
+/**
+ * 滑轨可调范围;maxDx 恒 0 = 水平锁死(见 SLIDER_BASE 注释),只留上下挪与粗细。
+ * 纵向不再预留「顶部记分牌带」—— 轨可以拖到屏幕任意高度,只有横向那一维由球场对位锁住。
+ */
+export const SLIDER_LIMIT = { rMin: 20, rMax: 44, maxDx: 0, maxDy: PLACE_GUARD };
+
+/**
+ * 滑轨 ↔ 球场对位几何:滑块中心的行程 = 左场球员的可达区间 [wallL, netX - netPad]。
+ *
+ * 为什么能一比一:设计分辨率是 FIXED_HEIGHT —— 高恒 540,世界层挂在 Canvas 中心
+ * 且不做横向拉伸,所以「世界 x - world.w/2」就是屏幕中心往右的 UI 像素数,
+ * 1 世界单位 = 1 UI 单位。于是把滑块行程取成可达区间的长度、轨心放在区间中点的
+ * 正下方,手指在轨上挪多少像素,人就在地面上挪多少像素。
+ *
+ * 端点必须和 player.ts 的夹取同源(否则轨的端点指向人到不了的位置),所以这里读的是
+ * 同一组 CFG.court 字段,不另抄数字。
+ */
+export function railGeo(): { minX: number; maxX: number; span: number; centerUiX: number } {
+  const CO = CFG.court;
+  const minX = CO.wallL;
+  const maxX = CO.netX - CO.netPad;
+  return {
+    minX, maxX,
+    span: maxX - minX,
+    centerUiX: (minX + maxX) / 2 - CFG.world.w / 2,
+  };
+}
 
 export interface PadBtn { dx: number; dy: number; r: number }
 
@@ -108,11 +139,20 @@ export interface GameSettings {
   pad: Record<PadAction, PadBtn>;
   /** 触屏移动方式:摇杆 or 左右按键 or 滑轨。老档缺失时 sanitize 走 "buttons"(不打断既成习惯) */
   moveMode: MoveMode;
-  /** 精彩即时回放模式:关闭 / 仅赛点 / 全部精彩扣杀 */
-  replayMode: ReplayMode;
+  /**
+   * 球速档位 id(取值 = CFG.pace.tiers[*].id,不存索引也不存系数:插档不会让老存档指错)。
+   * 这里只存偏好,真正生效的是 core/pace.ts —— game-root 启动时 apply,面板改档时 request,
+   * 由 rules.beginPoint() 在下一球落地。缺字段/认不出都退回 CFG.pace.default。
+   */
+  paceTier: string;
+  /**
+   * 人物移速档位 id(取值 = CFG.gait.tiers[*].id)。与球速档分开给,是因为两摊账互相补偿:
+   * 球速档调「留给玩家几帧」,这一档调「这几帧里能覆盖多少地面」。即时生效,不等下一球。
+   */
+  gaitTier: string;
   /** 摇杆本体的位/大小:dx/dy 相对 JOYSTICK_BASE,r = 底圈半径(渲染时再乘设备 scale) */
   joystick: PadBtn;
-  /** 滑轨本体的位/大小:dx/dy 相对 SLIDER_BASE,r = 底轨半高半径(渲染时再乘设备 scale) */
+  /** 滑轨本体的可调量:dy = 相对 SLIDER_BASE.y 的高度差(参考系是屏幕底边中点,不乘 scale);r = 底轨半高半径(渲染时乘设备 scale);dx 恒 0 —— 水平由球场对位锁死,见 SLIDER_BASE */
   slider: PadBtn;
 }
 
@@ -132,7 +172,8 @@ function fresh(): GameSettings {
     padAlpha: 0.8,
     pad,
     moveMode: "joystick",
-    replayMode: "matchpoint",
+    paceTier: CFG.pace.default,
+    gaitTier: CFG.gait.default,
     joystick: { dx: 0, dy: 0, r: JOYSTICK_BASE.r },
     slider: { dx: 0, dy: 0, r: SLIDER_BASE.r },
   };
@@ -145,8 +186,13 @@ const num = (v: unknown, d: number, lo: number, hi: number): number =>
 const bool = (v: unknown, d: boolean): boolean => (typeof v === "boolean" ? v : d);
 const moveModeOf = (v: unknown, d: MoveMode): MoveMode =>
   v === "joystick" || v === "buttons" || v === "slider" ? v : d;
-const replayModeOf = (v: unknown, d: ReplayMode): ReplayMode =>
-  v === "off" || v === "matchpoint" || v === "all" ? v : d;
+// 球速档位:只认表里存在的 id(表在 config.pace.tiers),认不出退默认。
+// 不 import pace.ts —— 这个模块刻意只依赖 utils+config,好让 tools/settings-check.ts
+// 能在 node 下直接造实例跑断言。
+const paceTierOf = (v: unknown, d: string): string =>
+  typeof v === "string" && CFG.pace.tiers.some((t) => t.id === v) ? v : d;
+const gaitTierOf = (v: unknown, d: string): string =>
+  typeof v === "string" && CFG.gait.tiers.some((t) => t.id === v) ? v : d;
 
 /** 坏档不许崩:认不出的字段一律退回默认。导出给 tools/settings-check.ts 直接断言 */
 export function sanitize(raw: unknown): GameSettings {
@@ -162,7 +208,10 @@ export function sanitize(raw: unknown): GameSettings {
   s.hintFloat = bool(r.hintFloat, s.hintFloat);
   s.hapticOn = bool(r.hapticOn, s.hapticOn);
   s.padAlpha = num(r.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
-  s.replayMode = replayModeOf(r.replayMode, s.replayMode);
+  // 球速档位:老存档没这个键 → 直接吃到 CFG.pace.default(出货默认比上一版慢 8%)。
+  // 这就是「老玩家也自动吃新默认」的落点,不需要版本号。
+  s.paceTier = paceTierOf(r.paceTier, s.paceTier);
+  s.gaitTier = gaitTierOf(r.gaitTier, s.gaitTier);
   const pad = r.pad as Record<string, Partial<PadBtn>> | null | undefined;
   let padSeen = false;
   if (pad && typeof pad === "object") {
@@ -179,8 +228,8 @@ export function sanitize(raw: unknown): GameSettings {
   }
   // 老档升级(v<2):跳跃偏移原本是相对**右下角**的位移,现在基准在**左下角**,
   // 照原值套过去会飞到屏幕正中甚至屏外。半径与簇无关,保留用户调过的大小。
-  // 不用「算距离判断是否越界」那套 —— 位移上限本来就夹在 ±240/±180,老值全都合法,
-  // 只有簇变了这件事是数学上检测不出来的,必须靠版本号。
+  // 不用「算距离判断是否越界」那套 —— 位移上限只是坏档护栏(PLACE_GUARD,视口到不了),
+  // 老值全都合法,只有簇变了这件事是数学上检测不出来的,必须靠版本号。
   if (typeof r.v !== "number" || r.v < 2) {
     s.pad.jump = { dx: 0, dy: 0, r: s.pad.jump.r };
   }
@@ -251,7 +300,8 @@ export class SettingsStore {
   get hapticOn(): boolean { return this.v.hapticOn; }
   get padAlpha(): number { return this.v.padAlpha; }
   get moveMode(): MoveMode { return this.v.moveMode; }
-  get replayMode(): ReplayMode { return this.v.replayMode; }
+  get paceTier(): string { return this.v.paceTier; }
+  get gaitTier(): string { return this.v.gaitTier; }
   get joystick(): PadBtn { return this.v.joystick; }
   get slider(): PadBtn { return this.v.slider; }
 
@@ -304,7 +354,7 @@ export class SettingsStore {
    * persist=false 同 setPad:音量滑杆拖动时逐帧改内存、松手再 flush,
    * 原生 sys.localStorage.setItem 是同步文件 IO,不能跟着手指 60Hz 写盘。
    */
-  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "padAlpha" | "moveMode" | "replayMode">>, persist = true): void {
+  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "padAlpha" | "moveMode" | "paceTier" | "gaitTier">>, persist = true): void {
     const s = this.v;
     if (p.sfxOn !== undefined) s.sfxOn = bool(p.sfxOn, s.sfxOn);
     if (p.sfxVol !== undefined) s.sfxVol = num(p.sfxVol, s.sfxVol, 0, 1);
@@ -316,7 +366,8 @@ export class SettingsStore {
     if (p.hapticOn !== undefined) s.hapticOn = bool(p.hapticOn, s.hapticOn);
     if (p.padAlpha !== undefined) s.padAlpha = num(p.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
     if (p.moveMode !== undefined) s.moveMode = moveModeOf(p.moveMode, s.moveMode);
-    if (p.replayMode !== undefined) s.replayMode = replayModeOf(p.replayMode, s.replayMode);
+    if (p.paceTier !== undefined) s.paceTier = paceTierOf(p.paceTier, s.paceTier);
+    if (p.gaitTier !== undefined) s.gaitTier = gaitTierOf(p.gaitTier, s.gaitTier);
     this.after(persist);
   }
 

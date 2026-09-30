@@ -3,12 +3,17 @@
 // 「黄昏体育馆 · 街机赛事海报」语言 —— 硬偏移阴影贴纸感、
 // 厚底 3D 按钮、扫描线氛围、rise / slam / pop 分层入场。
 //
-// 只依赖 cc 与 core/config,不 import 其它 ui 文件:ui-manager 与 career/drill
+// 只依赖 cc、core/config 与零依赖的 text-metrics,不 import 其它 ui 文件:ui-manager 与 career/drill
 // 面板都要用它,放独立文件避免互相 import 成环。
 // Graphics 为保留型画布:一次构建,运行时零重绘(动画只用 tween)。
+// 例外是 retainedDraw() 那一条:节点被 deactivate 再 activate 时原生侧会掉渲染数据,
+// 所以「会被按状态开关」的底块都登记一份可重放的绘制,激活时 clear()+重画。
 // ============================================================
-import { BlockInputEvents, Button, Color, Graphics, Label, Node, sys, Tween, tween, UIOpacity, UITransform, Vec3, view } from "cc";
+import { BlockInputEvents, Button, Color, Component, Graphics, Label, Node, sys, Tween, tween, UIOpacity, UITransform, Vec3, view, _decorator } from "cc";
 import { CFG } from "../core/config";
+import { textW } from "./text-metrics";
+
+const { ccclass } = _decorator;
 
 // ---------- 设计令牌(老 base.css :root 同源) ----------
 export const ARCADE = {
@@ -107,6 +112,15 @@ const fadedOut = new WeakSet<Node>();
  * 数据)。用户报告的「训练场返回主菜单后按钮全透明」即此因。而纯透明度 0↔255
  * 往返从不丢 Graphics(slamIn 每次显示都在跑),故隐藏改为:
  * 保持 active + UIOpacity 0 + Button/BlockInputEvents 禁用,重显由 cancelFade 还原。
+ *
+ * ⚠ 但这里管不到**裸触摸监听**。引擎派发 UI 触摸默认吞噬(`UIEvent.preventSwallow`
+ * 为 false:谁先接住 TOUCH_START,渲染层级在它之下的节点一个都收不到),而吞噬只取决
+ * 于「这个节点还 active 且挂着 TOUCH_* 监听」,与监听里干了什么无关。所以:
+ *   面板里凡是给整屏/大块节点挂 `node.on(Node.EventType.TOUCH_*)` 的
+ *   (点遮罩关闭、日志窗拖动、pressFx 那一类),hide 时必须自己 off、show 时再 on;
+ *   否则关掉的面板就是屏幕上一块隐形挡板,底下的虚拟按键与暂停键一起失灵
+ *   (无限练习弹窗曾把整局按键打死,见 endless-dialog.setDimLive)。
+ * 做不到挂卸的,就学 career/drill/settings:退场动画放完后 destroy。
  */
 export function fadeOutHide(node: Node, onDone?: () => void, dur = 0.15): void {
   if (fadedOut.has(node)) { onDone?.(); return; }
@@ -163,16 +177,18 @@ export function uiIconButton(
   n.addComponent(UITransform).setContentSize(hit, hit);
   const g = n.addComponent(Graphics);
   const r = vis / 2;
-  g.fillColor = ac("#000000", 0.45);          // 硬偏移阴影
-  g.circle(2.5, -2.5, r);
-  g.fill();
-  g.fillColor = ac(opts.bg ?? "#6e2029", opts.bgA ?? 0.94);
-  g.circle(0, 0, r);
-  g.fill();
-  g.strokeColor = ac(opts.edge ?? "#ff8a8a", opts.edgeA ?? 0.7);
-  g.lineWidth = 1.5;
-  g.circle(0, 0, r);
-  g.stroke();
+  retainedDraw(g, () => {
+    g.fillColor = ac("#000000", 0.45);          // 硬偏移阴影
+    g.circle(2.5, -2.5, r);
+    g.fill();
+    g.fillColor = ac(opts.bg ?? "#6e2029", opts.bgA ?? 0.94);
+    g.circle(0, 0, r);
+    g.fill();
+    g.strokeColor = ac(opts.edge ?? "#ff8a8a", opts.edgeA ?? 0.7);
+    g.lineWidth = 1.5;
+    g.circle(0, 0, r);
+    g.stroke();
+  });
   const ln = new Node("glyph");
   ln.layer = parent.layer;
   ln.addComponent(UITransform).setContentSize(vis, vis);
@@ -210,15 +226,59 @@ export function acShade(hex: string, k: number, alpha = 1): Color {
   return c;
 }
 
+// ---------- 小构件:文案宽度 ----------
+
 /**
- * 文案宽度估算:全角按 1.05、半角按 0.62 个字宽。
- * Graphics 没有 measureText,而 Label 的 contentSize 要等布局才准(当帧读是旧值),
- * 所以「底块要跟着字长走」的地方(chip / 轻提示 / HUD 状态条)统一用这把尺子。
+ * 文案宽度估算:全角按 1.05、半角按 0.62 个字宽 —— 实现见 ./text-metrics.ts。
+ * 搬出去只为让零 cc 依赖的折行算法能在 node 下回归(更新弹窗的溢出全押在这把尺上);
+ * 这里 import 再 export:本文件 makeChip 要用它,各面板
+ * `import { textW } from "./ui-arcade"` 的调用点也一律不动。
  */
-export function textW(text: string, size: number): number {
-  let w = 0;
-  for (let i = 0; i < text.length; i++) w += text.charCodeAt(i) > 255 ? 1.05 : 0.62;
-  return Math.round(w * size);
+export { textW };
+
+// ---------- 一次绘制的 Graphics 的「复活」 ----------
+
+/**
+ * 记在组件上的那次绘制。用闭包而不是去摸引擎私有字段:`clear()` + 重画是
+ * 本仓库已经验证过的活路(开关/滑杆就是这么在往返后活下来的)。
+ */
+@ccclass("GraphicsKeepAlive")
+class GraphicsKeepAlive extends Component {
+  private g: Graphics | null = null;
+  private draw: (() => void) | null = null;
+
+  /** 必须晚于 Graphics 的 addComponent:激活顺序按组件顺序走,要排在它后面 */
+  setup(g: Graphics, draw: () => void): void {
+    this.g = g;
+    this.draw = draw;
+  }
+
+  onEnable(): void {
+    const g = this.g;
+    if (!g || !g.isValid || !this.draw) return;
+    g.clear();
+    this.draw();
+  }
+}
+
+/**
+ * 把「一次绘制」登记成可重放:节点每次回到激活态(含被祖先带起来)就 clear() + 重画。
+ *
+ * 为什么要这一手 —— 引擎 `UIRenderer.onDisable → destroyRenderData()`,原生(JSB)侧
+ * Graphics 的渲染数据被清之后,重新 activate **不会**自动重传:底块全透明、只剩 Label,
+ * 而每次 `clear()` + 重画的构件毫发无损。web/preview 完全不复现,所以只能从源头兜住。
+ * 面板整块的显隐另有 `fadeOutHide`/`cancelFade`(压根不 deactivate);这个管的是
+ * 「按状态每帧开关的小件」—— 暂停键、比分胶囊、发球旗标、页内子树那一类。
+ *
+ * 约定:`draw` 必须自包含且可重复执行(只往 g 上画,不写外部状态)。
+ * 首帧会画两次(登记时一次 + 激活时一次),代价是一次 roundRect,换调用点不用改结构。
+ */
+export function retainedDraw(g: Graphics, draw: () => void): Graphics {
+  draw();
+  const n = g.node;
+  const k = (n.getComponent(GraphicsKeepAlive) ?? n.addComponent(GraphicsKeepAlive)) as GraphicsKeepAlive;
+  k.setup(g, draw);
+  return g;
 }
 
 // ---------- 硬偏移阴影(sticker 感的魂) ----------
@@ -519,7 +579,7 @@ export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid,
   // 计算字符显示宽度(全角汉字按 1.05, 半角按 0.62)
   const w = Math.max(size * 2 + 16, textW(text, size) + 16);
   const h = Math.round(size + 10);
-  drawChip(g, w, h, bg);
+  retainedDraw(g, () => drawChip(g, w, h, bg));
 
   const lNode = new Node("chip-text");
   lNode.layer = parent.layer;
@@ -547,24 +607,26 @@ export function makeCoinIcon(parent: Node, x = 0, y = 0, r = 9): Node {
   n.addComponent(UITransform);
   n.setPosition(x, y, 0);
   const g = n.addComponent(Graphics);
-  // 金底 + 深金描边
-  g.fillColor = ac("#ffd34d");
-  g.circle(0, 0, r);
-  g.fill();
-  g.strokeColor = ac("#b79b12");
-  g.lineWidth = 1.5;
-  g.circle(0, 0, r);
-  g.stroke();
-  // 内圈(铸币感)
-  g.strokeColor = ac("#c79a1e", 0.9);
-  g.lineWidth = 1;
-  g.circle(0, 0, r * 0.62);
-  g.stroke();
-  // 高光弧
-  g.strokeColor = ac("#fff2b8", 0.95);
-  g.lineWidth = 1.6;
-  g.arc(0, 0, r * 0.72, 130, 205, false);
-  g.stroke();
+  retainedDraw(g, () => {
+    // 金底 + 深金描边
+    g.fillColor = ac("#ffd34d");
+    g.circle(0, 0, r);
+    g.fill();
+    g.strokeColor = ac("#b79b12");
+    g.lineWidth = 1.5;
+    g.circle(0, 0, r);
+    g.stroke();
+    // 内圈(铸币感)
+    g.strokeColor = ac("#c79a1e", 0.9);
+    g.lineWidth = 1;
+    g.circle(0, 0, r * 0.62);
+    g.stroke();
+    // 高光弧
+    g.strokeColor = ac("#fff2b8", 0.95);
+    g.lineWidth = 1.6;
+    g.arc(0, 0, r * 0.72, 130, 205, false);
+    g.stroke();
+  });
   n.setParent(parent);
   return n;
 }

@@ -25,16 +25,25 @@
 //
 // 屏幕自适应与安全区防遮挡设计:
 // 1. 左侧移动簇(摇杆 或 左/右/跳)通过 Widget 吸附屏幕左下角,避让刘海/打孔。
+//    **滑轨不在这一簇里**:它要和球场 1:1 对位,而球场永远以屏幕中线为对称轴。
+//    左下簇会随安全区内缩,一内缩整条轨的 x 就整体平移、对不上地面的场地线 ——
+//    所以滑轨单独挂「屏幕底边中点」参考系(cluster-rail),见 railGeo()。
 // 2. 右侧操作簇(跨步/短球/深球)通过 Widget 吸附屏幕右下角。
-// 3. 底部留出安全边距,避免沉底或触发全面屏系统手势。
+// 3. 底部留出安全边距,避免沉底或触发全面屏系统手势 —— 但这只是**默认位**,
+//    玩家把控件拖到哪儿由 clampDelta 决定:唯一的约束是整块留在可视区内,
+//    屏幕其余地方(包括 HUD 那一带)都能放。
 // 4. **padScale** 把整套控件按可视宽/960 的比例放大 —— 16:9 屏 scale=1.0,
 //    20:9 屏 scale≈1.125,让手指与视觉密度跨机型保持一致。存档仍记「基准倍」
 //    下的原始数字,渲染时才乘,换手机不会污染存档。
+//    **滑轨是唯一的例外**:轨的「长度」不乘 scale(球场本身不缩放),只有粗细
+//    与触摸目标乘 —— 否则宽屏上轨会被拉得比球场还长,1:1 就破了。
 //
 // 可自定义布局(设置页「调整位置」)存的是**簇内相对位移 dx/dy + 半径 r**,
 // 不是屏幕绝对坐标:设计分辨率是 FIXED_HEIGHT —— 高恒 540、宽随长宽比变,
 // 再叠加刘海内缩,A 机调好的绝对坐标到 B 机就出屏了。簇靠 Widget 吸角落,
 // 位移相对簇原点,才能同时穿越两者变化。
+// 滑轨是这套规则里唯一被砍掉一个自由度的槽位:dx 恒 0(SLIDER_LIMIT.maxDx = 0),
+// 编辑态只能上下拖 —— 横向一动,轨和脚下场地的 1:1 对位就废了。
 //
 // 反馈增强的四处:
 //   按下 → 冲击环:同一帧画一圈外扩淡出环(alpha 220 → 0,scale 0.85 → 1.15),
@@ -51,11 +60,10 @@
 // ============================================================
 import { Color, EventTouch, Graphics, Layers, Node, Tween, tween, UIOpacity, UITransform, Vec3, Widget, sys, v3, view } from "cc";
 import { Pad, press, release, cancelJump, resetPadHolds, setMoveAxis, setTargetX } from "./pad";
-import { replay } from "../core/replay";
 import {
-  PAD_BASE, PAD_LIMIT, Settings,
-  JOYSTICK_BASE, JOYSTICK_LIMIT,
-  SLIDER_BASE, SLIDER_LIMIT,
+  PAD_BASE, Settings,
+  JOYSTICK_BASE,
+  SLIDER_BASE, railGeo,
   type MoveMode, type PadAction,
 } from "../core/settings";
 import { CFG } from "../core/config";
@@ -68,8 +76,10 @@ import { haptic } from "../game/haptics";
 const RELEASE_ACTIONS: PadAction[] = ["left", "right", "jump", "swing"];
 
 /** 滑动手势阈值(像素):手指从按下点横移超过这个距离即提交方向。
- *  约为按钮半径的 1/3,够小不误触、够大有缓冲。 */
-const SWIPE_THRESHOLD = 15;
+ *  约为按钮半径的 1/3,够小不误触、够大有缓冲。
+ *  数值搬到 config.touchAim.commitPx:同样的量要在 node 侧断言(见 reach-check 第④段),
+ *  而这个文件 import cc,编译不进 tools/tsconfig.json —— 留在原地就永远测不到。 */
+const SWIPE_THRESHOLD = CFG.touchAim.commitPx;
 
 /**
  * 每一簇的建键顺序(照改造前的书写序,别顺手改成 PAD_ACTIONS 的顺序):
@@ -84,9 +94,6 @@ const CLUSTER_ORDER: Record<"left" | "right", PadAction[]> = {
   left: ["left", "right", "jump"],
   right: ["swing", "lunge"],
 };
-
-/** 顶部让开记分牌带(HUD 比分牌占 y≈203..261),按键中心不许进这一带 */
-const TOP_KEEP = 150;
 
 /** 摇杆满舵阈值:|moveAxis| 越过这个视觉与触觉都会给一次额外反馈 */
 const FULL_DEFLECT = 0.85;
@@ -153,13 +160,16 @@ interface StickRec {
 }
 
 interface SliderRec {
-  cluster: Node;
-  root: Node;              // 底座(位置随 Settings.slider.dx/dy + padScale)
+  cluster: Node;           // cluster-rail:屏幕底边中点参考系(不是左下簇,见文件头)
+  root: Node;              // 底座(x = railGeo().centerUiX 锁死,y = SLIDER_BASE.y + dy)
   baseUt: UITransform;
   baseG: Graphics;
   thumb: Node;             // 滑块,root 的子节点
   thumbG: Graphics;
-  w: number;               // scaled 轨宽
+  span: number;            // 滑块中心行程 = 左场可达区间长度;**不乘 scale**,与地面等长
+  minX: number;            // 可达区间的世界 x 两端(与 player.ts 的夹取同源,见 railGeo)
+  maxX: number;
+  w: number;               // scaled 轨宽 = span + 2r(两端各让出一个滑块半径)
   h: number;               // scaled 轨高
   r: number;               // scaled 轨半高半径
   selected: boolean;
@@ -329,11 +339,12 @@ function paintKnob(st: StickRec, pressed: boolean): void {
   g.fill();
 }
 
-/** 滑轨底座:胶囊型滑道 + 半场参考刻度 + 上滑起跳提示箭头 */
+/** 滑轨底座:胶囊型滑道(与左半场 1:1 对位)+ 真实场地线刻度 + 上滑起跳提示箭头 */
 function paintSliderTrack(st: SliderRec, pressed: boolean, edit: boolean): void {
   const g = st.baseG;
   const S = CFG.padSkin;
   const A = Settings.padAlpha;
+  const CO = CFG.court;
   const w = st.w, h = st.h, r = st.r;
   g.clear();
 
@@ -353,26 +364,31 @@ function paintSliderTrack(st: SliderRec, pressed: boolean, edit: boolean): void 
   g.roundRect(-w / 2, -h / 2, w, h, r);
   g.stroke();
 
-  // 轨道内的半场刻度线参考:
-  // 左侧 = 底线外(wallL),右侧 = 球网(netX - 10)
-  const span = w - r * 2;
-  const leftX = -w / 2 + r;
-  g.strokeColor = skinColor(S.idleEdge, S.idleEdgeA * A * 0.38);
+  // 刻度 = 脚下的真实场地线。轨与球场 1:1 对位后,世界 x 平移一下就能直接落笔,
+  // 所以这里不再按轨宽取百分比(老那套假刻度对不上地面的任何一条线)。
+  // 判读方式很简单:滑块停在哪条线上,人就站在那条线的正下方。
+  const centerWorldX = (st.minX + st.maxX) / 2;   // 轨心脚下的世界 x
+  const tick = (worldX: number, half: number): void => {
+    const x = worldX - centerWorldX;
+    g.moveTo(x, -half); g.lineTo(x, half); g.stroke();
+  };
+  g.strokeColor = skinColor(S.idleEdge, S.idleEdgeA * A * 0.42);
   g.lineWidth = 1.5;
-
-  // 底线刻度(约 11% 处)
-  const baseLineX = leftX + span * 0.11;
-  g.moveTo(baseLineX, -r * 0.45); g.lineTo(baseLineX, r * 0.45); g.stroke();
-
-  // 前发球线刻度(约 77% 处)
-  const serveLineX = leftX + span * 0.77;
-  g.moveTo(serveLineX, -r * 0.45); g.lineTo(serveLineX, r * 0.45); g.stroke();
-
-  // 中心站位点(微点)
-  const midX = leftX + span * 0.55;
-  g.fillColor = skinColor(S.idleEdge, S.idleEdgeA * A * 0.3);
-  g.circle(midX, 0, 2);
-  g.fill();
+  tick(CO.left, r * 0.45);            // 我方底线
+  tick(CO.shortServeL, r * 0.45);     // 前发球线
+  // 球网:更粗更亮、画得更满 —— 它是「再往右也过不去」的那道墙
+  g.strokeColor = skinColor(S.idleEdge, S.idleEdgeA * A * 0.78);
+  g.lineWidth = 3;
+  tick(CO.netX, r * 0.74);
+  // 可达端点(滑块行程的两个极限,即 wallL 与 netX-netPad):贴着轨上下缘的短横档,
+  // 和「场地线」那种通高竖线区分开,免得右端三道线糊成一坨看不出谁是谁。
+  g.strokeColor = skinColor(S.idleEdge, S.idleEdgeA * A * 0.5);
+  g.lineWidth = 2;
+  for (const lim of [st.minX, st.maxX]) {
+    const x = lim - centerWorldX;
+    g.moveTo(x, -r * 0.95); g.lineTo(x, -r * 0.6); g.stroke();
+    g.moveTo(x, r * 0.6);  g.lineTo(x, r * 0.95);  g.stroke();
+  }
 
   // 顶部起跳手势指引(小上箭头):越过起跳阈值时高亮
   const jumpArrowY = r + 6;
@@ -760,17 +776,22 @@ function makeJoystick(cluster: Node, opts: TouchPadOpts, scale: number): StickRe
   return st;
 }
 
+/**
+ * 建滑轨。参考系是 cluster-rail 的原点 = **屏幕底边中点**(不是左下簇,原因见文件头),
+ * 局部单位就是设计像素:轨的 x/长度一律不乘 scale,只有粗细 r 与触摸目标乘。
+ */
 function makeSlider(cluster: Node, opts: TouchPadOpts, scale: number): SliderRec {
   const s = Settings.slider;
+  const G = railGeo();
   const r = s.r * scale;
   const h = r * 2;
-  const w = (SLIDER_BASE.w / SLIDER_BASE.r) * r;
+  const w = G.span + r * 2;
 
   const root = new Node("slider-ctrl");
   root.layer = Layers.Enum.UI_2D;
   const baseUt = root.addComponent(UITransform);
   baseUt.setContentSize(w + 32, h + 32);
-  root.setPosition((SLIDER_BASE.x + s.dx) * scale, (SLIDER_BASE.y + s.dy) * scale);
+  root.setPosition(G.centerUiX, SLIDER_BASE.y + s.dy);
   root.setParent(cluster);
   const baseG = root.addComponent(Graphics);
 
@@ -784,7 +805,7 @@ function makeSlider(cluster: Node, opts: TouchPadOpts, scale: number): SliderRec
 
   const st: SliderRec = {
     cluster, root, baseUt, baseG, thumb, thumbG,
-    w, h, r,
+    span: G.span, minX: G.minX, maxX: G.maxX, w, h, r,
     selected: false, activeTouch: null, jumpOn: false,
     lastTouchTime: 0, lastTouchX: 0, lastTouchY: 0,
   };
@@ -792,20 +813,22 @@ function makeSlider(cluster: Node, opts: TouchPadOpts, scale: number): SliderRec
   paintSliderThumb(st, false);
 
   if (opts.edit) {
+    // 编辑态拖动:簇局部单位 == 设计像素,所以这里**不除 scale**(按钮那套要除,
+    // 因为它们的存档是「基准倍」下的数字;轨的 y 本来就是屏幕像素)。
+    // 横向被 clampDelta 夹回 0,拖不动是设计而不是 bug。
     let dragId: number | null = null;
-    let grab = { x: 0, y: 0, dx: 0, dy: 0 };
+    let grab = { x: 0, y: 0, dy: 0 };
     root.on(Node.EventType.TOUCH_START, (e: EventTouch) => {
       if (dragId !== null) return;
       dragId = e.getID();
       const l = toClusterLocal(cluster, e);
-      const cur = Settings.slider;
-      grab = { x: l.x / scale, y: l.y / scale, dx: cur.dx, dy: cur.dy };
+      grab = { x: l.x, y: l.y, dy: Settings.slider.dy };
       opts.onPick?.("slider");
     });
     root.on(Node.EventType.TOUCH_MOVE, (e: EventTouch) => {
       if (e.getID() !== dragId) return;
       const l = toClusterLocal(cluster, e);
-      opts.onDrag?.("slider", grab.dx + (l.x / scale - grab.x), grab.dy + (l.y / scale - grab.y));
+      opts.onDrag?.("slider", 0, grab.dy + (l.y - grab.y));
     });
     const fin = (e: EventTouch) => {
       if (e.getID() !== dragId) return;
@@ -846,6 +869,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
 
   // 1. 左侧移动簇:按当前 moveMode 决定建摇杆,还是建 left/right/jump 三键。
   //    摇杆模式下不建跳跃键 —— 往上推摇杆就是跳(见 CFG.stickJump),没有实体键可摆。
+  //    slider 模式这一簇是空的,轨住在下面的 cluster-rail 里(见 1b)。
   const leftCluster = new Node("cluster-left");
   leftCluster.layer = Layers.Enum.UI_2D;
   const leftTrans = leftCluster.addComponent(UITransform);
@@ -863,18 +887,36 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   leftWidget.bottom = safe.b;
   leftWidget.updateAlignment();
 
+  // 1b. 滑轨专用参考系:原点落在**屏幕底边中点**。
+  //     滑轨是左半场在地面上的投影,而球场永远以屏幕中线为对称轴、且不随 padScale
+  //     横向拉伸 —— 所以它不能住在会随刘海内缩的左下簇里(一内缩整条轨就平移,
+  //     对不上脚下的场地线)。水平居中 + 吸底,轨心 x 才能直接等于 railGeo().centerUiX。
+  const railCluster = new Node("cluster-rail");
+  railCluster.layer = Layers.Enum.UI_2D;
+  const railTrans = railCluster.addComponent(UITransform);
+  railTrans.setAnchorPoint(0.5, 0);   // 原点 = 屏幕底边中点(尺寸只够 Widget 定位用)
+  railTrans.setContentSize(2, 2);
+  railCluster.setParent(layer);
+
+  const railWidget = railCluster.addComponent(Widget);
+  railWidget.isAlignHorizontalCenter = true;
+  railWidget.horizontalCenter = 0;
+  railWidget.isAlignBottom = true;
+  railWidget.bottom = safe.b;
+  railWidget.updateAlignment();
+
   const buildLeftSide = (): void => {
     // 拆掉上一份左簇子节点(mode 切换、scale 变化都会走这里)
     for (const rec of recs) if (PAD_BASE[rec.action].cluster === "left") rec.node.destroy();
     // filter 后保留 right 簇的 recs 原序
     for (let i = recs.length - 1; i >= 0; i--) if (PAD_BASE[recs[i].action].cluster === "left") recs.splice(i, 1);
     if (stick) { stick.root.destroy(); stick = null; }
-    if (slider) { slider.root.destroy(); slider = null; }
+    if (slider) { slider.root.destroy(); slider = null; }   // 轨本体拆,cluster-rail 这个参考系留着
 
     if (currentMode === "joystick") {
       stick = makeJoystick(leftCluster, opts, currentScale);
     } else if (currentMode === "slider") {
-      slider = makeSlider(leftCluster, opts, currentScale);
+      slider = makeSlider(railCluster, opts, currentScale);
     } else {
       for (const a of CLUSTER_ORDER.left) makeButton(a, leftCluster, opts, recs, currentScale);
     }
@@ -943,7 +985,12 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       return dx * dx + dy * dy <= rr * rr;
     };
 
-    /** 触点 → 是否在滑轨激活区(略向外扩展,特别是上方方便上滑跳跃) */
+    /**
+     * 触点 → 是否在滑轨激活区。
+     * 轨现在是「你这一半场底部的一条投影带」,横向整条都收手指 —— 不必先瞄准胶囊
+     * 才能站位,落点由 readSlider 夹进可达区间,所以过网那一点点也不会跑出界。
+     * 上方多留一截是给「上滑起跳」留的余量。
+     */
     const hitSlider = (e: EventTouch): boolean => {
       if (!slider) return false;
       const u = e.getUILocation();
@@ -972,10 +1019,14 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
 
     /**
-     * 触点 → 滑轨局部量。
-     * targetX = 映射到左半场可达世界的坐标 x;
-     * thumbX = 夹在底轨内的滑块局部 x;
-     * dy = 向上滑动量(相对于滑轨中心,用于判定上滑跳跃)。
+     * 触点 → 滑轨局部量 + 目标世界 x。
+     *
+     * 这里**故意没有归一化那一步**:轨心就钉在可达区间中点的正下方,而 FIXED_HEIGHT
+     * 下 1 UI 像素 == 1 世界像素(世界层挂屏幕中心、不横向拉伸;击球瞬间的镜头 punch
+     * 只是临时放大画面,不改逻辑坐标),所以「手指的屏幕 x + world.w/2」直接就是
+     * 「脚下该站的世界 x」。手指挪 1px = 人挪 1px,人永远停在手指正上方那条竖线上。
+     * 老写法把轨宽归一化成 0..1 再铺满可达区间:220px 的轨摊 426px 的地面 ≈ 1.94 倍
+     * 放大,想微调 20px 站位得先心算手指该挪 10px —— 挂着"精准"名号的模式反而最不准。
      */
     const readSlider = (e: EventTouch): { targetX: number; thumbX: number; dy: number } => {
       const st = slider!;
@@ -983,17 +1034,8 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       const p = layerTrans.convertToNodeSpaceAR(v3(u.x, u.y, 0), tmpVec);
       const c = layerTrans.convertToNodeSpaceAR(st.root.worldPosition, new Vec3());
       const dx = p.x - c.x, dy = p.y - c.y;
-      const span = st.w - st.r * 2;
-      const minThumbX = -st.w / 2 + st.r;
-      const maxThumbX = st.w / 2 - st.r;
-      const thumbX = clamp(dx, minThumbX, maxThumbX);
-      const rawT = span > 0 ? (thumbX - minThumbX) / span : 0.5;
-      const t = clamp(rawT, 0, 1);
-
-      const minX = CFG.court.wallL;
-      const maxX = CFG.court.netX - 10;
-      const targetX = minX + t * (maxX - minX);
-
+      const thumbX = clamp(dx, -st.span / 2, st.span / 2);
+      const targetX = clamp(c.x + thumbX + CFG.world.w / 2, st.minX, st.maxX);
       return { targetX, thumbX, dy };
     };
 
@@ -1162,10 +1204,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
 
     layer.on(Node.EventType.TOUCH_START, (e: EventTouch) => {
-      if (replay.isActive()) {
-        replay.skip();
-        return;
-      }
       const id = e.getID();
       if (id == null || claims.has(id)) return;
       if (hitStick(e)) {
@@ -1229,37 +1267,60 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     return { hw: w > 0 ? w / 2 : 480, hh: h > 0 ? h / 2 : 270 };
   };
 
-  /** 某个槽位的簇原点(左下/右下角点)在层坐标系里的位置(世界单位,已含 scale) */
+  /** 某个槽位的簇原点(左下/右下角点)在层坐标系里的位置(世界单位,已含 scale)。
+   *  slider 不走这里 —— 它的参考系是屏幕底边中点,见 clampRailDelta。 */
   const slotCorner = (slot: PadSlot, hw: number, hh: number): { x: number; y: number } => {
-    const left = slot === "joystick" || slot === "slider" ? true : PAD_BASE[slot as PadAction].cluster === "left";
+    const left = slot === "joystick" ? true : PAD_BASE[slot as PadAction].cluster === "left";
     return { x: left ? -hw + safe.l : hw - safe.r, y: -hh + safe.b };
   };
 
-  /** 槽位的默认布局基准点(世界单位,未含 scale) */
+  /** 槽位的默认布局基准点(世界单位,未含 scale);slider 同上,不走这里 */
   const slotBaseXY = (slot: PadSlot): { x: number; y: number } => {
     if (slot === "joystick") return { x: JOYSTICK_BASE.x, y: JOYSTICK_BASE.y };
-    if (slot === "slider") return { x: SLIDER_BASE.x, y: SLIDER_BASE.y };
     return { x: PAD_BASE[slot as PadAction].x, y: PAD_BASE[slot as PadAction].y };
   };
 
-  /** 位移与半径夹到当前视口内(单位:原始、未 scale) */
+  /**
+   * 滑轨的位移夹取:只有「上下」这一维。
+   * 参考系 = 屏幕底边中点,单位 = 设计像素(不乘 scale —— 和球场同一把尺)。
+   * dx 一律回 0:轨与球场 1:1 对位之后,横向一动就对不上脚下的场地线,
+   * 「手指在哪人就在哪」这个承诺当场作废,所以这一维不是留给用户调的。
+   * 纵向唯一约束 = 整条轨留在可视区内(上下都留 edgePad),不再预留顶部记分牌带。
+   */
+  const clampRailDelta = (dy: number): { dx: number; dy: number } => {
+    const { hh } = viewportHalf();
+    const r = Settings.slider.r * currentScale;
+    const edge = CFG.padSkin.edgePad;
+    const lo = r + edge, hi = Math.max(lo, 2 * hh - r - edge);
+    const yBottom = clamp(safe.b + SLIDER_BASE.y + dy, lo, hi);
+    return {
+      dx: 0,
+      dy: yBottom - safe.b - SLIDER_BASE.y,
+    };
+  };
+
+  /**
+   * 槽位可放区域的唯一约束:整块控件留在可视区内(四周各留 edgePad)。
+   * 以前还额外预留过一条「顶部记分牌带」(按键中心不许进 y>120 那一带),
+   * 用户要的是「能放到任意位置」,所以那道保留带已经去掉 —— 挡住 HUD 是玩家自己的选择,
+   * 而「拖出屏外就再也点不回来」不是,那一类才是必须夹住的。
+   * (位移数值本身仍由 Settings 的 PLACE_GUARD 兜住坏档,这里不重复夹。)
+   */
   const clampDelta = (slot: PadSlot, dx: number, dy: number): { dx: number; dy: number } => {
+    if (slot === "slider") return clampRailDelta(dy);
     const base = slotBaseXY(slot);
     const { hw, hh } = viewportHalf();
     const corner = slotCorner(slot, hw, hh);
     const isJoy = slot === "joystick";
-    const isSld = slot === "slider";
-    const r = (isJoy ? Settings.joystick.r : isSld ? Settings.slider.r : Settings.padOf(slot as PadAction).r) * currentScale;
-    const limDx = isJoy ? JOYSTICK_LIMIT.maxDx : isSld ? SLIDER_LIMIT.maxDx : PAD_LIMIT.maxDx;
-    const limDy = isJoy ? JOYSTICK_LIMIT.maxDy : isSld ? SLIDER_LIMIT.maxDy : PAD_LIMIT.maxDy;
-    // 圆心可行域:整圆在屏内,且不进顶部记分牌带(edgePad 从 config 读)
+    const r = (isJoy ? Settings.joystick.r : Settings.padOf(slot as PadAction).r) * currentScale;
     const edge = CFG.padSkin.edgePad;
     const lo = -hw + r + edge, hi = hw - r - edge;
+    const yLo = -hh + r + edge, yHi = hh - r - edge;
     const cx = clamp(corner.x + (base.x + dx) * currentScale, Math.min(lo, hi), Math.max(lo, hi));
-    const cy = clamp(corner.y + (base.y + dy) * currentScale, -hh + r + edge, hh - TOP_KEEP);
+    const cy = clamp(corner.y + (base.y + dy) * currentScale, Math.min(yLo, yHi), Math.max(yLo, yHi));
     return {
-      dx: clamp(cx / currentScale - corner.x / currentScale - base.x, -limDx, limDx),
-      dy: clamp(cy / currentScale - corner.y / currentScale - base.y, -limDy, limDy),
+      dx: cx / currentScale - corner.x / currentScale - base.x,
+      dy: cy / currentScale - corner.y / currentScale - base.y,
     };
   };
 
@@ -1306,13 +1367,20 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       }
       if (slider) {
         const s = Settings.slider;
-        const shown = clampDelta("slider", s.dx, s.dy);
+        const G = railGeo();
+        const shown = clampRailDelta(s.dy);
         slider.r = s.r * currentScale;
         slider.h = slider.r * 2;
-        slider.w = (SLIDER_BASE.w / SLIDER_BASE.r) * slider.r;
-        slider.root.setPosition((SLIDER_BASE.x + shown.dx) * currentScale, (SLIDER_BASE.y + shown.dy) * currentScale);
+        slider.span = G.span;
+        slider.minX = G.minX;
+        slider.maxX = G.maxX;
+        slider.w = G.span + slider.r * 2;
+        // x 与长度不乘 scale:轨是球场的投影,球场不随长宽比缩放
+        slider.root.setPosition(G.centerUiX, SLIDER_BASE.y + shown.dy);
         slider.baseUt.setContentSize(slider.w + 32, slider.h + 32);
         slider.thumb.getComponent(UITransform)!.setContentSize(slider.r * 2.2, slider.r * 2.2);
+        // 换机/重置后旧滑块位置可能落在新行程外,夹回来,别让滑块挂在轨端之外
+        slider.thumb.setPosition(clamp(slider.thumb.position.x, -G.span / 2, G.span / 2), 0);
         paintSliderTrack(slider, false, !!opts.edit);
         paintSliderThumb(slider, false);
       }
