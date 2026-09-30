@@ -139,6 +139,14 @@ interface BtnRec {
   swipeDir: number;
   /** 键名文字的透明度节点(仅 swing/lunge 有):apply 里随 padAlpha 同步,不参与 paint 重画 */
   labelOp: UIOpacity | null;
+  /** 键名文本组件引用(用于动态更新技能名称) */
+  labelComp?: Label | null;
+  /** 技能 CD 比例: 0 (就绪) .. 1 (全量冷却中) */
+  cdRatio?: number;
+  /** 技能是否满足当前局势释放条件 (不满足置灰, 满足点亮) */
+  skillReady?: boolean;
+  /** 技能专属类型 (lunge / smash / flash / magnet / focus) */
+  skillId?: string;
 }
 
 interface StickRec {
@@ -205,12 +213,49 @@ function paint(rec: BtnRec, edit: boolean): void {
     return c;
   };
   g.clear();
-  g.fillColor = rec.pressed ? mix(S.downFill, S.downFillA * A, glow * 0.4) : mix(S.idleFill, S.idleFillA * A, glow * 0.55);
-  g.strokeColor = rec.pressed ? mix(S.downEdge, S.downEdgeA * A, glow * 0.6) : mix(S.idleEdge, S.idleEdgeA * A, glow);
-  g.lineWidth = rec.pressed ? 4 : 3;
+  const isLunge = rec.action === "lunge";
+  const isSkillDisabled = isLunge && (rec.skillReady === false || (rec.cdRatio ?? 0) > 0);
+  const isFlashReady = isLunge && rec.skillId === "flash" && rec.skillReady && (rec.cdRatio ?? 0) <= 0;
+
+  let baseFill = rec.pressed ? mix(S.downFill, S.downFillA * A, glow * 0.4) : mix(S.idleFill, S.idleFillA * A, glow * 0.55);
+  let baseEdge = rec.pressed ? mix(S.downEdge, S.downEdgeA * A, glow * 0.6) : mix(S.idleEdge, S.idleEdgeA * A, glow);
+  if (isSkillDisabled) {
+    baseFill = skinColor("#0e121a", 0.45 * A);
+    baseEdge = skinColor("#334155", 0.45 * A);
+  } else if (isFlashReady) {
+    baseEdge = skinColor(CFG.colors.accent, 0.98 * A);
+  }
+
+  g.fillColor = baseFill;
+  g.strokeColor = baseEdge;
+  g.lineWidth = (rec.pressed || isFlashReady) ? 4 : 3;
   g.circle(0, 0, rec.r);
   g.fill();
   g.stroke();
+
+  // 闪现扣杀可触发点亮状态: 双重高光环
+  if (isFlashReady) {
+    g.strokeColor = skinColor("#ffffff", 0.8 * A);
+    g.lineWidth = 1.8;
+    g.circle(0, 0, rec.r - 3);
+    g.stroke();
+  }
+
+  // 冷却中: 绘制半透明扇形扫掠遮罩与外圈进度环
+  if (isLunge && (rec.cdRatio ?? 0) > 0) {
+    const cd = clamp(rec.cdRatio!, 0, 1);
+    g.fillColor = skinColor("#000000", 0.58 * A);
+    g.moveTo(0, 0);
+    g.arc(0, 0, rec.r, -Math.PI / 2, -Math.PI / 2 + cd * Math.PI * 2, false);
+    g.lineTo(0, 0);
+    g.fill();
+
+    g.strokeColor = skinColor("#38bdf8", 0.85 * A);
+    g.lineWidth = 2.5;
+    g.arc(0, 0, rec.r - 1.5, -Math.PI / 2 + cd * Math.PI * 2, -Math.PI / 2 + Math.PI * 2, false);
+    g.stroke();
+  }
+
   if (edit && rec.selected) {
     // 外圈荧光黄环 = 「选中」,与按下的内亮区分开:编辑态两者可能同时成立
     g.strokeColor = skinColor(S.downEdge, 1 * A);
@@ -218,10 +263,17 @@ function paint(rec: BtnRec, edit: boolean): void {
     g.circle(0, 0, rec.r + 8);
     g.stroke();
   }
-  // 图标跟随按下/选中态变色;击球键再带上滑动档位(提交后整键切档位图)
-  drawIcon(g, rec.action, rec.r,
-    mix(rec.pressed ? S.downIcon : S.icon, (rec.pressed ? S.downIconA : S.iconA) * A, glow * 0.7),
-    rec.action === "swing" ? rec.swipeDir : 0);
+
+  let iconCol = mix(rec.pressed ? S.downIcon : S.icon, (rec.pressed ? S.downIconA : S.iconA) * A, glow * 0.7);
+  if (isSkillDisabled) {
+    iconCol = skinColor("#64748b", 0.5 * A);
+  } else if (isFlashReady) {
+    iconCol = skinColor("#ffe14d", 0.98 * A);
+  }
+
+  // 图标跟随按下/选中/技能态变色
+  drawIcon(g, rec.action, rec.r, iconCol,
+    rec.action === "swing" ? rec.swipeDir : 0, rec.skillId);
   // 滑动手势反馈(仅 swing 键):已提交方向时画一道方向色弧
   if (rec.action === "swing" && rec.swipeDir !== 0) {
     const hex = rec.swipeDir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan;
@@ -497,7 +549,7 @@ function drawDropShot(g: Graphics, r: number): void {
  * - swing: variant 三态 —— 0 中性羽毛球 + 档位色滑动箭头;1 深球重击图;-1 短球轻击图
  * - swingFar / swingNear: 键盘专用路径(触屏不再建按钮),与 swing 的两张档位图同源
  */
-function drawIcon(g: Graphics, action: PadAction, r: number, color: Color, variant = 0): void {
+function drawIcon(g: Graphics, action: PadAction, r: number, color: Color, variant = 0, skillId = "lunge"): void {
   g.strokeColor = color;
   g.fillColor = color;
   g.lineWidth = 5;
@@ -534,32 +586,84 @@ function drawIcon(g: Graphics, action: PadAction, r: number, color: Color, varia
     }
 
     case "lunge": {
-      // 跨步:正面大开立的人形剪影 + 两侧速度线。
-      // 人形一眼读出「位移动作」;刻意画成左右对称的开立姿,不暗示单一方向
-      // —— 往哪跨由左手方向键/摇杆决定(见 pad.ts press("lunge") 的方向解算)。
+      const sId = skillId || "lunge";
+      if (sId === "smash") {
+        // 百分百重击: 倾斜斩击巨剑 + 爆星
+        const s = r * 0.42;
+        g.lineWidth = 5;
+        g.moveTo(-s * 0.45, -s * 0.45);
+        g.lineTo(s * 0.45, s * 0.45);
+        g.stroke();
+        g.lineWidth = 3.5;
+        g.moveTo(-s * 0.25, -s * 0.1);
+        g.lineTo(-s * 0.6, -s * 0.35);
+        g.stroke();
+        g.circle(s * 0.55, s * 0.55, s * 0.18);
+        g.fill();
+        break;
+      }
+      if (sId === "flash") {
+        // 闪现扣杀: 折线闪电
+        const s = r * 0.42;
+        g.lineWidth = 4.5;
+        g.moveTo(-s * 0.2, s * 0.85);
+        g.lineTo(-s * 0.48, s * 0.1);
+        g.lineTo(0, s * 0.1);
+        g.lineTo(-s * 0.25, -s * 0.7);
+        g.lineTo(s * 0.48, 0);
+        g.lineTo(0.08, 0);
+        g.lineTo(s * 0.35, s * 0.85);
+        g.stroke();
+        break;
+      }
+      if (sId === "magnet") {
+        // 引力吸球: 双同心圆 + 向心引力
+        const s = r * 0.42;
+        g.lineWidth = 3.2;
+        g.circle(0, 0, s * 0.82);
+        g.stroke();
+        g.circle(0, 0, s * 0.46);
+        g.stroke();
+        g.circle(0, 0, s * 0.18);
+        g.fill();
+        break;
+      }
+      if (sId === "focus") {
+        // 时空减速: 表盘刻度 + 指针
+        const s = r * 0.42;
+        g.lineWidth = 3.2;
+        g.circle(0, 0, s * 0.75);
+        g.stroke();
+        g.lineWidth = 3.8;
+        g.moveTo(0, 0);
+        g.lineTo(0, s * 0.45);
+        g.moveTo(0, 0);
+        g.lineTo(s * 0.38, 0);
+        g.stroke();
+        g.circle(0, 0, s * 0.15);
+        g.fill();
+        break;
+      }
+
+      // 默认强力跨步: 正面大开立的人形剪影 + 两侧速度线
       const s = r * 0.42;
-      // 头(实心)
       g.circle(0, s * 0.88, s * 0.24);
       g.fill();
-      // 躯干
       g.lineWidth = 5.5;
       g.moveTo(0, s * 0.6);
       g.lineTo(0, s * 0.05);
       g.stroke();
-      // 双腿大开立(跨步姿)
       g.moveTo(0, s * 0.05);
       g.lineTo(-s * 0.72, -s * 0.62);
       g.moveTo(0, s * 0.05);
       g.lineTo(s * 0.72, -s * 0.62);
       g.stroke();
-      // 双臂向下外张(压低重心)
       g.lineWidth = 4.5;
       g.moveTo(0, s * 0.48);
       g.lineTo(-s * 0.52, s * 0.02);
       g.moveTo(0, s * 0.48);
       g.lineTo(s * 0.52, s * 0.02);
       g.stroke();
-      // 两侧速度线(冲刺感)
       g.lineWidth = 3.5;
       for (const side of [-1, 1]) {
         const x0 = side * s * 0.98, x1 = side * s * 1.34;
@@ -683,6 +787,8 @@ export interface TouchPadHandle {
    * 只重画击球两键,电平变化 <0.02 跳过重画,不来球时恒 0(无重画开销)。
    */
   setSwingGlow(level: number): void;
+  /** 设置技能按键的运行时状态 (CD比例、就绪状态、技能ID及按键名称) */
+  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string): void;
   /** 当前生效的移动方式(便于面板判断要不要显示摇杆的 chip) */
   readonly moveMode: MoveMode;
   /** 清触摸 claim 与按下的视觉状态(层被隐藏时 TOUCH_END 送不到,必须主动清) */
@@ -725,6 +831,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
   // 键名文字标签(仅击球/跨步两键):图形之外再给一行字,一眼可读。
   // 挂在按钮圆内底部,不参与 paint 重画;透明度随 padAlpha,由 apply() 同步。
   let labelOp: UIOpacity | null = null;
+  let labelComp: Label | null = null;
   if (action === "swing" || action === "lunge") {
     const PS = CFG.padSkin;
     const ln = new Node(`label-${action}`);
@@ -744,11 +851,13 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     labelOp = ln.addComponent(UIOpacity);
     labelOp.opacity = Math.round(PS.labelA * Settings.padAlpha * 255);
     ln.setParent(node);
+    labelComp = lb;
   }
 
   const rec: BtnRec = {
     action, node, ut, g, cluster, r, pressed: false, selected: false, glow: 0,
-    flash, flashG, flashOp, swipeDir: 0, labelOp,
+    flash, flashG, flashOp, swipeDir: 0, labelOp, labelComp,
+    cdRatio: 0, skillReady: true, skillId: "lunge",
   };
   paint(rec, !!opts.edit);
 
@@ -1110,6 +1219,13 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
 
     const down = (rec: BtnRec): void => {
+      // 技能按钮处于 CD 中或不满足释放门槛时拒绝触发
+      if (rec.action === "lunge") {
+        if ((rec.cdRatio ?? 0) > 0 || rec.skillReady === false) {
+          haptic("light");
+          return;
+        }
+      }
       rec.pressed = true;
       if (rec.action === "swing") rec.swipeDir = 0;  // 新按下重置手势
       paint(rec, false);
@@ -1516,6 +1632,24 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     }
   };
 
+  const setSkillState = (cdRatio: number, ready: boolean, skillId: string, skillName?: string): void => {
+    for (const rec of recs) {
+      if (rec.action !== "lunge") continue;
+      const changed = Math.abs((rec.cdRatio ?? 0) - cdRatio) > 0.015
+        || rec.skillReady !== ready
+        || rec.skillId !== skillId;
+      rec.cdRatio = cdRatio;
+      rec.skillReady = ready;
+      rec.skillId = skillId;
+      if (skillName && rec.labelComp && rec.labelComp.string !== skillName) {
+        rec.labelComp.string = skillName;
+      }
+      if (changed) {
+        paint(rec, !!opts.edit);
+      }
+    }
+  };
+
   apply();
   // 设置页/编辑器改布局 → 两个实例(真按键 + 编辑预览)都跟着刷;
   // apply 只读不写 Settings,不会自激。
@@ -1528,6 +1662,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     select,
     pulseSwing,
     setSwingGlow,
+    setSkillState,
     get moveMode(): MoveMode { return currentMode; },
     clearPressed(): void {
       claims.clear();
@@ -1625,6 +1760,11 @@ class TouchPadController {
   /** 按拍预告辉光电平;未挂载时静默忽略 */
   setSwingGlow(level: number): void {
     this.handle?.setSwingGlow(level);
+  }
+
+  /** 设置技能按键运行时状态 (CD、就绪、技能名);未挂载时静默忽略 */
+  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string): void {
+    this.handle?.setSkillState(cdRatio, ready, skillId, skillName);
   }
 }
 

@@ -13,6 +13,7 @@ import { Physics } from "./physics";
 import { Pace } from "./pace";
 import { Player as Pl } from "./player";
 import { Rules, RulesState } from "./rules";
+import { Skills } from "./skills";
 import { AiState, Ball, Intercept, Player, PlayerInput } from "./types";
 
 const C = CFG;
@@ -273,20 +274,51 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     }
   }
 
-  // ---------- 跨步救球 ----------
-  // 球低且刚好超出正常步幅,但 lunge 能救到:果断跨步
-  if (p.onGround && p.swingT < 0 && p.lungeT < 0 && incoming && ball.live && !ball.held) {
-    const dist = Math.abs(ball.x - p.x);
-    const reach = p.swingRadius * 1.1;
-    const lungeReach = reach * (C.lunge.reachMul || 1.55);
-    const h = CO.groundY - ball.y;
-    // 球在网前高度以下、距离超出正常但进入跨步范围
-    if (dist > reach && dist < lungeReach && h < C.aiReach.stand * 0.7) {
-      // 面朝球的方向才跨步(反向说明已经跑过了)
-      const ballDir = ball.x > p.x ? 1 : -1;
-      if (ballDir === p.facing) {
-        inp.lungePressed = true;
-        inp.lungeDir = p.facing;
+  // ---------- AI 技能决策系统 ----------
+  if (p.skill && incoming && ball.live && !ball.held && Skills.canActivate(p, ball)) {
+    const sId = p.skill.id;
+    if (sId === "lunge") {
+      // 强力跨步救球:球低且刚好超出正常步幅,但跨步能救到
+      const dist = Math.abs(ball.x - p.x);
+      const reach = p.swingRadius * 1.1;
+      const lungeReach = reach * (C.lunge.reachMul || 1.55);
+      const h = CO.groundY - ball.y;
+      if (dist > reach && dist < lungeReach && h < C.aiReach.stand * 0.7) {
+        const ballDir = ball.x > p.x ? 1 : -1;
+        if (ballDir === p.facing) {
+          inp.skillPressed = true;
+          inp.skillDir = p.facing;
+          inp.lungePressed = true;
+          inp.lungeDir = p.facing;
+        }
+      }
+    } else if (sId === "smash") {
+      // 百分百重击:进攻心态强且即将来球在攻击范围内预先附魔
+      if (S.wantSmash && Math.abs(ball.x - p.x) < 130 && Math.random() < 0.6) {
+        inp.skillPressed = true;
+      }
+    } else if (sId === "flash") {
+      // 闪现扣杀:球在己方高空 (>= 120px) 且处于下落/高点时,凌空暴扣绝杀
+      const h = CO.groundY - ball.y;
+      if (h >= 120 && (S.wantSmash || Math.random() < 0.75)) {
+        inp.skillPressed = true;
+      }
+    } else if (sId === "magnet") {
+      // 引力吸球:预测失位或面对网前低短球时,触发引力吸球保命与反击
+      const dist = Math.abs(ball.x - p.x);
+      const h = CO.groundY - ball.y;
+      if (dist > p.swingRadius * 1.15 && h < C.aiReach.stand * 0.8) {
+        inp.skillPressed = true;
+      } else if (S.ic && S.chasing) {
+        const runToTime = Math.abs(S.ic.x - p.x) / (C.player.vmax * em.speed);
+        if (S.ic.t < runToTime - 2 || dist > 200) {
+          inp.skillPressed = true;
+        }
+      }
+    } else if (sId === "focus") {
+      // 时空减速:对手球速过快或落后时开启领域
+      if (Math.hypot(ball.vx, ball.vy) > 13 || em.aggr > 0.45) {
+        inp.skillPressed = true;
       }
     }
   }

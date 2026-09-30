@@ -17,6 +17,7 @@ import { flightFramesTo } from "../core/physics";
 import { Pace } from "../core/pace";
 import { Gait } from "../core/gait";
 import { Player, PRESS_LEAD_FRAMES } from "../core/player";
+import { Skills } from "../core/skills";
 import { clamp } from "../core/utils";
 import { Ball, FaceKind, GameEvent, PlayerInput } from "../core/types";
 import { WorldView } from "../render/world";
@@ -160,6 +161,14 @@ export class GameRoot extends Component {
 
     this.drain();
     this.updateSwingCue();
+    // 同步玩家技能按键状态至触屏
+    const human = R.players[0];
+    if (human && human.skill) {
+      const s = human.skill;
+      const cdRatio = s.maxCd > 0 ? clamp(s.cd / s.maxCd, 0, 1) : 0;
+      const def = Skills.defOf(s.id);
+      touchPad.setSkillState(cdRatio, s.ready, s.id, def.shortName);
+    }
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     // 氛围暗角输入(长回合金晕/赛点红晕在渲染层只读消费)
     this.world.setAtmo(R.state, R.rally, Rules.isMatchPoint());
@@ -357,9 +366,38 @@ export class GameRoot extends Component {
                       : (e.q as number) > 0.86 ? K.floatTierGood : null;
             if (lab) this.world.float(e.x as number, (e.y as number) + lab.dy, lab.text, lab.color, lab.size, lab.life);
           }
-          // 跨步后窗口内击球:力度强化的专属飘字(与上面球种飘字错开,放更高一档)
-          if (praise && e.lungeShot) {
-            this.world.float(e.x as number, (e.y as number) - 44, "跨步重击!", "#ff8c1a", 22, 46);
+          // 技能专属击球飘字与强化特效
+          const skillKind = e.skillKind as string | null;
+          if (praise && skillKind) {
+            const K = C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number; dy: number }>;
+            const sLab = skillKind === "lunge" ? K.floatSkillLunge
+              : skillKind === "smash" ? K.floatSkillSmash
+              : skillKind === "flash" ? K.floatSkillFlash
+              : skillKind === "magnet" ? K.floatSkillMagnet
+              : skillKind === "focus" ? K.floatSkillFocus
+              : null;
+            if (sLab) {
+              this.world.float(e.x as number, (e.y as number) + sLab.dy - 16, sLab.text, sLab.color, sLab.size, sLab.life);
+            }
+            if (skillKind === "lunge") {
+              const ang = hitAng ?? this.hitAngOf(e);
+              this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET_SMASH);
+              this.world.whiteFlash(0.48);
+              this.world.shake(9);
+            } else if (skillKind === "smash" || skillKind === "flash") {
+              const ang = hitAng ?? this.hitAngOf(e);
+              this.world.fx.smash(e.x as number, e.y as number, ang, TIER_FIRE);
+              this.world.whiteFlash(0.75);
+              this.world.shake(16);
+            } else if (skillKind === "magnet") {
+              this.world.fx.sweet(e.x as number, e.y as number, hitAng);
+              this.world.whiteFlash(0.5);
+              this.world.shake(8);
+            }
+          } else if (praise && e.lungeShot) {
+            this.world.float(e.x as number, (e.y as number) - 44, "跨步重击!", "#38bdf8", 24, 48);
+            const ang = hitAng ?? this.hitAngOf(e);
+            this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
           }
           // 连击热手提示:热度首次烧到 fireAt 时飘一次(连打好球的人才看得到)
           if (praise && (e.heat as number) === (C.heat.fireAt || 3)) {

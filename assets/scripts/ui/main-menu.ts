@@ -8,6 +8,7 @@
 import { Button, Color, Graphics, Label, Node, tween, UIOpacity, UITransform, Vec2, Widget } from "cc";
 import { CFG, DRILLS, menuForPlatform } from "../core/config";
 import { Career } from "../core/career";
+import { Skills } from "../core/skills";
 import type { DiffKey } from "../core/types";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
@@ -42,6 +43,8 @@ export class MainMenu {
   private courtTabs: Array<{ g: Graphics; name: Label; flag: Node; id: string; accent: string }> = [];
   private careerSub: Label;
   private drillSub: Label;
+  private skillNameLabel!: Label;
+  private skillBadgeG!: Graphics;
   private checkedStartup = false;
   /** rise 入场的节点队列(节点,延迟):show 时逐级展开 */
   private riseNodes: Array<{ node: Node; delay: number }> = [];
@@ -224,6 +227,21 @@ export class MainMenu {
       this.courtTabs.push({ g, name, flag, id: c.id, accent: c.accent });
       this.riseNodes.push({ node, delay: 0.26 + i * 0.03 });
     });
+
+    // ---------- 核心技能配置胶囊 (整块可点, 弹出技能选择弹窗) ----------
+    const skillBadge = this.card("badge:skill", 270, 36, { r: 18, edge: 3, bar: 0, alpha: 0.94, slant: 4, accent: "#38bdf8" });
+    skillBadge.node.setPosition(0, 24, 0);
+    this.skillBadgeG = skillBadge.g;
+    makeChip(skillBadge.node, "SKILL", 9, "#38bdf8", "#0a0e1c", 8).setPosition(-94, 0, 0);
+    this.skillNameLabel = this.txt(skillBadge.node, "强力跨步", 13, P.accent, -60, 0, 96);
+    this.txt(skillBadge.node, "更换 ›", 11, DIM_FAINT, 76, 0, 48);
+    skillBadge.node.on(Button.EventType.CLICK, () => {
+      kit.sfx.play("ui");
+      kit.openSkillDialog(() => {
+        this.paintSkillBadge();
+      });
+    });
+    this.riseNodes.push({ node: skillBadge.node, delay: 0.33 });
 
     // ---------- 单人三难度:横排三张实底卡,整卡即按钮 ----------
     // 染色强度随档位递增:入门冷静 → 大师发烫,颜色本身就在报难度
@@ -433,6 +451,13 @@ export class MainMenu {
     fadeOutHide(this.root);   // 退场淡出:BlockInputEvents 立即放行,不拦刚开局的拇指
   }
 
+  private paintSkillBadge(): void {
+    const sId = Career.equippedSkill();
+    const def = Skills.defOf(sId);
+    this.skillNameLabel.string = def.name;
+    this.skillNameLabel.color = col(def.accent);
+  }
+
   private refresh(): void {
     const p = Career.profile();
     this.lvLabel.string = `Lv.${p.level}`;
@@ -441,6 +466,7 @@ export class MainMenu {
     // 铭牌跟随当前球馆(老 ui.js heroKicker)
     this.kickerLabel.string = this.kit.getCourtTheme().sub;
     this.paintCourts();
+    this.paintSkillBadge();
     const cleared = Object.values(p.drills).filter((d) => d.stars > 0).length;
     this.drillSub.string = `${cleared}/${DRILLS.length} 已练成 · 首通有奖`;
     const rate = p.stats.matches > 0 ? Math.round((p.stats.wins / p.stats.matches) * 100) : 0;

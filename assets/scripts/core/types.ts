@@ -30,6 +30,35 @@ export type FaceKind =
   | "cheer"    // 赢下比赛:∩∩ 笑眼 + 半圆张嘴 + 爱心贴纸
   | "ko";      // 输掉比赛:XX 眼 + 波浪嘴
 
+// ---------- 技能系统 ----------
+
+/** 可装备技能标识 */
+export type SkillId = "lunge" | "smash" | "flash" | "magnet" | "focus";
+
+/** 技能静态定义 */
+export interface SkillDef {
+  id: SkillId;
+  name: string;
+  shortName: string;
+  tag: string;
+  desc: string;
+  unlockLevel: number;
+  cooldownFrames: number;
+  accent: string;
+  icon: string;
+}
+
+/** 球员身上的技能运行时状态 */
+export interface PlayerSkillState {
+  id: SkillId;
+  cd: number;               // 剩余冷却帧数 (<=0 表示已就绪)
+  maxCd: number;            // 技能基础冷却总帧数
+  activeT: number;          // 激活执行中的剩余帧数 (-1=空闲)
+  buffT: number;            // 增益状态剩余帧数 (如百分百重击附魔, >0 表示激活中)
+  ready: boolean;           // 当前局势下是否满足激活门槛 (如闪现扣杀要求球高/在己方半场)
+  magnetPulling?: boolean;  // 引力吸球进行中
+}
+
 // ---------- 输入 ----------
 
 /**
@@ -63,11 +92,15 @@ export interface PlayerInput {
   lungePressed: boolean;
   /** 跨步方向(-1=向左, 1=向右; 未指定时兜底面向方向 p.facing)。Pad 端按最近的方向键解出 */
   lungeDir?: number;
+  /** 动态技能按键按下 (兼容 lungePressed) */
+  skillPressed?: boolean;
+  skillDir?: number;
   onJump?(p: Player): void;
   onLand?(p: Player, vy: number): void;
   onFootstep?(p: Player): void;
   onWhiff?(p: Player): void;
   onLunge?(p: Player): void;
+  onSkill?(p: Player, skillId: SkillId): void;
 }
 
 // ---------- 实体 ----------
@@ -174,6 +207,12 @@ export interface Player {
   lungeCd: number;
   /** 跨步后特殊击球窗口倒计时(>0=窗口内,每帧递减,跨步触发时重置为 C.lunge.shotWindow) */
   lungeShotT: number;
+  /** 球员当前技能系统状态 */
+  skill?: PlayerSkillState;
+  /** 闪现扣杀残影与电光倒计时 */
+  flashT?: number;
+  /** 时空减速领域持续帧 */
+  focusT?: number;
   stats: { hits: number; smashes: number; sweets: number; perfects: number; whiffs: number };
   /** rules.step 每步记下的输入快照(调试用) */
   lastInp?: PlayerInput;
@@ -206,9 +245,21 @@ export interface Ball {
   flyFromX: number;
   /** 飞入手中动画起点 Y */
   flyFromY: number;
+  /** 引力吸球进行中的牵引目标与参数 */
+  magnetPull?: { targetX: number; targetY: number; player: Player; total: number; t: number; fromX: number; fromY: number } | null;
 }
 
-// ---------- 击球结果 ----------
+// ---------- 击球参数与结果 ----------
+
+export interface HitOpt {
+  q?: number; sweet?: boolean; perfect?: boolean; dEdge?: number;
+  /** 连击热手:本次命中「之前」的连续好球数(0 = 无加成;发球等直调路径不带) */
+  heat?: number;
+  /** 跨步后特殊击球窗口内命中(buildShot 叠加 shotBoost + shotPowerDeg) */
+  lungeShot?: boolean;
+  /** 发球等场景直接指定落点深度(绕过瞄准表) */
+  forced?: { depth: number };
+}
 
 /** 一次命中的完整结果:player.buildShot 的产物,rules 只负责装进球里 */
 export interface ShotResult {
@@ -236,6 +287,8 @@ export interface ShotResult {
   /** 瞄准档位:挥拍时提交的落点瞄准("deep"=深球压底线 / "near"=短球放网 / "mid"=不指定);
    *  命中确认飘字用(表现层判断真人后区分轻重提示) */
   aim?: string;
+  /** 触发的专属技能类型(用于飘字、音效、专属特效) */
+  skillKind?: SkillId;
 }
 
 // ---------- 事件 ----------

@@ -11,6 +11,7 @@ import { Physics } from "./physics";
 import { Pace } from "./pace";
 import { Player as Pl } from "./player";
 import { AI } from "./ai";
+import { Skills } from "./skills";
 import { Ball, DiffKey, GameEvent, Player, PlayerInput, TeamSide } from "./types";
 
 const C = CFG;
@@ -140,6 +141,15 @@ function applyAiTier(): void {
     // 出球误差:接 player.ts buildShot 里那条 `err += p.aiAimErr`(此前无人赋值,
     // 所以菜单上「入门 · 常打飞」一直是句空话)。
     p.aiAimErr = D.shotErr;
+
+    // AI 技能配置分配: 难度越高越能解锁高阶技能
+    if (R.diff === "easy") {
+      p.skill = Skills.initSkillState("lunge");
+    } else if (R.diff === "normal") {
+      p.skill = Skills.initSkillState("lunge");
+    } else {
+      p.skill = Skills.initSkillState("lunge");
+    }
   });
 }
 
@@ -218,7 +228,7 @@ function beginPoint(): void {
   R.state = "SERVE";
   R.timer = C.scoring.servePause;
   R.serveWait = 0;
-  for (const p of R.players) { AI.reset(p); p.heat = 0; }   // 连击热手随新的一分清零
+  for (const p of R.players) { AI.reset(p); Skills.resetPoint(p); p.heat = 0; }   // 连击热手与技能随新的一分复位
   emit("point-start", { server: R.server });
 }
 
@@ -246,6 +256,7 @@ function applyShot(ball: Ball, shot: ShotLike): void {
     landX: shot.landX, steps: shot.steps, intoNet: shot.intoNet, rally: R.rally,
     vx: shot.vx, vy: shot.vy, heat: shot.hitter.heat, lungeShot: !!shot.lungeShot,
     aim: shot.aim ?? null,
+    skillKind: shot.skillKind || null,
   });
 }
 
@@ -339,6 +350,28 @@ function step(inputs: PlayerInput[]): void {
       emit("serve", { side: o.side, type: forced ? (R.serveWait < sv.flickThresh ? "flick" : "clear") : "normal" });
     }
     if (R.timer > 0) R.timer--;
+    return;
+  }
+
+  // 引力吸球:球沿吸力轨道平滑牵引至球员身前
+  if (ball.magnetPull) {
+    const mp = ball.magnetPull;
+    mp.t--;
+    const progress = 1 - mp.t / mp.total;
+    const ease = 1 - Math.pow(1 - progress, 2);
+    ball.px = ball.x; ball.py = ball.y;
+    ball.x = mp.fromX + (mp.targetX - mp.fromX) * ease;
+    ball.y = mp.fromY + (mp.targetY - mp.fromY) * ease;
+    ball.vx = ball.x - ball.px;
+    ball.vy = ball.y - ball.py;
+    if (mp.t <= 0) {
+      ball.magnetPull = null;
+      // 牵引到位，立即触发吸球回击
+      mp.player.swingHit = true;
+      mp.player.hitLock = C.swing.doubleHitLock;
+      const shot = Pl.buildShot(mp.player, ball, { q: 1.0, sweet: true });
+      applyShot(ball, shot);
+    }
     return;
   }
 

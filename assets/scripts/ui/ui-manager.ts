@@ -27,12 +27,13 @@ import { installStorageBackend } from "../game/host";
 import { Rules } from "../core/rules";
 import { Career } from "../core/career";
 import { Drill } from "../core/drill";
-import type { DiffKey } from "../core/types";
+import type { DiffKey, SkillId } from "../core/types";
 import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
 import { courtRenderer, CourtThemeItem } from "../render/court";
 import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawSlantShadow, drawVeil, drawVignette, getDisplayFont, onDisplayFont, skewOf, slashWipe, textW, TOUCH_MIN } from "./ui-arcade";
+import { SkillDialog } from "./skill-dialog";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
 import { Hud } from "./hud";
@@ -292,6 +293,8 @@ export interface UiKit {
   openCareer(): void;
   openDrills(): void;
   openEndlessDialog(): void;
+  /** 技能配置弹窗 (赛前选择主动技能) */
+  openSkillDialog(onEquip?: (id: SkillId) => void): void;
   /** 设置页(主菜单与暂停页都进得来;从暂停页进,关完回暂停页) */
   openSettings(): void;
   cycleCourtTheme(): string;
@@ -324,6 +327,7 @@ export class UIManager extends Component {
   private settlePanel!: SettlePanel;
   private updateDialog!: UpdateDialog;
   private endlessDialog!: EndlessDialog;
+  private skillDialog!: SkillDialog;
   private careerPanel: CareerPanel | null = null;
   private drillPanel: DrillPanel | null = null;
   private settingsPanel: SettingsPanel | null = null;
@@ -359,6 +363,7 @@ export class UIManager extends Component {
     this.settlePanel = new SettlePanel(root, this.kit);
     this.updateDialog = new UpdateDialog(root, this.kit);
     this.endlessDialog = new EndlessDialog(root, this.kit);
+    this.skillDialog = new SkillDialog(root, this.kit);
     this.bridgeCareerSettle();
 
     // UI 音复用同一批烘焙 WAV(resources 缓存共享)。
@@ -473,6 +478,7 @@ export class UIManager extends Component {
     // openSettings() 期间状态不变,所以这里不会把刚打开的面板自己关掉。
     this.settingsPanel?.hide();
     this.endlessDialog?.hide();
+    this.skillDialog?.hide();
     switch (st) {
       case "MENU": {
         this.pausePanel.hide();
@@ -750,6 +756,7 @@ export class UIManager extends Component {
       openCareer: () => this.openCareer(),
       openDrills: () => this.openDrills(),
       openEndlessDialog: () => this.endlessDialog.show(),
+      openSkillDialog: (onEquip) => this.skillDialog.show(onEquip),
       openSettings: () => this.openSettings(),
       cycleCourtTheme: () => this.cycleCourtTheme(),
       courtThemes: () => this.courtThemes(),

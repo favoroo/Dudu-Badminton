@@ -776,6 +776,12 @@ export const CFG = {
     // 与上方的档位飘字、更下方的跨步飘字都错开;mid(直接点击,没滑)不飘,默认档不打扰
     floatAimDeep:          { text: "深球·重",    color: "#ffe14d", size: 14, life: 30, dy: 26 },
     floatAimNear:          { text: "短球·轻",    color: "#00f0ff", size: 14, life: 30, dy: 26 },
+    // 技能触发与特殊击球飘字
+    floatSkillLunge:       { text: "疾风重击!!", color: "#38bdf8", size: 26, life: 48, dy: -28 },
+    floatSkillSmash:       { text: "必杀重扣!!", color: "#f43f5e", size: 30, life: 54, dy: -32 },
+    floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, dy: -34 },
+    floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, dy: -30 },
+    floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, dy: -26 },
   },
 
   // BGM:原版是 WebAudio 现场合成的自适应背景音乐(零音频文件);
@@ -884,13 +890,97 @@ export const CFG = {
     speed: 15,              // 跨步爆发速度(px/帧,约为 vmax 的 1.6 倍)
     duration: 6,            // 跨步持续帧数
     reachMul: 1.55,         // 判定区半径倍率
-    cooldownFrames: 10,     // 爆发结束后再次跨步的冷却(期间移动完全正常)
-    shotWindow: 60,         // 跨步后特殊击球窗口(帧,1 秒,从跨步触发起算)
-    shotBoost: 2.5,         // 窗口内击球初速上限加成(≈ perfectBoost 的八成)
-    shotPowerDeg: 6,        // 窗口内额外压弧度(度,介于 sweet 5 / perfect 9 之间)
+    cooldownFrames: 48,     // 跨步冷却(48帧 ≈ 0.8s,支持短CD快节奏多次救球)
+    shotWindow: 60,         // 跨步后特殊击球窗口(60帧 = 1 秒,身上带风道粒子动画)
+    shotBoost: 3.0,         // 窗口内强化重击初速加成(适度提速,兼顾长相持与终结)
+    shotPowerDeg: 6.5,      // 窗口内额外压弧度
     // --- 深跨步姿势(纯视觉):前膝深弯、髋沉、后腿蹬直的下肢剪裁 ---
     dip: 14,                // 髋部下沉量(px):引导腿深弯的来源(legIK 反解)
     lean: 14,               // 躯干沿跨步方向的前倾(度;退防跨步为负 = 后仰)
+  },
+
+  // ===== 动态技能系统(数值集中管理,纯数据) =====
+  skills: {
+    list: [
+      {
+        id: "lunge",
+        name: "强力跨步",
+        shortName: "跨步",
+        tag: "敏捷突进",
+        desc: "快速滑步突进救球，并在 1 秒内激活强力暴击状态",
+        unlockLevel: 1,
+        cooldownFrames: 48,  // 0.8s
+        accent: "#38bdf8",
+        icon: "lunge",
+      },
+      {
+        id: "smash",
+        name: "百分百重击",
+        shortName: "重击",
+        tag: "绝杀附魔",
+        desc: "球拍聚能爆发烈焰，下次挥击无视高度必定暴扣",
+        unlockLevel: 2,
+        cooldownFrames: 210, // 3.5s
+        accent: "#f43f5e",
+        icon: "smash",
+      },
+      {
+        id: "flash",
+        name: "闪现扣杀",
+        shortName: "闪现",
+        tag: "空中折跃",
+        desc: "瞬间瞬移至高空羽毛球后方，凌空打出一记极速劈扣",
+        unlockLevel: 3,
+        cooldownFrames: 300, // 5.0s
+        accent: "#eab308",
+        icon: "flash",
+      },
+      {
+        id: "magnet",
+        name: "引力吸球",
+        shortName: "吸球",
+        tag: "空间掌控",
+        desc: "展开重力力场，将全场羽毛球瞬间抓回拍前强力回抽",
+        unlockLevel: 4,
+        cooldownFrames: 360, // 6.0s
+        accent: "#a855f7",
+        icon: "magnet",
+      },
+      {
+        id: "focus",
+        name: "时空减速",
+        shortName: "时空",
+        tag: "领域掌控",
+        desc: "开启 1.5 秒子弹时间，球速与对手大幅减慢，从容完美反击",
+        unlockLevel: 5,
+        cooldownFrames: 270, // 4.5s
+        accent: "#06b6d4",
+        icon: "focus",
+      },
+    ],
+    // 各技能专属机制数值
+    smash: {
+      buffDuration: 240,    // 附魔激活后持续 4 秒(未击球时维持)
+      speedBoost: 4.0,      // 极速加成
+      powerDeg: 14,         // 强制压角
+    },
+    flash: {
+      minHeight: 115,       // 球离地高度需 ≥ 115px 才能点亮触发
+      overheadDist: 28,     // 瞬移至球后方距离
+      overheadY: 15,        // 瞬移至球上方高度
+      speedBoost: 3.8,      // 闪现扣杀出球速度加成
+      powerDeg: 12,         // 闪现下压角
+    },
+    magnet: {
+      pullFrames: 9,        // 吸球牵引时长 (约 0.15s 迅速吸至身前)
+      speedBoost: 3.2,      // 吸球反弹初速加成
+      reboundDepth: 0.92,   // 默认强抽对方深场
+    },
+    focus: {
+      duration: 90,         // 持续 90 帧 = 1.5 秒
+      ballSlow: 0.35,       // 球速减速至 35%
+      rivalSlow: 0.40,      // 对手移速减速至 40%
+    },
   },
 
   // AI 拦截高度带:站立够球上限 / 跳起够球上限 / 低位接球截面(px 离地)。

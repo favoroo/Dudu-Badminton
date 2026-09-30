@@ -780,6 +780,44 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   g.stroke();
   // 侧条纹:躯干前缘一道纵向亮线,运动球衣的常见装饰
   px(g, F, tx + lean + runTwist + tw * 0.18, bodyTop + 6, 1.5, bodyH * 0.82, "rgba(255,255,255,0.10)");
+
+  // ---------- 跨步后 1 秒内身体疾风残影与流光动效 (配合跨步重击) ----------
+  if (p.lungeShotT > 0) {
+    const windAlpha = (p.lungeShotT / C.lunge.shotWindow) * 0.6;
+    const wave = Math.sin(t * 0.3) * 2;
+    // 躯干背侧流线风道短线
+    g.strokeColor = withAlpha(pal("#38bdf8"), windAlpha * 0.8);
+    g.lineWidth = F.lw(2.5);
+    const wy1 = bodyTop + bodyH * 0.2;
+    const wy2 = bodyTop + bodyH * 0.55;
+    const wy3 = bodyTop + bodyH * 0.8;
+    lineSeg(g, F, tx - 14 - wave, wy1, tx - 2, wy1);
+    lineSeg(g, F, tx - 18 + wave, wy2, tx - 3, wy2);
+    lineSeg(g, F, tx - 12 - wave, wy3, tx - 2, wy3);
+    g.stroke();
+    // 躯干周围青色风晕
+    px(g, F, tx - 3, bodyTop - 3, tw + 6, bodyH + 6, withAlpha(pal("#38bdf8"), windAlpha * 0.22));
+  }
+
+  // 闪现扣杀折跃雷光
+  if (p.flashT && p.flashT > 0) {
+    const flashA = (p.flashT / 20) * 0.85;
+    g.strokeColor = withAlpha(pal("#eab308"), flashA);
+    g.lineWidth = F.lw(2.6);
+    lineSeg(g, F, tx - 8, bodyTop - 8, tx + 6, bodyTop + 12);
+    lineSeg(g, F, tx + 6, bodyTop + 12, tx - 2, bodyTop + 24);
+    lineSeg(g, F, tx - 2, bodyTop + 24, tx + 14, bodyTop + bodyH);
+    g.stroke();
+  }
+
+  // 引力吸球波纹光环
+  if (p.skill && p.skill.magnetPulling) {
+    const waveR = 18 + ((t * 1.8) % 18);
+    g.strokeColor = withAlpha(pal("#a855f7"), 0.6);
+    g.lineWidth = F.lw(2);
+    circleAA(g, F, 0, 0, waveR);
+    g.stroke();
+  }
   // ---------- 球衣纹样(设计款人物专属):压在底色上、领口描边之下 ----------
   // 注册表分发:key 在 config.SKINS.player[].jersey;glow 色做纹样主色。
   // 局部参考:躯干从 (jx, top) 到 (+w, +h)
@@ -1962,8 +2000,20 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   g.stroke();
 
   // ---------- 9. 命中与击球反馈辉光 ----------
-  // 完美命中瞬间:白金拍框 + 金青双色外晕
-  if (p.perfectGlow > 0) {
+  // 百分百重击技能蓄力附魔:炽热金红与烈焰高光外晕
+  const isPowerSmashBuff = !!(p.skill && p.skill.id === "smash" && p.skill.buffT > 0);
+  if (isPowerSmashBuff && p.skill) {
+    const flameU = Math.sin((p.skill.buffT || 0) * 0.25);
+    const outer = isometricHeadPts(R, headRx + 4.2 + flameU * 1.5, headRy + 4.8 + flameU * 1.5, 36);
+    glowStroke(g, R, outer, "#f43f5e", 4.2 + 8);
+    glowStroke(g, R, head, "#ffe14d", 3.6 + 6);
+    g.strokeColor = pal("#ffffff");
+    g.lineWidth = R.lw(3.6);
+    polyPath(g, head, true); g.stroke();
+    g.strokeColor = pal("#f43f5e");
+    g.lineWidth = R.lw(2.5);
+    polyPath(g, outer, true); g.stroke();
+  } else if (p.perfectGlow > 0) {
     const outer = isometricHeadPts(R, headRx + 3.2, headRy + 3.8, 36);
     glowStroke(g, R, head, "#00f0ff", 3.6 + 8);
     g.strokeColor = pal("#ffffff");

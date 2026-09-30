@@ -6,7 +6,8 @@ import { CFG } from "./config";
 import { clamp, lerp, approach, sweptHit } from "./utils";
 import { Physics } from "./physics";
 import { Gait } from "./gait";
-import { Ball, Player as PlayerEntity, PlayerInput, ShotResult } from "./types";
+import { Skills } from "./skills";
+import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShotResult } from "./types";
 
 // 本模块导出的 Player(值:移动/挥拍/命中的 API)与 types 的 Player 实体(类型)
 // 同名对外,调用方 `import { Player } from "./player"` 两个语义都拿得到,
@@ -48,6 +49,9 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     lungeDir: 0,                    // 跨步方向(1=右,-1=左)
     lungeCd: 0,                     // 跨步冷却:>0 不许再跨,移动照常
     lungeShotT: 0,                  // 跨步后特殊击球窗口倒计时(>0=窗口内)
+    skill: Skills.initSkillState((opts.skill && opts.skill.id) || "lunge"),
+    flashT: 0,
+    focusT: 0,
     stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
   };
 }
@@ -86,34 +90,38 @@ export const PRESS_LEAD_FRAMES = SW.windup + 0.5 + (SW.active - 1) / 2;
 function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   p.px = p.x; p.py = p.y; p.sqPrev = p.sq;
 
-  // ---------- 跨步救球状态机 ----------
-  // 触发判断放在持续推进之前:按下当帧立即爆发(旧结构先推进再判触发,移动中按下
-  // 会先吃 1 帧旧移动逻辑再起步,手感和视觉上都像「顿了一下」)。
-  const LG = C.lunge;
-  // 触发:地面、未在挥拍、未在跨步中、冷却完毕、按下跨步键。
-  // 方向由输入层解(摇杆 → 当前按着的方向键 → 最近按过的);都没给时兜底 ——
-  // 有移动惯性就顺势跨(不逆转去向),完全静止才朝网。
-  if (inp.lungePressed && p.onGround && p.swingT < 0 && p.lungeT < 0 && p.lungeCd <= 0) {
-    p.lungeT = 0;
-    p.lungeDir = inp.lungeDir ? inp.lungeDir
-      : (Math.abs(p.vx) > 1 ? (p.vx > 0 ? 1 : -1) : p.facing);
-    p.lungeShotT = LG.shotWindow;  // 启动跨步后特殊击球窗口
-    p.sq = 0.85;  // 跨步时身体压低
-    // 跨步是冲量,叠加在当前水平速度上 —— 跑动中跨步 = 跑速 + 爆发,不再被替换成
-    // 爆发速(旧逻辑 vx=dir×15 把跑速抹掉,跑动时只比干跑快一点点,「跨了像没跨」)。
-    p.vx += p.lungeDir * LG.speed;
-    inp.onLunge && inp.onLunge(p);
+  // ---------- 动态技能与跨步救球状态机 ----------
+  // 触发判断放在持续推进之前:按下当帧立即爆发
+  const skillHit = inp.skillPressed || inp.lungePressed;
+  const dir = inp.skillDir ?? inp.lungeDir;
+  if (skillHit && ball && Skills.canActivate(p, ball)) {
+    const success = Skills.activate(p, ball, dir);
+    if (success && p.skill) {
+      inp.onSkill && inp.onSkill(p, p.skill.id);
+      if (p.skill.id === "lunge" && inp.onLunge) {
+        inp.onLunge(p);
+      }
+    }
   }
+
+  // 推进技能状态机
+  if (ball) {
+    Skills.update(p, ball);
+  }
+
+  const LG = C.lunge;
   if (p.lungeT >= 0) {
     p.lungeT++;
-    // 跨步中:vx 在触发帧已锁定(含跑速+爆发),这里只推进帧数与判定区扩大;不重写
-    // vx,以免把叠加后的高速又抹回纯爆发速。移动覆盖段跳过正常加速/摩擦,保住锁定值。
+    // 跨步中:vx 在触发帧已锁定(含跑速+爆发),这里只推进帧数与判定区扩大
     if (p.lungeT >= LG.duration) {
       p.lungeT = -1;
-      p.lungeCd = LG.cooldownFrames;  // 进冷却:移动照常,只是不许立刻再跨
+      p.lungeCd = p.skill ? p.skill.cd : LG.cooldownFrames;
     }
   } else if (p.lungeCd > 0) {
     p.lungeCd--;
+  }
+  if (p.lungeShotT > 0) {
+    p.lungeShotT--;
   }
 
   // ---------- 水平:加速度 + 摩擦 ----------
@@ -305,16 +313,6 @@ function ballInZone(p: ZoneProbe, ball: Ball): number | null {
   return d <= z.r ? clamp(d / z.r, 0, 1) : null;
 }
 
-export interface HitOpt {
-  q?: number; sweet?: boolean; perfect?: boolean; dEdge?: number;
-  /** 连击热手:本次命中「之前」的连续好球数(0 = 无加成;发球等直调路径不带) */
-  heat?: number;
-  /** 跨步后特殊击球窗口内命中(buildShot 叠加 shotBoost + shotPowerDeg) */
-  lungeShot?: boolean;
-  /** 发球等场景直接指定落点深度(绕过瞄准表) */
-  forced?: { depth: number };
-}
-
 // 命中判定:挥拍窗口内 + 球在判定区(或真撞上拍头)
 function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   if (p.swingT < SW.windup || p.swingT > SW.windup + SW.active) return null;
@@ -398,18 +396,25 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   // 补同一个落点 → 球更凶、到得更早。低击球点会被「安全过网角」兜底抬回来,不会乱下网。
   // 连击热手在同一预算上再加余量,但总 boost 封在物理上限的差额里(25→30),
   // 不与 shuttle.maxSpeed 冲突。
-  // 跨步后窗口内击球(lungeShot):额外加 boost + 压弧度,同一预算封顶,不绕过 classify。
+  // 技能与连击热手加成统一在此汇聚
   const lungeShot = !!opt.lungeShot;
   const heatBoost = Math.min((opt.heat || 0) * C.heat.speedBonus, C.heat.speedBonusMax);
+  const sm = Skills.modifyShot(p, opt);
   const boost = Math.min(
     (perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0) + heatBoost
-      + (lungeShot ? C.lunge.shotBoost : 0),
+      + sm.speedBoost,
     C.shuttle.maxSpeed - C.shot.speedMax);
   const powerDeg = (perfect ? C.perfect.powerDeg : sweet ? C.sweet.powerDeg : 0)
-    + (lungeShot ? C.lunge.shotPowerDeg : 0);
-  const loft = clamp(Physics.loftFor(depth, h, q) - powerDeg, C.shot.loftMinDeg, C.shot.loftMaxDeg);
+    + sm.powerDeg;
+  let loft = clamp(Physics.loftFor(depth, h, q) - powerDeg, C.shot.loftMinDeg, C.shot.loftMaxDeg);
+  if (sm.forceSmash) {
+    loft = Math.min(loft, 10);
+  }
 
   const shot = Physics.solveShot(ball.x, ball.y, dir, depth, loft, boost);
+  if (sm.forceSmash) {
+    shot.kind = "smash";
+  }
   if (shot.kind === "smash") p.stats.smashes++;
   return {
     kind: shot.kind, q, sweet, perfect,
@@ -424,6 +429,7 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     lungeShot,
     // 瞄准档位只在字符串瞄准(真人路径 mid/deep/near)时有意义;AI 直接给数值深度,不上报
     aim: typeof p.swingAim === "string" ? p.swingAim : undefined,
+    skillKind: sm.skillKind,
   };
 }
 

@@ -8,7 +8,8 @@ import { CFG } from "./config";
 import { load, save } from "./utils";
 import { Rules } from "./rules";
 import { DrillResult } from "./drill";
-import { DiffKey, SkinDef, SkinKind } from "./types";
+import { DiffKey, SkinDef, SkinKind, SkillId } from "./types";
+import { Skills } from "./skills";
 
 const C = CFG;
 const KEY = "profile";
@@ -24,6 +25,8 @@ export interface Profile {
   coins: number;
   owned: string[];
   equipped: Record<SkinKind, string>;
+  /** 当前装备的技能 */
+  equippedSkill?: SkillId;
   streak: number;
   bestStreak: number;
   /** 训练场进度:关卡 id → 最好成绩。老档缺这个字段由 profile() 逐字段补默认,零迁移 */
@@ -50,6 +53,7 @@ const fresh = (): Profile => ({
   level: 1, exp: 0, coins: C.career.startCoins,
   owned: KINDS.map((k) => DEFAULTS[k].id),
   equipped: { player: DEFAULTS.player.id, racket: DEFAULTS.racket.id, shuttle: DEFAULTS.shuttle.id, face: DEFAULTS.face.id },
+  equippedSkill: "lunge",
   streak: 0, bestStreak: 0,
   drills: {},
   stats: {
@@ -79,6 +83,7 @@ function profile(): Profile {
   for (const k of KINDS) {
     if (!cache.owned.includes(DEFAULTS[k].id)) cache.owned.push(DEFAULTS[k].id);
   }
+  if (!cache.equippedSkill) cache.equippedSkill = "lunge";
   // 首次自动合流散落的旧 wins / matches 记录
   const legacyWins = load<number>("wins", 0);
   const legacyMatches = load<number>("matches", 0);
@@ -286,7 +291,27 @@ function buyAndEquip(kind: SkinKind, id: string): BuyResult {
   return r;
 }
 
-// 把当前装备解析成 theme / playerSkin / racketSkin,只挂在左队 0 号真人(「你」)身上。
+// 获取当前装备的技能 (缺省为 "lunge")
+function equippedSkill(): SkillId {
+  return profile().equippedSkill || "lunge";
+}
+
+// 检查某个技能是否已通过等级解锁
+function isSkillUnlocked(id: SkillId): boolean {
+  const def = Skills.defOf(id);
+  return profile().level >= def.unlockLevel;
+}
+
+// 装备指定技能
+function equipSkill(id: SkillId): boolean {
+  if (!isSkillUnlocked(id)) return false;
+  profile().equippedSkill = id;
+  saveProfile();
+  applyToMatch();
+  return true;
+}
+
+// 把当前装备解析成 theme / playerSkin / racketSkin 与当前技能,只挂在左队 0 号真人(「你」)身上。
 // CPU 与 P2 保持阵营色 —— 敌我一眼分明,这也是现有视觉语言。
 // theme 只承载三色(与 CPU 阵营色同构),发型/头饰/纹样/光环等设计字段走 playerSkin
 function applyToMatch(): void {
@@ -298,10 +323,12 @@ function applyToMatch(): void {
     me.playerSkin = ps;
     me.racketSkin = skinOf("racket");
     me.faceSkin = skinOf("face");
+    me.skill = Skills.initSkillState(equippedSkill());
   }
 }
 
 export const Career = {
   KINDS, profile, skinOf, skinById, owns, unlocked,
   expNeed, levelCoin, settle, settleDrill, buy, equip, buyAndEquip, applyToMatch,
+  equippedSkill, isSkillUnlocked, equipSkill,
 };
