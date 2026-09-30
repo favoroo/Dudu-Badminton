@@ -6,6 +6,12 @@
 // 漏接再按「挥了没碰着(whiff)」/「压根没起拍」归因,按难度分组输出;
 // 阈值断言防回退。样本要够大 —— 单样本方差 ±8%,40 分看不出结论。
 //
+// 2026-09-30 阈值重划(方向变了,别再拿这条当"AI 越能接越好"):
+// 用户反馈入门档"来回怎么都接得到、只有发球漏接" —— 漏接率低本身没问题,
+// **只有发球会漏**才是问题。所以本工具继续钉住 normal/hard 的地板(顶两档要稳),
+// 另外给 easy 加一条**天花板**:入门档必须真的接漏一些发球(玩家才看得见"这档打得动"),
+// 但不许漏到像不会打球。胜负口径归 tools/ai-check.ts,这里只管接发这一件事。
+//
 // 用法:node .tools-build/tools/serve-check.js
 import { Rules } from "../assets/scripts/core/rules";
 import { AI } from "../assets/scripts/core/ai";
@@ -125,6 +131,10 @@ const rateOf = (d: string) => table.find((t) => t[0] === d)?.[1] ?? 0;
 assert(rateOf("normal") >= 0.82, `normal 接发成功率应 ≥82%(实际 ${(rateOf("normal") * 100).toFixed(0)}%)`);
 assert(rateOf("hard") >= 0.90, `hard 接发成功率应 ≥90%(实际 ${(rateOf("hard") * 100).toFixed(0)}%)`);
 assert(rateOf("hard") >= rateOf("normal") - 0.05, "hard 接发成功率不应明显低于 normal");
+// 入门档的**天花板**:这一档要故意漏(用户要的"打得动"),但也不许漏成不会接球的木桩。
+// 实测 87% 左右(漏的全是"没起拍"= 走位看错,不是挥空)—— 上下各留 8~13 个点的余量。
+assert(rateOf("easy") <= 0.95, `easy 接发率不应高到 ${(rateOf("easy") * 100).toFixed(0)}%(入门档要留得下漏接)`);
+assert(rateOf("easy") >= 0.70, `easy 接发率不应低于 70%(入门≠不会打球;实际 ${(rateOf("easy") * 100).toFixed(0)}%)`);
 
 if (failures) {
   console.log(`\n${failures} 项断言失败`);

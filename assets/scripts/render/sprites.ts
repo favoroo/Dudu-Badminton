@@ -579,51 +579,69 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
 
   // ---------- 远臂:躯干后层的远侧手臂(景深)。两段 FK + 肤色小臂 + 手,跟着动作反相 ----------
   // 画在腿/躯干/头之前 → 内侧被躯干盖住是刻意的景深。不要在这里"对称地"补一颗肩关节圆:
-  // 远肩距躯干背缘只有 5.8,画了会被整个抹掉(近侧那颗有效是因为它画在躯干之后)。
+  // 远肩距躯干**肩段**背缘只有 5.8(tx+lean=-14.8),画了会被整个抹掉(近侧那颗有效是因为它
+  // 画在躯干之后)。手在髋高,量它露不露出来要用不随 lean 动的**髋段**背缘 -W*0.40 = -16.8
+  // —— pose-preview 的「手贴轮廓」断言就是拿这条边量的。
   // 远肩:躯干后层的景深肩。**不参与发球的沉降/后倾**(serveDip/serve 项从 x 里扣除):
   // 托球手必须钉在 rules 的球位上,躯干在它后面沉 —— 否则球落手瞬间手和球错开 2~3px
   const bsx = -9 + (lean - 2 + serveBodyK * C.serveHold.lean) * 0.9;   // 与近侧 A 相距 10.5 = 3/4 视角的肩宽透视;
   const bsy = bodyTop - serveDip + runShDy;    //   远肩贴躯干上沿但**不参与发球沉降**(托球手钉在 rules 球位上,
   const B = offsetFrame(F, bsx, bsy);          //   否则球落手瞬间手和球错开 2~3px);跑步时肩高差比近侧肩高 2。
 
-  // 基准 = 待机放松挂位(肘朝后外翻、前臂垂在后下),跑动/空中/跨步/情绪逐层覆盖
-  let fea = 206, fef = 250;
+  // 基准 = 待机放松挂位:**肘是整条臂最外凸的点,前臂近乎竖直垂到胯边**。
+  // 旧基准 206/250 把整条臂甩成正后方 64°(手落在躯干背缘外 8 单位的空白里),读作尾巴不是
+  // 手臂 —— 那条臂画在躯干后层,只要露出背缘就够,不需要离开身体。228/266 让手盘内缘
+  // 只离髋段背缘 0.6 单位(贴住),且与持拍臂手位同高(-45.6 vs -48)= 一副身体两条臂。
+  let fea = 228, fef = 266;
   // 待机呼吸:远臂基线角度随呼吸微变(不同周期,避免与近臂同步)
   if (!swinging && p.recoverT <= 0 && !airborne && !lunging && !celebrating && !frustrated) {
     fea += Math.sin(t * 0.018) * 3; fef += Math.sin(t * 0.014 + 0.5) * 2.5;
   }
   // 落地冲击:远臂下意识外展缓冲
   if (landing) { fea += landAmt * 8; fef += landAmt * 6; }
-  // 对侧步态:远侧臂与近侧(前)腿同相。旧版写的是 -cycRaw,与前腿反相 = 顺拐
-  fea += cycRaw * 14 * runAmt; fef += cycRaw * 18 * runAmt;
+  // 对侧步态:远侧臂与近侧(前)腿同相。旧版写的是 -cycRaw,与前腿反相 = 顺拐。
+  // **前摆小、后摆大**:这条臂画在躯干之前,甩到身体前方会被整个吞掉(实测对称 ±6 时
+  // 前相 hug=-4.5,只剩三成手盘露在背缘外)。用抛物线把行程按相位偏置(单调、无折角):
+  // 前相走 40% 行程(手压到背缘外 -2.8,仍露七成),后相走 120%(手离体 3.7 = 摆到身后该看见)。
+  const gait = cycRaw * (1 - 0.5 * cycRaw) * 0.8 * runAmt;
+  fea += gait * 8; fef += gait * 10;
   if (airborne) { fea = lerp(fea, 178, 1 - runAmt); fef = lerp(fef, 128, 1 - runAmt); }
   if (lunging) {
-    // 上网救球:远臂朝后上猛甩(走钢丝式平衡);退防跨步:整条下压后摆
+    // 上网救球:远臂朝后上猛甩(走钢丝式平衡);退防跨步:整条垂在身后跟着身体后坐
+    // (旧 196/250 手离体 9.2 = 又一根尾巴,退防的「后摆」由 bsx 随 lean 后移提供,臂本身收着)
     const k = lungeLegExt;
-    const la = lungeDirRel > 0 ? 168 : 196, lf = lungeDirRel > 0 ? 118 : 250;
+    const la = lungeDirRel > 0 ? 168 : 214, lf = lungeDirRel > 0 ? 118 : 268;
     fea = lerp(fea, la, k); fef = lerp(fef, lf, k);
   }
   if (celebrating) {                             // 挥拳:手举到头顶后缘外
     const s = Math.sin(celebrateU * Math.PI);
     fea = lerp(fea, 150, s) - 10 * s; fef = lerp(fef, 95, s);
   }
-  if (frustrated) {                              // 耷拉:偏转角刻意收到 30 = limp,但手盘和肤色段还在
+  if (frustrated) {                              // 耷拉:折角仍按旧版收到 30 = limp,比贴身待机
+                                                 // 再直、再往里压 1 单位;区分度主要靠 emotionLean/低头/脸
     const s = Math.sin(frustrateU * Math.PI);
-    fea = lerp(fea, 230, s); fef = lerp(fef, 260, s);
+    fea = lerp(fea, 232, s); fef = lerp(fef, 262, s);
   }
   // 发球持球(最高优先):球钉在 rules.handX/handY —— 非持拍手自然后摆的手心
   // (远肩(-9,-72) + 悬挂角 206/250 反解 → x-28、0.515H),球在身体后侧,与体前的拍
   // 明显分开 =「一手拍、一手球」。手到哪球到哪:呼吸/步态残摆收到 ±1.5° 防脱手;
   // 收拍/空中/情绪一律让位。
+  // **这两条角是游戏数值,不是审美值**:rules.ts handX = -28 由它反解而来,待机基准改了
+  // 也绝不跟着改(改了 = 改发球释放点)。待机贴身之后它反而读得更清楚:托球是刻意后伸手。
   if (serveHold) {
     fea = 206 + Math.sin(t * 0.022) * 1.2 + cycRaw * 3 * runAmt;
     fef = 250 + Math.sin(t * 0.018 + 0.7) * 1 + cycRaw * 4 * runAmt;
   }
   fea += (p.hitRecoil || 0) * 0.6;
-  // 架拍平衡:远臂从垂挂位抬到肩后上方。3/4 视角下远臂前伸会撞进后脑遮挡圆(见下文
-  // 手指来球的警告),只能往后上抬 —— 读作反手预备的绷臂。挥空踉跄:划大弧找平衡
-  if (readyW > 0) { fea -= readyW * C.readyStance.farUp; fef -= readyW * C.readyStance.farFold; }
-  if (whiffK > 0) { fea -= whiffK * 26; fef -= whiffK * 30; }
+  // 架拍平衡:远臂从垂挂位抬到肩后上方(绝对目标角,与 air/lunge/celebrate 同一写法)。
+  // 3/4 视角下远臂前伸会撞进后脑遮挡圆(见下文手指来球的警告),只能往后上抬 —— 读作反手
+  // 预备的绷臂。旧版是「从待机 206/250 各减一个增量」:基准改成贴身 228/266 之后,增量式
+  // 抬不动 fef(228-38=190 但 266-42=224 会把前臂甩成正后方),手反而离体 24。
+  if (readyW > 0) {
+    fea = lerp(fea, C.readyStance.farArm[0], readyW);
+    fef = lerp(fef, C.readyStance.farArm[1], readyW);
+  }
+  if (whiffK > 0) { fea -= whiffK * 26; fef -= whiffK * 30; }   // 挥空踉跄:划大弧找平衡
 
   // 收拍 → 挥拍:与持拍臂共用 recK / blendIn 两条窗。**顺序不可调换** —— 缓冲衔接的连拍
   // 在起拍时 recoverT 还没走完,远臂要从回摆中途接过去(对应持拍臂的 poseLerp(recoverPose…))
@@ -632,6 +650,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     const e = farSwingAngles(pp.lastSwingStyle ?? p.swingStyle, 1, p.serveSwing);   // u=1 与挥拍末帧无缝(发球用松球轨迹终点)
     cea = lerp(e[0], fea, recK); cef = lerp(e[1], fef, recK);
   }
+  // 发球起拍:远臂的混合**出发点**换成托球位,与持拍臂的 `from = serveHoldPose(t)` 同一个
+  // 起点、同一个 k。待机基准 206→228 之后托球位与基准差 22°,不接管就是 f0→f1 瞬跳
+  // (连续性 serve 松球断言实测 10.1°/帧 vs 持拍臂 2.6°)。
+  if (swinging && p.serveSwing) { cea = 206; cef = 250; }
   if (swinging && sp) {
     const t = farSwingAngles(p.swingStyle, clamp(poseU, 0, 1), p.serveSwing);
     const k = swT < SW.blendIn ? 1 - (1 - clamp(swT / SW.blendIn, 0, 1)) ** 2 : 1;
@@ -640,14 +662,18 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   } else {
     fea = cea; fef = cef;
   }
-  // 命中后跟随:远臂反向平衡(近臂横拉过身体,远臂自然外展)
+  // 命中后跟随:远臂反向平衡(近臂横拉过身体,远臂自然外展)。
+  // 12→8:待机基准从「甩在身后」改成「垂在胯侧」后,末帧目标已经贴到背缘,再加 12 会把
+  // 肘推过 -8 的外露地板(242° → 肘相对肩 -7.5,整条臂缩进躯干里看不见)
   if (ft && poseU > 0.5) {
-    fea += (poseU - 0.5) * 2 * 12;
+    fea += (poseU - 0.5) * 2 * 8;
   }
 
   // 手指向来球:只在远臂已抬起且球在肩以上时轻推,±12° 封顶。绝不做全 IK ——
   // 手一往前上就撞进后脑的遮挡圆,往回缩就没过躯干背缘,两头都坏事。
-  // 两重门控都走斜坡:fea 硬切会瞬跳(跑步步态 fea 206±14 来回穿越那条线);
+  // 两重门控都走斜坡:fea 硬切会瞬跳(穿越 195 那条线的是空中 178 / 上网跨步 168 /
+  // 庆祝 140 / 挥拍引拍与收拍混合途中,它们进出这条线时角度是连续变化的);待机 228 与
+  // 跑动 216~236 全程在 195 之下 = 垂手时不推,正是想要的(旧基准 206±14 也会来回穿越)。
   // |d|>90 = 球在手的反方向,轻推无意义,90~120 淡出 —— 否则 d 扫过 ±180
   // (正对反方向)时 clamp 的符号翻转会让手指瞬跳
   if (ball) {

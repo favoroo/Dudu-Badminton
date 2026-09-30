@@ -18,11 +18,14 @@ const assert = (cond: boolean, msg: string): void => {
 };
 
 // 让「真人位」也归 AI 驱动:整机测试只关心世界自洽,不关心谁执拍
+// 翻了 isAI 必须重落一次档位参数(脚速/判定区/出球误差),否则左队挂着 AI 的脑子
+// 却拿真人的 speedMul 1 / zoneScale 1 —— 那台 AI 一直比它声称的档位更强。
 function makeAllAI(): void {
   for (const p of Rules.R.players) {
     p.isAI = true;
     p.aiDiff = "normal";
   }
+  Rules.applyAiTier();
 }
 
 function drainEvents(): number {

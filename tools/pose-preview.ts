@@ -65,6 +65,7 @@ function mkPlayer(ov: Partial<Player> = {}): Player {
 function mkAi(ov: Partial<NonNullable<Player["ai"]>> = {}): NonNullable<Player["ai"]> {
   return {
     tick: 0, targetX: 300, serveT: 0, wantSmash: false, ic: null, swingLead: null,
+    readErr: 0, readRolled: false,
     chasing: false, emotion: 0, tauntCd: 0, celebrateT: 0, frustrateT: 0, ...ov,
   };
 }
@@ -79,7 +80,10 @@ function mkBall(ov: Partial<Ball> = {}): Ball {
 
 // ---------- 姿势清单 ----------
 
-interface Named { name: string; held: boolean; holdBall?: boolean; bigHand?: boolean; foot?: "planted"; p: Player; ball?: Ball; ops?: StubOp[] }
+interface Named { name: string; held: boolean; holdBall?: boolean; bigHand?: boolean; foot?: "planted";
+  /** hang = 静止垂挂姿势(待机/架拍/沮丧…):远臂手盘必须**贴着**躯干髋段背缘,离体 >2.5 判「尾巴」 */
+  hang?: boolean;
+  p: Player; ball?: Ball; ops?: StubOp[] }
 
 // 发球托球:p 与 ball.owner 必须是同一实例(drawPlayer 里用 === 判持球归属)。
 // 球按 rules.handX/handY 同源数值摆:非持拍手自然后摆的手心 x-28、0.515H
@@ -104,9 +108,10 @@ const catchMid: Named = (() => {
  *  手臂的样子,不是棍子。棍子的判据是「长期保持的姿势看不出肘」+「没有手」+「整条同色」,
  *  所以过渡姿势改由两条恒等不变量兜底:两段等长、有手掌。 */
 const POSES: Named[] = [
-  { name: "idle 待机", held: true, foot: "planted", p: mkPlayer() },
-  { name: "run-fwd 跑动前相", held: true, p: mkPlayer({ runAmt: 1, runPhase: Math.PI / 2, vx: 6 }) },
-  { name: "run-lift 跑动抬腿", held: true, p: mkPlayer({ runAmt: 1, runPhase: 0, vx: 6 }) },
+  { name: "idle 待机", held: true, hang: true, foot: "planted", p: mkPlayer() },
+  // 前摆相手压向身体(贴身约束管这一相);后摆手甩到身后属正常步态,只受 6.5 的「不是尾巴」上限
+  { name: "run-fwd 跑动前相", held: true, hang: true, p: mkPlayer({ runAmt: 1, runPhase: Math.PI / 2, vx: 6 }) },
+  { name: "run-lift 跑动抬腿", held: true, hang: true, p: mkPlayer({ runAmt: 1, runPhase: 0, vx: 6 }) },
   { name: "run-back 跑动后相", held: true, p: mkPlayer({ runAmt: 1, runPhase: -Math.PI / 2, vx: 6 }) },
   { name: "air 空中", held: true, p: mkPlayer({ onGround: false, vy: -2, runAmt: 0 }) },
   { name: "air-fall 下落展腿", held: true, p: mkPlayer({ onGround: false, vy: 4, runAmt: 0 }) },
@@ -125,22 +130,23 @@ const POSES: Named[] = [
   { name: "lunge-net 跨步上网", held: true, p: mkPlayer({ lungeT: 7, lungeDir: 1, runAmt: 0.35, vx: 3 }) },
   { name: "lunge-back 跨步后退", held: true, p: mkPlayer({ lungeT: 7, lungeDir: -1, runAmt: 0.35, vx: -3 }) },
   { name: "celebrate 庆祝", held: true, foot: "planted", p: mkPlayer({ ai: mkAi({ celebrateT: 15 }) }) },
-  { name: "frustrate 沮丧", held: true, foot: "planted", p: mkPlayer({ ai: mkAi({ frustrateT: 12 }) }) },
+  { name: "frustrate 沮丧", held: true, hang: true, foot: "planted", p: mkPlayer({ ai: mkAi({ frustrateT: 12 }) }) },
   // 来球在右上方:验「远侧手指向来球」只在抬起时轻推、且手不缩回躯干后
-  { name: "idle+ball 待机有球", held: true, foot: "planted", p: mkPlayer(), ball: mkBall({ x: 520, y: 250 }) },
+  { name: "idle+ball 待机有球", held: true, hang: true, foot: "planted", p: mkPlayer(), ball: mkBall({ x: 520, y: 250 }) },
   // 来球预备架拍:快速来球逼近(vx=-14 朝我方)→ readyK≈0.95,拍抬到肩前、屈膝沉降、远臂后上平衡
-  { name: "ready 架拍", held: true, foot: "planted", p: mkPlayer(), ball: mkBall({ x: 340, y: 280, vx: -14 }) },
+  { name: "ready 架拍", held: true, hang: true, foot: "planted", p: mkPlayer(), ball: mkBall({ x: 340, y: 280, vx: -14 }) },
   // under 蓄力提跟(poseU≈0.09 引拍期)+ over 蹬伸(接触帧,远侧后腿提跟)
   { name: "under-crouch 蓄力提跟", held: false, p: mkPlayer({ swingT: 2, swingStyle: "under", swingHit: true }) },
   { name: "over-drive 蹬伸", held: false, p: mkPlayer({ swingT: 9, swingStyle: "over", swingHit: true }) },
-  // 挥空踉跄:硬直窗中段(swingT=19 > windup+active),躯干前冲 + 远臂划大弧
+  // 挥空踉跄:硬直窗中段(swingT=19 > windup+active),躯干前冲 + 远臂划大弧(刻意失衡)
   { name: "whiff 挥空踉跄", held: false, p: mkPlayer({ swingT: 19, swingStyle: "over", swingHit: false }) },
   // 收拍回弹峰值:easeOutBack 过冲顶点在 recK≈0.64 → recoverT≈3.6,拍子甩过头一点
   { name: "recover-end 回弹", held: false, p: mkPlayer({ swingT: -1, recoverT: 4, swingStyle: "over", lastSwingStyle: "over" }) },
   // 发球接球半程:球飞回手途中(flyT=6/12),持拍臂向 SERVE_POSE 渐入、屈膝沉降同步落位
   catchMid,
   // 发球挥拍(serveSwing=true):松球(f2,远臂还在托球位附近)、发力中段(f8)、随挥(f14)。
-  // 持拍臂从 SERVE_POSE 低持位出发,远臂走松球专属轨迹(206/250 → 170/198)
+  // 持拍臂从 SERVE_POSE 低持位出发,远臂走松球专属轨迹(206/250 → 232/270 贴身垂挂位);
+  // 前几帧手还离体 7~8 —— 那是刻意后伸托球(rules.handX 钉死),held:false 不参与贴身约束。
   { name: "serve-swing-f2 松球", held: false, p: mkPlayer({ swingT: 2, swingStyle: "under", swingHit: true, serveSwing: true }) },
   { name: "serve-swing-f8 发力", held: false, p: mkPlayer({ swingT: 8, swingStyle: "under", swingHit: true, serveSwing: true }) },
   { name: "serve-swing-f14 随挥", held: false, p: mkPlayer({ swingT: 14, swingStyle: "under", swingHit: true, serveSwing: true }) },
@@ -484,7 +490,7 @@ function nearLeg(ops: StubOp[]): Leg | null {
 
 // ---- 逐姿势:出图 + 断言 ----
 const sheet: { name: string; dark: string; light: string }[] = [];
-for (const { name, held, holdBall, bigHand, foot, p, ball, ops: preOps } of POSES) {
+for (const { name, held, hang, holdBall, bigHand, foot, p, ball, ops: preOps } of POSES) {
   const ops = preOps ?? render(p, ball ?? null);
   const arm = farArm(ops);
   const file = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");   // 中文名只留 ASCII 段做文件名
@@ -510,8 +516,37 @@ for (const { name, held, holdBall, bigHand, foot, p, ball, ops: preOps } of POSE
     const gap = hd ? Math.hypot(hd.x - brel.x, hd.y - brel.y) : 99;
     check(name + " 手托在球下", gap <= 2.5, `hand-ball gap=${gap.toFixed(1)} (需 ≤2.5)`);
   } else {
-    check(name + " 肘外露", el.x <= -9.5, `elbow.x=${el.x.toFixed(1)} (需 ≤ -9.5)`);
-    check(name + " 手外露", !!hd && hd.x <= -9.5, hd ? `hand.x=${hd.x.toFixed(1)}` : "无手");
+    // ---------- 远臂与身体轮廓的关系(这次重做的核心判据) ----------
+    // 旧断言只有「肘/手相对远肩 ≤ -9.5」一条**地板**:它只保证手臂露出躯干背缘,不保证
+    // 手臂还在身体旁边 —— 于是谁都可以靠「再往外甩」满足它,待机甩到 hug=8.24 就变成一条
+    // 脱离身体的尾巴(用户看到的正是这个)。现在补上天花板,把「贴身」变成可验收的机制。
+    // BACK = 躯干**髋段**背缘(唯一不随 lean 动的边);hug > 0 = 手与身体之间有背景空隙,
+    // hug < 0 = 手盘压进躯干(远臂画在躯干之前,压过头就被整个吞掉)。
+    const BACK = -CFG.player.w * 0.40;
+    check(name + " 肘外露", el.x <= -8.0, `elbow.x=${el.x.toFixed(1)} (需 ≤ -8.0)`);
+    check(name + " 手外露", !!hd && hd.x <= -8.0, hd ? `hand.x=${hd.x.toFixed(1)}` : "无手");
+    if (hd) {
+      const hug = BACK - (arm.sh.x + hd.x + (disc ?? 3.3));   // >0 手与身体之间有背景空隙
+      check(name + " 手不被吞", hug >= (hang ? -3.0 : -5.0),
+        `hug=${hug.toFixed(1)} (需 ≥ ${hang ? -3.0 : -5.0},更负=手盘大半被躯干盖掉)`);
+      if (hd.y > 0 && held) {
+        // 只在「会持续保持几十帧」的姿势上要求贴身:手垂在肩线以下 = 挂着的臂,必须贴着
+        // 身体;举过肩线的(空中/跨步上网/庆祝/引拍)读作伸手不是尾巴,改走头遮挡圆判据。
+        // 挥拍/松球/踉跄这些 held:false 的过渡帧允许大幅甩臂 —— 那是动作,不是构图错误。
+        const cap = hang ? 2.5 : 6.5;
+        check(name + (hang ? " 手贴轮廓" : " 手不脱体"), hug <= cap,
+          `hug=${hug.toFixed(1)} (需 ≤ ${cap}${hang ? ";静止垂挂却离体 = 读作尾巴" : ";这条臂不该离身体这么远"})`);
+      }
+      if (hd.y <= 0) {
+        // 后脑遮挡圆:「撞进后脑手就消失」在 sprites/poses 里被 4 处注释引用过,却从来没有
+        // 断言兜着。头心(F 局部)=(2+(lean-2)*0.6, bodyTop-hr*1.12),lean 由远肩 x 反解;
+        // headDy/serveDip/runShDy 都在 ±4 内,阈值取 0 = 允许正好贴着头后缘(庆祝挥拳的构图)。
+        const hr = CFG.player.h * 0.21;                     // POSES 不挂皮肤 → 恒 standard 体型
+        const hcx = 2 + (arm.sh.x + 9) * (0.6 / 0.9) - arm.sh.x;
+        const clear = Math.hypot(hd.x - hcx, hd.y + hr * 1.12) - hr - (disc ?? 3.3);
+        check(name + " 手不进后脑", clear >= 0, `headGap=${clear.toFixed(1)} (需 ≥0,负=手画进头里被吞)`);
+      }
+    }
   }
   // 肘折只对 held 姿势设地板值;过渡姿势伸直是真实手臂,由下面两条不变量兜底
   if (held) check(name + " 肘折可见", def >= 28, `deflection=${def.toFixed(1)}° (需 ≥28°)`);
@@ -599,6 +634,30 @@ for (const style of ["over", "under"] as SwingStyle[]) {
   const near = worstStep((s, f) => g(s, f).near, style);
   check(`连续性 ${style}`, far.deg <= near.deg + 0.5,
     `远臂单帧最大跳变 ${far.deg.toFixed(1)}° @f${far.at} vs 持拍臂 ${near.deg.toFixed(1)}° @f${near.at}`);
+}
+
+// ---- 挥拍全程「不许在朝正后方时伸直」----
+// 上臂从「举在头后」转到「垂在胯侧」必然经过「朝正后方」(角度 180 附近)。若那一刻
+// 两段刚好对齐(折角≈0),屏幕上就是一根横着戳出去的木棍 —— 旧版线性 lerp 的折角零点
+// 正好落在 u=0.556 / 上臂 194° 处,这就是用户说「后面那只手别扭」里最难看的一帧。
+// 判据只钉这一件事实:上臂朝后(160~205°)时,肘折必须看得见。
+{
+  const inBack = (ea: number) => ea >= 160 && ea <= 205;
+  for (const style of ["over", "under"] as SwingStyle[]) {
+    let worst = 999, at = -1, worstEA = 0;
+    for (let f = 0; f <= SWING_FRAMES; f++) {
+      const a = farArm(render(mkPlayer({ swingT: f, swingStyle: style, swingHit: true }), null));
+      if (!a || !a.hd) continue;
+      // 记录点是 Graphics 空间(y 向上),与 fea 的「0=朝网、正=向上」同向,直接 atan2 即可
+      const ea = (Math.atan2(a.el.y - a.sh.y, a.el.x - a.sh.x) * 180 / Math.PI + 360) % 360;
+      if (!inBack(ea)) continue;
+      const def = deflection(a);
+      if (def < worst) { worst = def; at = f; worstEA = ea; }
+    }
+    if (at < 0) rows.push(`  · 挥拍 ${style.padEnd(6)} 无「朝正后方」帧(检查是否轨迹改太小)`);
+    else check(`伸直窗 ${style}`, worst >= 20,
+      `朝后那帧(上臂 ${worstEA.toFixed(0)}° @f${at})折角 ${worst.toFixed(1)}° (需 ≥20,否则读作横着的木棍)`);
+  }
 }
 
 // ---- 架拍渐入连续性:来球从远到近扫一遍,远臂依旧不许比持拍臂更跳 ----

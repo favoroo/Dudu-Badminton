@@ -1133,14 +1133,18 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
 
     /**
-     * 击球键滑动手势跟踪:手指从按下点横移超过 SWIPE_THRESHOLD 即提交方向。
-     * 右滑 → deep(1),左滑 → near(-1)。提交后写入 pad.swingSwipe,player.ts 在
-     * 命中前读取。同时更新 rec.swipeDir 触发方向色弧视觉反馈。
+     * 击球键滑动手势跟踪:手指从按下点位移超过 SWIPE_THRESHOLD 即提交方向。
+     * 触发用总位移 hypot(dx,dy)(斜滑也算),但横向分量仍需占主导(≥ 阈值一半),
+     * 避免纯纵向晃动误触;方向由 X 符号决定。右滑 → deep(1),左滑 → near(-1)。
+     * 提交后写入 pad.swingSwipe,player.ts 在命中前读取。同时更新 rec.swipeDir
+     * 触发方向色弧视觉反馈。
      */
     const trackSwingSwipe = (rec: BtnRec, sx: number, sy: number, e: EventTouch): void => {
       const u = e.getUILocation();
       const dx = u.x - sx;
-      if (Math.abs(dx) < SWIPE_THRESHOLD) return;
+      const dy = u.y - sy;
+      if (Math.hypot(dx, dy) < SWIPE_THRESHOLD) return;       // 位移不足:仍是 mid
+      if (Math.abs(dx) < SWIPE_THRESHOLD * 0.5) return;        // 横向分量过小:纯纵向无方向语义
       const dir = dx > 0 ? 1 : -1;
       if (rec.swipeDir === dir) return;   // 已提交同方向,不重复刷
       rec.swipeDir = dir;

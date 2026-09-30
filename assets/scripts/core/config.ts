@@ -386,7 +386,7 @@ export const CFG = {
   },
 
   // 来球预备架拍(纯视觉,零判定):球朝己方飞来且临近时,从待机向架拍姿势插值 ——
-  // 拍头抬到肩前、屈膝降重心、远臂前抬平衡。真实羽毛球接球者的「提前架拍」,
+  // 拍头抬到肩前、屈膝降重心、远臂绷到肩后上方平衡。真实羽毛球接球者的「提前架拍」,
   // 也是动画的 anticipation 法则:预备在半路,起拍行程视觉上变短,3 帧 blendIn 更利落。
   // readyK 信号由渲染层按几何近似现算(不积分弹道、不写逻辑字段),AI/玩家通吃。
   // **挥拍中强制归零**:肩点 pivotY 是判定锁定位,降了就破坏「视觉拍头=扫掠判定」。
@@ -395,8 +395,11 @@ export const CFG = {
     speedGain: 0.55,     // 来球越快预备越深:慢球(≤8)只做 55% 上下,快球做满
     dip: 4.5,            // 屈膝降重心:髋/躯干/肩/头整体下沉量(px);膝弯由腿部 IK 反解,沉降量即屈膝深度
     lean: 1.5,           // 躯干前倾增量(度)
-    farUp: 38,           // 远臂上臂前抬量(度,从待机 206 抬到 168:肘提到肩后上方)
-    farFold: 42,         // 远臂前臂前抬量(度,从待机 250 折到 208)—— 手收到肩后平衡位
+    // 远臂(非持拍侧)两段绝对角 [上臂, 前臂](0=朝网,正=向上;与 air/lunge/celebrate 同一写法)。
+    // 214/274 = 肘提到肩后上方、前臂垂住,手落在 (-21.3, -48.6):肘折 60°,手仍贴着髋段背缘
+    // 只露 1.2 单位。**不是增量** —— 待机基准 228/266 若各减 38/42 会得到 190/224,前臂被
+    // 甩成正后方、手离体 24 单位(= 这次要修的「尾巴」毛病又回来)。
+    farArm: [214, 274],
   },
 
   // 挥拍下半身动力链(纯视觉):上半身拧转/挥臂/甩腕之外,腿也要参与 ——
@@ -843,8 +846,10 @@ export const CFG = {
   // pad.swingSwipe —— 这就是「触屏比键盘多花的那几帧」。原本它是 touchpad.ts 里的
   // 字面量 15,而那个文件 import cc,node 侧读不到,断言就写不出来;值一字未改,
   // 只是搬回它该住的地方(数值只进 config)。
+  // 判定用位移矢量长度 hypot(dx,dy) 触发(斜滑也算),但横向分量仍需占主导
+  // (≥ commitPx/2),方向由 X 符号决定 —— 见 touchpad.ts trackSwingSwipe。
   touchAim: {
-    commitPx: 15,       // 横移超过这么多像素即提交深/浅(约按钮半径的 1/3)
+    commitPx: 10,       // 总位移超过这么多像素即提交深/浅(斜滑也认,横向分量需 ≥ commitPx/2)
   },
 
   // 键位表(桌面端按 e.code 绑定,跨布局稳定;每项可给多个候选)
@@ -894,11 +899,31 @@ export const CFG = {
   // 再接 —— 按过截面点站位,球会落在身后死角;陡坠球滑行小,维持原截点。
   aiReach: { stand: 140, attack: 182, jump: 236, contact: 72, contactDrift: 48 },
 
-  // AI 难度:全部走同一套挥拍机制,只是时机更不准、反应更慢
+  // ===== AI 预判(read):它每记来球只「认定」一次站位偏差,之后一路认账 =====
+  // 旧写法是每次重规划(tick 帧一次)重掷 ±aimErr —— 均值归零,几次重规划下来
+  // 收敛到真实落点,92px 这个数字等于没写(用户反馈「入门 AI 怎么都能接住」的根因之一)。
+  // 改成每记球掷一次并死守之后,误差真的会让人跑错地方。代价是不能再照搬旧数字:
+  // 同一个 92 不抵消了,杀伤力大得多,所以整体收小。
+  // hard 系数量化「这一拍有多难读」,把误差压回难球上:慢高球只吃 readFloor 那一档
+  // (对拉回合照样打得起来,用户明确要保留长回合),快球 / 需要长距离跑位的球才吃满。
+  // 速度口径复用 swing.zoneFullSpeed / zoneTightenSpan —— 与 player.strikeZone 那条
+  // 「来球越快判定区越小」是同一个词汇,不另立一套"快"的定义。
+  aiRead: {
+    runRef: 260,        // 跑位距离参考(px):要跑这么远就算"难读"的球
+    speedMix: 0.62,     // 难度构成:速度项权重(其余给跑位距离)
+    hardMax: 1,         // 系数上限(误差封顶就是 diffs.read)
+  },
+
+  // AI 难度:全部走同一套挥拍机制,只是**看走眼更狠、判定区更窄、出手更不准**
+  // read=站位认定误差(px) · zone=单打判定区缩放(双打再与 doubles.aiZone 取 min)
+  // shotErr=出球落点误差(px,进 player.buildShot 的误差预算,会下网/出界)
+  // composure=情绪修正闸门(0=落后不会变强;见 ai.ts emotionModifiers)
+  // 回滚成旧行为(逐项精确复现):read 填回 92/66/20 并把 aiRead 的 readFloor 设 1、
+  // zone 全 1、shotErr 全 0、composure 全 1 —— 但 read 不抵消这条一改就回不去。
   diffs: {
-    easy:   { label: "简单", tick: 20, speed: 0.74, aimErr: 92, timingErr: 9, aggr: 0.12 },
-    normal: { label: "普通", tick: 14, speed: 0.88, aimErr: 66, timingErr: 6, aggr: 0.40 },
-    hard:   { label: "困难", tick: 8,  speed: 1.00, aimErr: 20, timingErr: 2, aggr: 0.58 },
+    easy:   { label: "简单", tick: 20, speed: 0.74, read: 95, readFloor: 0.22, zone: 0.82, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0 },
+    normal: { label: "普通", tick: 14, speed: 0.88, read: 55, readFloor: 0.40, zone: 0.91, shotErr: 22, timingErr: 6, aggr: 0.40, composure: 0.5 },
+    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 20, readFloor: 0.62, zone: 0.98, shotErr: 8,  timingErr: 2, aggr: 0.58, composure: 1 },
   },
 
   // ===== 生涯成长:赛后奖励 / 等级 / 皮肤经济(纯数值,逻辑在 career.ts) =====

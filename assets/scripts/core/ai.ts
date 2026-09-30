@@ -1,6 +1,11 @@
 // ============================================================
 // AI:和人类用同一套挥拍机制(会挥空、会打偏),只是时机更差、误差更大
 // 关键是「自己重模拟球路」而不是直接读答案,所以调参不会让它未卜先知
+// 但「重模拟准」不等于「接得到」:难度档靠三个真实生效的旋钮拉开 ——
+//   read   每记来球只**认定一次**的站位偏差(一路认账,才会看走眼跑错地方)
+//   zone   判定区缩放(人类侧的宽容判定区是给手指准备的,AI 不该白拿满额)
+//   shotErr 出球误差(接 player.buildShot 的误差预算,会下网/出界 = 会送分)
+// 三者都在 config.diffs 里,验收口径在 tools/ai-check.ts(真人替身能不能赢)。
 // ============================================================
 import { CFG } from "./config";
 import { clamp, approach, rand } from "./utils";
@@ -15,6 +20,8 @@ const CO = C.court;
 
 function fresh(): AiState {
   return { tick: 0, targetX: 0, serveT: 0, wantSmash: false, ic: null, swingLead: null, chasing: true,
+    readErr: 0,       // 本记来球认定的站位偏差(px):每记球掷一次,之后一路认账
+    readRolled: false,
     emotion: 0,           // 情绪值:-1(沮丧)到 1(亢奋),0=平静
     tauntCd: 0,           // 挑衅动作冷却
     celebrateT: 0,        // 庆祝动作剩余帧
@@ -128,6 +135,9 @@ function zoneHome(p: Player): number {
 interface EmotionMods { aggr: number; timingErr: number; speed: number }
 
 // 情绪修正:落后时更激进(认真起来),领先时略放松
+// composure 是档位闸门(0=情绪只改表情,不改强度):旧结构让 AI **落后时跑得更快、
+// 时机更准**,于是玩家越落后面对的是越强的对手 —— 与「入门档要能得分」正面冲突。
+// aggr 不闸:输了才认真猛扣是看得见的性格,而且不加难度。
 function emotionModifiers(p: Player, S: AiState, d: ReturnType<typeof D>): EmotionMods {
   const R = Rules.R;
   const myIdx = p.side === "left" ? 0 : 1;
@@ -137,12 +147,32 @@ function emotionModifiers(p: Player, S: AiState, d: ReturnType<typeof D>): Emoti
   // 情绪目标:落后 → 负(沮丧/认真),领先 → 正(亢奋/放松)
   const targetEmotion = clamp(diff / 5, -1, 1);
   S.emotion = approach(S.emotion, targetEmotion, 0.08);
+  const c = d.composure;
   // 返回修正后的难度参数
   return {
     aggr: d.aggr * (1 - S.emotion * 0.25),        // 落后时更激进(+25%),领先时更保守(-25%)
-    timingErr: d.timingErr * (1 + S.emotion * 0.2), // 落后时更准(-20%),领先时更松(+20%)
-    speed: d.speed * (1 + S.emotion * 0.08),        // 落后时跑更快
+    timingErr: d.timingErr * (1 + S.emotion * 0.2 * c), // 落后时更准(-20%),领先时更松(+20%)
+    speed: d.speed * (1 + S.emotion * 0.08 * c),  // 落后时跑更快
   };
+}
+
+type Diff = ReturnType<typeof D>;
+
+/**
+ * 这一拍有多难读(0..1) —— 决定本记球吃多少 `diffs.read`。
+ * 为什么必须加权:误差全局放大就会把每一拍都变成 winner,回合掉到三五拍,
+ * 而用户明确要「保留长回合,只要得分变成可能」。所以慢高球只吃 readFloor
+ * (高远对拉照常打得起来),快球与需要长距离跑位的球才吃满 —— 失分点集中在难球。
+ * 速度口径与 player.strikeZone「来球越快判定区越小」同源(都读世界速度、不折档):
+ * 慢档里 AI 也更少看走眼,那正是「慢一档更好接」的另一半。
+ */
+function readHardness(p: Player, ball: Ball, ic: Intercept, d: Diff): number {
+  const SW = C.swing;
+  const AR = C.aiRead;
+  const spd = clamp((Math.hypot(ball.vx, ball.vy) - SW.zoneFullSpeed) / SW.zoneTightenSpan, 0, 1);
+  const run = clamp(Math.abs(ic.x - p.x) / AR.runRef, 0, 1);
+  const k = clamp(spd * AR.speedMix + run * (1 - AR.speedMix), 0, 1);
+  return clamp(d.readFloor + k * (AR.hardMax - d.readFloor), 0, AR.hardMax);
 }
 
 function think(p: Player, ball: Ball, state: string): PlayerInput {
@@ -204,7 +234,15 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
       if (c.t >= runTo(c.x) + need) { ic = c; S.wantSmash = jumping || S.wantSmash; break; }
     }
     if (!ic) ic = intercept(p, ball, 90, C.aiReach.contact);
-    const err = (Math.random() * 2 - 1) * d.aimErr;
+    // 站位偏差:**每记来球只认定一次**,之后每次重规划都沿用同一个数。
+    // 旧写法在这里重掷 ±d.aimErr,均值归零 → 几次重规划下来收敛到真实落点,
+    // 92px 等于没写(用户反馈「入门 AI 怎么都能接住」的头号根因)。认定之后它就
+    // 一路全速跑向自己那个错的点,最后差一点够不到 —— 这才是「看走眼」。
+    if (!S.readRolled) {
+      S.readRolled = true;
+      S.readErr = (Math.random() * 2 - 1) * d.read * readHardness(p, ball, ic, d);
+    }
+    const err = S.readErr;
     const lo = p.side === "left" ? CO.wallL : CO.netX + CO.netPad;
     const hi = p.side === "left" ? CO.netX - CO.netPad : CO.wallR;
     // 双打:落点归队友就回防区待命,别两个人叠在一起
@@ -256,7 +294,13 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   // ---------- 起手时机:按「提前量 = 窗口中心」起手,起手即定落点深浅 ----------
   const SW = C.swing;
   const center = SW.windup + SW.active / 2;
-  if (!incoming) S.swingLead = null;
+  if (!incoming) {
+    S.swingLead = null;
+    // 「新的一记来球」的边界就是这里:自己击球后 incoming 转假,对手击打后转真。
+    // 认定误差与起手时机共用这一个复位点 —— 两者都是「每拍只掷一次」。
+    S.readRolled = false;
+    S.readErr = 0;
+  }
   const radius = Physics.reachRadius(ball);
   const lead = (ball.live && !ball.held && S.chasing !== false) ? entryLead(p, ball, radius) : -1;
   if (incoming && S.swingLead === null) {

@@ -29,6 +29,7 @@
 | 更新弹窗/更新说明排版 | [update-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/update-dialog.ts) + 折行算法 [release-notes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/release-notes.ts) |
 | 改「调整位置」顶栏排版 | [editor-strip.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/editor-strip.ts)(纯函数,回归见 `tools/strip-check.ts`)+ [settings-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settings-panel.ts) 消费它 |
 | 改虚拟按键能放在哪儿 | [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 的 `clampDelta`(唯一约束 = 整块留在可视区内) |
+| 改 AI 难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `diffs` 段(`read`=每记球只认定一次的站位误差 / `zone`=CPU 判定区 / `shotErr`=出球误差 / `composure`=落后是否变强),生效逻辑在 [ai.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/ai.ts),落档到球员在 `rules.ts` 的 `applyAiTier()`;验收 `node .tools-build/tools/ai-check.js`(三档胜负口径) |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
 | 改启动图/应用图标 | [make-app-icons.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-app-icons.py) 出图标母版 → [make-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-splash.py) 派生启动图 → [apply-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/apply-splash.py) 注入构建(比例见 [splash-config.json](file:///Users/a1/Documents/01Code/dudu-cocos/tools/splash-config.json)) |
@@ -74,6 +75,12 @@ node .tools-build/tools/drill-check.js
 
 # 4. AI 接发成功率回归(改 AI/物理/数值必跑;阈值防回退)
 node .tools-build/tools/serve-check.js
+
+# 4.2 真人可赢性回归(exit 0;三档 AI 的胜负口径 —— 脚本化"真人替身"打完一整局:
+#     得分率必须 easy > normal > hard 单调拉开,easy 要 ≥55%(否则又是"怎么都赢不了"),
+#     回合均值 ≥10 拍作护栏(削弱过头会把回合打成三五拍)。替身强弱有标定段,改任何
+#     diffs.* 数值都要重跑;加样本 AI_CHECK_MATCHES=25)
+node .tools-build/tools/ai-check.js
 
 # 4.5 反应预算与输入画像(exit 0;把「手机接不到球」统一成帧的账:
 #     §1 球速档位是否真的只改时间不改空间 —— 有人砍 shot.speedMax 来放慢会在这里红,

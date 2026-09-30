@@ -23,7 +23,9 @@
 // 不随档缩放的量(它们是**玩家侧**预算,与球无关,别到处乘):
 //   swing.*(windup/active/recover/buffer)、player.tapCommitFrames/jumpApex/coyote、
 //   lunge.shotWindow、scoring.servePause/pointPause、serve.flickThresh/clearThresh、
-//   diffs.*.tick/timingErr、fx.hitstop*/slowmo*(变速另有 world.timeScale 那条链)、
+//   diffs.*.tick/timingErr、diffs.*.read/zone/shotErr(AI 的站位认定误差是**空间量**、
+//     判定区缩放与出球误差跟着几何走,乘 s 等于偷偷改了难度档的相对关系)、
+//   fx.hitstop*/slowmo*(变速另有 world.timeScale 那条链)、
 //   swingCue.horizonFrames / rampFrames 与 landing.urgentFrames —— 它们是「距球进入判定区
 //     还剩几帧」的**剩余帧**预算,不是总滞空帧数:不乘档 = 预告在真实时间里同样提前
 //     0.66s 亮起,慢档里只是这段预告覆盖的空间更短。乘了反而让 UI 提前量跟着档变,

@@ -119,6 +119,30 @@ function mk(side: TeamSide, i: number, total: number, opts: Partial<Player>): Pl
   }));
 }
 
+/**
+ * 把难度档落到每个球员身上(脚速 / 判定区 / 出球误差)。
+ * 单开成导出函数有两个原因:
+ *   1. 任何在 newMatch **之后**才把 isAI 翻真的地方(回归里的 makeAllAI、以后的
+ *      「玩家中途退出、CPU 接管」)都必须再调一次它,否则那个人挂着 AI 的脑子
+ *      却拿真人的脚速与判定区 —— sim-check 的左队一直就是这样(speedMul 1、zoneScale 1)。
+ *   2. 档位参数只有一个写入点,读代码的人不必去猜「谁还会改这些字段」。
+ */
+function applyAiTier(): void {
+  const dbl = R.mode === "2v2";
+  const D = C.diffs[R.diff];
+  R.players.forEach((p, idx) => {
+    p.idx = idx;
+    if (!p.isAI) { p.speedMul = 1; p.zoneScale = 1; p.aiAimErr = 0; return; }
+    p.speedMul = D.speed;
+    // 判定区:人类那套很宽容(手指来不及),CPU 不该白拿满额 —— 双打的 aiZone
+    // 与档位 zone 取 min,保证双打的行为与收紧前逐位一致。
+    p.zoneScale = dbl ? Math.min(C.doubles.aiZone, D.zone) : D.zone;
+    // 出球误差:接 player.ts buildShot 里那条 `err += p.aiAimErr`(此前无人赋值,
+    // 所以菜单上「入门 · 常打飞」一直是句空话)。
+    p.aiAimErr = D.shotErr;
+  });
+}
+
 function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   R.mode = mode;
   R.diff = diff || "normal";
@@ -150,13 +174,7 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
       teamLabel: dbl ? "AI方" : (mode === "1p" || mode === "endless" ? "AI" : "蓝方"),
     }));
   }
-  const D = C.diffs[R.diff];
-  R.players.forEach((p, idx) => {
-    p.idx = idx;
-    p.speedMul = p.isAI ? D.speed : 1;
-    // 只有双打收紧 CPU 判定区,单打保持原样
-    p.zoneScale = (p.isAI && dbl) ? C.doubles.aiZone : 1;
-  });
+  applyAiTier();
 
   R.scores = [0, 0];
   R.server = "left";
@@ -528,5 +546,6 @@ const statsOf = (s: TeamSide): TeamStats => {
 
 export const Rules = {
   R, newMatch, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint,
+  applyAiTier,
   teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf, setTrailHook,
 };

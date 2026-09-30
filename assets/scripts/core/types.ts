@@ -97,6 +97,13 @@ export interface AiState {
   ic: Intercept | null;
   swingLead: number | null;
   chasing: boolean;
+  /**
+   * 本记来球「认定」的站位偏差(px,带符号):每记球只掷一次,之后一路认账。
+   * 旧结构每次重规划重掷 → 均值归零 → AI 收敛到真实落点,难度档形同虚设。
+   */
+  readErr: number;
+  /** readErr 是否已为本记来球掷过(随 swingLead 一起复位,见 ai.ts) */
+  readRolled: boolean;
   /** 情绪值:-1(沮丧)到 1(亢奋),0=平静 */
   emotion: number;
   tauntCd: number;
