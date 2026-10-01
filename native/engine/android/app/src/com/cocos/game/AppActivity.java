@@ -77,22 +77,71 @@ public class AppActivity extends CocosActivity {
     }
 
     /**
-     * 触觉反馈震动:游戏层经 native.reflection 调用(game/haptics.ts)。
-     * @param ms 震动时长(毫秒);<=0 不震。O 以上走 VibrationEffect,旧系统退回 deprecated 重载
+     * 取可用马达:没有 Context / 系统没有 VibratorService / 该设备无马达,一律返回 null。
+     * Android 12(API 31)起 VIBRATOR_SERVICE 已废弃,改用 VibratorManager.getDefaultVibrator(),
+     * 所以这里按 SDK_INT 分叉;低版本仍走 getSystemService(minSdk=21 上 VibratorManager 不存在)。
      */
-    public static void vibrate(int ms) {
+    private static Vibrator vib() {
+        if (sContext == null) return null;
         try {
-            if (sContext == null || ms <= 0) return;
-            Vibrator v = (Vibrator) sContext.getSystemService(Context.VIBRATOR_SERVICE);
-            if (v == null || !v.hasVibrator()) return;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+            Vibrator v;
+            if (Build.VERSION.SDK_INT >= 31) {
+                android.os.VibratorManager vm =
+                    (android.os.VibratorManager) sContext.getSystemService(Context.VIBRATOR_SERVICE);
+                v = (vm == null) ? null : vm.getDefaultVibrator();
             } else {
-                v.vibrate(ms);
+                v = (Vibrator) sContext.getSystemService(Context.VIBRATOR_SERVICE);
             }
+            return (v != null && v.hasVibrator()) ? v : null;
+        } catch (Exception e) {
+            Log.e(TAG, "vib() exception: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** 供 JS 探测(game/haptics.ts → hapticStatus()):这台设备到底有没有马达 */
+    public static boolean hasVibrator() {
+        return vib() != null;
+    }
+
+    /**
+     * 供 JS 探测:能不能控振幅。不能控振幅的机器上,JS 侧会把振幅差折算成时长差(见 core/haptic.ts plan)。
+     * hasVibrator() 在 API 11、hasAmplitudeControl() 在 API 26,所以后者必须卡版本。
+     */
+    public static boolean hasAmplitudeControl() {
+        Vibrator v = vib();
+        return v != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && v.hasAmplitudeControl();
+    }
+
+    /**
+     * 触觉反馈震动:游戏层经 native.reflection 调用(game/haptics.ts)。
+     * 强度 = 时长 × 振幅两维 —— 旧版只有时长,12~24ms 的 one-shot 在线性马达上基本无感,
+     * 六档打击阶梯在触觉通道上被压成了"全都一样",所以这里补上振幅维度。
+     * @param ms  震动时长(毫秒);<=0 不震
+     * @param amp 震动幅度 1..255;传其它值(含无振幅控制时的 -1)走 DEFAULT_AMPLITUDE
+     * @return 是否真的下发了震动;false 时 JS 侧把它显示成状态读数,不再静默
+     */
+    public static boolean vibrate(int ms, int amp) {
+        try {
+            Vibrator v = vib();
+            if (v == null || ms <= 0) return false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // createOneShot 对 amplitude 只接受 1..255 或 DEFAULT_AMPLITUDE(-1),越界直接抛异常
+                int a = (amp >= 1 && amp <= 255) ? amp : VibrationEffect.DEFAULT_AMPLITUDE;
+                v.vibrate(VibrationEffect.createOneShot((long) ms, a));
+            } else {
+                v.vibrate((long) ms);
+            }
+            return true;
         } catch (Exception e) {
             Log.e(TAG, "vibrate exception: " + e.getMessage());
+            return false;
         }
+    }
+
+    /** 旧签名(单时长、默认幅度):保留是为了覆盖安装期间 JS/Java 不同步,新代码一律用 vibrate(ms, amp) */
+    public static void vibrate(int ms) {
+        vibrate(ms, -1);   // -1 == VibrationEffect.DEFAULT_AMPLITUDE,写字面量避免在 API<26 上引用该类
     }
 
     public static boolean installApk(String filePath) {

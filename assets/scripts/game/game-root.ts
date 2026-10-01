@@ -5,7 +5,7 @@
 // 事件只从 Rules.R.events 取,分发给音效/飘字/震屏 —— 表现层依旧不进逻辑。
 // 菜单/结算完整 UI 是阶段 3;本组件先直进一局「单人 · 普通」。
 // ============================================================
-import { _decorator, Component, ResolutionPolicy, profiler, view } from "cc";
+import { _decorator, Component, ResolutionPolicy, game, profiler, view } from "cc";
 import { CFG, FloatLabel } from "../core/config";
 import { Settings } from "../core/settings";
 import { installStorageBackend } from "./host";
@@ -19,7 +19,7 @@ import { Gait } from "../core/gait";
 import { Player, PRESS_LEAD_FRAMES } from "../core/player";
 import { Skills } from "../core/skills";
 import { clamp } from "../core/utils";
-import { Ball, FaceKind, GameEvent, PlayerInput, SkillId } from "../core/types";
+import { Ball, FaceKind, GameEvent, PlayerInput, ShotKind, ShotResult, SkillId } from "../core/types";
 import { WorldView } from "../render/world";
 import { TIER_FIRE, TIER_NORMAL, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "../render/shuttle-motion";
 import { newPad, clearEdges, buildIntent, emptyIntent, tickHolds, Pad } from "../input/pad";
@@ -27,7 +27,8 @@ import { bindKeyboard } from "../input/keyboard";
 import { touchPad } from "../input/touchpad";
 import { Sfx } from "./sfx";
 import { BgmManager } from "./bgm";
-import { haptic } from "./haptics";
+import { haptic, hapticTick } from "./haptics";
+import { shotKey } from "../core/haptic";
 
 const { ccclass } = _decorator;
 const C = CFG;
@@ -45,6 +46,14 @@ export class GameRoot extends Component {
   private stopFrames = 0;      // hitstop:世界定格的剩余步数(老 FX.stop 的精简版)
 
   private swingCueArmed = true; // 按拍预告「到点了」一次性闪环的闩:来球退回前瞻线外再重新武装
+  /** 球种预告缓存:一次 previewKind ≈ 28 条弹道 trace(数千次积分),旧版每渲染帧全跑一遍。
+   *  同一拍飞行中球种几乎不变,这里按「球的 shot 引用」命中缓存、每 10 帧兜底刷新一次,
+   *  一拍从 ~60 次求解降到 1-6 次;徽标更新节奏肉眼无感。 */
+  private previewShotRef: ShotResult | null = null;
+  private previewFrame = -99;
+  private previewKindCache: ShotKind | null = null;
+  /** 时机环入参复用对象(setTimingRing 只存引用、draw 时读字段,复用安全) */
+  private cueRing = { zx: 0, zy: 0, zr: 0, progress: 0, locked: false };
 
   onLoad(): void {
     // 存储后端与设置读盘:必须排在任何 load() 之前。
@@ -64,6 +73,9 @@ export class GameRoot extends Component {
     view.setDesignResolutionSize(C.world.w, C.world.h, ResolutionPolicy.FIXED_HEIGHT);
     // 隐藏 Cocos 左下角性能监控/FPS面板
     profiler.hideStats();
+    // 锁渲染帧率(config.perf.frameRate):逻辑本就固定 60Hz 步进,高刷屏裸跑只会把
+    // 每帧重绘成本 ×2、发热触发温控降频 —— 见 config.perf 注释
+    game.frameRate = C.perf.frameRate;
   }
 
   start(): void {
@@ -166,6 +178,9 @@ export class GameRoot extends Component {
     if (n === C.sim.maxSteps) this.acc = 0;
 
     this.drain();
+    // 触觉待发放:挂在真实帧循环(不是上面的模拟循环)—— 定格/慢动作期间模拟帧会积压,
+    // 若跟着模拟帧放,恢复的那一瞬间会一口气震一串
+    hapticTick();
     this.updateSwingCue();
     // 同步玩家技能按键状态至触屏
     const human = R.players[0];
@@ -217,6 +232,7 @@ export class GameRoot extends Component {
       this.world.setSwingCue(0);
       this.world.hudOverlay.setTimingRing(null);
       touchPad.setShotPreview(null);
+      this.previewShotRef = null;
       return;
     }
     const z = Player.strikeZone(human, Math.hypot(ball.vx, ball.vy));
@@ -232,6 +248,7 @@ export class GameRoot extends Component {
       this.world.setSwingCue(0);
       this.world.hudOverlay.setTimingRing(null);
       touchPad.setShotPreview(null);
+      this.previewShotRef = null;
       return;
     }
     const lead = PRESS_LEAD_FRAMES;
@@ -248,40 +265,50 @@ export class GameRoot extends Component {
     }
     // 时机环喂给渲染层:收缩环长在球上(按拍预告的球上版),甜区圈画在判定区心
     const TR = C.timingRing;
-    this.world.hudOverlay.setTimingRing({
-      zx: z.x, zy: z.y, zr: z.r,
-      progress: clamp(1 - (fc - pressAt) / TR.spanFrames, 0, 1),
-      locked: fc <= pressAt,
-    });
-    // 球种预告:按真实求解器预演这一拍,徽标写在击球键上方(挥拍中瞄准还能改,不掐)
-    touchPad.setShotPreview(Player.previewKind(human, ball));
+    this.cueRing.zx = z.x; this.cueRing.zy = z.y; this.cueRing.zr = z.r;
+    this.cueRing.progress = clamp(1 - (fc - pressAt) / TR.spanFrames, 0, 1);
+    this.cueRing.locked = fc <= pressAt;
+    this.world.hudOverlay.setTimingRing(this.cueRing);
+    // 球种预告:按真实求解器预演这一拍,徽标写在击球键上方(挥拍中瞄准还能改,不掐)。
+    // 走 previewKindCache:同拍命中缓存,换拍(shot 引用变)或每 10 帧才真正求解一次。
+    if (this.previewShotRef !== ball.shot || this.frameT - this.previewFrame >= 10) {
+      this.previewShotRef = ball.shot;
+      this.previewFrame = this.frameT;
+      this.previewKindCache = Player.previewKind(human, ball);
+    }
+    touchPad.setShotPreview(this.previewKindCache);
   }
 
   /** 慢放总闸(见 config.fx.slowmoEnabled):关掉时两处 world.slowmo() 与赛点常驻微慢放全不发,世界恒速 */
   private get slowmoOn(): boolean { return C.fx.slowmoEnabled === true; }
 
   // ---------- 输入 → 意图(与老 buildInputs 同构) ----------
+  /** 输入事件钩子:一次性构造、整个生命周期复用(旧版每模拟步新建 7 个闭包,纯 GC 粮) */
+  private inputHooks: Partial<PlayerInput> | null = null;
   private buildInputs(): PlayerInput[] {
     const R = Rules.R;
-    const hooks: Partial<PlayerInput> = {
-      onJump: () => this.sfx.play("jump"),
-      onLand: (_p, vy) => {
-        if (vy > 4) {
-          this.sfx.floor(Math.max(0.4, Math.min(1.2, vy / 12)));
-          this.world.shake(Math.min(2.4, vy * 0.12));
-        }
-      },
-      onWhiff: () => {
-        this.sfx.play("whiff");
-        this.world.shake(C.fx.shakeWhiff || 1.5);
-        this.setStop(C.fx.hitstopWhiff || 1);
-      },
-      onFootstep: (p) => {
-        this.world.fx.stepDust(p.x, C.court.groundY);
-      },
-      onLunge: () => this.sfx.play("lunge"),
-      onSkill: (p, id) => this.onSkillCast(p, id),
-    };
+    if (!this.inputHooks) {
+      this.inputHooks = {
+        onJump: () => this.sfx.play("jump"),
+        onLand: (_p, vy) => {
+          if (vy > 4) {
+            this.sfx.floor(Math.max(0.4, Math.min(1.2, vy / 12)));
+            this.world.shake(Math.min(2.4, vy * 0.12));
+          }
+        },
+        onWhiff: () => {
+          this.sfx.play("whiff");
+          this.world.shake(C.fx.shakeWhiff || 1.5);
+          this.setStop(C.fx.hitstopWhiff || 1);
+        },
+        onFootstep: (p) => {
+          this.world.fx.stepDust(p.x, C.court.groundY);
+        },
+        onLunge: () => this.sfx.play("lunge"),
+        onSkill: (p, id) => this.onSkillCast(p, id),
+      };
+    }
+    const hooks = this.inputHooks;
     return R.players.map((p) => {
       // 训练场的右半边不是对手,是喂球机:走同一条 inputs 通道(一拍一落是结构必然)
       if (R.mode === "drill" && p.side === "right") {
@@ -306,6 +333,8 @@ export class GameRoot extends Component {
     const ball = Rules.R.ball;
     const F = C.fx;
     if (!ball) return;
+    // 起手飘字只给真人:AI 放技能照常有特效/音效(对手高光),但不再飘教学字
+    const showLab = !p.isAI;
 
     if (id === "lunge") {
       // 强力跨步起手:贴地破风气浪爆发 + 镜头微推 + 突进轻微破风闪 + 飘字
@@ -313,25 +342,25 @@ export class GameRoot extends Component {
       this.world.fx.lungeDash(p.x, C.court.groundY, dir);
       this.world.punch(p.x, p.y, C.lunge.castPunch || 1.025);
       this.world.shake(C.lunge.castShake || 3);
-      this.floatSideLab({ text: "疾风突进!", color: "#38bdf8", size: 24, life: 46, plate: "slant" }, p.x);
+      if (showLab) this.floatSideLab({ text: "疾风突进!", color: "#38bdf8", size: 24, life: 46, plate: "slant" }, p.x);
       this.sfx.play("lunge");
-      if (!p.isAI) haptic("light");
+      if (!p.isAI) haptic("skillLight");
     } else if (id === "smash") {
       // 百分百重击起手:聚能爆气 + 镜头推近 + 强力震屏 + 炽热金红爆闪 + 飘字
       this.world.fx.flameBurst(p.x, p.y - 20);
       this.world.punch(p.x, p.y, C.skills.smash.castPunch || 1.05);
       this.world.shake(C.skills.smash.castShake || 6);
-      this.floatSideLab({ text: "暴烈重扣!!", color: "#f43f5e", size: 28, life: 52, plate: "star" }, p.x);
+      if (showLab) this.floatSideLab({ text: "暴烈重扣!!", color: "#f43f5e", size: 28, life: 52, plate: "star" }, p.x);
       this.sfx.play("smash");
-      if (!p.isAI) haptic("score");
+      if (!p.isAI) haptic("skill");
     } else if (id === "magnet") {
       // 引力吸球起手:引力奇点光环爆发 + 空间震颤 + 紫色微闪 + 镜头推向球 + 飘字
       this.world.fx.singularityBurst(ball.x, ball.y);
       this.world.punch(ball.x, ball.y, C.skills.magnet.castPunch || 1.045);
       this.world.shake(C.skills.magnet.castShake || 5);
-      this.floatSideLab({ text: "引力掌控!!", color: "#a855f7", size: 26, life: 48, plate: "slant" }, p.x);
+      if (showLab) this.floatSideLab({ text: "引力掌控!!", color: "#a855f7", size: 26, life: 48, plate: "slant" }, p.x);
       this.sfx.play("swing", 0.7);
-      if (!p.isAI) haptic("light");
+      if (!p.isAI) haptic("skillLight");
     } else if (id === "focus") {
       // 时空减速起手:时空领域展开! 激活子弹时间 + 时空微澜波纹 + 镜头微推 + 青碧闪光 + 飘字
       const dur = C.skills.focus.duration || 90;
@@ -340,9 +369,9 @@ export class GameRoot extends Component {
       this.world.fx.timeRupture(p.x, p.y - 28);
       this.world.punch(p.x, p.y, C.skills.focus.castPunch || 1.035);
       this.world.shake(C.skills.focus.castShake || 4);
-      this.floatSideLab({ text: "时空领域!!", color: "#06b6d4", size: 26, life: 50, plate: "slant" }, p.x);
+      if (showLab) this.floatSideLab({ text: "时空领域!!", color: "#06b6d4", size: 26, life: 50, plate: "slant" }, p.x);
       this.sfx.play("whiff", 0.8);
-      if (!p.isAI) haptic("score");
+      if (!p.isAI) haptic("skillLight");
     } else if (id === "flash") {
       // 雷光折跃:保持现有的雷光折跃三段演出
       if (p.flashFrom) this.world.fx.blink(p.flashFrom.x, p.flashFrom.y, p.x, p.y);
@@ -350,9 +379,10 @@ export class GameRoot extends Component {
       this.setStop(F.hitstopFlashCast || 7);
       this.world.shake(F.flashCastShake || 7, 0, Math.atan2(ball.y - p.y, ball.x - p.x));
       this.world.punch(ball.x, ball.y, F.flashCastPunch || 1.05);
-      this.floatSideLab(F.flashCastFloat as FloatLabel, p.x, true);
+      if (showLab) this.floatSideLab(F.flashCastFloat as FloatLabel, p.x, true);
       this.sfx.play("flash");
-      if (!p.isAI) haptic("score");
+      // 折跃那一下是全游戏最"空间感"的起手,给满档:与命中时的 perfectSmash 一唱一和
+      if (!p.isAI) haptic("skill");
     }
   }
 
@@ -437,8 +467,10 @@ export class GameRoot extends Component {
           // 夸奖只给真人:喂球那拍不飘字(判据可信度)
           const praise = !(R.mode === "drill" && e.side === "right");
           const hitterIdx = e.idx as number;
-          // 触觉:真人击球短震,完美重扣用重档(喂球侧不震,与飘字同一判据)
-          if (praise) haptic(perfect && smash ? "score" : "hit");
+          // 触觉:只给真人打出来的特殊击球 —— 普通对拉不震、AI 击球不震(旧写法两条都没挡住,
+          // 结果是"每拍都在嗡嗡"反而什么都读不出来)。档位判据在 core/haptic.ts 的 shotKey
+          const hk = shotKey(smash, sweet, perfect);
+          if (praise && hk && !R.players[hitterIdx]?.isAI) haptic(hk);
           // 甜蜜/完美 → 击球两键档位辉光:飘字在球边上,拇指边的按键也直接亮一拍。
           // 只认真人自己打出来的 —— 对手/AI 的好球不是你的操作反馈,亮了反而误导
           if (praise && !R.players[hitterIdx]?.isAI && (sweet || perfect)) {
@@ -465,6 +497,7 @@ export class GameRoot extends Component {
           }
           // 技能专属击球飘字与强化特效
           const skillKind = e.skillKind as string | null;
+          const hitterIsAI = !!R.players[hitterIdx]?.isAI;
           if (praise && skillKind) {
             const K = C.fx as unknown as Record<string, FloatLabel>;
             const sLab = skillKind === "lunge" ? K.floatSkillLunge
@@ -473,7 +506,8 @@ export class GameRoot extends Component {
               : skillKind === "magnet" ? K.floatSkillMagnet
               : skillKind === "focus" ? K.floatSkillFocus
               : null;
-            if (sLab) {
+            // 技能命中字只给真人:AI 的命中特效/震屏保留,不再飘同款标签
+            if (sLab && !hitterIsAI) {
               this.floatSideLab(sLab, e.x as number);
             }
             if (skillKind === "lunge") {
@@ -512,12 +546,12 @@ export class GameRoot extends Component {
               this.world.punch(e.x as number, e.y as number, 1.035);
             }
           } else if (praise && e.lungeShot) {
-            this.floatSideLab({ text: "跨步重击!", color: "#38bdf8", size: 24, life: 48, plate: "slant" }, e.x as number);
+            if (!hitterIsAI) this.floatSideLab({ text: "跨步重击!", color: "#38bdf8", size: 24, life: 48, plate: "slant" }, e.x as number);
             const ang = hitAng ?? this.hitAngOf(e);
             this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
           }
           // 连击热手提示:热度首次烧到 fireAt 时飘一次(连打好球的人才看得到)
-          if (praise && (e.heat as number) === (C.heat.fireAt || 3)) {
+          if (praise && !hitterIsAI && (e.heat as number) === (C.heat.fireAt || 3)) {
             this.floatSideLab({ text: "手感火热!", color: "#ff6a1f", size: 21, life: 46, plate: "slant" }, e.x as number);
           }
           // 跳杀:空中高球必然扣杀的专属飘字(挂场边,与档位字同侧自动错行)
@@ -599,6 +633,9 @@ export class GameRoot extends Component {
           break;
         case "land": {
           this.sfx.floor(e.isSmash ? 1.5 : 0.9);
+          // 扣杀砸穿对手那一记才震(球落地即这一分结束,所以 score 分支会避开重复);
+          // AI 的扣杀不震 —— 对手的高光不是你的操作反馈,与 pulseSwing 同一判据
+          if (e.isSmash && e.scorer === "left") haptic("landSmash");
           // 扣杀落地:纵向震动为主 + 地面冲击波 + 羽毛碎屑(老 fx.js shockwave 的落地波纹,本次接线)
           this.world.shake(e.isSmash ? (C.fx.shakeLandSmash || 7) : e.out ? 2 : 3,
             e.isSmash ? (C.fx.shakeLandSmashVert || 5) : 0);
@@ -632,8 +669,10 @@ export class GameRoot extends Component {
         case "score": {
           this.sfx.score(true);
           this.bgm.onScore();
-          // 触觉:自己得分给一记重震;丢分不震(安慰性 buzz 只会添堵)
-          if (e.side === "left") haptic("score");
+          // 触觉:自己得分给一记重震;丢分不震(安慰性 buzz 只会添堵)。
+          // 扣杀得分那一记已由 land 分支的 landSmash 说过同一个时刻了,这里不再叠第二段
+          // (rules 里 land 之后必发 score,两处都震会变成两串连打)。
+          if (e.side === "left" && e.reason !== "扣杀得分") haptic("score");
           // 扣杀得分专属:观众大欢呼 + 庆祝短慢放 + 中央大字,与普通得分拉开层次
           if (e.reason === "扣杀得分") {
             this.sfx.cheer(0.7);
@@ -657,6 +696,8 @@ export class GameRoot extends Component {
         case "match-over": {
           const youWon = R.mode === "2p" ? true : e.winner === "left";
           this.sfx.play(youWon ? "win" : "lose");
+          // 终局是整局唯一给到三段脉冲的时机(胜利)/一记长而软的落锤(失利)
+          haptic(youWon ? "win" : "lose");
           this.sfx.cheer(1);
           this.bgm.onMatchOver(youWon);
           // 表情:胜负定格(OVER 冻结 faceT 不衰减,一直挂到结算面板盖上来)

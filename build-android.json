@@ -23,8 +23,7 @@
       },
       "apiLevel": 34,
       "appABIs": [
-        "arm64-v8a",
-        "armeabi-v7a"
+        "arm64-v8a"
       ],
       "useDebugKeystore": true,
       "resizeableActivity": true,
@@ -36,7 +35,7 @@
       "appBundle": false,
       "androidInstant": false,
       "inputSDK": false,
-      "isSoFileCompressed": true,
+      "isSoFileCompressed": false,
       "remoteUrl": "",
       "sdkPath": "/Users/a1/Library/Android/sdk",
       "ndkPath": "/Users/a1/Library/Android/sdk/ndk/28.2.13676358",
@@ -45,7 +44,7 @@
       "renderBackEnd": {
         "vulkan": false,
         "gles3": true,
-        "gles2": true
+        "gles2": false
       },
       "swappy": false
     },

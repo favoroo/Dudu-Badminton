@@ -1,37 +1,29 @@
 // ============================================================
 // 主菜单:球场在身后,菜单是浮在场上的一层玻璃。
-// 版面自上而下:等级/金币/音效条 → 球馆铭牌 → 标题 →
-// 球馆选择 → 技能胶囊 → 三档难度卡 → 训练/生涯入口 → 版本。
-// 决策②:手机版纯单人 —— 入口只从 menuForPlatform() 取(仅 1p 三档),
-// 2p / 2v2 的 MENU 条目不渲染不引用,面板上不存在这两个入口。
+// 版式(P5 海报改版):等级/金币/音效条 → 标题 → 五块实底大色块 → 版本。
+// 信息架构(用户指令):「入门/普通/大师」不再铺在首页 —— 合并成左上那块
+// 「对练」大色块,和闯关/无限练习/专项训练/生涯同级;点进去是模式屏
+// (mode-screen.ts),球馆选择与技能胶囊也搬进了对练屏,首页只留模式入口。
+// 大色块 = ui-arcade.drawSolidBlock 实底海报面,文字用色由 inkOn(accent) 定。
+// 屏间转场走 ui-arcade.screenSwap(红黑斜带扫屏),进对局仍走 slashWipe。
 // ============================================================
 import { Button, Color, Graphics, Label, Node, tween, UIOpacity, UITransform, Vec2, Widget } from "cc";
-import { CFG, DRILLS, menuForPlatform } from "../core/config";
+import { CFG, DRILLS } from "../core/config";
 import { Career } from "../core/career";
-import { Skills } from "../core/skills";
 import { CampaignManager } from "../core/campaign";
-import type { DiffKey } from "../core/types";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import {
-  ARCADE, cancelFade, drawChevron, drawHardShadow, drawMenuCard,
-  drawSlantPanel, drawSlantShadow, drawSawtooth, fadeOutHide, floatLoop, makeChip, makeCoinIcon,
+  ARCADE, cancelFade, drawChevron, drawSlantPanel, drawSlantShadow, drawSawtooth,
+  drawSolidBlock, fadeOutHide, floatLoop, inkOn, makeChip, makeCoinIcon,
   riseIn, safePad, skewOf, slashIn, slantPath, stopLoops,
 } from "./ui-arcade";
-import type { MenuCardOpts } from "./ui-arcade";
+import { textW } from "./text-metrics";
 import { APP_VERSION_NAME } from "../core/version";
 import { UpdateService } from "../core/update-service";
 
-/** 建卡参数:绘图选项 + 本文件才关心的圆角/阴影强度 */
-type CardOpts = MenuCardOpts & { r?: number; shadow?: number };
-
-// 产品命名:老 MENU 的「简单/困难」在手机版叫「入门/普通/大师」,档位与 CFG.diffs 一一对应
-const CN_DIFF: Record<string, string> = { easy: "入门", normal: "普通", hard: "大师" };
-/** 三档各自的强调色:绿 → 荧光黄 → 橙红,一眼看出强度 */
-const DIFF_ACCENT: Record<string, string> = { easy: "#7dff9e", normal: "#ffe14d", hard: "#ff6a1f" };
-
-const DIM_SUB = "#93a0c4";     // 老 .mode .m-desc
-const DIM_FAINT = "#6f7ca6";   // 老 .hint / .hero-kicker
+/** 大色块字色:亮面配墨黑,斩劈红面配纸白(由亮度算,不逐块手拍) */
+const inkOf = (accent: string): string => (inkOn(accent) ? "#0a0e1c" : "#f5efe1");
 
 export class MainMenu {
   readonly root: Node;
@@ -39,19 +31,10 @@ export class MainMenu {
   private lvLabel: Label;
   private coinLabel: Label;
   private soundLabel: Label;
-  private kickerLabel: Label;
-  /** 球馆 tab:选中态要重画底块 + 亮「使用中」角标,故缓存这两样 */
-  private courtTabs: Array<{ g: Graphics; name: Label; flag: Node; id: string; accent: string }> = [];
-  private careerSub: Label;
-  private drillSub: Label;
   private campaignSub!: Label;
-  private skillNameLabel!: Label;
-  private skillBadgeG!: Graphics;
+  private drillSub!: Label;
+  private careerSub!: Label;
   private checkedStartup = false;
-  /** 作者通道:连点同一个球馆 tab 的计数 / 上一次是哪块 tab / 上一落的时刻 */
-  private authorTabId: string | null = null;
-  private authorTaps = 0;
-  private authorAt = 0;
   /** rise 入场的节点队列(节点,延迟):show 时逐级展开 */
   private riseNodes: Array<{ node: Node; delay: number }> = [];
   /** 顶栏徽章的斩入队列:与 rise 分开,show 时侧向 slashIn */
@@ -150,11 +133,6 @@ export class MainMenu {
       { node: soundBadge, delay: 0.1 }, { node: setBadge, delay: 0.15 },
     );
 
-    // ---------- 球馆铭牌(老 .hero-kicker:跟着当前球馆走) ----------
-    this.kickerLabel = this.txt(this.root, kit.getCourtTheme().sub, 11, DIM_FAINT, -240, 200 - sp.top, 480, 1, P.ink);
-    this.kickerLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
-    this.riseNodes.push({ node: this.kickerLabel.node, delay: 0.12 });
-
     // ---------- 街机海报标题:红黑斜切衬底 +「嘟嘟」荧光黄 +「羽毛球」暖纸白 ----------
     // P5 化:标题压在一块错位叠层的红黑斜切衬纸上,大字换子集化标题黑体
     const backing = new Node("title-backing");
@@ -173,13 +151,13 @@ export class MainMenu {
     bgg.lineWidth = 1.5;
     slantPath(bgg, 372, 74, bs);
     bgg.stroke();
-    backing.setPosition(0, 164, 0);
+    backing.setPosition(0, 190, 0);
     backing.setParent(this.root);
 
     const t1 = kit.label(this.root, "嘟嘟", 54, P.accent, { disp: true });
-    t1.node.setPosition(-81, 164, 0);
+    t1.node.setPosition(-81, 190, 0);
     const t2 = kit.label(this.root, "羽毛球", 54, P.text, { disp: true });
-    t2.node.setPosition(54, 164, 0);
+    t2.node.setPosition(54, 190, 0);
     for (const t of [t1, t2]) {
       t.enableShadow = true;
       t.shadowColor = new Color(0, 0, 0, 140);
@@ -190,124 +168,98 @@ export class MainMenu {
     this.titleNode = t1.node;
     stopLoops(t2.node); // 浮动只挂在一个节点上,两个都停过再启
 
-    // ---------- 球馆选择(老 .court-picker:名称 + 描述,选中描边该馆主题色) ----------
-    // 赛制横线已删:腾出的纵轴空间留给技能胶囊,避免被难度卡压住
-    kit.courtThemes().forEach((c, i) => {
-      const { node, g } = this.card(`court:${c.id}`, 200, 48, { r: 10, edge: 0, bar: 0, alpha: 0.82, slant: 6 });
-      node.setPosition((i - 1.5) * 216, 92, 0);   // 卡间距 16:相邻可点目标的最小间隙
-      const name = this.txt(node, c.name, 14, P.text, -88, 13, 96);
-      this.txt(node, c.tag, 11, DIM_FAINT, -88, -13, 100);
-      // 「使用中」角标:选中才亮,斜切小片贴在卡片右上角
-      const flag = new Node("flag");
-      flag.layer = this.root.layer;
-      flag.addComponent(UITransform).setContentSize(56, 18);
-      const fg = flag.addComponent(Graphics);
-      fg.fillColor = col(c.accent);
-      slantPath(fg, 56, 18, skewOf(18, 10));
-      fg.fill();
-      kit.label(flag, "使用中", 11, "#0a0e1c").node.setPosition(0, 0, 0);
-      flag.setPosition(62, 13, 0);
-      flag.setParent(node);
-
-      node.on(Button.EventType.CLICK, () => {
+    // ---------- 五块实底大色块(P5 海报面):对练为主入口,右列 2×2 ----------
+    // 对练 = 左侧整柱斩劈红(进对练屏选难度/球馆/技能);
+    // 右列:闯关(荧光黄)/ 无限练习(绿)/ 专项训练(青)/ 生涯与商店(纸白)。
+    // 色即功能语言:红=上场、黄=闯关星星、绿=练球、青=专项、白=档案。
+    const block = (
+      name: string, w: number, h: number, accent: string, onTap: () => void,
+    ): Node => {
+      const n = new Node(name);
+      n.layer = this.root.layer;
+      n.addComponent(UITransform).setContentSize(w, h);
+      drawSolidBlock(n.addComponent(Graphics), w, h, accent, 5);
+      const b = n.addComponent(Button);
+      b.transition = Button.Transition.SCALE;
+      b.zoomScale = 0.96;
+      b.target = n;
+      n.on(Button.EventType.CLICK, () => {
         kit.sfx.play("ui");
-        kit.setCourtTheme(c.id);
-        this.kickerLabel.string = c.sub;
-        this.paintCourts();
-        if (!this.authorTap(c.id)) kit.toast(`球馆已切换 · ${c.name}`);
+        onTap();
       });
-      this.courtTabs.push({ g, name, flag, id: c.id, accent: c.accent });
-      this.riseNodes.push({ node, delay: 0.26 + i * 0.03 });
-    });
+      n.setParent(this.root);
+      return n;
+    };
 
-    // ---------- 核心技能配置胶囊 (整块可点, 弹出技能选择弹窗) ----------
-    const skillBadge = this.card("badge:skill", 270, 36, { r: 18, edge: 3, bar: 0, alpha: 0.94, slant: 4, accent: "#38bdf8" });
-    skillBadge.node.setPosition(0, 40, 0);   // 球馆卡(底 68)与难度卡(顶 12)之间,留 8px 呼吸隙
-    this.skillBadgeG = skillBadge.g;
-    makeChip(skillBadge.node, "SKILL", 9, "#38bdf8", "#0a0e1c", 8).setPosition(-94, 0, 0);
-    this.skillNameLabel = this.txt(skillBadge.node, "强力跨步", 13, P.accent, -60, 0, 96);
-    this.txt(skillBadge.node, "更换 ›", 11, DIM_FAINT, 76, 0, 48);
-    skillBadge.node.on(Button.EventType.CLICK, () => {
-      kit.sfx.play("ui");
-      kit.openSkillDialog(() => {
-        this.paintSkillBadge();
-      });
-    });
-    this.riseNodes.push({ node: skillBadge.node, delay: 0.33 });
+    // 主入口:对练(整柱大块,内容竖排)
+    const hero = block("mode:match-setup", 316, 330, ARCADE.slash, () => kit.openMatchSetup());
+    hero.setPosition(-298, -51, 0);
+    makeChip(hero, "MATCH", 10, "#0a0e1c", ARCADE.acid).setPosition(-102, 126, 0);
+    const heroName = kit.label(hero, "对练", 44, ARCADE.paper, { disp: true });
+    heroName.node.setPosition(-96, 74, 0);
+    this.txt(hero, "三档难度 · 选球馆 · 随时开局", 12, col(ARCADE.paper, 0.8), -104, 24, 240);
+    // 三档强度色点:绿→黄→橙,颜色本身就在报难度(与对练屏 DIFF_PICKS 同源)
+    const dots = new Node("diff-dots");
+    dots.layer = hero.layer;
+    dots.addComponent(UITransform);
+    const dg = dots.addComponent(Graphics);
+    const dotHexes = ["#7dff9e", "#ffe14d", "#ff6a1f"];
+    for (let i = 0; i < dotHexes.length; i++) {
+      dg.fillColor = col(dotHexes[i], 0.95);
+      slantPath(dg, 26, 14, skewOf(14, 8), -34 + i * 34, 0);
+      dg.fill();
+    }
+    dots.setPosition(-88, -22, 0);
+    dots.setParent(hero);
+    const heroHint = this.txt(hero, "EASY / NORMAL / HARD", 10, col(ARCADE.paper, 0.55), -104, -58, 200);
+    heroHint.horizontalAlign = Label.HorizontalAlign.LEFT;
+    const heroChev = new Node("hero-chev");
+    heroChev.layer = hero.layer;
+    heroChev.addComponent(UITransform);
+    drawChevron(heroChev.addComponent(Graphics), 15, ARCADE.paper, 0.85, 2);
+    heroChev.setPosition(112, -124, 0);
+    heroChev.setParent(hero);
 
-    // ---------- 单人三难度:横排三张实底卡,整卡即按钮 ----------
-    // 染色强度随档位递增:入门冷静 → 大师发烫,颜色本身就在报难度
-    menuForPlatform().forEach((m, i) => {
-      const diff = (m.diff ?? "normal") as DiffKey;
-      const accent = DIFF_ACCENT[diff];
-      const { node } = this.card(`mode:${diff}`, 268, 104, {
-        r: 12, accent, tint: 0.09 + i * 0.045, bar: 5, edge: 5, alpha: 0.9, slant: 5,
-      });
-      node.setPosition((i - 1) * 284, -40, 0);    // 卡间距 16,难度卡整卡即按钮
-      makeChip(node, m.tag ?? diff.toUpperCase(), 11, accent, "#0a0e1c", 10).setPosition(98, 34, 0);
-      this.txt(node, CN_DIFF[diff], 22, accent, -108, 14, 150);
-      this.txt(node, m.desc, 12, DIM_SUB, -108, -26, 212);
-      node.on(Button.EventType.CLICK, () => {
-        kit.sfx.play("ui");
-        kit.startMatch(diff);
-      });
-      this.riseNodes.push({ node, delay: 0.4 + i * 0.06 });
-    });
+    /** 右列小块:EN 角签 + 名称 + 动态副行 + 箭标(整块即按钮) */
+    const entry = (
+      name: string, accent: string, tag: string, label: string, sub: string,
+      x: number, y: number, onTap: () => void,
+    ): { node: Node; subLabel: Label | null } => {
+      const n = block(name, 282, 150, accent, onTap);
+      n.setPosition(x, y, 0);
+      const ink = inkOf(accent);
+      makeChip(n, tag, 9, "#0a0e1c", accent).setPosition(-104, 46, 0);
+      // 名称按实测字宽左锚摆位:「生涯与商店」5 字也要贴齐左缘,中心摆会溢出块外
+      const nm = kit.label(n, label, 22, ink, { disp: true });
+      nm.node.setPosition(-104 + textW(label, 22) / 2, 10, 0);
+      const subLabel = sub ? this.txt(n, sub, 11, col(ink, 0.62), -104, -34, 210) : null;
+      const chev = new Node("chev");
+      chev.layer = n.layer;
+      chev.addComponent(UITransform);
+      drawChevron(chev.addComponent(Graphics), 12, ink, 0.75, 2);
+      chev.setPosition(112, -8, 0);
+      chev.setParent(n);
+      return { node: n, subLabel };
+    };
 
-    // ---------- 功能入口(闯关模式 / 专项训练 / 无限练习 / 生涯与商店) ----------
-    // 四张卡片横排: 宽度 204, 间距 12, 中心点分别为 -324, -108, 108, 324
-    const campaign = this.card("entry:campaign", 204, 62, {
-      r: 12, accent: ARCADE.slash, tint: 0.12, bar: 5, edge: 4, alpha: 0.95, slant: 5,
-    });
-    campaign.node.setPosition(-324, -139, 0);
-    makeChip(campaign.node, "CHALLENGE", 9, ARCADE.slash, "#200407", 10).setPosition(-56, 12, 0);
-    this.txt(campaign.node, "闯关模式", 16, ARCADE.paper, -16, 12, 70);
-    this.campaignSub = this.txt(campaign.node, "", 10, DIM_FAINT, -76, -16, 150);
-    this.arrow(campaign.node, ARCADE.slash, 84);
-
-    const career = this.card("entry:career", 204, 62, {
-      r: 12, accent: ARCADE.cyan, tint: 0.1, bar: 5, edge: 4, alpha: 0.9, slant: 5,
-    });
-    career.node.setPosition(-108, -139, 0);
-    makeChip(career.node, "TRAIN", 9, ARCADE.cyan, "#04121a", 10).setPosition(-64, 12, 0);
-    this.txt(career.node, "专项训练", 16, ARCADE.paper, -24, 12, 70);
-    this.drillSub = this.txt(career.node, "", 10, DIM_FAINT, -76, -16, 150);
-    this.arrow(career.node, ARCADE.cyan, 84);
-
-    const endless = this.card("entry:endless", 204, 62, {
-      r: 12, accent: ARCADE.good, tint: 0.1, bar: 5, edge: 4, alpha: 0.9, slant: 5,
-    });
-    endless.node.setPosition(108, -139, 0);
-    makeChip(endless.node, "ENDLESS", 9, ARCADE.good, "#04121a", 10).setPosition(-60, 12, 0);
-    this.txt(endless.node, "无限练习", 16, ARCADE.paper, -20, 12, 70);
-    this.txt(endless.node, "无视比分·持续对拉", 10, DIM_FAINT, -76, -16, 150);
-    this.arrow(endless.node, ARCADE.good, 84);
-
-    const shop = this.card("entry:shop", 204, 62, {
-      r: 12, accent: ARCADE.acid, tint: 0.1, bar: 5, edge: 4, alpha: 0.9, slant: 5,
-    });
-    shop.node.setPosition(324, -139, 0);
-    makeChip(shop.node, "CAREER", 9, ARCADE.acid, "#0a0e1c", 10).setPosition(-60, 12, 0);
-    this.txt(shop.node, "生涯与商店", 16, ARCADE.paper, -20, 12, 75);
-    this.careerSub = this.txt(shop.node, "", 10, DIM_FAINT, -76, -16, 150);
-    this.arrow(shop.node, ARCADE.acid, 84);
-
-    campaign.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openCampaign(); });
-    career.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openDrills(); });
-    endless.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openEndlessDialog(); });
-    shop.node.on(Button.EventType.CLICK, () => { kit.sfx.play("ui"); kit.openCareer(); });
+    const campaign = entry("entry:campaign", ARCADE.acid, "CHALLENGE", "闯关模式", "", 12, 40, () => kit.openCampaign());
+    this.campaignSub = campaign.subLabel!;
+    const endless = entry("entry:endless", ARCADE.good, "ENDLESS", "无限练习", "无视比分 · 持续对拉", 318, 40, () => kit.openEndless());
+    const drill = entry("entry:drill", ARCADE.cyan, "TRAIN", "专项训练", "", 12, -138, () => kit.openDrills());
+    this.drillSub = drill.subLabel!;
+    const career = entry("entry:career", ARCADE.paper, "CAREER", "生涯与商店", "", 318, -138, () => kit.openCareer());
+    this.careerSub = career.subLabel!;
     this.riseNodes.push(
-      { node: campaign.node, delay: 0.55 },
-      { node: career.node, delay: 0.58 },
-      { node: endless.node, delay: 0.61 },
-      { node: shop.node, delay: 0.64 }
+      { node: hero, delay: 0.26 },
+      { node: campaign.node, delay: 0.3 },
+      { node: endless.node, delay: 0.34 },
+      { node: drill.node, delay: 0.38 },
+      { node: career.node, delay: 0.42 },
     );
-
-    // ---------- 玩法提示:落点教学只在发球那一次说(hud.ts 状态行),首页不再复述 ----------
 
     // ---------- 底部版本号与更新检查入口(高度由 uiButton 钳到触控下限) ----------
     const verBtn = kit.button(this.root, `${APP_VERSION_NAME} 检查更新`, 200, 44, { size: 13, fg: P.dim });
-    verBtn.setPosition(0, -222, 0);
+    verBtn.setPosition(0, -246, 0);
     verBtn.on(Button.EventType.CLICK, async () => {
       kit.sfx.play("ui");
       kit.toast("正在检查更新...");
@@ -324,35 +276,9 @@ export class MainMenu {
         kit.toast("网络连接失败，请稍后重试");
       }
     });
-    this.riseNodes.push({ node: verBtn, delay: 0.7 });
+    this.riseNodes.push({ node: verBtn, delay: 0.5 });
 
-    this.paintCourts();
     this.paintSound();
-  }
-
-  // ---------- 作者通道 ----------
-
-  /**
-   * 连点同一个球馆 tab 满 CFG.author.taps 下 → 等级/金币拉满,方便真机测商店与技能解锁。
-   * 换 tab 或两下点慢过 gapMs 就重新计数,所以正常「挨个看球馆」不会误触;
-   * 触发时顺带吃掉这次点击,不再叠一层「球馆已切换」的提示(同一条 toast 通道,会互相盖)。
-   * 拉满只在内存生效且此后 profile 不再落盘,所以重开应用会退回原档 —— 每次进应用都得重新连点。
-   * @returns 本次是否触发了拉满
-   */
-  private authorTap(courtId: string): boolean {
-    const A = CFG.author;
-    if (!A.enabled) return false;
-    const now = Date.now();
-    if (this.authorTabId !== courtId || now - this.authorAt > A.gapMs) this.authorTaps = 0;
-    this.authorTabId = courtId;
-    this.authorAt = now;
-    if (++this.authorTaps < A.taps) return false;
-    this.authorTaps = 0;
-    const r = Career.maxOut(A.coins);
-    this.refresh();
-    this.kit.sfx.play("levelup");
-    this.kit.toast(`作者模式 · Lv.${r.level} / 金币 ${r.coins} · 本局不落盘`);
-    return true;
   }
 
   // ---------- 建块辅助 ----------
@@ -361,7 +287,7 @@ export class MainMenu {
    * 左对齐文本:x 传「文字左缘」而不是节点中心 ——
    * Cocos 的 Label 是按节点 contentSize 排字的,直接摆中心点会把整段推出卡片。
    */
-  private txt(parent: Node, text: string, size: number, colorHex: string,
+  private txt(parent: Node, text: string, size: number, colorHex: string | Color,
     left: number, y: number, w: number, lines = 1, outline?: string): Label {
     // 落在遮罩上的裸文字要描边,不然亮球馆(海滩场)一冲就糊
     const l = this.kit.label(parent, text, size, colorHex,
@@ -373,56 +299,7 @@ export class MainMenu {
     return l;
   }
 
-  /** 实底菜单卡节点:自带 Button(SCALE) 与硬阴影;返回 Graphics 供状态变化时重画 */
-  private card(name: string, w: number, h: number, o: CardOpts): { node: Node; g: Graphics } {
-    const r = o.r ?? 12;
-    const n = new Node(name);
-    n.layer = this.root.layer;
-    n.addComponent(UITransform).setContentSize(w, h);
-    const g = n.addComponent(Graphics);
-    // 阴影要探出厚底边之下才读得出「浮起」,故 dy 跟着 edge 走;斜切卡用斜切阴影
-    if (o.slant) {
-      drawSlantShadow(g, w, h, skewOf(h, o.slant), 5, (o.edge ?? 4) + 3, o.shadow ?? 0.5);
-    } else {
-      drawHardShadow(g, w, h, r, 5, (o.edge ?? 4) + 3, o.shadow ?? 0.5);
-    }
-    drawMenuCard(g, w, h, r, o);
-    const b = n.addComponent(Button);
-    b.transition = Button.Transition.SCALE;
-    b.zoomScale = 0.96;
-    b.target = n;
-    n.setParent(this.root);
-    return { node: n, g };
-  }
-
-  /** 入口条右侧箭标:一眼看出「这格点进去还有下一页」,而不是一个信息块 */
-  private arrow(parent: Node, hex: string, x = 182): void {
-    const n = new Node("arrow");
-    n.layer = this.root.layer;
-    n.addComponent(UITransform).setContentSize(24, 20);
-    drawChevron(n.addComponent(Graphics), 11, hex, 0.8, 2);
-    n.setParent(parent);
-    n.setPosition(x, 0, 0);
-  }
-
   // ---------- 状态描绘 ----------
-
-  /** 球馆 tab:选中 = 该馆主题色实底 + 描边点亮 + 亮「使用中」角标 */
-  private paintCourts(): void {
-    const curId = this.kit.getCourtTheme().id;
-    for (const t of this.courtTabs) {
-      const active = t.id === curId;
-      t.g.clear();
-      drawSlantShadow(t.g, 200, 48, skewOf(48, 6), 5, 7, active ? 0.52 : 0.34);
-      drawMenuCard(t.g, 200, 48, 10, {
-        accent: active ? t.accent : undefined,
-        tint: 0.14, bar: 0, edge: active ? 4 : 0,
-        alpha: active ? 0.92 : 0.82, active, slant: 6,
-      });
-      t.name.color = col(active ? ARCADE.paper : "#a7b6dd");
-      t.flag.active = active;
-    }
-  }
 
   private paintSound(): void {
     const muted = this.kit.muted;      // 两条总线都关才算「声音关」,与设置页的独立开关不冲突
@@ -456,7 +333,7 @@ export class MainMenu {
         .call(() => cover.destroy()).start();
     }
 
-    // 街机海报式入场:顶栏斩入 → 铭牌 → 标题 → 横线 → 卡片逐级 rise
+    // 街机海报式入场:顶栏斩入 → 标题 → 大色块逐级 rise
     for (const s of this.slashNodes) slashIn(s.node, s.delay, -38, -6);
     for (const r of this.riseNodes) riseIn(r.node, r.delay);
     // 标题浮动等 rise 落位后再起(floatLoop 会停掉同一节点的位移动画)
@@ -482,22 +359,11 @@ export class MainMenu {
     fadeOutHide(this.root);   // 退场淡出:BlockInputEvents 立即放行,不拦刚开局的拇指
   }
 
-  private paintSkillBadge(): void {
-    const sId = Career.equippedSkill();
-    const def = Skills.defOf(sId);
-    this.skillNameLabel.string = def.name;
-    this.skillNameLabel.color = col(def.accent);
-  }
-
   private refresh(): void {
     const p = Career.profile();
     this.lvLabel.string = `Lv.${p.level}`;
     this.coinLabel.string = `${p.coins}`;
     this.paintSound();
-    // 铭牌跟随当前球馆(老 ui.js heroKicker)
-    this.kickerLabel.string = this.kit.getCourtTheme().sub;
-    this.paintCourts();
-    this.paintSkillBadge();
     const campCleared = CampaignManager.getClearedCount();
     const campStars = CampaignManager.getTotalStars();
     this.campaignSub.string = `${campCleared}/20关 · ★${campStars}星`;

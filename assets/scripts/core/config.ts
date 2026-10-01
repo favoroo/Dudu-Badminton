@@ -157,6 +157,13 @@ export const CFG = {
     maxSteps: 4,       // 单帧最多补几步(切后台回来不追帧)
   },
 
+  // ===== 渲染帧率上限:120Hz 高刷屏上旧版按设备刷新率裸跑,所有每帧重绘 ×2 =====
+  // 逻辑本来就是固定 60Hz 步进,高刷只是重复画一模一样的帧;锁 60 直接把每帧开销
+  // 减半,发热更小、更不容易触发温控降频(真机卡顿的隐形来源)。生效在 game-root.onLoad。
+  perf: {
+    frameRate: 60,
+  },
+
   // ===== 球速档位(时间膨胀):玩家可改的唯一物理旋钮,生效逻辑在 core/pace.ts =====
   // s = 每帧位移相对量(<1 = 更慢)。pace.ts 的缩放是「重力 ×s²、速度类 ×s、阻力系数不动」,
   // 所以**空间轨迹逐点不变**(落点/弧度/过网余量都不动),只是滞空帧数 ÷s。
@@ -951,9 +958,10 @@ export const CFG = {
     floatPopFrames: 6,         // 弹入用时(模拟步)
     floatRiseEase: 1.8,        // 上浮减速指数(>1 起得快落得缓)
     floatFadeK: 0.5,           // 全程淡出起点(1=一出现就开始淡)
-    // 场边评价字锚点(世界坐标):评价/技能类飘字不贴球,按击球方挂到两侧场边
-    // (padX = 距左右边线的锚点 x;y 取网顶上方的空中区)—— 底板从此不挡飞行中的球
-    floatSide: { padX: 100, y: 350 },
+    // 场边评价字锚点(世界坐标,canvas 风 y 向下 —— 小 y 更高):评价/技能类飘字不贴球,
+    // 按击球方挂到两侧场边空中区(padX = 距左右边线的锚点 x)。298 = 网顶(netTopY=390)
+    // 上方约 90、人物头顶(groundY-64=406)上方 80+ 的净空带,再往上就撞里程碑横幅(72)
+    floatSide: { padX: 100, y: 298 },
     // 飘字底板强度:底板已移到场边,恢复实心墨黑保文字可读(dim=1 原版)。
     // 教训:半透明底板(dim 0.55)在暖色球场上糊成灰,金字反而看不清 ——
     // 可读性靠实底,不挡球靠挪位置;真机仍嫌抢眼再整体调低
@@ -981,6 +989,44 @@ export const CFG = {
     floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, plate: "slant" },
     // 跳杀(空中高球必然扣杀)专属飘字
     floatJumpSmash:        { text: "跳杀!!",     color: "#ff8a3d", size: 26, life: 46, plate: "slant" },
+  },
+
+  // ===== 触觉反馈档位(手机端震动):生效逻辑在 core/haptic.ts,出口在 game/haptics.ts =====
+  // 为什么要有这一整段:震动是唯一还没被分级过的打击感通道。fx 的 hitstop/shake/punch
+  // 三套阶梯都是「同一拍、按强弱分档」,触觉以前只有 12/24/40ms 三个点 —— 而且只有时长、
+  // 没有振幅,线性马达手机上 12~24ms 的 one-shot 基本无感,用户读出来的就是「开关没用」。
+  // 现在键名与 fx 六档同源(sweet/smash/…/perfectSmash),单调性由 tools/haptic-check 钉住。
+  // 强度 = ms × amp 两维(amp 1..255 直接给 Android VibrationEffect);设备不支持控振幅时
+  // core/haptic.ts 会把振幅差折进时长差,所以「轻/标准/强」在无振幅控制的机器上依然有差别。
+  haptic: {
+    floorMs: 18,        // 时长地板:低于这个数在真机上就是「震了但摸不到」,旧 light:12 栽在这儿
+    capMs: 90,          // 时长上限:再长就不再是「触感」而是「马达在嗡嗡」,且盖不住音效
+    throttleMs: 55,     // 同一个事件名的最小间隔(防连打把手机震成马达噪声;不同事件不互吞)
+    maxQueued: 3,       // 待发放上限:同帧涌进三件事(重扣+落地+得分)也不至于排成一串礼花
+    preemptRatio: 1.5,  // 队列已满时,来者 power 需 ≥ 队内最弱 × 此倍率才挤掉它
+    gapMs: 26,          // 多段脉冲/排队段之间的间隔:短到读成一串、长到不糊成一坨
+    default: "standard",
+    // 表序必须从弱到强单调(haptic-check 有断言):设置页滑杆按下标定位。
+    // 存 id 不存索引,与 pace/gait 同一套语义。
+    levels: [
+      { id: "low",      msMul: 0.60, ampMul: 0.55, label: "轻",   note: "只在重要那几下点一下" },
+      { id: "standard", msMul: 1.00, ampMul: 1.00, label: "标准", note: "现在的强度,顶档摸得到" },
+      { id: "high",     msMul: 1.35, ampMul: 1.00, label: "强",   note: "时长再加三成,手机别放桌上用" },
+    ],
+    // --- 击球六档(与 fx.hitstop* / shake* / punch* 同序;普通档不在表里 = 不震) ---
+    sweet:        { ms: 26, amp: 140 },
+    perfect:      { ms: 32, amp: 180 },   // 完美但非扣杀:略轻于 smash,对齐 fx 的 5<5、9<12
+    smash:        { ms: 34, amp: 200 },
+    sweetSmash:   { ms: 40, amp: 235 },
+    perfectSmash: { ms: 48, amp: 255, segs: 2 },  // 全游戏最重的一下:两段脉冲读作「炸开」
+    // --- 技能起手:重扣/闪现是爆发型,其余是铺垫型 ---
+    skill:        { ms: 44, amp: 230 },
+    skillLight:   { ms: 24, amp: 120 },
+    // --- 关键节点 ---
+    landSmash:    { ms: 40, amp: 210, segs: 2 },  // 扣杀落地冲击波
+    score:        { ms: 42, amp: 220, segs: 2 },  // 己方得分
+    win:          { ms: 70, amp: 255, segs: 3 },  // 通关:三段,顶档只给它
+    lose:         { ms: 50, amp: 130 },           // 失利:长但软,不和爽点抢振幅
   },
 
   // BGM:原版是 WebAudio 现场合成的自适应背景音乐(零音频文件);
@@ -1413,6 +1459,23 @@ export const MENU: MenuEntry[] = [
   { id: "1p-hard",   label: "单人 · 困难", tag: "HARD",   desc: "跳起就扣杀,落点很刁", mode: "1p", diff: "hard" },
   { id: "2v2", label: "双打 · 两人组队",   tag: "CO-OP 2P", desc: "你 + 队友 打两个 AI",       mode: "2v2", diff: "normal", humans: 2 },
   { id: "1v2", label: "双打 · 带AI搭档", tag: "CO-OP 1P", desc: "你 + AI 搭档 打两个 AI",   mode: "2v2", diff: "normal", humans: 1 },
+];
+
+// 难度选择展示表:对练屏与无限练习屏共用的三档「海报文案」。
+// 档位与 CFG.diffs 一一对应;颜色即难度语言(绿 → 黄 → 橙,一眼看出强度)。
+// 主菜单改版后三档难度不再直接铺在首页,而是收进「对练」屏统一选档。
+export interface DiffPick {
+  key: DiffKey;
+  name: string;
+  tag: string;
+  accent: string;
+  desc: string;
+}
+
+export const DIFF_PICKS: DiffPick[] = [
+  { key: "easy",   name: "入门", tag: "EASY",   accent: "#7dff9e", desc: "球速温和 · 回球稳定 · 适合热身挥拍" },
+  { key: "normal", name: "普通", tag: "NORMAL", accent: "#ffe14d", desc: "攻守兼备 · 会抓空当 · 标准拉吊" },
+  { key: "hard",   name: "大师", tag: "HARD",   accent: "#ff6a1f", desc: "反应迅捷 · 跳起重扣 · 落点很刁" },
 ];
 
 // ============================================================

@@ -22,6 +22,9 @@ import { drawCrossMark, drawTaper } from "./p5kit";
 
 const C = CFG;
 const CO = C.court;
+/** 赛点横幅文字的两态颜色(模块级常量;旧版每帧 new 两个 Color) */
+const MP_COL_A = new Color().fromHEX("#fff5f2");
+const MP_COL_B = new Color().fromHEX("#ffd9d9");
 
 function txt(parent: Node, name: string, size: number): Label {
   const n = new Node(name);
@@ -38,6 +41,9 @@ function txt(parent: Node, name: string, size: number): Label {
 export class HudOverlay {
   private g: Graphics;
   private vp: Viewport;
+  /** 赛点横幅的内容缓存(raw label → 拼好的展示串;label 不变不重拼) */
+  private mpLastRaw = "";
+  private mpContent = "★ MATCH POINT ★";
   // 赛点旗标(拍数由 HUD 的连击大字负责,训练进度由 HUD 的状态行负责)
   private mpLabel: Label;
   private mpShown = false;
@@ -515,8 +521,13 @@ export class HudOverlay {
     const pulse = 0.5 + 0.5 * Math.sin(t * 0.12);
     const cy = this.vp.y(25);
     // rules 的 label 里自带 ★,这里只补两侧装饰 —— 直接拼会出现「★ ★ 赛末点 ★」
-    const raw = mp.label.replace(/★/g, "").trim();
-    const content = raw ? `★ ${raw} ★` : "★ MATCH POINT ★";
+    // 内容只在 rules 的 label 变化时重拼(赛点期间旧版每帧 replace + 模板串)
+    if (mp.label !== this.mpLastRaw) {
+      this.mpLastRaw = mp.label;
+      const raw = mp.label.replace(/★/g, "").trim();
+      this.mpContent = raw ? `★ ${raw} ★` : "★ MATCH POINT ★";
+    }
+    const content = this.mpContent;
     // P5 斩劈横幅:近黑衬带 + 全宽主红带(微仰切)+ 下缘锯齿撕边
     const w = C.world.w + 120;
     const h = 30;
@@ -555,6 +566,7 @@ export class HudOverlay {
         .start();
     }
     this.mpLabel.string = content;
-    this.mpLabel.color = pulse > 0.4 ? new Color().fromHEX("#fff5f2") : new Color().fromHEX("#ffd9d9");
+    // 颜色两态轮换(模块级常量,引擎赋值时内部 .set() 拷贝;旧版每帧 new 两个 Color)
+    this.mpLabel.color = pulse > 0.4 ? MP_COL_A : MP_COL_B;
   }
 }

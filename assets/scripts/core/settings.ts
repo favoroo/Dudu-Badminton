@@ -132,8 +132,15 @@ export interface GameSettings {
   bgmOn: boolean; bgmVol: number;
   // 画面提示:落点预测圈 / 屏幕震动 / 飘字
   hintLanding: boolean; hintShake: boolean; hintFloat: boolean;
-  // 触觉反馈:按键/击球/得分的短震动(移动端,Web 是空操作)
+  // 触觉反馈:特殊击打/技能/得分的震动总闸(移动端,Web 是空操作)
   hapticOn: boolean;
+  /**
+   * 震动强度档 id(取值 = CFG.haptic.levels[*].id)。与 paceTier 同一套语义:
+   * 存 id 不存下标也不存系数,缺字段/认不出都退 CFG.haptic.default。
+   * hapticOn 只管"震不震",这一档管"震得多狠" —— 两个旋钮不合并,
+   * 因为「关掉触觉」和「嫌太轻」是两件不同的事(后者要能当场试出来)。
+   */
+  hapticLevel: string;
   // 按钮整体透明度(0.2~1.0,1.0 = 完全不透明)—— 全局一条,不逐键独立
   padAlpha: number;
   pad: Record<PadAction, PadBtn>;
@@ -169,6 +176,7 @@ function fresh(): GameSettings {
     bgmOn: true, bgmVol: 0.6,
     hintLanding: true, hintShake: true, hintFloat: true,
     hapticOn: true,
+    hapticLevel: CFG.haptic.default,
     padAlpha: 0.8,
     pad,
     moveMode: "joystick",
@@ -193,6 +201,9 @@ const paceTierOf = (v: unknown, d: string): string =>
   typeof v === "string" && CFG.pace.tiers.some((t) => t.id === v) ? v : d;
 const gaitTierOf = (v: unknown, d: string): string =>
   typeof v === "string" && CFG.gait.tiers.some((t) => t.id === v) ? v : d;
+// 震动强度档:同样只认 config.haptic.levels 表里的 id
+const hapticLevelOf = (v: unknown, d: string): string =>
+  typeof v === "string" && CFG.haptic.levels.some((l) => l.id === v) ? v : d;
 
 /** 坏档不许崩:认不出的字段一律退回默认。导出给 tools/settings-check.ts 直接断言 */
 export function sanitize(raw: unknown): GameSettings {
@@ -207,6 +218,8 @@ export function sanitize(raw: unknown): GameSettings {
   s.hintShake = bool(r.hintShake, s.hintShake);
   s.hintFloat = bool(r.hintFloat, s.hintFloat);
   s.hapticOn = bool(r.hapticOn, s.hapticOn);
+  // 手改存档写了个不存在的强度档 → 保持默认,不带病下发反射调用
+  s.hapticLevel = hapticLevelOf(r.hapticLevel, s.hapticLevel);
   s.padAlpha = num(r.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
   // 球速档位:老存档没这个键 → 直接吃到 CFG.pace.default(出货默认比上一版慢 8%)。
   // 这就是「老玩家也自动吃新默认」的落点,不需要版本号。
@@ -298,6 +311,7 @@ export class SettingsStore {
   get hintShake(): boolean { return this.v.hintShake; }
   get hintFloat(): boolean { return this.v.hintFloat; }
   get hapticOn(): boolean { return this.v.hapticOn; }
+  get hapticLevel(): string { return this.v.hapticLevel; }
   get padAlpha(): number { return this.v.padAlpha; }
   get moveMode(): MoveMode { return this.v.moveMode; }
   get paceTier(): string { return this.v.paceTier; }
@@ -354,7 +368,7 @@ export class SettingsStore {
    * persist=false 同 setPad:音量滑杆拖动时逐帧改内存、松手再 flush,
    * 原生 sys.localStorage.setItem 是同步文件 IO,不能跟着手指 60Hz 写盘。
    */
-  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "padAlpha" | "moveMode" | "paceTier" | "gaitTier">>, persist = true): void {
+  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "hapticLevel" | "padAlpha" | "moveMode" | "paceTier" | "gaitTier">>, persist = true): void {
     const s = this.v;
     if (p.sfxOn !== undefined) s.sfxOn = bool(p.sfxOn, s.sfxOn);
     if (p.sfxVol !== undefined) s.sfxVol = num(p.sfxVol, s.sfxVol, 0, 1);
@@ -364,6 +378,7 @@ export class SettingsStore {
     if (p.hintShake !== undefined) s.hintShake = bool(p.hintShake, s.hintShake);
     if (p.hintFloat !== undefined) s.hintFloat = bool(p.hintFloat, s.hintFloat);
     if (p.hapticOn !== undefined) s.hapticOn = bool(p.hapticOn, s.hapticOn);
+    if (p.hapticLevel !== undefined) s.hapticLevel = hapticLevelOf(p.hapticLevel, s.hapticLevel);
     if (p.padAlpha !== undefined) s.padAlpha = num(p.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
     if (p.moveMode !== undefined) s.moveMode = moveModeOf(p.moveMode, s.moveMode);
     if (p.paceTier !== undefined) s.paceTier = paceTierOf(p.paceTier, s.paceTier);

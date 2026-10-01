@@ -81,6 +81,9 @@ export class Hud {
   private lastStatus = "";
   private lastCombo = -1;
   private lastDeuce = false;
+  private lastTeamL = "";
+  private lastTeamR = "";
+  private lastCenter = "";
   private entranceDone = false;
   private frameT = 0;
   private cHot = new Color();
@@ -346,6 +349,9 @@ export class Hud {
       this.lastModeTag = "";
       this.lastDeuce = false;
       this.lastStaminaLit = -1;
+      this.lastTeamL = "";
+      this.lastTeamR = "";
+      this.lastCenter = "";
       this.banner.active = false;
       this.entranceDone = false;
       fadeOutHide(this.root);
@@ -623,14 +629,18 @@ export class Hud {
         this.scoreR.string = b;
         this.lastScore = key;
       }
-      this.teamL.string = Rules.labelOf("left");
-      this.teamR.string = Rules.labelOf("right");
+      // 队名/目标分:值不变就不赋(Label 同值早退虽不重排,但模板串拼接本身就是每帧 GC)
+      const teamL = Rules.labelOf("left");
+      if (teamL !== this.lastTeamL) { this.teamL.string = teamL; this.lastTeamL = teamL; }
+      const teamR = Rules.labelOf("right");
+      if (teamR !== this.lastTeamR) { this.teamR.string = teamR; this.lastTeamR = teamR; }
       const stage = campaign ? R.activeStage : null;
-      this.centerBadge.string = endless
+      const center = endless
         ? "PRACTICE"
         : stage
         ? (stage.deathmatch ? "1-POINT" : `TO ${stage.targetScore}`)
         : `TO ${CFG.scoring.winScore}`;
+      if (center !== this.lastCenter) { this.centerBadge.string = center; this.lastCenter = center; }
 
       // ---- AI 体力能量槽同步(P5 斜切 5 段能量槽) ----
       const aiPlayer = R.players.find((p) => p.side === "right" && p.isAI);

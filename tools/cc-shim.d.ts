@@ -312,13 +312,24 @@ declare module "cc" {
   export namespace sys {
     export const isNative: boolean;
     export const isBrowser: boolean;
-    export const platform: number;
+    /** 平台标识。引擎真身是**字符串**枚举(pal/system-info/enum-type/platform.ts),
+     *  这里以前抄成数字枚举 —— 值不一样但成员比较仍成立,改回字符串以贴近真实运行时。 */
+    export const platform: Platform;
     export const os: string;
     export enum Platform {
-      ANDROID = 1,
-      IOS = 2,
-      WIN32 = 3,
-      MACOS = 4,
+      UNKNOWN = "UNKNOWN",
+      EDITOR_PAGE = "EDITOR_PAGE",
+      EDITOR_CORE = "EDITOR_CORE",
+      MOBILE_BROWSER = "MOBILE_BROWSER",
+      DESKTOP_BROWSER = "DESKTOP_BROWSER",
+      WIN32 = "WIN32",
+      ANDROID = "ANDROID",
+      IOS = "IOS",
+      MACOS = "MACOS",
+      OHOS = "OHOS",
+      OPENHARMONY = "OPENHARMONY",
+      WECHAT_GAME = "WECHAT_GAME",
+      WECHAT_MINI_PROGRAM = "WECHAT_MINI_PROGRAM",
     }
     export const OS: {
       ANDROID: string;
@@ -350,6 +361,11 @@ declare module "cc" {
     showStats(): void;
     hideStats(): void;
     isShowingStats(): boolean;
+  };
+
+  /** 游戏全局(本工程只用于锁渲染帧率,见 game-root.onLoad 与 config.perf) */
+  export const game: {
+    frameRate: number;
   };
 
   export const view: {

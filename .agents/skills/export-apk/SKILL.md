@@ -88,3 +88,7 @@ chmod +x gradlew
 
 - **Open in Android Studio**:
   Open the directory `/Users/a1/Documents/01Code/dudu-cocos/build/android/proj` directly in Android Studio.
+
+- **性能/帧率验收必须用 release 包**(`./gradlew assembleRelease`,dudu-release 流程产物):
+  debug 包是 `debuggable=true` + 无 minify,帧率与发热和正式包不可比 —— 「真机测出卡顿」
+  先确认测的是哪个包,再谈优化。

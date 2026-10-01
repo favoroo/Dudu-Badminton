@@ -415,6 +415,8 @@ export class CourtRenderer {
   private currentTheme: CourtThemeId = "arena";
   /** 存档读取推迟到首次访问(见 ensureTheme);模块级单例构造太早 */
   private themeEnsured = false;
+  /** 静态层脏标记:主题切换/数据重建后置位,由 WorldView 轮询消费(见 consumeStaticDirty) */
+  private staticDirty = true;
 
   // 物理与时间状态
   private time = 0;
@@ -861,6 +863,7 @@ export class CourtRenderer {
       this.currentTheme = themeId as CourtThemeId;
       save("court_theme", themeId);
       this.buildAll();
+      this.staticDirty = true;
       return true;
     }
     return false;
@@ -909,9 +912,44 @@ export class CourtRenderer {
   }
 
   // ------------------------------------------------------------
-  // 全量绘制总调度
+  // 分层绘制总调度(性能)
+  // 旧版每渲染帧全量重画整个球场(200 观众 + LED 点阵 + 渐变/桁架/广告板,
+  // ~900 个图元),而其中真正在动的不到 5% —— Graphics 的成本在 CPU 侧
+  // 几何重建 + 顶点缓冲重传,这是移动端最大的单点卡顿源。现在拆三层:
+  //   静态  穹顶/看台结构/地板/广告板/灯具外形 —— 主题切换时画一次;
+  //   慢速  观众 bob/LED 跑马/荧光棒 —— 动得很慢但人很多,每 3 渲染帧一次;
+  //   动态  球网/光束/微尘/闪光灯/回合 tint —— 每渲染帧。
+  // 三层的节点序(静态在下、动态在上)与旧版单层内的绘制顺序对任何发生
+  // 空间重叠的图元都保持一致;draw() 仍保留为「三层合成一支笔」的全量画法,
+  // 供回归预览工具出图比对。
   // ------------------------------------------------------------
   draw(g: Graphics, vp: Viewport, rallyCount = 0): void {
+    this.drawStaticTo(g, vp);
+    this.drawSlowTo(g, vp, rallyCount);
+    this.drawDynTo(g, vp, rallyCount);
+  }
+
+  /** 静态层:只依赖主题,不依赖时间 —— setTheme/buildAll 后由 consumeStaticDirty 通知重画 */
+  drawStaticTo(g: Graphics, vp: Viewport): void {
+    this.ensureTheme();
+    switch (this.currentTheme) {
+      case "beach": this.drawBeachStatic(g, vp); break;
+      case "cyber": this.drawCyberStatic(g, vp); break;
+      case "dojo": this.drawDojoStatic(g, vp); break;
+      default: this.drawArenaStatic(g, vp); break;
+    }
+  }
+
+  /** 慢速层:目前只有黄昏馆有大面积慢速装饰(观众群 + LED 跑马),其它主题为空 */
+  drawSlowTo(g: Graphics, vp: Viewport, rallyCount = 0): void {
+    this.ensureTheme();
+    if (this.currentTheme !== "arena") return;
+    const glow = clamp(rallyCount / 18, 0, 1);
+    this.drawArenaSlow(g, vp, this.time, glow);
+  }
+
+  /** 动态层:每渲染帧(球网/光束/微尘/闪光灯/回合 tint) */
+  drawDynTo(g: Graphics, vp: Viewport, rallyCount = 0): void {
     this.ensureTheme();
     const glow = clamp(rallyCount / 18, 0, 1);
     const t = this.time;
@@ -920,14 +958,11 @@ export class CourtRenderer {
     // 两边都给满幅的话,符号会互相打乱,叶簇看着像在随机动,而不是"风往这边走"。
     this.windX = Math.sin(t * 0.005) * Math.cos(t * 0.013) * 3.5 * this.decorK + this.envWindPx;
 
-    if (this.currentTheme === "beach") {
-      this.drawBeach(g, vp, t, glow);
-    } else if (this.currentTheme === "cyber") {
-      this.drawCyber(g, vp, t, glow);
-    } else if (this.currentTheme === "dojo") {
-      this.drawDojo(g, vp, t, glow);
-    } else {
-      this.drawArena(g, vp, t, glow);
+    switch (this.currentTheme) {
+      case "beach": this.drawBeachDyn(g, vp, t, glow); break;
+      case "cyber": this.drawCyberDyn(g, vp, t, glow); break;
+      case "dojo": this.drawDojoDyn(g, vp, t, glow); break;
+      default: this.drawArenaDyn(g, vp, t, glow); break;
     }
 
     // 回合升温氛围 — 全屏极低 alpha 主题色调色
@@ -943,10 +978,19 @@ export class CourtRenderer {
     this.drawNet(g, vp);
   }
 
+  /** 主题切换/数据重建后置位;WorldView 每帧轮询消费 → 重画静态层 */
+  consumeStaticDirty(): boolean {
+    const d = this.staticDirty;
+    this.staticDirty = false;
+    return d;
+  }
+
   // ============================================================
   // 主题 1: 黄昏专业馆 (Dusk Arena)
+  // 静态层(主题切换时画一次)/ 慢速层(观众·跑马灯,每 3 渲染帧)/
+  // 动态层(光束·微尘·闪光灯,每帧) —— 层间叠放序与旧版单层绘制序一致。
   // ============================================================
-  private drawArena(g: Graphics, vp: Viewport, time: number, glow: number): void {
+  private drawArenaStatic(g: Graphics, vp: Viewport): void {
     // 1. 穹顶与背景墙 (分段线性渐变)
     fillVerticalGradient(
       g,
@@ -984,13 +1028,7 @@ export class CourtRenderer {
     fillRect(g, vp, -EXT_W, 84, TOTAL_W, 2, new Color(36, 50, 90, 255));
     fillRect(g, vp, -EXT_W, 116, TOTAL_W, 2, new Color(24, 34, 64, 255));
 
-    // LED 点阵发光装饰条与跑马方块
-    const ledOff = (time * 1.5) % 180;
-    for (let x = -EXT_W; x < TOTAL_W; x += 18) {
-      const isBright = ((x + ledOff) % 90 < 36);
-      const col = isBright ? colRgba(255, 225, 77, 0.65) : colRgba(255, 225, 77, 0.18);
-      fillRect(g, vp, x, 98, 9, 6, col);
-    }
+    // LED 跑马方块 → 慢速层 drawArenaSlow(相位动得很慢,不必每帧重铺 83 个方块)
 
     // 4. 阶梯看台与微动观众群
     fillVerticalGradient(
@@ -1013,64 +1051,7 @@ export class CourtRenderer {
       fillRect(g, vp, -EXT_W, sy, TOTAL_W, 2, new Color(29, 40, 74, 255));
     }
 
-    for (const c of this.crowd) {
-      const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
-      const shade = c.shadeBase + c.tone * 22;
-      // 观众身体
-      fillRect(
-        g,
-        vp,
-        c.x - c.r * 1.1,
-        c.y + bob + c.r * 0.7,
-        c.r * 2.2,
-        c.r * 2.0,
-        colRgba(shade - 4, shade - 6, shade + 16, 0.92)
-      );
-      // 观众头部
-      fillCircle(g, vp, c.x, c.y + bob, c.r, new Color(shade + 8, shade + 6, shade + 28, 255));
-    }
-
-    // 观众手机闪光灯（拍照闪烁效果）
-    const flashIntervalMul = glow > 0.3 ? 0.5 : 1.0;
-    for (const f of this.arenaFlashes) {
-      f.timer -= 1;
-      if (f.timer <= 0) {
-        const c = this.crowd[f.crowdIdx];
-        if (c) {
-          const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
-          fillCircle(g, vp, c.x, c.y + bob - 2, 2, colRgba(255, 255, 255, 0.9));
-          fillConcentricGlow(g, vp, c.x, c.y + bob - 2, 8, 6, colRgba(255, 255, 255, 0.4), colRgba(255, 255, 255, 0), 2);
-        }
-        f.timer = f.interval * flashIntervalMul;
-      }
-    }
-
-    // 观众挥舞毛巾
-    for (const tw of this.arenaTowels) {
-      const c = this.crowd[tw.crowdIdx];
-      if (!c) continue;
-      const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
-      const wave = Math.sin(time * tw.period + tw.phase);
-      if (wave > 0.3) {
-        const towelY = c.y + bob - c.r * 2.5 - wave * 4;
-        fillRect(g, vp, c.x - 4, towelY, 8, 3, tw.color);
-      }
-    }
-
-    // 相持高潮挥动荧光棒
-    if (glow > 0.35) {
-      const stickAlpha = Math.min(0.65, (glow - 0.35) * 1.2);
-      g.lineWidth = 2.5;
-      for (const gs of this.arenaGlowSticks) {
-        const c = this.crowd[gs.crowdIdx];
-        if (!c) continue;
-        const wave = Math.sin(time * 0.09 + gs.ph) * 5;
-        g.strokeColor = new Color(gs.color.r, gs.color.g, gs.color.b, Math.round(stickAlpha * 255));
-        g.moveTo(vp.x(c.x + 3), vp.y(c.y - 2));
-        g.lineTo(vp.x(c.x + 8 + wave), vp.y(c.y - 12));
-        g.stroke();
-      }
-    }
+    // 观众 bob 群 → 慢速层 drawArenaSlow;闪光灯/毛巾 → 动态层 drawArenaDyn
 
     // 看台护栏
     g.strokeColor = colRgba(42, 56, 94, 0.45);
@@ -1175,6 +1156,142 @@ export class CourtRenderer {
       fillRect(g, vp, lamp - 30, 42, 60, 2, new Color(255, 255, 255, 255));
     }
 
+    // 8. 【核心·实木地板延伸】：延伸至 BOTTOM_WY (720)，厚度 250px
+    // 纵向进深渐暗处理：从地表暖焦糖色向近景深暗木色自然过渡
+    fillVerticalGradient(
+      g,
+      vp,
+      -EXT_W,
+      CO.groundY,
+      TOTAL_W,
+      BOTTOM_WY - CO.groundY,
+      [
+        { stop: 0, color: new Color(200, 112, 58, 255) },
+        { stop: 0.25, color: new Color(171, 91, 40, 255) },
+        { stop: 0.6, color: new Color(110, 53, 20, 255) },
+        { stop: 1, color: new Color(55, 24, 8, 255) },
+      ],
+      12
+    );
+
+    // 木板缝隙拼花：完整贯通延伸到底部
+    for (const b of this.boards) {
+      const col = b.t % 2 ? colRgba(132, 66, 29, 0.22) : colRgba(230, 151, 68, 0.16);
+      fillRect(g, vp, b.x, CO.groundY, b.w, BOTTOM_WY - CO.groundY, col);
+    }
+
+    // 专业草绿色 PVC 比赛地胶 (在 wy=560 处立体收边，留下近景外延实木)
+    const matL = CO.left - 28;
+    const matR = CO.right + 28;
+    const matW = matR - matL;
+    const matH = 560 - CO.groundY; // 90px 高度地胶
+    fillVerticalGradient(
+      g,
+      vp,
+      matL,
+      CO.groundY,
+      matW,
+      matH,
+      [
+        { stop: 0, color: new Color(25, 84, 62, 255) },
+        { stop: 0.45, color: new Color(20, 69, 51, 255) },
+        { stop: 1, color: new Color(13, 49, 36, 255) },
+      ],
+      6
+    );
+
+    // 地胶四周封边压条与立体暗阴影
+    fillRect(g, vp, matL - 2, CO.groundY, 2, matH, colRgba(0, 0, 0, 0.45));
+    fillRect(g, vp, matR, CO.groundY, 2, matH, colRgba(0, 0, 0, 0.45));
+    fillRect(g, vp, matL, CO.groundY, matW, 2, colRgba(255, 255, 255, 0.22));
+    fillRect(g, vp, matL - 2, 560, matW + 4, 3, colRgba(0, 0, 0, 0.5));
+    fillRect(g, vp, matL, 558, matW, 2, colRgba(255, 255, 255, 0.18));
+
+    // 地面基准亮线(排灯反光光斑/教练剪影 → 动态层 drawArenaDyn)
+    fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, colRgba(255, 238, 195, 0.55));
+
+    // 【专属延展细节】：底部近景场边哑光防滑包边收边条 (wy: 680~720)
+    fillRect(g, vp, -EXT_W, 680, TOTAL_W, 40, new Color(24, 18, 14, 255));
+    fillRect(g, vp, -EXT_W, 680, TOTAL_W, 2, colRgba(255, 255, 255, 0.12));
+    fillRect(g, vp, -EXT_W, 683, TOTAL_W, 3, new Color(234, 179, 8, 200)); // 专业防滑警戒黄线
+
+    // 9. 标线
+    this.drawLines(g, vp, colRgba(255, 248, 235, 0.92), colRgba(255, 248, 235, 0.55));
+  }
+
+  /** 慢速层:LED 跑马方块 / 观众 bob / 相持荧光棒 —— 动得很慢但人数多,每 3 渲染帧重画一次 */
+  private drawArenaSlow(g: Graphics, vp: Viewport, time: number, glow: number): void {
+    // LED 点阵发光装饰条与跑马方块
+    const ledOff = (time * 1.5) % 180;
+    for (let x = -EXT_W; x < TOTAL_W; x += 18) {
+      const isBright = ((x + ledOff) % 90 < 36);
+      const col = isBright ? colRgba(255, 225, 77, 0.65) : colRgba(255, 225, 77, 0.18);
+      fillRect(g, vp, x, 98, 9, 6, col);
+    }
+
+    // 阶梯看台上的微动观众群(bob 幅度 0.9px、周期 ~3.7s,20fps 重画肉眼不可辨)
+    for (const c of this.crowd) {
+      const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
+      const shade = c.shadeBase + c.tone * 22;
+      // 观众身体
+      fillRect(
+        g,
+        vp,
+        c.x - c.r * 1.1,
+        c.y + bob + c.r * 0.7,
+        c.r * 2.2,
+        c.r * 2.0,
+        colRgba(shade - 4, shade - 6, shade + 16, 0.92)
+      );
+      // 观众头部
+      fillCircle(g, vp, c.x, c.y + bob, c.r, new Color(shade + 8, shade + 6, shade + 28, 255));
+    }
+
+    // 相持高潮挥动荧光棒
+    if (glow > 0.35) {
+      const stickAlpha = Math.min(0.65, (glow - 0.35) * 1.2);
+      g.lineWidth = 2.5;
+      for (const gs of this.arenaGlowSticks) {
+        const c = this.crowd[gs.crowdIdx];
+        if (!c) continue;
+        const wave = Math.sin(time * 0.09 + gs.ph) * 5;
+        g.strokeColor = new Color(gs.color.r, gs.color.g, gs.color.b, Math.round(stickAlpha * 255));
+        g.moveTo(vp.x(c.x + 3), vp.y(c.y - 2));
+        g.lineTo(vp.x(c.x + 8 + wave), vp.y(c.y - 12));
+        g.stroke();
+      }
+    }
+  }
+
+  /** 动态层:闪光灯/毛巾/丁达尔光束/灯晕/微尘/地面反光/教练 —— 每渲染帧 */
+  private drawArenaDyn(g: Graphics, vp: Viewport, time: number, glow: number): void {
+    // 观众手机闪光灯（拍照闪烁效果）
+    const flashIntervalMul = glow > 0.3 ? 0.5 : 1.0;
+    for (const f of this.arenaFlashes) {
+      f.timer -= 1;
+      if (f.timer <= 0) {
+        const c = this.crowd[f.crowdIdx];
+        if (c) {
+          const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
+          fillCircle(g, vp, c.x, c.y + bob - 2, 2, colRgba(255, 255, 255, 0.9));
+          fillConcentricGlow(g, vp, c.x, c.y + bob - 2, 8, 6, colRgba(255, 255, 255, 0.4), colRgba(255, 255, 255, 0), 2);
+        }
+        f.timer = f.interval * flashIntervalMul;
+      }
+    }
+
+    // 观众挥舞毛巾
+    for (const tw of this.arenaTowels) {
+      const c = this.crowd[tw.crowdIdx];
+      if (!c) continue;
+      const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
+      const wave = Math.sin(time * tw.period + tw.phase);
+      if (wave > 0.3) {
+        const towelY = c.y + bob - c.r * 2.5 - wave * 4;
+        fillRect(g, vp, c.x - 4, towelY, 8, 3, tw.color);
+      }
+    }
+
     // 7. 柔和丁达尔聚光灯束 (梯形矢量分段，随相持升温)
     const beamBaseAlpha = 0.115 + glow * 0.045;
     for (const lamp of LAMPS) {
@@ -1233,58 +1350,7 @@ export class CourtRenderer {
       }
     }
 
-    // 8. 【核心·实木地板延伸】：延伸至 BOTTOM_WY (720)，厚度 250px
-    // 纵向进深渐暗处理：从地表暖焦糖色向近景深暗木色自然过渡
-    fillVerticalGradient(
-      g,
-      vp,
-      -EXT_W,
-      CO.groundY,
-      TOTAL_W,
-      BOTTOM_WY - CO.groundY,
-      [
-        { stop: 0, color: new Color(200, 112, 58, 255) },
-        { stop: 0.25, color: new Color(171, 91, 40, 255) },
-        { stop: 0.6, color: new Color(110, 53, 20, 255) },
-        { stop: 1, color: new Color(55, 24, 8, 255) },
-      ],
-      12
-    );
-
-    // 木板缝隙拼花：完整贯通延伸到底部
-    for (const b of this.boards) {
-      const col = b.t % 2 ? colRgba(132, 66, 29, 0.22) : colRgba(230, 151, 68, 0.16);
-      fillRect(g, vp, b.x, CO.groundY, b.w, BOTTOM_WY - CO.groundY, col);
-    }
-
-    // 专业草绿色 PVC 比赛地胶 (在 wy=560 处立体收边，留下近景外延实木)
-    const matL = CO.left - 28;
-    const matR = CO.right + 28;
-    const matW = matR - matL;
-    const matH = 560 - CO.groundY; // 90px 高度地胶
-    fillVerticalGradient(
-      g,
-      vp,
-      matL,
-      CO.groundY,
-      matW,
-      matH,
-      [
-        { stop: 0, color: new Color(25, 84, 62, 255) },
-        { stop: 0.45, color: new Color(20, 69, 51, 255) },
-        { stop: 1, color: new Color(13, 49, 36, 255) },
-      ],
-      6
-    );
-
-    // 地胶四周封边压条与立体暗阴影
-    fillRect(g, vp, matL - 2, CO.groundY, 2, matH, colRgba(0, 0, 0, 0.45));
-    fillRect(g, vp, matR, CO.groundY, 2, matH, colRgba(0, 0, 0, 0.45));
-    fillRect(g, vp, matL, CO.groundY, matW, 2, colRgba(255, 255, 255, 0.22));
-    fillRect(g, vp, matL - 2, 560, matW + 4, 3, colRgba(0, 0, 0, 0.5));
-    fillRect(g, vp, matL, 558, matW, 2, colRgba(255, 255, 255, 0.18));
-
-    // 地面排灯反光光斑 (近景木地板与地胶双重反射)
+    // 地面排灯反光光斑 (近景木地板与地胶双重反射;地板/地胶本体在静态层)
     for (const lamp of LAMPS) {
       fillConcentricGlow(
         g,
@@ -1298,7 +1364,6 @@ export class CourtRenderer {
         3
       );
     }
-    fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, colRgba(255, 238, 195, 0.55));
 
     // 场边教练剪影 — 左右各一个坐姿剪影，头部微晃
     for (const side of [-1, 1]) {
@@ -1313,20 +1378,12 @@ export class CourtRenderer {
       fillRect(g, vp, cx + side * 14, cy + 10, 5, 8, new Color(60, 130, 200, 180));
       fillRect(g, vp, cx + side * 14.5, cy + 7, 4, 3, new Color(60, 130, 200, 180));
     }
-
-    // 【专属延展细节】：底部近景场边哑光防滑包边收边条 (wy: 680~720)
-    fillRect(g, vp, -EXT_W, 680, TOTAL_W, 40, new Color(24, 18, 14, 255));
-    fillRect(g, vp, -EXT_W, 680, TOTAL_W, 2, colRgba(255, 255, 255, 0.12));
-    fillRect(g, vp, -EXT_W, 683, TOTAL_W, 3, new Color(234, 179, 8, 200)); // 专业防滑警戒黄线
-
-    // 9. 标线
-    this.drawLines(g, vp, colRgba(255, 248, 235, 0.92), colRgba(255, 248, 235, 0.55));
   }
 
   // ============================================================
   // 主题 2: 阳光椰林海滩 (Sunny Beach)
   // ============================================================
-  private drawBeach(g: Graphics, vp: Viewport, time: number, glow: number): void {
+  private drawBeachStatic(g: Graphics, vp: Viewport): void {
     // 1. 蔚蓝晴空渐变 (0~270)
     fillVerticalGradient(
       g,
@@ -1366,6 +1423,86 @@ export class CourtRenderer {
       8
     );
 
+    // (焦散光斑/帆船/跃鱼/浪线/太阳/云/海鸥 → 动态层 drawBeachDyn)
+
+    // 6. 左侧热带椰子树剪影 (带微风叶片摆动)
+    g.strokeColor = new Color(69, 36, 16, 255);
+    g.lineWidth = 14;
+    g.moveTo(vp.x(35), vp.y(CO.groundY));
+    g.quadraticCurveTo(vp.x(80), vp.y(240), vp.x(110), vp.y(120));
+    g.stroke();
+
+    // 树冠椰子
+    fillCircle(g, vp, 106, 126, 5, new Color(56, 26, 6, 255));
+    fillCircle(g, vp, 114, 128, 4.5, new Color(56, 26, 6, 255));
+    fillCircle(g, vp, 110, 134, 4.5, new Color(56, 26, 6, 255));
+
+    // 柔韧风动椰树叶簇 → 动态层 drawBeachDyn
+
+    // 7. 右侧木质遮阳伞与躺椅
+    fillRect(g, vp, 880, 310, 6, 160, new Color(120, 53, 15, 255));
+    // 红白相间伞盖
+    g.fillColor = new Color(239, 68, 68, 255);
+    g.moveTo(vp.x(810), vp.y(335));
+    g.lineTo(vp.x(950), vp.y(335));
+    g.lineTo(vp.x(883), vp.y(290));
+    g.close();
+    g.fill();
+
+    g.fillColor = new Color(255, 255, 255, 255);
+    for (let sx = 825; sx <= 935; sx += 30) {
+      g.moveTo(vp.x(sx), vp.y(335));
+      g.lineTo(vp.x(sx + 15), vp.y(335));
+      g.lineTo(vp.x(883), vp.y(290));
+      g.close();
+      g.fill();
+    }
+    // 躺椅
+    g.strokeColor = new Color(180, 83, 9, 255);
+    g.lineWidth = 3.5;
+    g.moveTo(vp.x(820), vp.y(440));
+    g.lineTo(vp.x(855), vp.y(460));
+    g.lineTo(vp.x(875), vp.y(460));
+    g.stroke();
+
+    // 8. 【核心·金黄沙滩全屏铺满延伸】：延伸至 BOTTOM_WY (720)
+    fillVerticalGradient(
+      g,
+      vp,
+      -EXT_W,
+      CO.groundY,
+      TOTAL_W,
+      BOTTOM_WY - CO.groundY,
+      [
+        { stop: 0, color: new Color(253, 230, 138, 255) },
+        { stop: 0.25, color: new Color(252, 211, 77, 255) },
+        { stop: 0.6, color: new Color(245, 158, 11, 255) },
+        { stop: 0.85, color: new Color(217, 119, 6, 255) },
+        { stop: 1, color: new Color(154, 76, 10, 255) }, // 近景略暗干沙
+      ],
+      12
+    );
+
+    // 散落贝壳与沙斑 (包含近景延伸区)
+    for (const sh of this.beachShells) {
+      fillCircle(g, vp, sh.x, sh.y, sh.size, sh.col);
+    }
+
+    // 沙滩阳光闪烁/潮汐湿痕 → 动态层 drawBeachDyn
+
+    // 【专属延展细节】：近景浅水潮汐湿润光斑 (wy: 620~700)
+    for (let bx = -EXT_W + 100; bx < TOTAL_W; bx += 260) {
+      fillEllipse(g, vp, bx, 650, 90, 18, colRgba(254, 240, 138, 0.12));
+    }
+
+    // 10. 海风风丝 → 动态层 drawBeachDyn
+
+    // 9. 沙滩防滑编织织带标线
+    this.drawLines(g, vp, new Color(2, 132, 199, 255), colRgba(2, 132, 199, 0.65));
+  }
+
+  /** 动态层:焦散/帆船/跃鱼/浪线/太阳/云/海鸥/椰树叶簇/沙地闪光/潮汐湿痕/海风风丝 —— 每渲染帧 */
+  private drawBeachDyn(g: Graphics, vp: Viewport, time: number, glow: number): void {
     // 海面焦散光斑（阳光穿透水体的折射光纹）
     for (const ca of this.beachCaustics) {
       const cx = ca.cx + Math.sin(time * 0.02 + ca.phase) * 8;
@@ -1479,18 +1616,6 @@ export class CourtRenderer {
     }
     g.stroke();
 
-    // 6. 左侧热带椰子树剪影 (带微风叶片摆动)
-    g.strokeColor = new Color(69, 36, 16, 255);
-    g.lineWidth = 14;
-    g.moveTo(vp.x(35), vp.y(CO.groundY));
-    g.quadraticCurveTo(vp.x(80), vp.y(240), vp.x(110), vp.y(120));
-    g.stroke();
-
-    // 树冠椰子
-    fillCircle(g, vp, 106, 126, 5, new Color(56, 26, 6, 255));
-    fillCircle(g, vp, 114, 128, 4.5, new Color(56, 26, 6, 255));
-    fillCircle(g, vp, 110, 134, 4.5, new Color(56, 26, 6, 255));
-
     // 柔韧风动椰树叶簇
     const fronds = [-0.9, -0.5, -0.1, 0.3, 0.7, 1.1, 1.5];
     g.strokeColor = new Color(22, 101, 52, 255);
@@ -1507,55 +1632,6 @@ export class CourtRenderer {
     }
     g.stroke();
 
-    // 7. 右侧木质遮阳伞与躺椅
-    fillRect(g, vp, 880, 310, 6, 160, new Color(120, 53, 15, 255));
-    // 红白相间伞盖
-    g.fillColor = new Color(239, 68, 68, 255);
-    g.moveTo(vp.x(810), vp.y(335));
-    g.lineTo(vp.x(950), vp.y(335));
-    g.lineTo(vp.x(883), vp.y(290));
-    g.close();
-    g.fill();
-
-    g.fillColor = new Color(255, 255, 255, 255);
-    for (let sx = 825; sx <= 935; sx += 30) {
-      g.moveTo(vp.x(sx), vp.y(335));
-      g.lineTo(vp.x(sx + 15), vp.y(335));
-      g.lineTo(vp.x(883), vp.y(290));
-      g.close();
-      g.fill();
-    }
-    // 躺椅
-    g.strokeColor = new Color(180, 83, 9, 255);
-    g.lineWidth = 3.5;
-    g.moveTo(vp.x(820), vp.y(440));
-    g.lineTo(vp.x(855), vp.y(460));
-    g.lineTo(vp.x(875), vp.y(460));
-    g.stroke();
-
-    // 8. 【核心·金黄沙滩全屏铺满延伸】：延伸至 BOTTOM_WY (720)
-    fillVerticalGradient(
-      g,
-      vp,
-      -EXT_W,
-      CO.groundY,
-      TOTAL_W,
-      BOTTOM_WY - CO.groundY,
-      [
-        { stop: 0, color: new Color(253, 230, 138, 255) },
-        { stop: 0.25, color: new Color(252, 211, 77, 255) },
-        { stop: 0.6, color: new Color(245, 158, 11, 255) },
-        { stop: 0.85, color: new Color(217, 119, 6, 255) },
-        { stop: 1, color: new Color(154, 76, 10, 255) }, // 近景略暗干沙
-      ],
-      12
-    );
-
-    // 散落贝壳与沙斑 (包含近景延伸区)
-    for (const sh of this.beachShells) {
-      fillCircle(g, vp, sh.x, sh.y, sh.size, sh.col);
-    }
-
     // 沙滩阳光闪烁 — 微小白色亮点渐隐渐现
     for (const sp of this.beachSparkles) {
       const alpha = Math.max(0, Math.sin(time * sp.speed * 0.05 + sp.phase));
@@ -1568,11 +1644,6 @@ export class CourtRenderer {
     const wetAlpha = 0.65 + Math.sin(time * 0.04) * 0.15;
     fillRect(g, vp, -EXT_W, CO.groundY - 2, TOTAL_W, 3, colRgba(255, 255, 255, wetAlpha));
     fillRect(g, vp, -EXT_W, CO.groundY + 1, TOTAL_W, 2, colRgba(180, 83, 9, 0.35));
-
-    // 【专属延展细节】：近景浅水潮汐湿润光斑 (wy: 620~700)
-    for (let bx = -EXT_W + 100; bx < TOTAL_W; bx += 260) {
-      fillEllipse(g, vp, bx, 650, 90, 18, colRgba(254, 240, 138, 0.12));
-    }
 
     // 10. 海风风丝 —— 第 1 关「海风突变」的动画提示
     //     风从前只住在 physics 的每步积分里,画面一格都不动:球被横推一百多像素,
@@ -1597,15 +1668,12 @@ export class CourtRenderer {
         g.stroke();
       }
     }
-
-    // 9. 沙滩防滑编织织带标线
-    this.drawLines(g, vp, new Color(2, 132, 199, 255), colRgba(2, 132, 199, 0.65));
   }
 
   // ============================================================
   // 主题 3: 赛博霓虹夜市 (Cyber Neon City)
   // ============================================================
-  private drawCyber(g: Graphics, vp: Viewport, time: number, glow: number): void {
+  private drawCyberStatic(g: Graphics, vp: Viewport): void {
     // 1. 深邃暗紫与电光天幕
     fillVerticalGradient(
       g,
@@ -1645,15 +1713,11 @@ export class CourtRenderer {
       fillRect(g, vp, b.x, topY, b.w, b.h, bCol);
       strokeRect(g, vp, b.x, topY, b.w, b.h, strokeCol, 1);
 
-      // 大楼通讯天线与慢闪航空警示红灯
+      // 大楼通讯天线杆(警示红灯的慢闪 → 动态层 drawCyberDyn)
       if (b.antenna) {
         const ax = b.x + b.antenna.offX;
         const ay = topY - b.antenna.h;
         fillRect(g, vp, ax, ay, 1.5, b.antenna.h, new Color(71, 85, 105, 255));
-        const blink = Math.sin(time * 0.07 + b.antenna.beaconPh);
-        if (blink > 0.2) {
-          fillCircle(g, vp, ax + 0.75, ay, 2.2, new Color(239, 68, 68, 255));
-        }
       }
 
       // 点阵发光窗格
@@ -1667,88 +1731,23 @@ export class CourtRenderer {
       }
     }
 
-    // 楼宇窗户随机闪烁 — 个别窗户随机亮灭
-    for (let bi = 0; bi < this.cyberBuildings.length; bi++) {
-      const b = this.cyberBuildings[bi];
-      const topY = CO.groundY - b.h;
-      for (let r = 0; r < 8; r++) {
-        for (let col = 0; col < 2; col++) {
-          const winIdx = bi * 16 + r * 2 + col;
-          const flk = Math.sin(time * 0.03 + winIdx * 2.7);
-          if (flk > 0.85) {
-            const fa = (flk - 0.85) / 0.15 * 0.6;
-            const wCol = col % 2 ? colRgba(0, 240, 255, fa) : colRgba(255, 0, 127, fa);
-            fillRect(g, vp, b.x + 6 + col * (b.w - 18), topY + 16 + r * 14, 4, 6, wCol);
-          }
-        }
-      }
-    }
+    // (楼宇窗户闪烁/滚动色块/全息广告 → 动态层 drawCyberDyn)
 
     // 4. 赛博全息 HUD 标语屏
     fillRect(g, vp, -EXT_W, 72, TOTAL_W, 32, colRgba(10, 4, 25, 0.85));
     fillRect(g, vp, -EXT_W, 72, TOTAL_W, 2, new Color(255, 0, 127, 255));
     fillRect(g, vp, -EXT_W, 102, TOTAL_W, 2, new Color(0, 240, 255, 255));
 
-    // 全息滚动科技色块与数码字符块
-    const cyberOff = (time * 2.2) % 240;
-    for (let x = -EXT_W; x < TOTAL_W; x += 28) {
-      const isCyan = (x + cyberOff) % 110 < 55;
-      const col = isCyan ? colRgba(0, 240, 255, 0.75) : colRgba(255, 0, 127, 0.75);
-      fillRect(g, vp, x, 84, 14, 8, col);
-    }
+    // (滚动科技色块/全息旋转广告 → 动态层 drawCyberDyn)
 
-    // 全息旋转广告 — 宽度随 cos 振荡模拟 3D 旋转，颜色 glitch 跳变
-    {
-      const holoW = 60 + Math.cos(time * 0.025) * 30;
-      const holoX = 720;
-      const holoY = 56;
-      const glitchT = Math.floor(time * 0.15) % 3;
-      const holoCol = glitchT === 0 ? colRgba(0, 240, 255, 0.5) : glitchT === 1 ? colRgba(255, 0, 127, 0.5) : colRgba(140, 80, 255, 0.5);
-      fillRect(g, vp, holoX - holoW / 2, holoY, holoW, 20, holoCol);
-      // 扫描线
-      for (let sy = holoY + 2; sy < holoY + 18; sy += 4) {
-        fillRect(g, vp, holoX - holoW / 2 + 2, sy, holoW - 4, 1, colRgba(255, 255, 255, 0.15));
-      }
-    }
-
-    // 5. 顶棚激光发射器与双色霓虹光幕 (随相持升温)
-    const cyberBeamAlpha = 0.22 + glow * 0.08;
+    // 5. 顶棚激光发射器(双色霓虹光幕 → 动态层 drawCyberDyn)
     for (const lamp of LAMPS) {
       const isPink = lamp === 480;
-      const segs = 4;
-      for (let s = 0; s < segs; s++) {
-        const t1 = s / segs;
-        const t2 = (s + 1) / segs;
-        const y1 = 20 + t1 * (CO.groundY - 20);
-        const y2 = 20 + t2 * (CO.groundY - 20);
-        const w1 = 30 + t1 * (150 - 30);
-        const w2 = 30 + t2 * (150 - 30);
-        const a = cyberBeamAlpha * (1.0 - t1 * 0.8);
-        const col = isPink ? colRgba(255, 0, 127, a) : colRgba(0, 240, 255, a);
-
-        g.fillColor = col;
-        g.moveTo(vp.x(lamp - w1), vp.y(y1));
-        g.lineTo(vp.x(lamp + w1), vp.y(y1));
-        g.lineTo(vp.x(lamp + w2), vp.y(y2));
-        g.lineTo(vp.x(lamp - w2), vp.y(y2));
-        g.close();
-        g.fill();
-      }
-
       fillRect(g, vp, lamp - 24, 0, 48, 18, new Color(26, 11, 54, 255));
       fillRect(g, vp, lamp - 20, 14, 40, 4, isPink ? new Color(255, 0, 127, 255) : new Color(0, 240, 255, 255));
     }
 
-    // 向上反重力漂浮数码粒子
-    const cyberSpeedMul = 1.0 + glow * 0.3;
-    for (const p of this.cyberParticles) {
-      p.y += p.speedY * cyberSpeedMul;
-      p.x += p.speedX * cyberSpeedMul;
-      if (p.y < 30) p.y = CO.groundY - 10;
-      if (p.x < 0) p.x = W;
-      if (p.x > W) p.x = 0;
-      fillRect(g, vp, p.x + this.windX, p.y, p.size, p.size, p.color);
-    }
+    // 向上反重力漂浮数码粒子 → 动态层 drawCyberDyn
 
     // 6. 【核心·赛博合金高光地面与透视网格延伸】：延伸至 BOTTOM_WY (720)
     fillVerticalGradient(
@@ -1781,7 +1780,105 @@ export class CourtRenderer {
     }
     g.stroke();
 
-    // 【专属延展细节】：摩天大楼与全息屏的垂直霓虹高光倒影 (地面反光感)
+    // (大楼霓虹倒影/导光缆脉冲数据流 → 动态层 drawCyberDyn)
+
+    // 地面发光边线与霓虹光斑(边线在静态层;光斑 → 动态层 drawCyberDyn)
+    fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, new Color(0, 240, 255, 255));
+
+    // (地面霓虹光斑/飞行器/霓虹雨丝 → 动态层 drawCyberDyn)
+
+    // 7. 发光双色场地标线
+    this.drawLines(g, vp, new Color(0, 240, 255, 255), colRgba(255, 0, 127, 0.85));
+  }
+
+  /** 动态层:警示红灯/窗户闪烁/滚动色块/全息广告/霓虹光幕/数码粒子/倒影/导光缆/光斑/飞行器/雨丝 —— 每渲染帧 */
+  private drawCyberDyn(g: Graphics, vp: Viewport, time: number, glow: number): void {
+    // 楼宇航空警示红灯慢闪
+    for (const b of this.cyberBuildings) {
+      if (!b.antenna) continue;
+      const ay = CO.groundY - b.h - b.antenna.h;
+      const blink = Math.sin(time * 0.07 + b.antenna.beaconPh);
+      if (blink > 0.2) {
+        fillCircle(g, vp, b.x + b.antenna.offX + 0.75, ay, 2.2, new Color(239, 68, 68, 255));
+      }
+    }
+
+    // 楼宇窗户随机闪烁 — 个别窗户随机亮灭
+    for (let bi = 0; bi < this.cyberBuildings.length; bi++) {
+      const b = this.cyberBuildings[bi];
+      const topY = CO.groundY - b.h;
+      for (let r = 0; r < 8; r++) {
+        for (let col = 0; col < 2; col++) {
+          const winIdx = bi * 16 + r * 2 + col;
+          const flk = Math.sin(time * 0.03 + winIdx * 2.7);
+          if (flk > 0.85) {
+            const fa = (flk - 0.85) / 0.15 * 0.6;
+            const wCol = col % 2 ? colRgba(0, 240, 255, fa) : colRgba(255, 0, 127, fa);
+            fillRect(g, vp, b.x + 6 + col * (b.w - 18), topY + 16 + r * 14, 4, 6, wCol);
+          }
+        }
+      }
+    }
+
+    // 全息滚动科技色块与数码字符块
+    const cyberOff = (time * 2.2) % 240;
+    for (let x = -EXT_W; x < TOTAL_W; x += 28) {
+      const isCyan = (x + cyberOff) % 110 < 55;
+      const col = isCyan ? colRgba(0, 240, 255, 0.75) : colRgba(255, 0, 127, 0.75);
+      fillRect(g, vp, x, 84, 14, 8, col);
+    }
+
+    // 全息旋转广告 — 宽度随 cos 振荡模拟 3D 旋转，颜色 glitch 跳变
+    {
+      const holoW = 60 + Math.cos(time * 0.025) * 30;
+      const holoX = 720;
+      const holoY = 56;
+      const glitchT = Math.floor(time * 0.15) % 3;
+      const holoCol = glitchT === 0 ? colRgba(0, 240, 255, 0.5) : glitchT === 1 ? colRgba(255, 0, 127, 0.5) : colRgba(140, 80, 255, 0.5);
+      fillRect(g, vp, holoX - holoW / 2, holoY, holoW, 20, holoCol);
+      // 扫描线
+      for (let sy = holoY + 2; sy < holoY + 18; sy += 4) {
+        fillRect(g, vp, holoX - holoW / 2 + 2, sy, holoW - 4, 1, colRgba(255, 255, 255, 0.15));
+      }
+    }
+
+    // 顶棚双色霓虹光幕 (随相持升温)
+    const cyberBeamAlpha = 0.22 + glow * 0.08;
+    for (const lamp of LAMPS) {
+      const isPink = lamp === 480;
+      const segs = 4;
+      for (let s = 0; s < segs; s++) {
+        const t1 = s / segs;
+        const t2 = (s + 1) / segs;
+        const y1 = 20 + t1 * (CO.groundY - 20);
+        const y2 = 20 + t2 * (CO.groundY - 20);
+        const w1 = 30 + t1 * (150 - 30);
+        const w2 = 30 + t2 * (150 - 30);
+        const a = cyberBeamAlpha * (1.0 - t1 * 0.8);
+        const col = isPink ? colRgba(255, 0, 127, a) : colRgba(0, 240, 255, a);
+
+        g.fillColor = col;
+        g.moveTo(vp.x(lamp - w1), vp.y(y1));
+        g.lineTo(vp.x(lamp + w1), vp.y(y1));
+        g.lineTo(vp.x(lamp + w2), vp.y(y2));
+        g.lineTo(vp.x(lamp - w2), vp.y(y2));
+        g.close();
+        g.fill();
+      }
+    }
+
+    // 向上反重力漂浮数码粒子
+    const cyberSpeedMul = 1.0 + glow * 0.3;
+    for (const p of this.cyberParticles) {
+      p.y += p.speedY * cyberSpeedMul;
+      p.x += p.speedX * cyberSpeedMul;
+      if (p.y < 30) p.y = CO.groundY - 10;
+      if (p.x < 0) p.x = W;
+      if (p.x > W) p.x = 0;
+      fillRect(g, vp, p.x + this.windX, p.y, p.size, p.size, p.color);
+    }
+
+    // 摩天大楼与全息屏的垂直霓虹高光倒影 (地面反光感)
     for (const b of this.cyberBuildings) {
       if (b.h > 200) {
         const refCol = hslToRgb(b.hue, 1.0, 0.5, 0.08 + glow * 0.04);
@@ -1800,8 +1897,7 @@ export class CourtRenderer {
       fillRect(g, vp, pxX - 6, tr.y - 1.5, 12, 3, pCol);
     }
 
-    // 地面发光边线与霓虹光斑
-    fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, new Color(0, 240, 255, 255));
+    // 地面霓虹光斑
     for (const lamp of LAMPS) {
       const isPink = lamp === 480;
       fillConcentricGlow(
@@ -1868,15 +1964,12 @@ export class CourtRenderer {
       }
       if (hasPink) g.stroke();
     }
-
-    // 7. 发光双色场地标线
-    this.drawLines(g, vp, new Color(0, 240, 255, 255), colRgba(255, 0, 127, 0.85));
   }
 
   // ============================================================
   // 主题 4: 竹林和风道场 (Bamboo Dojo)
   // ============================================================
-  private drawDojo(g: Graphics, vp: Viewport, time: number, glow: number): void {
+  private drawDojoStatic(g: Graphics, vp: Viewport): void {
     // 1. 水墨晨雾灰青天际
     fillVerticalGradient(
       g,
@@ -1938,21 +2031,7 @@ export class CourtRenderer {
       }
     }
 
-    // 竹叶簇摆动 — 间隔竹子顶部 2~3 片窄椭圆竹叶
-    let bambooIdx = 0;
-    for (const b of this.dojoBamboos) {
-      if (bambooIdx % 2 === 0) {
-        const topX = b.x + b.lean * (45 / CO.groundY); // 顶部偏移
-        const gust = Math.sin(time * 0.02 + b.x * 0.01) * Math.cos(time * 0.013 + b.x * 0.007);
-        for (let li = 0; li < 3; li++) {
-          const leafAngle = (li - 1) * 0.4 + gust * 0.3;
-          const lx = topX + Math.sin(leafAngle) * 12 + this.windX * 0.8;
-          const ly = 42 + li * 5;
-          fillEllipse(g, vp, lx, ly, 8, 2, new Color(45, 85, 60, 200));
-        }
-      }
-      bambooIdx++;
-    }
+    // 竹叶簇摆动 → 动态层 drawDojoDyn
 
     // 4. 日式木格障子门屏风 (Shoji Screens，内透竹影)
     fillRect(g, vp, -EXT_W, 280, TOTAL_W, 150, colRgba(245, 237, 218, 0.16));
@@ -1982,61 +2061,10 @@ export class CourtRenderer {
     }
     g.stroke();
 
-    // 5. 暖色和纸折叠灯笼 (Lanterns，带烛火明灭呼吸)
-    for (const l of this.dojoLanterns) {
-      fillRect(g, vp, l.x - 1, 45, 2, l.y - 45 - l.r, new Color(69, 40, 21, 255));
-      const candleFlicker = Math.sin(time * 0.11 + l.x) * 2;
-      const glowR = (l.r * 2.2 + candleFlicker) * (1.0 + glow * 0.15);
+    // 5. 暖色和纸折叠灯笼 → 动态层 drawDojoDyn(烛火明灭与灯体一体重画,保证辉光压不住灯体)
 
-      fillConcentricGlow(
-        g,
-        vp,
-        l.x,
-        l.y,
-        glowR,
-        glowR,
-        colRgba(255, 240, 180, 0.95),
-        colRgba(249, 115, 22, 0),
-        4
-      );
-
-      // 灯笼实体
-      fillEllipse(g, vp, l.x, l.y, l.r, l.r * 1.25, new Color(234, 88, 12, 255));
-      fillRect(g, vp, l.x - l.r * 0.7, l.y - l.r * 1.25, l.r * 1.4, 4, new Color(38, 23, 13, 255));
-      fillRect(g, vp, l.x - l.r * 0.7, l.y + l.r * 1.25 - 4, l.r * 1.4, 4, new Color(38, 23, 13, 255));
-    }
-
-    // 6. 随风漂浮盘旋的淡粉樱花瓣与竹叶
-    const petalSpeedMul = 1.0 + glow * 0.3;
-    for (const p of this.dojoPetals) {
-      p.x += p.vx * petalSpeedMul;
-      p.y += p.vy * petalSpeedMul;
-      p.rot += p.vrot;
-      if (p.y > CO.groundY) {
-        p.y = 40;
-        p.x = Math.random() * W;
-      }
-      if (p.x > W) p.x = 0;
-      fillEllipse(g, vp, p.x + this.windX * 1.5, p.y, p.size * 1.5, p.size * 0.8, colRgba(251, 207, 232, p.alpha));
-    }
-
-    // 线香烟雾 — 纤细 sin 曲线烟雾从香炉升起
-    for (const inc of this.dojoIncenses) {
-      // 香炉底座
-      fillEllipse(g, vp, inc.baseX, inc.baseY + 2, 8, 4, new Color(60, 50, 40, 255));
-      fillRect(g, vp, inc.baseX - 6, inc.baseY - 4, 12, 6, new Color(80, 65, 50, 255));
-      // 香棍
-      fillRect(g, vp, inc.baseX - 0.5, inc.baseY - 18, 1, 16, new Color(160, 130, 80, 255));
-      // 烟雾曲线
-      for (const seg of inc.segments) {
-        const sx = inc.baseX + seg.dx + Math.sin(time * 0.012 + seg.phase) * (6 + seg.dy * 0.1);
-        const sy = inc.baseY - 18 + seg.dy;
-        const alpha = Math.max(0, 0.25 * (1 - (-seg.dy) / 100));
-        if (alpha > 0.03) {
-          fillCircle(g, vp, sx, sy, 3 + (-seg.dy) * 0.04, colRgba(200, 200, 210, alpha));
-        }
-      }
-    }
+    // 6. 随风漂浮盘旋的淡粉樱花瓣与竹叶 → 动态层 drawDojoDyn
+    // 线香烟雾 → 动态层 drawDojoDyn
 
     // 7. 【核心·草编榻榻米地坪延展与和风回廊缘侧】：延伸至 BOTTOM_WY (720)
     // 榻榻米从 470 铺至 620
@@ -2097,6 +2125,86 @@ export class CourtRenderer {
       fillEllipse(g, vp, st.x - 2, st.y - 1.5, st.rx * 0.4, st.ry * 0.3, colRgba(255, 255, 255, 0.15));
     }
 
+    // 萤火虫 → 动态层 drawDojoDyn
+
+    // 8. 暗朱红场地标线
+    this.drawLines(g, vp, new Color(220, 38, 38, 255), colRgba(220, 38, 38, 0.65));
+  }
+
+  /** 动态层:竹叶簇/灯笼/樱花瓣/线香烟雾/萤火虫 —— 每渲染帧 */
+  private drawDojoDyn(g: Graphics, vp: Viewport, time: number, glow: number): void {
+    // 竹叶簇摆动 — 间隔竹子顶部 2~3 片窄椭圆竹叶
+    let bambooIdx = 0;
+    for (const b of this.dojoBamboos) {
+      if (bambooIdx % 2 === 0) {
+        const topX = b.x + b.lean * (45 / CO.groundY); // 顶部偏移
+        const gust = Math.sin(time * 0.02 + b.x * 0.01) * Math.cos(time * 0.013 + b.x * 0.007);
+        for (let li = 0; li < 3; li++) {
+          const leafAngle = (li - 1) * 0.4 + gust * 0.3;
+          const lx = topX + Math.sin(leafAngle) * 12 + this.windX * 0.8;
+          const ly = 42 + li * 5;
+          fillEllipse(g, vp, lx, ly, 8, 2, new Color(45, 85, 60, 200));
+        }
+      }
+      bambooIdx++;
+    }
+
+    // 5. 暖色和纸折叠灯笼 (Lanterns，带烛火明灭呼吸)
+    for (const l of this.dojoLanterns) {
+      fillRect(g, vp, l.x - 1, 45, 2, l.y - 45 - l.r, new Color(69, 40, 21, 255));
+      const candleFlicker = Math.sin(time * 0.11 + l.x) * 2;
+      const glowR = (l.r * 2.2 + candleFlicker) * (1.0 + glow * 0.15);
+
+      fillConcentricGlow(
+        g,
+        vp,
+        l.x,
+        l.y,
+        glowR,
+        glowR,
+        colRgba(255, 240, 180, 0.95),
+        colRgba(249, 115, 22, 0),
+        4
+      );
+
+      // 灯笼实体
+      fillEllipse(g, vp, l.x, l.y, l.r, l.r * 1.25, new Color(234, 88, 12, 255));
+      fillRect(g, vp, l.x - l.r * 0.7, l.y - l.r * 1.25, l.r * 1.4, 4, new Color(38, 23, 13, 255));
+      fillRect(g, vp, l.x - l.r * 0.7, l.y + l.r * 1.25 - 4, l.r * 1.4, 4, new Color(38, 23, 13, 255));
+    }
+
+    // 6. 随风漂浮盘旋的淡粉樱花瓣与竹叶
+    const petalSpeedMul = 1.0 + glow * 0.3;
+    for (const p of this.dojoPetals) {
+      p.x += p.vx * petalSpeedMul;
+      p.y += p.vy * petalSpeedMul;
+      p.rot += p.vrot;
+      if (p.y > CO.groundY) {
+        p.y = 40;
+        p.x = Math.random() * W;
+      }
+      if (p.x > W) p.x = 0;
+      fillEllipse(g, vp, p.x + this.windX * 1.5, p.y, p.size * 1.5, p.size * 0.8, colRgba(251, 207, 232, p.alpha));
+    }
+
+    // 线香烟雾 — 纤细 sin 曲线烟雾从香炉升起
+    for (const inc of this.dojoIncenses) {
+      // 香炉底座
+      fillEllipse(g, vp, inc.baseX, inc.baseY + 2, 8, 4, new Color(60, 50, 40, 255));
+      fillRect(g, vp, inc.baseX - 6, inc.baseY - 4, 12, 6, new Color(80, 65, 50, 255));
+      // 香棍
+      fillRect(g, vp, inc.baseX - 0.5, inc.baseY - 18, 1, 16, new Color(160, 130, 80, 255));
+      // 烟雾曲线
+      for (const seg of inc.segments) {
+        const sx = inc.baseX + seg.dx + Math.sin(time * 0.012 + seg.phase) * (6 + seg.dy * 0.1);
+        const sy = inc.baseY - 18 + seg.dy;
+        const alpha = Math.max(0, 0.25 * (1 - (-seg.dy) / 100));
+        if (alpha > 0.03) {
+          fillCircle(g, vp, sx, sy, 3 + (-seg.dy) * 0.04, colRgba(200, 200, 210, alpha));
+        }
+      }
+    }
+
     // 萤火虫 — 暖黄色小光点在竹林间飘浮明灭
     for (const ff of this.dojoFireflies) {
       const fx = ff.x + Math.sin(time * 0.02 + ff.phase) * 15 + this.windX;
@@ -2107,9 +2215,6 @@ export class CourtRenderer {
         fillCircle(g, vp, fx, fy, ff.size, colRgba(255, 250, 200, alpha * 0.9));
       }
     }
-
-    // 8. 暗朱红场地标线
-    this.drawLines(g, vp, new Color(220, 38, 38, 255), colRgba(220, 38, 38, 0.65));
   }
 
   // ------------------------------------------------------------

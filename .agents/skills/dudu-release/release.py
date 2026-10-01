@@ -202,19 +202,16 @@ def cmd_build(args) -> None:
             detail = (r.stderr or r.stdout or '')[-3000:]
             raise RuntimeError(f'构建脚本执行失败: {detail}')
 
-        # 查找产物
-        candidates = [
-            REPO_ROOT / 'build' / 'android' / 'proj' / 'build' / 'dudu-cocos' / 'outputs' / 'apk' / 'release' / 'dudu-cocos-release.apk',
-            REPO_ROOT / 'build' / 'android' / 'proj' / 'build' / 'dudu-cocos' / 'outputs' / 'apk' / 'debug' / 'dudu-cocos-debug.apk',
-        ]
-        src = None
-        for c in candidates:
-            if c.exists():
-                src = c
-                break
+        # 查找产物:只认 release 包。debug 包(debuggable=true、无 minify)性能与
+        # 正式包不可比,拿去发布会把调试桥带给用户 —— 找不到 release 就直接失败。
+        src = (
+            REPO_ROOT / 'build' / 'android' / 'proj' / 'build' / 'dudu-cocos' / 'outputs' / 'apk' / 'release' / 'dudu-cocos-release.apk'
+        )
+        if not src.exists():
+            src = None
 
         if not src:
-            raise RuntimeError('未找到生成的 APK 产物')
+            raise RuntimeError('未找到 release APK 产物(debug 包不再作为回退发布)')
 
         shutil.copyfile(src, dst)
         digest = sha256_file(dst)

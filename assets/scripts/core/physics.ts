@@ -274,14 +274,30 @@ function pathStepsFor(env: EnvModifier | null, base = C.landing.pathHorizon): nu
  * 风是"打"的技巧、不该变成"接"的运气;出球解算照旧走 aim,玩家与 AI 一样被风吹偏。
  */
 function future(b: BallLike, n: number, intent: IntegrateIntent = "truth"): { x: number; y: number; vx: number; vy: number }[] {
+  const out: FuturePt[] = [];
+  futureInto(b, n, out, intent);
+  return out;
+}
+
+/** future 的复用点型:见 futureInto */
+export interface FuturePt { x: number; y: number; vx: number; vy: number }
+
+/**
+ * future 的零 GC 版:点写进**调用方持有**的 out(每帧复用同一块),返回该缓冲。
+ * 点对象按需增长、原地改写,超出 n 的旧点截断。AI 每模拟步都要前瞻两三回,
+ * 旧版每回 new 一个数组 + n 个点(~340 对象/步/AI),是周期性 GC 尖峰的主源。
+ */
+function futureInto(b: BallLike, n: number, out: FuturePt[], intent: IntegrateIntent = "truth"): FuturePt[] {
   const s = fscratch;
   s.x = b.x; s.y = b.y; s.px = b.x; s.py = b.y; s.vx = b.vx; s.vy = b.vy;
   const phase0 = envPhase();
-  const out: { x: number; y: number; vx: number; vy: number }[] = [];
   for (let i = 0; i < n; i++) {
     integrate(s, intent, phase0 + i + 1);
-    out.push({ x: s.x, y: s.y, vx: s.vx, vy: s.vy });
+    let p = out[i];
+    if (p === undefined) { p = { x: 0, y: 0, vx: 0, vy: 0 }; out[i] = p; }
+    p.x = s.x; p.y = s.y; p.vx = s.vx; p.vy = s.vy;
   }
+  if (out.length > n) out.length = n;
   return out;
 }
 
@@ -583,8 +599,13 @@ function checkNet(b: BallLike): NetHit | null {
  * r 为半径的圆;horizon 帧内到不了(出界/落地)返回 null。
  * 拷贝入参积分,绝不改原球 —— 只供 UI 做「按拍预告」,不参与任何判定。
  */
+/** 按拍预告共用的积分暂存球:这两个前瞻每渲染帧都会跑,逐帧 new BallLike 是纯 GC 粮。
+ *  只在函数体内消费、不外泄引用,复用安全(与 world.ts ballView 同一手法)。 */
+const cueBallScratch: BallLike = { x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0 };
+
 export function flightFramesTo(ball: BallLike, tx: number, ty: number, r: number, horizon: number): number | null {
-  const b: BallLike = { x: ball.x, y: ball.y, px: ball.px, py: ball.py, vx: ball.vx, vy: ball.vy };
+  const b = cueBallScratch;
+  b.x = ball.x; b.y = ball.y; b.px = ball.px; b.py = ball.py; b.vx = ball.vx; b.vy = ball.vy;
   const r2 = r * r;
   const phase0 = envPhase();
   for (let i = 0; i <= horizon; i++) {
@@ -603,7 +624,8 @@ export function flightFramesTo(ball: BallLike, tx: number, ty: number, r: number
  * (根本够不到的球)返回 null,不给预告。只读不写,纯 UI 前瞻。
  */
 export function flightFramesToClosest(ball: BallLike, tx: number, ty: number, closestDist: number, horizon: number): number | null {
-  const b: BallLike = { x: ball.x, y: ball.y, px: ball.px, py: ball.py, vx: ball.vx, vy: ball.vy };
+  const b = cueBallScratch;
+  b.x = ball.x; b.y = ball.y; b.px = ball.px; b.py = ball.py; b.vx = ball.vx; b.vy = ball.vy;
   const cap2 = closestDist * closestDist;
   let bestD2 = Infinity;
   let bestI: number | null = null;
@@ -618,7 +640,7 @@ export function flightFramesToClosest(ball: BallLike, tx: number, ty: number, cl
 }
 
 export const Physics = {
-  step, trace, solveShot, classify, checkNet, predictPath, future, pathStepsFor,
+  step, trace, solveShot, classify, checkNet, predictPath, future, futureInto, pathStepsFor,
   loftFor, baseLoft, aimLoft,
   racketHead, swingTotal, reachRadius, strikeOffset, swingArc, swingPose,
   setEnvModifier, getEnvModifier,

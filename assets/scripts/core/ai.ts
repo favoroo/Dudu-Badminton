@@ -9,7 +9,7 @@
 // ============================================================
 import { CFG } from "./config";
 import { clamp, approach, rand } from "./utils";
-import { Physics } from "./physics";
+import { Physics, FuturePt } from "./physics";
 import { Player as Pl } from "./player";
 import { Rules, RulesState } from "./rules";
 import { Skills } from "./skills";
@@ -49,14 +49,21 @@ const SM = (p: Player) => (p.aiDiff ? C.aiSmashDefense[p.aiDiff] : C.aiSmashDefe
 // 技巧、不该变成"接"的运气;AI 自己出球照旧走 solveShot 的 aim 口径,跟玩家一样
 // 会被风吹偏 —— 不对称只留在"读别人的球"这一侧。
 // 阻尼/速度封顶/环境量的折算全部由 physics 负责,本层不许再出现积分数值。
-const future = Physics.future;
+const futureInto = Physics.futureInto;
+/** 每个前瞻调用点一块持久缓冲(点对象原地改写,消费即弃 —— 见 Physics.futureInto)。
+ *  旧版每步 future() new 数组 + n 个点,AI 每步 ~340 个短命对象,是周期性 GC 尖峰主源;
+ *  各点各用各的缓冲,即便 think() 里多处前瞻互相嵌套也不会互相覆盖。 */
+const landPtsBuf: FuturePt[] = [];
+const entryPtsBuf: FuturePt[] = [];
+const interceptPtsBuf: FuturePt[] = [];
+const jumpPtsBuf: FuturePt[] = [];
 
 /**
  * 球还有几帧落到地面(-1 = 在预测窗口内不落地)。
  * 「绝望挥拍」用它决定什么时候补那一杆空拍:球将落地时起手,挥空动画正好压在球落地那一刻。
  */
 function landFrames(ball: Ball): number {
-  const pts = future(ball, 150);
+  const pts = futureInto(ball, 150, landPtsBuf);
   for (let i = 0; i < pts.length; i++) {
     if (pts[i].y >= CO.groundY - 2) return i;
   }
@@ -74,7 +81,7 @@ function entryLead(p: Player, ball: Ball, radius: number): number {
     x: p.x, y: p.y, facing: p.facing,
     swingRadius: radius, swingStyle: p.swingStyle, zoneScale: p.zoneScale,
   };
-  const pts = future(ball, SW.windup + SW.active + 6);
+  const pts = futureInto(ball, SW.windup + SW.active + 6, entryPtsBuf);
   for (let f = 0; f < pts.length; f++) {
     const q = pts[f];
     if (p.side === "left" ? q.x > CO.netX - 2 : q.x < CO.netX + 2) return -1;
@@ -92,7 +99,7 @@ function entryLead(p: Player, ball: Ball, radius: number): number {
 // 会让球从头顶飞过落在身后(判定区背后是死角)—— 改等球下落穿过接球截面,
 // 站位贴近实际落点。陡坠球(高远/吊球)滑行小,维持原截点,回合照常能终结。
 function intercept(p: Player, ball: Ball, topH: number, contactH = 0): Intercept {
-  const pts = future(ball, 150);
+  const pts = futureInto(ball, 150, interceptPtsBuf);
   let best: Intercept | null = null;
   let iBest = 0;
   for (let i = 0; i < pts.length; i++) {
@@ -337,7 +344,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   // 不靠预定拦截点(球在高位停留太短),改反应式:
   // 若 jumpApex 帧后球会落到我头顶附近的高点,现在就跳,最高正好迎上
   if (S.wantSmash && S.chasing && p.onGround && incoming && ball.live && !ball.held) {
-    const q = future(ball, C.player.jumpApex)[C.player.jumpApex - 1];
+    const q = futureInto(ball, C.player.jumpApex, jumpPtsBuf)[C.player.jumpApex - 1];
     if (q && Math.abs(q.x - p.x) < 62) {
       const h = CO.groundY - q.y;
       const mine = p.side === "left" ? q.x < CO.netX - 6 : q.x > CO.netX + 6;

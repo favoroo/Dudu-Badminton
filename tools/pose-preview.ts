@@ -625,8 +625,9 @@ for (const { name, held, hang, holdBall, bigHand, foot, p, ball, ops: preOps } o
   check(name + " 有手掌", disc !== null && Math.abs(disc - discTarget) <= 0.3,
     disc === null ? "缺手盘(棍子特征)" : `r=${disc.toFixed(2)} (期望 ${discTarget})`);
 
-  // 球拍完整性:拍框外圈 stroke 必须存在(点数 ≥ 36,杜绝 fill 吃掉 path 导致无边框的 bug)
-  const hasFrame = ops.some((o) => o.kind === "stroke" && o.cmds.length >= 36);
+  // 球拍完整性:拍框外圈 stroke 必须存在(点数 ≥ 整圈采样段数,杜绝 fill 吃掉 path
+  // 导致无边框的 bug;sprites.ts 的 CIRCLE_SEGS=20,拍框是 21 点闭环)
+  const hasFrame = ops.some((o) => o.kind === "stroke" && o.cmds.length >= 20);
   check(name + " 拍框描边完整", hasFrame, hasFrame ? "包含立体拍框" : "拍框描边丢失");
 
   // 持拍臂两段等长(armIK 的不变量,与远臂同一条):手钉弧线时肘不再漂移

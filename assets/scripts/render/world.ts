@@ -38,6 +38,40 @@ function makeViewport(): Viewport {
   };
 }
 
+// ---------- 模块级常量色(帧循环里不再 new Color;引擎赋值时内部 .set() 拷贝,共享实例安全) ----------
+/** 名牌身份色(与 sprites.ts drawPlayerTag 的用色约定同源) */
+const TAG_MAIN_L = new Color().fromHEX("#ffe14d");
+const TAG_MAIN_R = new Color().fromHEX("#3ea8ff");
+const TAG_PARTNER = new Color().fromHEX("#6ee7b7");
+const TAG_P2 = new Color().fromHEX("#7fd0ff");
+const TAG_DEFAULT = new Color(255, 255, 255, 173);
+/** 体力条(绿/黄/红闪两相/底槽) */
+const STAMINA_GREEN = new Color(50, 220, 120, 230);
+const STAMINA_YELLOW = new Color(255, 200, 40, 230);
+const STAMINA_RED_HI = new Color(255, 50, 60, 255);
+const STAMINA_RED_LO = new Color(255, 50, 60, 80);
+const STAMINA_BG = new Color(10, 14, 24, 180);
+/** 禁区警示(闯关 forbiddenNetZone) */
+const ZONE_GRID = new Color(255, 30, 60, 42);
+const ZONE_HATCH = new Color(255, 60, 80, 150);
+const ZONE_EDGE = new Color(255, 40, 60, 220);
+
+/** 绘制排序比较器:离网远的先画,近网压前(模块级,别在帧循环里新建闭包) */
+function byNetDist(a: Player, b: Player): number {
+  return Math.abs(C.court.netX - b.x) - Math.abs(C.court.netX - a.x);
+}
+
+/** 残影队列的原地寿命压缩:递减 + 淘汰一步完成,不再每步 filter 出新数组(四组 × 60Hz) */
+function compactGhosts<T extends { life: number }>(arr: T[]): T[] {
+  let alive = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const e = arr[i];
+    if (--e.life > 0) arr[alive++] = e;
+  }
+  arr.length = alive;
+  return arr;
+}
+
 interface FloatText {
   node: Node;
   label: Label;
@@ -65,7 +99,9 @@ interface SwingArcGhost extends SwingArcFx { life: number; max: number }
 
 export class WorldView {
   readonly root: Node;          // 受震屏/镜头冲击影响的容器
-  private courtGfx: Graphics;
+  private courtGfx: Graphics;   // 球场静态层:只在主题切换时画一次
+  private courtSlowGfx!: Graphics; // 球场慢速层:观众/LED 跑马,每 3 渲染帧
+  private courtDynGfx!: Graphics;  // 球场动态层:球网/光束/微尘,每帧
   private g: Graphics;
   private vp: Viewport;
   private floatLayer: Node;
@@ -81,6 +117,12 @@ export class WorldView {
   /** drawShuttle 的入参副本:每帧 Object.assign 复用同一对象,不再 spread 出垃圾。
    *  sqR 是渲染层算的形变插值值(Ball 上没有,drawShuttle 按内部 RBall 读) */
   private ballView = {} as Ball & { sqR?: number };
+  /** drawPlayer 的入参副本:同 ballView 手法(旧版每帧每人 spread 一个完整 Player) */
+  private playerView = {} as Player;
+  /** 帧内持久数组:绘制排序与插值坐标(旧版每帧 slice()+sort()+两个新数组) */
+  private readonly drawOrder: Player[] = [];
+  private readonly rxs: number[] = [];
+  private readonly rys: number[] = [];
   private swingArcs: SwingArcGhost[] = [];
   readonly fx = new FXSystem(); // 完整打击特效与粒子系统
   /** 画布内世界提示层(老 hud.js:落点圈/训练时机条/拍数徽标/赛点旗标) */
@@ -125,13 +167,28 @@ export class WorldView {
     this.root.setPosition(0, C.view.offsetY, 0);   // 整体抬高:地面线上移,底部让出虚拟按键带
     this.root.setParent(parent);
 
-    // 球场多主题层(支持动态元素与晃网重绘)
+    // 球场多主题层 —— 性能分层(见 court.ts「分层绘制总调度」注释):
+    //   court-bg   静态(穹顶/看台/地板/广告板):主题切换时才画一次,旧版每帧全量重画是最大卡顿源;
+    //   court-slow 慢速(观众 bob/LED 跑马/荧光棒):动得慢但人多,每 3 渲染帧;
+    //   court-dyn  动态(球网/光束/微尘/闪光灯):每渲染帧。
+    // 节点序即叠放序,与旧版单层内的绘制顺序对发生重叠的图元保持一致。
     const bg = new Node("court-bg");
     bg.layer = Layers.Enum.UI_2D;
     bg.addComponent(UITransform);
     bg.setParent(this.root);
     this.courtGfx = bg.addComponent(Graphics);
-    courtRenderer.draw(this.courtGfx, this.vp);
+    const bgSlow = new Node("court-slow");
+    bgSlow.layer = Layers.Enum.UI_2D;
+    bgSlow.addComponent(UITransform);
+    bgSlow.setParent(this.root);
+    this.courtSlowGfx = bgSlow.addComponent(Graphics);
+    const bgDyn = new Node("court-dyn");
+    bgDyn.layer = Layers.Enum.UI_2D;
+    bgDyn.addComponent(UITransform);
+    bgDyn.setParent(this.root);
+    this.courtDynGfx = bgDyn.addComponent(Graphics);
+    courtRenderer.drawStaticTo(this.courtGfx, this.vp);
+    courtRenderer.consumeStaticDirty();   // 构造期已画好静态层,清掉脏标记
 
     // 动态层:每帧重绘(球员、羽毛球、特效粒子)
     const dyn = new Node("dyn");
@@ -214,11 +271,12 @@ export class WorldView {
       tag.node.active = true;
       tag.node.setPosition(Math.round(this.vp.x(rxs[k])), Math.round(this.vp.y(rys[k] - C.player.h - 18 + 0.5)), 0);
       tag.string = name;
+      // 身份色为模块级常量(Label.color 赋值时引擎内部拷贝,共享实例安全)
       tag.color = isMainUser
-        ? new Color().fromHEX(p.side === "left" ? "#ffe14d" : "#3ea8ff")
-        : isPartner ? new Color().fromHEX("#6ee7b7")
-        : isP2 ? new Color().fromHEX("#7fd0ff")
-        : new Color(255, 255, 255, 173);
+        ? (p.side === "left" ? TAG_MAIN_L : TAG_MAIN_R)
+        : isPartner ? TAG_PARTNER
+        : isP2 ? TAG_P2
+        : TAG_DEFAULT;
     }
     for (let k = i; k < this.tags.length; k++) this.tags[k].node.active = false;
   }
@@ -246,7 +304,12 @@ export class WorldView {
 
   private redrawCourt(rallyCount = 0): void {
     this.courtGfx.clear();
-    courtRenderer.draw(this.courtGfx, this.vp, rallyCount);
+    courtRenderer.drawStaticTo(this.courtGfx, this.vp);
+    this.courtSlowGfx.clear();
+    courtRenderer.drawSlowTo(this.courtSlowGfx, this.vp, rallyCount);
+    this.courtDynGfx.clear();
+    courtRenderer.drawDynTo(this.courtDynGfx, this.vp, rallyCount);
+    courtRenderer.consumeStaticDirty();
   }
 
   // ---------- rules.setTrailHook 的落点 ----------
@@ -439,14 +502,10 @@ export class WorldView {
       // 推进打击特效粒子(冲击波/火花/羽毛/彩带)与弧光残影/球残影寿命
       // (老 FX.update 同体:hitstop 早退时这些一起冻住)
       this.fx.step(dt);
-      for (const s of this.swingArcs) s.life--;
-      this.swingArcs = this.swingArcs.filter((s) => s.life > 0);
-      for (const lg of this.lungeGhosts) lg.life--;
-      this.lungeGhosts = this.lungeGhosts.filter((lg) => lg.life > 0);
-      for (const fg of this.flashGhosts) fg.life--;
-      this.flashGhosts = this.flashGhosts.filter((fg) => fg.life > 0);
-      for (const bg of this.ballChronoGhosts) bg.life--;
-      this.ballChronoGhosts = this.ballChronoGhosts.filter((bg) => bg.life > 0);
+      compactGhosts(this.swingArcs);
+      compactGhosts(this.lungeGhosts);
+      compactGhosts(this.flashGhosts);
+      compactGhosts(this.ballChronoGhosts);
       this.ribbon.step();
       // 球体运动学:步长归一到 60Hz(本步 dt=1/60 → 1)
       advanceShuttle(this.shuttleMot, ball ? ball.vx : 0, ball ? ball.vy : 0,
@@ -502,8 +561,18 @@ export class WorldView {
     const windNow = envMod ? Physics.windAt(Physics.envPhase()) : 0;
     courtRenderer.setWind(windNow * C.env.ambience.k, windNow !== 0 ? C.env.ambience.idle : 1);
 
-    // 动态球场重绘(包含球网弹性晃动、看台荧光棒、海浪、霓虹粒子等)
-    this.redrawCourt(rallyCount);
+    // 球场分层重绘:静态层仅在主题切换时重画;慢速层(观众/跑马)每 3 渲染帧;
+    // 动态层(球网/光束/微尘)每帧。旧版这里每帧全量重画整个球场(~900 个图元)。
+    if (courtRenderer.consumeStaticDirty()) {
+      this.courtGfx.clear();
+      courtRenderer.drawStaticTo(this.courtGfx, this.vp);
+    }
+    if (this.frameT % 3 === 0) {
+      this.courtSlowGfx.clear();
+      courtRenderer.drawSlowTo(this.courtSlowGfx, this.vp, rallyCount);
+    }
+    this.courtDynGfx.clear();
+    courtRenderer.drawDynTo(this.courtDynGfx, this.vp, rallyCount);
 
     const stage = Rules.R.mode === "campaign" ? Rules.R.activeStage : null;
     if (stage?.modifiers.player?.forbiddenNetZone) {
@@ -561,14 +630,21 @@ export class WorldView {
     }
 
     // 插值:120Hz 屏也不见阶梯;离网远的先画,近网压前(与老 render 同序)
-    const order = players.slice().sort(
-      (a, b) => Math.abs(C.court.netX - b.x) - Math.abs(C.court.netX - a.x));
-    const rxs: number[] = [], rys: number[] = [];
+    // order/rxs/rys/playerView 全部持久复用,不再每帧 slice/sort/spread 出垃圾
+    const order = this.drawOrder;
+    order.length = 0;
+    for (const p of players) order.push(p);
+    order.sort(byNetDist);
+    const rxs = this.rxs, rys = this.rys;
+    rxs.length = 0; rys.length = 0;
+    const pv = this.playerView;
     for (const p of order) {
       const rx = lerp(p.px, p.x, alpha);
       const ry = lerp(p.py, p.y, alpha);
       rxs.push(rx); rys.push(ry);
-      drawPlayer(g, this.vp, { ...p, x: rx, y: ry }, animT, alpha, ball);
+      Object.assign(pv, p);
+      pv.x = rx; pv.y = ry;
+      drawPlayer(g, this.vp, pv, animT, alpha, ball);
       if (p.stamina !== undefined) {
         this.drawStaminaBar(g, p);
       }
@@ -731,13 +807,13 @@ export class WorldView {
     const y0 = this.vp.y(groundY + 8);
     const h = 26;
 
-    // 红色半透明警示网格
-    g.fillColor = new Color(255, 30, 60, 42);
+    // 红色半透明警示网格(模块级常量色)
+    g.fillColor = ZONE_GRID;
     g.rect(x0, y0 - h, x1 - x0, h);
     g.fill();
 
     // 警示斜线
-    g.strokeColor = new Color(255, 60, 80, 150);
+    g.strokeColor = ZONE_HATCH;
     g.lineWidth = 1.5;
     for (let x = startX; x <= netX; x += 14) {
       g.moveTo(this.vp.x(x), y0);
@@ -746,7 +822,7 @@ export class WorldView {
     }
 
     // 激光警戒边缘
-    g.strokeColor = new Color(255, 40, 60, 220);
+    g.strokeColor = ZONE_EDGE;
     g.lineWidth = 2.5;
     g.moveTo(x0, y0);
     g.lineTo(x0, y0 - h);
@@ -762,17 +838,16 @@ export class WorldView {
     const barH = 5;
 
     // 背景底槽
-    g.fillColor = new Color(10, 14, 24, 180);
+    g.fillColor = STAMINA_BG;
     g.roundRect(px - barW / 2 - 1, py - barH / 2 - 1, barW + 2, barH + 2, 2.5);
     g.fill();
 
-    // 体力颜色 (绿 > 黄 > 闪烁红)
-    let col = new Color(50, 220, 120, 230);
+    // 体力颜色 (绿 > 黄 > 闪烁红;全部为模块级常量色)
+    let col = STAMINA_GREEN;
     if (st < 25) {
-      const flash = Math.sin(this.frameT * 0.4) > 0 ? 255 : 80;
-      col = new Color(255, 50, 60, flash);
+      col = Math.sin(this.frameT * 0.4) > 0 ? STAMINA_RED_HI : STAMINA_RED_LO;
     } else if (st < 55) {
-      col = new Color(255, 200, 40, 230);
+      col = STAMINA_YELLOW;
     }
     g.fillColor = col;
     const fillW = Math.max(2, (barW * st) / 100);
@@ -815,20 +890,32 @@ export class WorldView {
   }
 
   // ---------- 屏幕特效层(只画闯关关卡专属视觉环境特效) ----------
+  /** 上一帧是否画过特效:无特效帧连 clear 都不做(clear 本身就是一次空缓冲 dirty) */
+  private screenFxDrawn = false;
+
   private drawScreenFx(): void {
     const g = this.screenG;
+
+    const stage = Rules.R.activeStage;
+    const env = stage && Rules.R.mode === "campaign" ? stage.modifiers.environment : null;
+    const empActive = !!(env?.empGlitch && this.atmo.rally >= 3);
+    const flashActive = !!(env?.spectatorFlash && this.atmo.rally >= 5);
+    const any = !!(env && (env.sandstorm || env.fog || env.blindingSun || empActive || flashActive));
+    if (!any) {
+      // 非闯关局/无环境特效:旧版每帧无条件 clear 一次;现在只在「上一帧画过」时补一次清屏
+      if (this.screenFxDrawn) { g.clear(); this.screenFxDrawn = false; }
+      return;
+    }
     g.clear();
+    this.screenFxDrawn = true;
 
     const W = C.world.w, H = C.world.h;
     const cx = this.vp.x(W / 2), cy = this.vp.y(H / 2);
     const t = this.frameT;
 
-    // 闯关关卡专属视觉环境特效
-    const stage = Rules.R.activeStage;
-    if (stage && Rules.R.mode === "campaign") {
-      const env = stage.modifiers.environment;
+    {
       // 1. 沙尘暴滤镜与狂风飞沙
-      if (env?.sandstorm) {
+      if (env!.sandstorm) {
         g.fillColor = new Color(220, 160, 60, 38);
         g.rect(-1600, -1000, 3200, 2000);
         g.fill();
@@ -846,7 +933,7 @@ export class WorldView {
         }
       }
       // 2. 网前迷雾
-      if (env?.fog) {
+      if (env!.fog) {
         const nx = this.vp.x(C.court.netX);
         const ny = this.vp.y(C.court.netTopY + 25);
         g.fillColor = new Color(240, 245, 255, 68);
@@ -857,7 +944,7 @@ export class WorldView {
         g.fill();
       }
       // 3. 烈日致盲高空耀斑
-      if (env?.blindingSun) {
+      if (env!.blindingSun) {
         const sx = this.vp.x(480);
         const sy = this.vp.y(180);
         const flareA = 0.36 + Math.sin(t * 0.08) * 0.08;
@@ -869,7 +956,7 @@ export class WorldView {
         g.fill();
       }
       // 4. EMP 故障闪烁条纹 (多拍时触发)
-      if (env?.empGlitch && this.atmo.rally >= 3) {
+      if (empActive) {
         const glitchT = t % 160;
         if (glitchT > 138) {
           g.fillColor = new Color(0, 240, 255, 34);
@@ -886,7 +973,7 @@ export class WorldView {
         }
       }
       // 5. 看台闪光灯爆闪
-      if (env?.spectatorFlash && this.atmo.rally >= 5) {
+      if (flashActive) {
         if (Math.sin(t * 0.42) > 0.86) {
           g.fillColor = new Color(255, 255, 255, 60);
           g.ellipse(cx + Math.sin(t * 1.3) * 220, cy - 60, 150, 85);

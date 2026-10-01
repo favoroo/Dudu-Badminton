@@ -38,6 +38,8 @@ export class BgmManager {
   private on: Record<StemKey, boolean> = { menu: false, groove: false, drums: false, arp: false, lead: false, tamb: false };
   private cur: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
   private target: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
+  /** applyTargets 的强度暂存表(帧循环里复用,不再逐帧 new Record) */
+  private w: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
 
   // 音乐总线开关/音量读 Settings(见 applyTargets 与 shot),本类不再有私有状态
   private ducked = false;
@@ -125,14 +127,14 @@ export class BgmManager {
     const vol = Settings.bgmOn ? CFG.bgm.volume * Settings.bgmVol : 0;
     const bus = this.ducked ? vol * 0.25 : vol;
     const g = this.scene === "game";
-    const w: Record<StemKey, number> = {
-      menu: this.scene === "menu" ? 1 : 0,
-      groove: g ? 1 : 0,
-      drums: g && this.lvl >= 2 ? 1 : 0,
-      arp: g && this.lvl >= 3 ? 0.9 : 0,
-      lead: g && this.lvl >= 4 ? 1 : 0,
-      tamb: g && (this.mp || this.deuce) ? 1 : 0,
-    };
+    // 暂存表复用(旧版每帧 new 一个 Record)
+    const w = this.w;
+    w.menu = this.scene === "menu" ? 1 : 0;
+    w.groove = g ? 1 : 0;
+    w.drums = g && this.lvl >= 2 ? 1 : 0;
+    w.arp = g && this.lvl >= 3 ? 0.9 : 0;
+    w.lead = g && this.lvl >= 4 ? 1 : 0;
+    w.tamb = g && (this.mp || this.deuce) ? 1 : 0;
     for (const k of STEMS) this.target[k] = w[k] * bus;
   }
 

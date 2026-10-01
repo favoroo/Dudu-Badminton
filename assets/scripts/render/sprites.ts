@@ -138,10 +138,14 @@ function sweepDelta(a0: number, a1: number, ccw: boolean): number {
   return d;
 }
 
+/** 圆/椭圆折线采样的整圈段数:20 段在 r≤30px 下弦降 <0.6px(肉眼不可辨),
+ *  顶点量比旧值 36 少 45% —— 人物一帧要画十几处圆弧,这里是被 GC 与顶点重传放大的热点 */
+const CIRCLE_SEGS = 20;
+
 /** 局部圆弧按 canvas 语义采样成折线(角度在局部 canvas 约定里解释,方向视觉与原版一致) */
 function arcPts(f: Frame, cx: number, cy: number, r: number, a0: number, a1: number, ccw: boolean): Pt[] {
   const d = sweepDelta(a0, a1, ccw);
-  const steps = Math.max(2, Math.ceil((Math.abs(d) / TAU) * 36));
+  const steps = Math.max(2, Math.ceil((Math.abs(d) / TAU) * CIRCLE_SEGS));
   const pts: Pt[] = [];
   for (let i = 0; i <= steps; i++) {
     const th = a0 + (d * i) / steps;
@@ -153,8 +157,8 @@ function arcPts(f: Frame, cx: number, cy: number, r: number, a0: number, a1: num
 /** 一般椭圆参数采样(带旋转/非均匀缩放的椭圆 cc ellipse 画不了,统一折线) */
 function ellipsePts(f: Frame, cx: number, cy: number, rx: number, ry: number): Pt[] {
   const pts: Pt[] = [];
-  for (let i = 0; i < 36; i++) {
-    const t = (i / 36) * TAU;
+  for (let i = 0; i < CIRCLE_SEGS; i++) {
+    const t = (i / CIRCLE_SEGS) * TAU;
     pts.push(f.pt(cx + rx * Math.cos(t), cy + ry * Math.sin(t)));
   }
   return pts;
@@ -2071,7 +2075,7 @@ function drawHand(g: Graphics, f: Frame, hx: number, hy: number, r = 3.6, alpha 
  * 现代方头(Isometric)破风拍框采样点:
  * 顶端微平展扩大甜区,两侧破风挺拔流线,底端平滑收拢至 T 头。
  */
-function isometricHeadPts(R: Frame, rx = 9.2, ry = 11.5, steps = 36): Pt[] {
+function isometricHeadPts(R: Frame, rx = 9.2, ry = 11.5, steps = CIRCLE_SEGS): Pt[] {
   const pts: Pt[] = [];
   for (let i = 0; i < steps; i++) {
     const th = (i / steps) * TAU;
@@ -2281,7 +2285,7 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   g.stroke();
 
   // ---------- 8. 现代方头破风拍框(Isometric Aero Frame) ----------
-  const head = isometricHeadPts(R, headRx, headRy, 36);
+  const head = isometricHeadPts(R, headRx, headRy, CIRCLE_SEGS);
 
   // 拍面底色填充
   g.fillColor = withAlpha(pal("#ffffff"), 0.12);
@@ -2296,7 +2300,7 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
 
   // 拍顶破风刃高光弧(Aero Top Crown Highlight):10 点到 2 点钟的刃口反光
   const crownPts = head.filter((_, idx) => {
-    const t = (idx / 36) * TAU;
+    const t = (idx / CIRCLE_SEGS) * TAU;
     return Math.sin(t) < -0.32;
   });
   if (crownPts.length >= 2) {
@@ -2330,7 +2334,7 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   const isPowerSmashBuff = !!(p.skill && p.skill.id === "smash" && p.skill.buffT > 0);
   if (isPowerSmashBuff && p.skill) {
     const flameU = Math.sin((p.skill.buffT || 0) * 0.28);
-    const outer = isometricHeadPts(R, headRx + 4.5 + flameU * 1.5, headRy + 5.0 + flameU * 1.5, 36);
+    const outer = isometricHeadPts(R, headRx + 4.5 + flameU * 1.5, headRy + 5.0 + flameU * 1.5, CIRCLE_SEGS);
     glowStroke(g, R, outer, "#f43f5e", 4.2 + 8);
     glowStroke(g, R, head, "#ffe14d", 3.6 + 6);
     // 拍框外延翻滚跳跃的 6 朵烈火火舌
@@ -2355,7 +2359,7 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
     g.lineWidth = R.lw(2.5);
     polyPath(g, outer, true); g.stroke();
   } else if (p.perfectGlow > 0) {
-    const outer = isometricHeadPts(R, headRx + 3.2, headRy + 3.8, 36);
+    const outer = isometricHeadPts(R, headRx + 3.2, headRy + 3.8, CIRCLE_SEGS);
     glowStroke(g, R, head, "#00f0ff", 3.6 + 8);
     g.strokeColor = pal("#ffffff");
     g.lineWidth = R.lw(3.6);

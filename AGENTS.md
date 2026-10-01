@@ -24,6 +24,7 @@
 | 改人物移速 | 档位表在 `config.ts` 的 `gait` 段,生效逻辑在 [gait.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/gait.ts);**只乘真人的 accel+vmax**(AI 走 `diffs.speed`,两层不叠),跨步冲量/跳跃/摩擦不参与;**即时生效**(不等下一球);设置页「移速」滑杆(存 `Settings.gaitTier`),组合矩阵见 `tools/reach-check.ts` §5 |
 | 改角色姿势/外观 | [sprites.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/sprites.ts) |
 | 改击打/轨迹/球体特效 | 数值全在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `fx` 段;丝带 [ribbon.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/ribbon.ts) + 球体运动学 [shuttle-motion.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/shuttle-motion.ts) + 粒子 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts) + 缓动 [easing.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/easing.ts);出图验收 `node .tools-build/tools/fx-preview.js` |
+| 改手机震动(触觉) | 强度表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `haptic` 段(键名与 `fx` 六档同源,强度=时长×振幅两维);判据与排队在 [haptic.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/haptic.ts)(零 cc:`shotKey`/`plan`/`HapticGate`),平台出口在 [haptics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/haptics.ts)(Android 反射 `AppActivity.vibrate(ms,amp)` / 微信 `wx.vibrateShort` / Web `navigator.vibrate`,失败不静默 —— `hapticStatus()` 给设置页读数);Java 桥与能力探测在 `native/engine/android/app/src/com/cocos/game/AppActivity.java`;档位「轻/标准/强」在设置页声音画面 tab(存 `Settings.hapticLevel`),验收 `node .tools-build/tools/haptic-check.js`(+`--selftest`)。**改 Java 侧必须重打 APK 才生效** |
 | 改 P5 视觉构件(尖刺环/星芒/斜切/飘字底板/斩劈 cut-in) | render 层 [p5kit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/p5kit.ts),UI 层 [ui-arcade.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-arcade.ts);规范见下方「开发规范」P5 条 |
 | 主循环/事件分发 | [game-root.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/game-root.ts) |
 | UI 面板/菜单 | [ui-manager.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-manager.ts) |
@@ -113,6 +114,18 @@ node .tools-build/tools/flash-preview.js --out .tools-build/flash-preview   # �
 #     tab 自动聚焦不藏关。改 campaign.ts 关卡表或那两个判据都要跑)
 node .tools-build/tools/campaign-check.js
 node .tools-build/tools/campaign-check.js --selftest   # 五份改坏的关卡表必须被报警
+
+# 4.8 触觉(手机震动)分级与排队回归(exit 0;用户现场:「设置里打开了震动反馈,
+#     手机上根本没有用」。链路本来就是通的 —— APK 里有 AppActivity.vibrate、清单里有
+#     VIBRATE 权限、反射写法与引擎自身一致;坏在两处看不见的地方:①只有时长没有振幅,
+#     旧 light=12ms 在线性马达上基本无感;②裸 catch{} 把一切失败吞成"没反应"。
+#     断言:全部时机 ms ∈ [floor,cap] / amp ∈ [1,255]、击球五档 power 严格单调、
+#     无感地板 ≥18ms、shotKey 普通档必须返回 null(=不震,这条判据不许散进调用点)、
+#     无马达不发、无振幅控制时强度差折进时长且仍单调、同帧「完美重扣+得分」两段都得
+#     播出(旧 60ms 一刀切会吞掉第二下)、同键连打只响一次、队列有上限。
+#     改 config.ts haptic 段任一值、改 core/haptic.ts、或动 game/haptics.ts 都要跑)
+node .tools-build/tools/haptic-check.js
+node .tools-build/tools/haptic-check.js --selftest   # 反例(旧 MS={light:12} / 旧同帧直接 return)必须被报警
 
 # 5. AI 对 AI 整机冒烟(exit 0)
 node .tools-build/tools/sim-check.js

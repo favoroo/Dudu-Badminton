@@ -657,6 +657,44 @@ export function drawMenuCard(g: Graphics, w: number, h: number, r = 12, o: MenuC
   }
 }
 
+// ---------- 实底大色块:首页模式入口 / 模式屏难度条(P5 海报面) ----------
+
+/**
+ * 亮色面上用墨黑字还是纸白字:按相对亮度判(绿/黄/青/纸白 → 墨黑,斩劈红 → 纸白)。
+ * 大色块是整面实底,字的对比度就是可读性,不许调用方各拍一个。
+ */
+export function inkOn(hex: string): boolean {
+  const c = ac(hex);
+  const l = (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
+  return l > 0.5;   // 亮面 → true(配墨黑字)
+}
+
+/**
+ * 实底斜切大色块:整面 accent 实底 + 同色压暗厚底边 + 顶缘高光 + 同色描边。
+ * 与 drawMenuCard 的分工:MenuCard 是「深底染色卡」,色只在边上;
+ * 这里色占满整面(P5 海报的大色块语言),文字用色由 inkOn(accent) 决定。
+ */
+export function drawSolidBlock(g: Graphics, w: number, h: number, accent: string, slantDeg = 5): void {
+  const skew = skewOf(h, slantDeg);
+  drawSlantShadow(g, w, h, skew, 5, 8, 0.55);
+  g.fillColor = acShade(accent, 0.4);                        // 厚底边(同色压暗)
+  slantPath(g, w, h + 5, skewOf(h + 5, slantDeg), 0, -2.5);
+  g.fill();
+  g.fillColor = ac(accent, 0.97);                            // 主面
+  slantPath(g, w, h, skew);
+  g.fill();
+  const s = skew / 2;
+  g.strokeColor = ac("#ffffff", 0.25);                       // 顶缘高光线
+  g.lineWidth = 1;
+  g.moveTo(-w / 2 + s + 3, h / 2);
+  g.lineTo(w / 2 + s - 3, h / 2);
+  g.stroke();
+  g.strokeColor = acShade(accent, 0.62, 0.9);                // 同色系描边
+  g.lineWidth = 2;
+  slantPath(g, w, h, skew);
+  g.stroke();
+}
+
 /** 右向箭标:入口条右侧的「点我进去」提示(节点原点即箭标中心) */
 export function drawChevron(g: Graphics, size = 10, hex = ARCADE.paper, alpha = 0.75, count = 2): void {
   g.strokeColor = ac(hex, alpha);
@@ -1028,6 +1066,57 @@ export function slashWipe(parent: Node, onMid?: () => void, onDone?: () => void)
     .call(() => {
       onDone?.();
       wipeBusy = false;
+      if (root.isValid) root.destroy();
+    })
+    .start();
+}
+
+// ---------- 模式屏斩劈换屏(菜单层之间的「轻」转场) ----------
+
+let swapBusy = false;
+
+/**
+ * 模式屏之间的转场:旧屏淡出收触摸 + 红黑斜带扫屏 + 新屏就位。
+ * 与 slashWipe(进对局:黑带盖满、状态在中点切换)的分工 —— 这里状态不动,
+ * 只是 UI 层换页:斜带压过时新屏已经在 show() 里逐级入场,交接过程看得见。
+ * showIn() 立即调用(新屏自己的 stagger 动画自带节奏);转场层挂 BlockInputEvents
+ * 防连点,扫完自毁。进行中重复调用:直接执行 showIn 并跳过(与 slashWipe 同语义)。
+ */
+export function screenSwap(parent: Node, out: Node | null, showIn?: () => void): void {
+  if (swapBusy) { showIn?.(); return; }
+  swapBusy = true;
+  if (out) fadeOutHide(out);             // 旧屏退场:沿用 fadeOutHide 语义(禁交互件、不 deactivate)
+  const root = new Node("swap-bands");
+  root.layer = parent.layer;
+  root.addComponent(UITransform);
+  const wg = root.addComponent(Widget);
+  wg.isAlignTop = true; wg.top = 0;
+  wg.isAlignBottom = true; wg.bottom = 0;
+  wg.isAlignLeft = true; wg.left = 0;
+  wg.isAlignRight = true; wg.right = 0;
+  wg.updateAlignment();
+  root.addComponent(BlockInputEvents);   // 转场期吞触摸;整层随 root 销毁,不留残党
+  root.setParent(parent);
+  const mkBand = (name: string, th: number, hex: string, alpha: number, delay: number): void => {
+    const bw = 2400;
+    const n = new Node(name);
+    n.layer = root.layer;
+    n.addComponent(UITransform);
+    const g = n.addComponent(Graphics);
+    g.fillColor = ac(hex, alpha);
+    slantPath(g, bw, th, th * 0.9);
+    g.fill();
+    n.setPosition(-1900, 0, 0);
+    n.setParent(root);
+    tween(n).delay(delay).to(0.38, { position: new Vec3(1900, 0, 0) }, { easing: "quadIn" }).start();
+  };
+  mkBand("swap-band-ink", 780, ARCADE.ink, 0.97, 0.02);
+  mkBand("swap-band-red", 270, ARCADE.slash, 0.9, 0.13);
+  showIn?.();
+  tween(root)
+    .delay(0.64)
+    .call(() => {
+      swapBusy = false;
       if (root.isValid) root.destroy();
     })
     .start();

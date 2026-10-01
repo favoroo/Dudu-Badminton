@@ -4,7 +4,8 @@
 // cc.Color 构造器吃 (r,g,b,a) 或十六进制串,rgba() 函数串要自己拆;
 // alpha 约定:cc 是 0..255,canvas 的 rgba() 第四参是 0..1,在此换算。
 // fillColor/strokeColor 赋值时引擎内部会 .set() 拷贝,所以缓存同一实例安全;
-// withAlpha 恒返回新实例(透明度往往逐帧变化,不缓存)。
+// withAlpha 走「基色 × alpha 分桶(1/32)」记忆化 —— render 层每帧数百次调用
+// 曾全是 new Color,是周期性 GC 尖峰的一大源;1/32 的 alpha 量化肉眼不可辨。
 // ============================================================
 import { Color } from "cc";
 
@@ -57,9 +58,21 @@ export function pal(c: string): Color {
   return out;
 }
 
-/** canvas globalAlpha 语义:在颜色上叠乘不透明度(a ∈ 0..1),恒返回新实例 */
+/** withAlpha 的记忆化桶:基色 → 33 档 alpha(0..32)的 Color 表 */
+const alphaCache = new WeakMap<Color, Color[]>();
+
+/** canvas globalAlpha 语义:在颜色上叠乘不透明度(a ∈ 0..1)。
+ *  返回实例为共享只读(引擎赋值时内部 .set() 拷贝,见文件头),调用方不得修改。 */
 export function withAlpha(c: string | Color, a: number): Color {
   const base = typeof c === "string" ? pal(c) : c;
-  const k = a < 0 ? 0 : a > 1 ? 1 : a;
-  return new Color(base.r, base.g, base.b, Math.round(k * 255));
+  const k = Number.isFinite(a) ? (a < 0 ? 0 : a > 1 ? 1 : a) : 0;
+  let buckets = alphaCache.get(base);
+  if (!buckets) { buckets = []; alphaCache.set(base, buckets); }
+  const idx = Math.round(k * 32);
+  let hit = buckets[idx];
+  if (!hit) {
+    hit = new Color(base.r, base.g, base.b, Math.round((idx / 32) * 255));
+    buckets[idx] = hit;
+  }
+  return hit;
 }

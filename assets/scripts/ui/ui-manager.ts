@@ -32,7 +32,7 @@ import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
 import { courtRenderer, CourtThemeItem } from "../render/court";
-import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawSlantShadow, drawVeil, drawVignette, getDisplayFont, onDisplayFont, skewOf, slashWipe, textW, TOUCH_MIN } from "./ui-arcade";
+import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawSlantShadow, drawVeil, drawVignette, getDisplayFont, onDisplayFont, screenSwap, skewOf, slashWipe, textW, TOUCH_MIN } from "./ui-arcade";
 import { SkillDialog } from "./skill-dialog";
 import type { BtnStyle } from "./ui-arcade";
 import { MainMenu } from "./main-menu";
@@ -46,7 +46,7 @@ import { CampaignManager, type StageDef } from "../core/campaign";
 import { SettingsPanel } from "./settings-panel";
 import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
-import { EndlessDialog } from "./endless-dialog";
+import { MatchSetupScreen, EndlessScreen } from "./mode-screen";
 import type { UpdateInfo } from "../core/update-service";
 
 const { ccclass } = _decorator;
@@ -88,7 +88,7 @@ export interface LabelOpts {
   disp?: boolean;
 }
 
-export function uiLabel(parent: Node, text: string, size: number, colorHex: string, opts: LabelOpts = {}): Label {
+export function uiLabel(parent: Node, text: string, size: number, colorHex: string | Color, opts: LabelOpts = {}): Label {
   const n = new Node("label");
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform);
@@ -99,7 +99,7 @@ export function uiLabel(parent: Node, text: string, size: number, colorHex: stri
   l.lineHeight = Math.round(size * 1.22);
   l.horizontalAlign = opts.align ?? 1;
   l.verticalAlign = 1;
-  l.color = col(colorHex);
+  l.color = typeof colorHex === "string" ? col(colorHex) : colorHex;
   if (opts.outline) {
     l.enableOutline = true;
     l.outlineColor = col(opts.outline);
@@ -296,7 +296,10 @@ export interface UiKit {
   openDrills(): void;
   openCampaign(): void;
   startCampaignStage(stage: StageDef): void;
-  openEndlessDialog(): void;
+  /** 对练屏(模式屏:三档难度 + 球馆 + 技能;主菜单大色块点入,screenSwap 转场) */
+  openMatchSetup(): void;
+  /** 无限练习屏(模式屏:三档难度;由旧弹窗改造,同样非弹窗直切) */
+  openEndless(): void;
   /** 技能配置弹窗 (赛前选择主动技能) */
   openSkillDialog(onEquip?: (id: SkillId) => void): void;
   /** 设置页(主菜单与暂停页都进得来;从暂停页进,关完回暂停页) */
@@ -330,7 +333,8 @@ export class UIManager extends Component {
   private pausePanel!: PausePanel;
   private settlePanel!: SettlePanel;
   private updateDialog!: UpdateDialog;
-  private endlessDialog!: EndlessDialog;
+  private matchSetup!: MatchSetupScreen;
+  private endlessScreen!: EndlessScreen;
   private skillDialog!: SkillDialog;
   private campaignPanel!: CampaignPanel;
   private careerPanel: CareerPanel | null = null;
@@ -364,10 +368,14 @@ export class UIManager extends Component {
     // 兄弟顺序即渲染顺序(后加者在上):HUD < 菜单 < 暂停 < 结算
     this.hud = new Hud(root, this.kit);
     this.menu = new MainMenu(root, this.kit);
+    // 模式屏(对练/无限练习):渲染序压在菜单上、又低于暂停/结算 —— 菜单层的「第二页」
+    this.matchSetup = new MatchSetupScreen(root, this.kit,
+      () => screenSwap(this.node, this.matchSetup.root, () => this.menu.show()));
+    this.endlessScreen = new EndlessScreen(root, this.kit,
+      () => screenSwap(this.node, this.endlessScreen.root, () => this.menu.show()));
     this.pausePanel = new PausePanel(root, this.kit);
     this.settlePanel = new SettlePanel(root, this.kit);
     this.updateDialog = new UpdateDialog(root, this.kit);
-    this.endlessDialog = new EndlessDialog(root, this.kit);
     this.skillDialog = new SkillDialog(root, this.kit);
     this.campaignPanel = new CampaignPanel(root, this.kit);
     this.bridgeCareerSettle();
@@ -484,7 +492,8 @@ export class UIManager extends Component {
     // 连同编辑器那份预览按键一起叠在球场上。
     // openSettings() 期间状态不变,所以这里不会把刚打开的面板自己关掉。
     this.settingsPanel?.hide();
-    this.endlessDialog?.hide();
+    this.matchSetup?.hide();
+    this.endlessScreen?.hide();
     this.skillDialog?.hide();
     switch (st) {
       case "MENU": {
@@ -819,7 +828,8 @@ export class UIManager extends Component {
       openDrills: () => this.openDrills(),
       openCampaign: () => this.openCampaign(),
       startCampaignStage: (stage) => this.doStartCampaign(stage),
-      openEndlessDialog: () => this.endlessDialog.show(),
+      openMatchSetup: () => screenSwap(this.node, this.menu.root, () => this.matchSetup.show()),
+      openEndless: () => screenSwap(this.node, this.menu.root, () => this.endlessScreen.show()),
       openSkillDialog: (onEquip) => this.skillDialog.show(onEquip),
       openSettings: () => this.openSettings(),
       cycleCourtTheme: () => this.cycleCourtTheme(),

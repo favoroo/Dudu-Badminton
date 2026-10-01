@@ -45,12 +45,13 @@
 // 滑轨是这套规则里唯一被砍掉一个自由度的槽位:dx 恒 0(SLIDER_LIMIT.maxDx = 0),
 // 编辑态只能上下拖 —— 横向一动,轨和脚下场地的 1:1 对位就废了。
 //
-// 反馈增强的四处:
+// 反馈增强的四处(2026-10-01:这里原本还挂着四处 haptic("light") 按键轻震,已全撤 ——
+// 用户定的范围是「只在特殊击打时震」,按键级触觉只会把马达噪声垫在击球那几下下面):
 //   按下 → 冲击环:同一帧画一圈外扩淡出环(alpha 220 → 0,scale 0.85 → 1.15),
 //           比色变更快地告诉玩家"按到了"。
 //   松手 → 过冲回弹:0.90 → 1.06 → 1.00 两段 tween,物理感更"墩"。
-//   摇杆满舵 → |axis| > 0.85 时底圈描边切荧光黄,配合一次性 haptic("light")。
-//   摇杆起跳 → 上推越过 upHi 时底圈上半弧点亮,同一帧 haptic:代跳没有按键,
+//   摇杆满舵 → |axis| > 0.85 时底圈描边切荧光黄(只在跨阈值那一帧换)。
+//   摇杆起跳 → 上推越过 upHi 时底圈上半弧点亮:代跳没有按键,
 //           不给出看得见的边界就没人能学会它。
 //
 // 技能键的冷却读数(键心「还剩几秒」+ 扇形 + 进度环)**不跟透明度滑杆走到底**:
@@ -74,7 +75,6 @@ import {
 import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
 import { cdAlpha, cdText, drawCooldown, drawBlockedSlash, skillAccent } from "./pad-cd";
-import { haptic } from "../game/haptics";
 
 /** 有按下/抬起两种状态的键;跨步键是纯边沿语义,抬起不动它。
  *  击球键(swing)需要松手检测(清理 held 态),所以也在 release 列表里。
@@ -183,13 +183,16 @@ interface StickRec {
   knobR: number;           // scaled
   selected: boolean;
   activeTouch: number | null;
-  lastFullFlag: boolean;   // 上次是否处于满舵(用来只在跨阈值瞬间触发 haptic)
   /**
    * 上推代跳的迟滞状态:true = 这一段按住已经算作「正按住跳跃键」。
    * 必须有状态,不能在每帧里直接比大小 —— upHi/upLo 两档之间来回蹭时,
    * 无状态的判据会以帧率抖 press/release,而每一次 release 都触发一次 jumpCut。
    */
   jumpOn: boolean;
+  /** 底圈最后一次重画时的 (满舵, 起跳分界) 状态:TOUCH_MOVE 只在状态沿变化时重画
+   *  (触屏采样率高于刷新率,旧版推一圈摇杆 = 上百次全量 Graphics 重建) */
+  paintedFull: boolean;
+  paintedJump: boolean;
 }
 
 interface SliderRec {
@@ -208,6 +211,8 @@ interface SliderRec {
   selected: boolean;
   activeTouch: number | null;
   jumpOn: boolean;
+  /** 轨底座最后一次重画时的起跳分界状态(TOUCH_MOVE 状态沿门控,同 StickRec) */
+  paintedJump: boolean;
   lastTouchTime: number;   // 双击跳跃判定时钟(ms)
   lastTouchX: number;
   lastTouchY: number;
@@ -839,6 +844,8 @@ export interface TouchPadHandle {
 
 /** UI 坐标 → 簇局部坐标(UI 单位即世界单位,不需要任何缩放系数) */
 const tmpVec = new Vec3();
+/** 命中检测的键心暂存向量(旧版在 hitAny 循环里每个键 new 一个) */
+const tmpVecB = new Vec3();
 function toClusterLocal(cluster: Node, e: EventTouch): Vec3 {
   const u = e.getUILocation();
   return cluster.getComponent(UITransform)!.convertToNodeSpaceAR(v3(u.x, u.y, 0), tmpVec);
@@ -1056,7 +1063,7 @@ function makeJoystick(cluster: Node, opts: TouchPadOpts, scale: number): StickRe
 
   const st: StickRec = {
     cluster, root, baseUt, baseG, knob, knobG, baseR, knobR,
-    selected: false, activeTouch: null, lastFullFlag: false, jumpOn: false,
+    selected: false, activeTouch: null, jumpOn: false, paintedFull: false, paintedJump: false,
   };
   paintStick(st, false, false, !!opts.edit);
   paintKnob(st, false);
@@ -1120,7 +1127,7 @@ function makeSlider(cluster: Node, opts: TouchPadOpts, scale: number): SliderRec
   const st: SliderRec = {
     cluster, root, baseUt, baseG, thumb, thumbG,
     span: G.span, minX: G.minX, maxX: G.maxX, w, h, r,
-    selected: false, activeTouch: null, jumpOn: false,
+    selected: false, activeTouch: null, jumpOn: false, paintedJump: false,
     lastTouchTime: 0, lastTouchX: 0, lastTouchY: 0,
   };
   paintSliderTrack(st, false, !!opts.edit);
@@ -1281,7 +1288,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       const p = layerTrans.convertToNodeSpaceAR(v3(u.x, u.y, 0), tmpVec);
       for (let i = recs.length - 1; i >= 0; i--) {
         const rec = recs[i];
-        const c = layerTrans.convertToNodeSpaceAR(rec.node.worldPosition, new Vec3());
+        const c = layerTrans.convertToNodeSpaceAR(rec.node.worldPosition, tmpVecB);
         const dx = p.x - c.x, dy = p.y - c.y;
         if (dx * dx + dy * dy <= rec.r * rec.r) return rec;
       }
@@ -1359,7 +1366,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       // 本来就常驻着原因文字(skillBlock),按错也知道为什么。
       if (rec.action === "lunge") {
         if ((rec.cdRatio ?? 0) > 0 || rec.skillReady === false) {
-          haptic("light");
           Tween.stopAllByTarget(rec.node);
           tween(rec.node)
             .to(0.05, { position: v3(rec.node.position.x + 4, rec.node.position.y, 0) })
@@ -1377,7 +1383,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       rec.node.setScale(CFG.padSkin.pressScale, CFG.padSkin.pressScale, 1);
       triggerFlash(rec);
       press(pad, rec.action);
-      haptic("light");
     };
     const upOf = (rec: BtnRec): void => {
       rec.pressed = false;
@@ -1413,7 +1418,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       // 方向色冲击环:提交哪档就用哪档的颜色闪一圈 —— 配合图标切换,把「这一拍是重是轻」
       // 在拇指底下说清楚,不等命中才知道。色值与中性图标的滑动箭头同源。
       triggerFlash(rec, dir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan);
-      haptic("light");
     };
 
     /**
@@ -1429,7 +1433,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       if (!st.jumpOn && up >= J.upHi) {
         st.jumpOn = true;
         press(pad, "jump");
-        haptic("light");
       } else if (st.jumpOn && up <= J.upLo) {
         st.jumpOn = false;
         release(pad, "jump");
@@ -1441,7 +1444,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       if (!st.jumpOn && dy >= SC.jumpSwipeUpY) {
         st.jumpOn = true;
         press(pad, "jump");
-        haptic("light");
       } else if (st.jumpOn && dy <= SC.jumpSwipeUpLoY) {
         st.jumpOn = false;
         release(pad, "jump");
@@ -1451,27 +1453,31 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     const stickDown = (e: EventTouch): void => {
       const st = stick!;
       st.activeTouch = e.getID();
+      // 抓取瞬间先掐掉上一段的回中弹簧,否则它会在按住期间把 knob 拽回圆心
+      Tween.stopAllByTarget(st.knob);
       const { axis, up, kx, ky } = readStick(e);
       st.knob.setPosition(kx, ky);
       const full = Math.abs(axis) >= FULL_DEFLECT;
       evalStickJump(st, up);          // 先判跳跃再画:底圈那条分界线要跟着一起亮
+      st.paintedFull = full; st.paintedJump = st.jumpOn;
       paintStick(st, true, full, false);
       paintKnob(st, true);
       setMoveAxis(pad, axis);
-      if (full && !st.lastFullFlag) haptic("light");
-      st.lastFullFlag = full;
     };
     const stickMove = (e: EventTouch): void => {
       const st = stick!;
       const { axis, up, kx, ky } = readStick(e);
-      Tween.stopAllByTarget(st.knob);
+      // knob 是独立节点,挪位置不重画;回中弹簧只在 down 抓取时掐一次
+      // (旧版每个 TOUCH_MOVE 都 stop + 全量重铺底圈,推一圈 = 上百次 Graphics 重建)
       st.knob.setPosition(kx, ky);
       const full = Math.abs(axis) >= FULL_DEFLECT;
       evalStickJump(st, up);
-      paintStick(st, true, full, false);
+      // 底圈外观只依赖 (按下, 满舵, 起跳分界) 三个离散状态 → 只在状态沿变化时重画
+      if (st.paintedFull !== full || st.paintedJump !== st.jumpOn) {
+        st.paintedFull = full; st.paintedJump = st.jumpOn;
+        paintStick(st, true, full, false);
+      }
       setMoveAxis(pad, axis);
-      if (full && !st.lastFullFlag) haptic("light");
-      st.lastFullFlag = full;
     };
     const stickUp = (): void => {
       const st = stick!;
@@ -1479,9 +1485,9 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       // 抬手 = 松跳跃键。短按会被 pad.ts 补成完整一跳,推够久再松的仍然收得住高度。
       if (st.jumpOn) { st.jumpOn = false; release(pad, "jump"); }
       setMoveAxis(pad, 0);
+      st.paintedFull = false; st.paintedJump = st.jumpOn;
       paintStick(st, false, false, false);
       paintKnob(st, false);
-      st.lastFullFlag = false;
       // knob spring 回中:elasticOut 让"手指抬起、小球自己弹回"这件事看得见
       Tween.stopAllByTarget(st.knob);
       tween(st.knob).to(0.24, { position: new Vec3(0, 0, 0) }, { easing: "elasticOut" }).start();
@@ -1500,7 +1506,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       if (dt > 40 && dt <= SC.doubleTapWindowMs && dist <= SC.doubleTapMaxDist) {
         st.jumpOn = true;
         press(pad, "jump");
-        haptic("light");
         st.lastTouchTime = 0; // 消费本次双击
       } else {
         st.lastTouchTime = now;
@@ -1509,9 +1514,11 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       }
 
       const { targetX, thumbX, dy } = readSlider(e);
+      // 抓取瞬间掐掉 thumb 上可能残留的 tween(旧版在 move 里每个采样停一次)
+      Tween.stopAllByTarget(st.thumb);
       st.thumb.setPosition(thumbX, 0);
       evalSliderJump(st, dy);
-
+      st.paintedJump = st.jumpOn;
       paintSliderTrack(st, true, false);
       paintSliderThumb(st, true);
       setTargetX(pad, targetX);
@@ -1520,12 +1527,14 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     const sliderMove = (e: EventTouch): void => {
       const st = slider!;
       const { targetX, thumbX, dy } = readSlider(e);
-      Tween.stopAllByTarget(st.thumb);
+      // thumb 是独立节点,挪位置不重画;底座只在起跳分界状态沿变化时重画
       st.thumb.setPosition(thumbX, 0);
 
       evalSliderJump(st, dy);
-
-      paintSliderTrack(st, true, false);
+      if (st.paintedJump !== st.jumpOn) {
+        st.paintedJump = st.jumpOn;
+        paintSliderTrack(st, true, false);
+      }
       setTargetX(pad, targetX);
     };
 
@@ -1536,6 +1545,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
         st.jumpOn = false;
         release(pad, "jump");
       }
+      st.paintedJump = st.jumpOn;
       paintSliderTrack(st, false, false);
       paintSliderThumb(st, false);
     };
@@ -1785,7 +1795,12 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     const v = clamp(level, 0, 1);
     for (const rec of recs) {
       if (rec.action !== "swing") continue;
-      if (Math.abs(rec.glow - v) < 0.02) continue;
+      // 量化到 0.1 一档才重画:来球逼近的辉光爬坡(~14 帧)旧版每帧全键重画,
+      // 现在隔帧重画一次;爬坡本身是注意力提示,10% 一档的阶梯感可忽略,
+      // 到点的强提示由 pulseSwing 的闪环承担,不依赖这条渐变的无级平滑。
+      // 两端(全灭/全亮)不量化,保证辉光精确归零/拉满,不会剩一层"擦不干净"的余晖。
+      const atEnd = (v <= 0 && rec.glow <= 0.001) || (v >= 1 && rec.glow >= 0.999);
+      if (!atEnd && Math.abs(rec.glow - v) < 0.1) continue;
       rec.glow = v;
       paint(rec, !!opts.edit);
     }
@@ -1899,7 +1914,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       }
       if (stick && stick.activeTouch !== null) {
         stick.activeTouch = null;
-        stick.lastFullFlag = false;
         // 代跳的迟滞状态必须一起清:层被 hide 时手指可能正压在起跳区,
         // jumpOn 留着 true 的话下一次碰摇杆会认为还按着,要推回 upLo 以下才能再跳 —— 卡跳。
         // 走 cancelJump 而不是 release:这不是玩家主动松手,不该补出一段点跳尾巴。

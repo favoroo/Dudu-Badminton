@@ -34,6 +34,8 @@ import { Settings, PAD_LIMIT, JOYSTICK_LIMIT, SLIDER_LIMIT, type MoveMode } from
 import { CFG } from "../core/config";
 import { Pace, paceIndexOf, paceTierById } from "../core/pace";
 import { Gait, gaitIndexOf, gaitTierById } from "../core/gait";
+import { hapticIndexOf, hapticLabel, hapticLevelId } from "../core/haptic";
+import { haptic, hapticCancel, hapticStatus } from "../game/haptics";
 import type { UiKit } from "./ui-manager";
 import { ac, cancelFade, drawArcadeButton, drawHardShadow, fadeOutHide, riseIn, safePad, slamIn } from "./ui-arcade";
 import type { Slider, Toggle } from "./widgets";
@@ -89,6 +91,10 @@ export class SettingsPanel extends Component {
   private paceValueLabel: Label | null = null;
   private gaitSlider: Slider | null = null;
   private gaitValueLabel: Label | null = null;
+  /** 震动强度滑杆 + 读数:同样独立字段,理由与 paceSlider 相同(别撞音量滑杆的下标) */
+  private hapticSlider: Slider | null = null;
+  private hapticValueLabel: Label | null = null;
+  private hapticStatusLabel: Label | null = null;
   private selected: PadSlot | null = "left";
   private sizeLabel: Label | null = null;
   private modeTipLabel: Label | null = null;
@@ -117,6 +123,8 @@ export class SettingsPanel extends Component {
   hide(): void {
     this.offChange?.();
     this.offChange = null;
+    // 试震的待发放不能留:面板已经收走了,晚半秒再震一下只会像灵异事件
+    hapticCancel();
     this.padHandle?.destroy();
     this.padHandle = null;
     this.discardPage();
@@ -231,6 +239,9 @@ export class SettingsPanel extends Component {
     this.paceValueLabel = null;
     this.gaitSlider = null;
     this.gaitValueLabel = null;
+    this.hapticSlider = null;
+    this.hapticValueLabel = null;
+    this.hapticStatusLabel = null;
     if (this.page && this.page.isValid) this.page.destroy();
     this.page = null;
   }
@@ -348,7 +359,7 @@ export class SettingsPanel extends Component {
     const togX = -268;                 // 左子列开关(宽 140)中心:-338..-198
     const volX = -125;                 // 左子列音量滑杆(宽 130)中心:-190..-60
     const hintX = 200;                 // 右子列开关(宽 280)中心:60..340
-    const rows = [56, 0, -56];         // 行心:行距 56 = 开关高 40 + 16
+    const rows = [56, 0, -56, -112, -168];  // 前三行沿用,后两行给震动的强度/试震
 
     this.txt(page, "声音与震动", 15, P.accent, COL_X, 104, 200);
     this.txt(page, "画面", 15, P.accent, 60, 104, 120);
@@ -375,13 +386,52 @@ export class SettingsPanel extends Component {
     bgmSl.node.setPosition(volX, rows[1], 0);
     this.wireVolume(bgmSl, "bgmVol", "bgmOn");
 
-    // 震动反馈:按键/击球/得分的触觉短震(移动端才有体感,Web 是空操作)
+    // 震动反馈:特殊击打/技能/得分的触觉短震(移动端才有体感,Web 大概率被浏览器忽略)
     const hapticTog = this.kit.toggle(page, "震动反馈", 140, {
       get: () => Settings.v.hapticOn,
-      set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ hapticOn: v }); },
+      set: (v) => {
+        this.kit.sfx.play("ui");
+        Settings.setPart({ hapticOn: v });
+        // 关掉就把待发放一起丢掉,不许有"已经关了还震一下"的尾巴
+        if (!v) hapticCancel();
+        else this.kit.toast("震动已开 · 点「试震」验一下");
+      },
     });
     hapticTog.node.setPosition(togX, rows[2], 0);
     this.toggles.push(hapticTog);
+
+    // ---------- 震动:强度档 + 试震 + 状态读数 ----------
+    // 为什么三样一起给:上一版只有开关,用户看不到"到底是哪一环断了"就只能猜。
+    // 强度行(标签 34 + 滑杆 150 + 档名 60)整条落在左子列 -338..-80,与音量滑杆同宽不撞。
+    this.txt(page, "强度", 14, P.text, -338, rows[3], 34);
+    const hSl = this.kit.slider(page, 150, {
+      min: 0, max: CFG.haptic.levels.length - 1, step: 1,
+      value: hapticIndexOf(Settings.hapticLevel),
+    });
+    hSl.node.setPosition(-225, rows[3], 0);
+    // 拖动只改内存(原生 setItem 是同步文件 IO),松手才落盘并当场试震一下
+    hSl.onChange((v) => Settings.setPart({ hapticLevel: hapticLevelId(v) }, false));
+    hSl.onCommit(() => {
+      Settings.flush();
+      const lab = hapticLabel(Settings.hapticLevel);
+      this.kit.toast(`震动「${lab}」· 已生效`);
+      haptic("smash");
+    });
+    this.hapticSlider = hSl;
+    this.hapticValueLabel = this.txt(page, hapticLabel(Settings.hapticLevel), 13, P.text, -140, rows[3], 60);
+
+    const testBtn = this.kit.button(page, "试震", 110, 40, { size: 15 });
+    testBtn.setPosition(-283, rows[4], 0);
+    testBtn.on(Button.EventType.CLICK, () => {
+      this.kit.sfx.play("ui");
+      // 三档连打:轻/中/最重各一下,顺带验证 core/haptic.ts 的排队(同帧三件事都得响得出)
+      haptic("sweet");
+      haptic("smash");
+      haptic("perfectSmash");
+    });
+
+    // 状态读数:这一行就是「为什么没震」的答案,不是装饰
+    this.hapticStatusLabel = this.txt(page, hapticStatus(), 11, P.dim, 60, rows[4], 280);
 
     const mkHint = (text: string, key: "hintLanding" | "hintShake" | "hintFloat", y: number): void => {
       const t = this.kit.toggle(page, text, 280, {
@@ -463,6 +513,13 @@ export class SettingsPanel extends Component {
       if (this.gaitSlider.get() !== gi) this.gaitSlider.set(gi);
     }
     if (this.gaitValueLabel) this.gaitValueLabel.string = this.gaitCaption();
+    // 震动:同样「值不同才 set」,否则 setPart → 通知 → repaint → set → onChange 自转圈
+    if (this.hapticSlider) {
+      const hi = hapticIndexOf(Settings.hapticLevel);
+      if (this.hapticSlider.get() !== hi) this.hapticSlider.set(hi);
+    }
+    if (this.hapticValueLabel) this.hapticValueLabel.string = hapticLabel(Settings.hapticLevel);
+    if (this.hapticStatusLabel) this.hapticStatusLabel.string = hapticStatus();
     if (this.sizeLabel) {
       // 「大小」标签跟着选中槽位变,提示玩家当前拖的是谁
       this.sizeLabel.string = this.selected === "joystick" ? "摇杆" : this.selected === "slider" ? "滑轨" : "大小";

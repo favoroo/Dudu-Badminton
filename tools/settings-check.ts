@@ -396,5 +396,28 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(st.v.gaitTier === "vfast", "gaitTier 垃圾值 → 保持原档不动");
 }
 
+// ---------- ⑭ 震动强度档(hapticLevel):只加字段不动 hapticOn 的类型 ----------
+// 上一版「震动反馈」被用户报成"打开了根本没用",这次补了强度档与状态读数。
+// hapticOn 仍是 boolean(①/③ 里那三条老断言就是钉住它别被顺手改成 string ——
+// 改了就是给所有老存档换一套语义,而开关本身没有任何问题)。
+{
+  const HD = CFG.haptic.default;
+  const other = CFG.haptic.levels.find((l) => l.id !== HD)?.id ?? HD;
+  ok(sanitize(null).hapticLevel === HD, "空档 → 震动强度默认档(老存档自动吃新默认,不写迁移)");
+  ok(sanitize({ hapticOn: true }).hapticLevel === HD, "只有 hapticOn 的老档 → 强度补默认(覆盖安装的实际形态)");
+  ok(sanitize({ hapticLevel: "nonsense" }).hapticLevel === HD, "hapticLevel 垃圾值 → 退回默认档");
+  ok(sanitize({ hapticLevel: other }).hapticLevel === other, `显式存的 "${other}" 照读`);
+  ok(sanitize({ hapticLevel: 42 }).hapticLevel === HD, "强度档收到数字 → 回默认(与 paceTier 同一套消毒)");
+  const hs = new SettingsStore();
+  hs.init();
+  hs.setPart({ hapticLevel: other });
+  hs.flush();
+  ok(new SettingsStore().init().hapticLevel === other, "setPart 改强度档后 flush → 重开读回同值");
+  hs.setPart({ hapticLevel: "垃圾" as never });
+  ok(hs.v.hapticLevel === other, "setPart 收到垃圾强度 → 保持原档不动(不会突然变弱)");
+  hs.setPart({ hapticOn: false });
+  ok(hs.v.hapticOn === false && hs.v.hapticLevel === other, "总闸与强度互不干扰:关掉不影响已设的档");
+}
+
 console.log(`\n${bad === 0 ? "全部通过" : `${bad} 项失败`}`);
 process.exit(bad === 0 ? 0 : 1);

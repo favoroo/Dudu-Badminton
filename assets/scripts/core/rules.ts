@@ -87,7 +87,16 @@ const R: RulesState = {
 const emit = (t: string, data: Record<string, unknown>): void => { R.events.push(Object.assign({ t }, data)); };
 const other = (s: TeamSide): TeamSide => (s === "left" ? "right" : "left");
 const teamIdx = (s: TeamSide): number => (s === "left" ? 0 : 1);
-const teamOf = (s: TeamSide): Player[] => R.players.filter((p) => p.side === s);
+/** 每侧一块持久缓冲:teamOf 每步被 AI/规则调用七八次,旧版每次都 filter 出新数组。
+ *  所有调用点都是「取完当场用完」(find/map/reduce/解构),不外泄引用,复用安全;
+ *  左右各一块,同侧嵌套调用不存在。 */
+const teamBuf: Record<TeamSide, Player[]> = { left: [], right: [] };
+const teamOf = (s: TeamSide): Player[] => {
+  const out = teamBuf[s];
+  out.length = 0;
+  for (const p of R.players) if (p.side === s) out.push(p);
+  return out;
+};
 const mateOf = (p: Player): Player | null => teamOf(p.side).find((q) => q !== p) || null;
 const rivalsOf = (p: Player): Player[] => teamOf(other(p.side));
 const labelOf = (s: TeamSide): string => teamOf(s)[0].teamLabel;
