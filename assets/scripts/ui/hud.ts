@@ -71,6 +71,11 @@ export class Hud {
   private bannerLabel: Label;
   // 暂停按钮
   private pauseBtn: Node;
+  // AI 体力条(P5 斜切 5 段能量槽)
+  private aiStaminaNode: Node;
+  private aiStaminaG: Graphics;
+  private aiStaminaLabel: Label;
+  private lastStaminaLit = -1;
   // 同步用缓存
   private lastScore = "";
   private lastStatus = "";
@@ -144,6 +149,18 @@ export class Hud {
       s.shadowColor = new Color(0, 0, 0, 150);
       s.shadowOffset = new Vec2(0, -3);
     }
+
+    // AI 体力条(P5 斜切 5 段能量槽, 挂在 pillR 左下侧)
+    const stNode = new Node("ai-stamina");
+    stNode.layer = this.root.layer;
+    stNode.addComponent(UITransform).setContentSize(CFG.aiStaminaBar.w, CFG.aiStaminaBar.h);
+    stNode.setPosition(CFG.aiStaminaBar.x, CFG.aiStaminaBar.y, 0);
+    stNode.setParent(pillR);
+    this.aiStaminaNode = stNode;
+    this.aiStaminaG = stNode.addComponent(Graphics);
+    this.aiStaminaLabel = kit.label(stNode, "STM", 10, "#8a93a8");
+    this.aiStaminaLabel.node.setPosition(-CFG.aiStaminaBar.w / 2 - 15, 0, 0);
+    this.aiStaminaLabel.node.angle = 2;
     // 中缝小徽章:斜切黄片微仰,常驻显示赛制(赛点由顶部斩劈横幅提示,这里不抢戏)
     const bd = new Node("badge");
     bd.layer = this.root.layer;
@@ -328,6 +345,7 @@ export class Hud {
       this.lastStatus = "";
       this.lastModeTag = "";
       this.lastDeuce = false;
+      this.lastStaminaLit = -1;
       this.banner.active = false;
       this.entranceDone = false;
       fadeOutHide(this.root);
@@ -506,6 +524,56 @@ export class Hud {
     tween(this.combo).to(0.16, { scale: new Vec3(1, 1, 1), angle: 0 }, { easing: "backOut" }).start();
   }
 
+  /**
+   * 绘制 AI 体力能量槽(P5 风格 5 段斜切平行四边形)
+   * segmentsLit ∈ [0, 5], 0 = 彻底力竭斩劈红慢呼吸警告
+   */
+  private paintAiStamina(segmentsLit: number, stamina: number): void {
+    const g = this.aiStaminaG;
+    if (!g) return;
+    const cfg = CFG.aiStaminaBar;
+    const totalSegs = cfg.segments;
+    const segW = (cfg.w - (totalSegs - 1) * cfg.gap) / totalSegs;
+    const h = cfg.h;
+    const sk = cfg.skew;
+    g.clear();
+
+    // 1. 暗底槽(黑色硬投影 + 墨黑衬底)
+    for (let i = 0; i < totalSegs; i++) {
+      const cx = -cfg.w / 2 + i * (segW + cfg.gap) + segW / 2;
+      g.fillColor = col("#000000", 0.55);
+      slantPath(g, segW, h, sk, cx + 1, -1);
+      g.fill();
+      g.fillColor = col("#181c2b", 0.85);
+      slantPath(g, segW, h, sk, cx, 0);
+      g.fill();
+    }
+
+    // 2. 亮格根据体能充沛度分级着色
+    if (segmentsLit > 0) {
+      let hex = "#ffe14d"; // 充沛(4-5格): 荧光黄
+      if (segmentsLit <= 1) hex = ARCADE.red;       // 危险(1格): 斩劈红
+      else if (segmentsLit <= 3) hex = "#ff8a3d";   // 消耗(2-3格): 活力橙
+
+      for (let i = 0; i < segmentsLit; i++) {
+        const cx = -cfg.w / 2 + i * (segW + cfg.gap) + segW / 2;
+        g.fillColor = col(hex, 0.95);
+        slantPath(g, segW, h, sk, cx, 0);
+        g.fill();
+      }
+    } else {
+      // 0格彻底力竭: 边框带斩劈红慢呼吸警告
+      const blinkA = 0.5 + Math.sin(this.frameT * 0.25) * 0.4;
+      g.strokeColor = col(ARCADE.red, blinkA);
+      g.lineWidth = 1;
+      for (let i = 0; i < totalSegs; i++) {
+        const cx = -cfg.w / 2 + i * (segW + cfg.gap) + segW / 2;
+        slantPath(g, segW, h, sk, cx, 0);
+        g.stroke();
+      }
+    }
+  }
+
   /** 每帧由 UIManager 调用;只读 R,不推进任何游戏状态 */
   sync(R: RulesState): void {
     if (!this.root.active) return;
@@ -563,6 +631,22 @@ export class Hud {
         : stage
         ? (stage.deathmatch ? "1-POINT" : `TO ${stage.targetScore}`)
         : `TO ${CFG.scoring.winScore}`;
+
+      // ---- AI 体力能量槽同步(P5 斜切 5 段能量槽) ----
+      const aiPlayer = R.players.find((p) => p.side === "right" && p.isAI);
+      if (!aiPlayer) {
+        this.aiStaminaNode.active = false;
+      } else {
+        this.aiStaminaNode.active = true;
+        const pr = aiPlayer.ai?.pressure ?? 0;
+        const stamina = Math.min(1, Math.max(0, 1 - pr));
+        // 5 段斜切小方块: 满压或 stamina<=0.04 为 0 格(力竭)
+        const lit = stamina <= 0.04 ? 0 : Math.max(1, Math.min(5, Math.ceil(stamina * 5)));
+        if (lit === 0 || lit !== this.lastStaminaLit) {
+          this.lastStaminaLit = lit;
+          this.paintAiStamina(lit, stamina);
+        }
+      }
     }
 
     // ---- 状态行:只管「现在该干什么」 ----

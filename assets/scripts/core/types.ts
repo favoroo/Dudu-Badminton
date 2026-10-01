@@ -12,6 +12,20 @@ export type ShotKind = "smash" | "slash" | "lob" | "netshot" | "drive" | "clear"
 /** AI 难度档位 key(对应 CFG.diffs) */
 export type DiffKey = "easy" | "normal" | "hard";
 
+/** AI 面对扣杀时的防守削弱参数 */
+export interface AiSmashDefenseDef {
+  /** 面对扣杀的额外反应迟疑帧数(猝不及防愣神) */
+  noticeAdd: number;
+  /** 站位误判放大倍率 */
+  readMul: number;
+  /** 接杀判定区缩放(重杀容错收紧) */
+  zoneMul: number;
+  /** 挥拍时机误差增量(极速穿窗易挥空) */
+  timingAdd: number;
+  /** 勉强接下时的出球失误增量(px,易下网或出界) */
+  shotErrAdd: number;
+}
+
 /** 挥拍样式:over=高球下压,under=低球上挑 */
 export type SwingStyle = "over" | "under";
 

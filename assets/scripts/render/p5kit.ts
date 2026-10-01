@@ -165,43 +165,68 @@ export function drawStarburst(
 
 export type FloatPlateStyle = "slant" | "star" | "none";
 
-/** slant 底板的斜切角(度)与底色(ARCADE.ink 同值,有意不 import ui) */
+/** slant 底板的斜切角(度)与底色(ARCADE.ink 同值,有意不 import ui)。
+ *  【坑】hex 必须带 # —— palette.parse 对不带 # 的串解析不了,兜底回纯白,
+ *  底板曾因此整块渲染成白底(用户:「不要白底,要黑底」的根因)。 */
 const PLATE_SKEW_DEG = 8;
-const PLATE_INK = "07070d";
+const PLATE_INK = "#07070d";
 
 /**
  * 飘字底板(位置由 game 层挂到场边锚点,这里只管画得清楚):
- *  slant = 斜切墨黑实底 + 档位色描边(漫画对话框的地基);
- *  star  = 三层尖刺星芒徽章:档位色外圈当描边 → 墨黑实底衬字 → 白芯低强度点缀。
+ *  slant = 斜切墨黑实底 + 档位色描边 + 硬投影 + 顶缘内衬线(漫画对话框的地基);
+ *  star  = 档位色尖刺光芒环绕 + 墨黑斜切实底衬字 + 白芯低强度点缀。
  * 曾经把底板 alpha 压到半透想「不抢球」,结果黑片在暖色球场上糊成灰、金字看不清 ——
  * 结论:可读性靠实底,不挡球靠挪位置。dim 保留为 config.fx.floatPlateDim 微调旋钮。
+ * star 的墨黑从「内圈星芒」改成「实底横牌」:旧版内圈芒瓣盖不住宽字的两端,
+ * 端字坐在亮色芒瓣上,看起来像亮底衬字 —— 现在字永远坐在墨黑上,彩芒只探出牌外。
  */
 export function drawFloatPlate(
   g: Graphics, w: number, h: number, style: FloatPlateStyle,
   color: Color, rot = 0, dim = 1,
 ): void {
+  // 斜切平行四边形路径(dx/dy = 整体偏移,供硬投影复用;UI 本地 y 向上,阴影朝下 = -y)
+  const slantTrace = (bw: number, bh: number, dx = 0, dy = 0): void => {
+    const s = (bh * Math.tan(PLATE_SKEW_DEG * Math.PI / 180)) / 2;
+    g.moveTo(-bw / 2 + s + dx, -bh / 2 + dy);
+    g.lineTo(bw / 2 + s + dx, -bh / 2 + dy);
+    g.lineTo(bw / 2 - s + dx, bh / 2 + dy);
+    g.lineTo(-bw / 2 - s + dx, bh / 2 + dy);
+    g.close();
+  };
   if (style === "slant") {
-    const skew = h * Math.tan(PLATE_SKEW_DEG * Math.PI / 180);
-    const s = skew / 2;
-    const trace = (): void => {
-      g.moveTo(-w / 2 + s, -h / 2);
-      g.lineTo(w / 2 + s, -h / 2);
-      g.lineTo(w / 2 - s, h / 2);
-      g.lineTo(-w / 2 - s, h / 2);
-      g.close();
-    };
-    g.fillColor = withAlpha(pal_(PLATE_INK), 0.92 * dim);
-    trace();
+    // P5 硬投影:黑片向右下错一档先垫底,剪纸贴纸的厚度感
+    g.fillColor = withAlpha(pal_(PLATE_INK), 0.45 * dim);
+    slantTrace(w, h, 3, -3);
+    g.fill();
+    g.fillColor = withAlpha(pal_(PLATE_INK), 0.94 * dim);
+    slantTrace(w, h);
     g.fill();
     g.strokeColor = withAlpha(color, dim);
     g.lineWidth = 2;
-    trace();
+    slantTrace(w, h);
+    g.stroke();
+    // 顶缘内衬线:细档位色提一条,补一点工艺感(不出内边距,压得住亮场)
+    g.strokeColor = withAlpha(color, 0.45 * dim);
+    g.lineWidth = 1.2;
+    const s = (h * Math.tan(PLATE_SKEW_DEG * Math.PI / 180)) / 2;
+    g.moveTo(-w / 2 + s + 7, h / 2 - 4);
+    g.lineTo(w / 2 - s - 7, h / 2 - 4);
     g.stroke();
   } else if (style === "star") {
     const r = w / 2;
-    drawStarburst(g, 0, 0, r, r * 0.55, 10, color, 0.95 * dim, rot);
-    drawStarburst(g, 0, 0, r * 0.88, r * 0.48, 10, pal_(PLATE_INK), 0.94 * dim, rot);
-    drawStarburst(g, 0, 0, r * 0.42, r * 0.24, 10, pal_("ffffff"), 0.16 * dim, rot + Math.PI / 10);
+    // 档位色尖刺光芒:只当「光环」探出牌外,不再当底
+    drawStarburst(g, 0, 0, r * 1.1, r * 0.6, 10, color, 0.92 * dim, rot);
+    // 墨黑斜切实底衬字:文字全程坐在黑底上
+    const bw = w * 0.94, bh = h * 1.04;
+    g.fillColor = withAlpha(pal_(PLATE_INK), 0.95 * dim);
+    slantTrace(bw, bh);
+    g.fill();
+    g.strokeColor = withAlpha(color, 0.85 * dim);
+    g.lineWidth = 1.5;
+    slantTrace(bw, bh);
+    g.stroke();
+    // 白芯低强度点缀(黑底上一粒微光,保留原语义)
+    drawStarburst(g, 0, 0, r * 0.3, r * 0.15, 8, pal_("ffffff"), 0.12 * dim, rot + Math.PI / 10);
   }
 }
 

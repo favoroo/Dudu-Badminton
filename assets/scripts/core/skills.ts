@@ -190,6 +190,12 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
       p.x = clamp(ball.x - off.dx, minX, maxX);
       // y 越小越高:脚底 = 球位往下挪 |off.dy|(圆心在脚底上方 ~73px),再夹一层悬空上限
       p.y = Math.max(ball.y - off.dy, CO.groundY - FL.maxHover);
+      // 上一帧位一起搬:渲染画的是 lerp(px, x, alpha),而折跃当帧主循环要定格 7 帧
+      // (fx.hitstopFlashCast)。定格期间 Rules.step 不跑、px 留在闪现前那一位,alpha 又常年
+      // 贴着 0 —— 于是「时停」最该看清楚的那几帧,人物被画回起点,读起来就是
+      // 「闪过去了、人又回到原位」。折跃是瞬移,不是位移,插值基准必须跟着跳。
+      p.px = p.x;
+      p.py = p.y;
       p.vx = 0;
       p.vy = 0;
       p.onGround = false;
@@ -272,6 +278,9 @@ export function update(p: Player, ball: Ball): void {
         p.swingQ = 0;
         p.flashStrikeT = C.skills.flash.strikeFrames;
         p.racketPrev = Physics.racketHead(p, 0, p.swingRadius);
+        // 落点就在折跃这里:起拍那一拍的惯量把人带下来,而不是从高点松手飘落地。
+        // 悬空蓄力期 p.vy 被 player.ts 按住为 0,蓄力一结束这里给初速,重力照常接管。
+        p.vy = C.skills.flash.diveVy;
       }
     }
   }

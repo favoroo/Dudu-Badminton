@@ -19,9 +19,9 @@ import { courtRenderer, CourtThemeItem } from "./court";
 import { FXSystem } from "./fx";
 import { HudOverlay } from "./hud-overlay";
 import { Ribbon } from "./ribbon";
-import { advanceShuttle, makeShuttleMotion, shuttleImpact, TIER_FIRE, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "./shuttle-motion";
+import { advanceShuttle, makeShuttleMotion, shuttleImpact } from "./shuttle-motion";
 import { easeOutBack, fadePow } from "./easing";
-import { drawCutinBands, drawFloatPlate, FloatPlateStyle, measureTextW } from "./p5kit";
+import { drawFloatPlate, FloatPlateStyle, measureTextW } from "./p5kit";
 
 const C = CFG;
 
@@ -95,14 +95,13 @@ export class WorldView {
   private shakeDirY = 0.6;
   frameT = 0;
 
-  // ---------- 镜头四件套状态(老 fx.js 的 camZ/slowT/flash;衰减全按模拟步走) ----------
+  // ---------- 镜头状态(老 fx.js 的 camZ/slowT;衰减全按模拟步走) ----------
   private camZ = 1;             // 镜头缩放:只放大不缩小,指数回弹到 1
   private camX = 0;             // punch 焦点(击球点,世界坐标)
   private camY = 0;
-  private flash = 0;            // 白闪强度 0..1
   private slowT = 0;            // 慢动作剩余模拟帧
   private slowFac = 1;          // 慢动作时间缩放
-  private screenG!: Graphics;   // 屏幕特效层:白闪 + 氛围暗角(不随镜头缩放)
+  private screenG!: Graphics;   // 屏幕特效层:关卡环境特效(不随镜头缩放)
   private atmo: AtmoState = { state: "", rally: 0, matchPoint: false };
   /** 按拍预告辉光级别(game 层 updateSwingCue 每帧喂;羽毛球本体发光,见 sprites.drawShuttle) */
   private swingCue = 0;
@@ -112,8 +111,6 @@ export class WorldView {
   private flashGhosts: FlashGhost[] = [];
   /** 时空领域中羽毛球的慢放幽灵残影队列 */
   private ballChronoGhosts: { x: number; y: number; life: number; maxLife: number; vx: number; vy: number }[] = [];
-  /** 自定义白闪颜色覆盖(如技能起手紫闪/青闪/火闪) */
-  private customFlashHex: string | null = null;
 
   // 闯关模式关卡专属动态视觉缓存
   private sandstormParticles: { x: number; y: number; len: number; spd: number; alpha: number }[] = [];
@@ -306,52 +303,6 @@ export class WorldView {
   /** 主循环每帧取时间缩放(慢动作 <1,平时 1) */
   timeScale(): number { return this.slowT > 0 ? this.slowFac : 1; }
 
-  /** 击球白闪(全屏白光一闪即逝,强度衰减在 stepFx;支持指定专属色) */
-  whiteFlash(a: number, hex?: string): void {
-    if (a > this.flash) {
-      this.flash = a;
-      if (hex) this.customFlashHex = hex;
-    }
-  }
-
-  // ---- P5 斩劈 cut-in:sweetSmash/fire 顶档命中的三道斜带横扫(模拟步驱动,不用 tween)----
-  private cutinT = 0;
-  private cutinDur = 0;
-  private cutinDir = 1;
-  private cutinFire = false;
-  private cutinCols: Color[] = [];
-
-  /**
-   * 顶档命中斩劈闪:三道红黑白/红橙金斜带错相位横扫全屏(P5 cut-in 语汇),
-   * 内含 0.25 基底白闪。cut-in 活跃期间径向环白闪被顶替,只留低强度整屏提亮;
-   * hitstop 冻结时斜带一起定格 —— "斩"得住才像刀。dir = 命中方向角(弧度)。
-   */
-  slashCutin(dir: number, fire = false): void {
-    const F = C.fx;
-    this.cutinT = 0;
-    this.cutinDur = F.slashCutinFrames || 9;
-    this.cutinDir = Math.cos(dir) >= 0 ? 1 : -1;
-    this.cutinFire = fire;
-    const hexes = fire ? (F.slashCutinColorsFire ?? ["#e60012", "#ff6a1f", "#ffe14d"])
-      : (F.slashCutinColors ?? ["#e60012", "#07070d", "#ffffff"]);
-    this.cutinCols = hexes.map((h) => pal(h));   // spawn 时换算,绘制路径零分配
-    if (this.flash < 0.25) this.flash = 0.25;
-  }
-
-  /**
-   * 白闪取色跟着刚才那一拍的档位或技能专属色走(与球体辉光、丝带同源,不新造状态):
-   * 普通拍是纯白,甜区偏青,扣烧金,甜蜜重扣/火热烧橙 —— 一眼能分出"这下的闪光是哪档"。
-   */
-  private flashHex(): string {
-    if (this.customFlashHex && this.flash > 0.05) return this.customFlashHex;
-    const tier = this.shuttleMot.tier;
-    return tier >= TIER_FIRE ? C.colors.smash.flame
-      : tier >= TIER_SWEET_SMASH ? C.colors.sweet.gold
-        : tier >= TIER_SMASH ? C.colors.smash.glow
-          : tier >= TIER_SWEET ? C.colors.sweet.neonCyan
-            : "#ffffff";
-  }
-
   /** 氛围暗角输入(每帧喂一次;渲染层只读) */
   setAtmo(state: string, rally: number, matchPoint: boolean): void {
     this.atmo.state = state;
@@ -480,10 +431,6 @@ export class WorldView {
       // 世界 y 向下、Graphics y 向上 → 方向分量取负
       this.shakeY = -(base * this.shakeDirY) - vert;
 
-      if (this.flash > 0.002) this.flash *= C.fx.flashDecay || 0.82;
-      else { this.flash = 0; this.customFlashHex = null; }
-      // 斩劈 cut-in 推进(非冻结段):hitstop 定格时斜带一起停住,更"斩"得住
-      if (this.cutinT < this.cutinDur) this.cutinT++;
       // 镜头指数回弹;慢动作里步进变慢,回弹自然放慢,镜头会「停在」重扣上
       this.camZ = 1 + (this.camZ - 1) * (C.fx.punchDecay || 0.85);
       if (this.camZ < 1.001) this.camZ = 1;
@@ -867,8 +814,7 @@ export class WorldView {
     g.stroke();
   }
 
-  // ---------- 屏幕特效层(老 FX.drawTop 的白闪 + 三种氛围暗角) ----------
-  /** 白闪与慢动作/长回合/赛点三种暗角;Cocos 无径向渐变,用描边环近似(court.drawVignette 同手法) */
+  // ---------- 屏幕特效层(只画闯关关卡专属视觉环境特效) ----------
   private drawScreenFx(): void {
     const g = this.screenG;
     g.clear();
@@ -876,54 +822,6 @@ export class WorldView {
     const W = C.world.w, H = C.world.h;
     const cx = this.vp.x(W / 2), cy = this.vp.y(H / 2);
     const t = this.frameT;
-
-    // 白闪:老实现是一整块全屏纯白矩形(alpha = flash×0.5),重扣那一下连球带人一起糊没。
-    // 现在改成「边缘亮、中心透」的径向(复用 strokeVignette 的描边环近似,Cocos 无渐变),
-    // 再叠一层很低的整体提亮保住"啪"的一下;色随档位由 game 层 whiteFlash(a, hex) 传入。
-    // P5 化:顶档命中走斩劈 cut-in(slashCutin 置入),三道斜带横扫顶替径向环。
-    if (this.cutinT < this.cutinDur) {
-      const F = C.fx;
-      const p = this.cutinT / Math.max(1, this.cutinDur);
-      drawCutinBands(g, W, H, p,
-        F.slashCutinAng ?? 14, F.slashCutinBandW ?? 0.38, this.cutinCols,
-        F.slashCutinAlpha ?? 0.85, F.slashCutinStagger ?? 0.22, this.cutinDir);
-      // 低强度整屏提亮保住"啪"的一下(径向环被 cut-in 顶替)
-      g.fillColor = withAlpha(pal("#ffffff"), this.flash * 0.10);
-      g.rect(-1600, -1000, 3200, 2000);
-      g.fill();
-    } else if (this.flash > 0.02) {
-      const F = C.fx;
-      const hex = this.flashHex();
-      this.strokeVignette(g, cx, cy, H * 1.05, H * 0.34, hex,
-        this.flash * (F.flashRadial || 0.6), F.flashRings || 16);
-      g.fillColor = withAlpha(pal(hex), this.flash * 0.14);
-      g.rect(-1600, -1000, 3200, 2000);
-      g.fill();
-    }
-
-    // 慢动作转播暗角:像转播镜头的特写氛围,把注意力聚到球场中央;结尾随 slowT 自然淡出
-    if (this.slowT > 0) {
-      const a = Math.min(1, this.slowT / 10) * 0.42;
-      this.strokeVignette(g, cx, cy, H * 0.78, H * 0.32, "#04060e", a);
-    }
-    // 长回合金色边缘暗晕:8 拍以上四角微泛金光,呼吸脉动
-    if (this.atmo.state === "RALLY" && this.atmo.rally >= 8) {
-      const fac = Math.min(1, (this.atmo.rally - 7) / 6);
-      const pulse = 0.85 + Math.sin(t * 0.14) * 0.15;
-      this.strokeVignette(g, cx, cy, W * 0.58, H * 0.36, "#ffbe28", 0.11 * fac * pulse);
-    }
-    // 赛点暗红张力暗角:纯边缘呼吸,不遮挡核心打球区
-    if ((this.atmo.state === "SERVE" || this.atmo.state === "RALLY") && this.atmo.matchPoint) {
-      const pulse = 0.5 + 0.5 * Math.sin(t * 0.08);
-      this.strokeVignette(g, cx, cy, W * 0.58, H * 0.36, "#6e0a14", 0.07 + 0.05 * pulse);
-    }
-    // 时空减速领域暗角:全屏淡青色时空微澜波动力场
-    const inFocusMode = Rules.R.players.some((p) => (p.focusT ?? 0) > 0);
-    if (inFocusMode) {
-      const focusPulse = 0.85 + Math.sin(t * 0.12) * 0.15;
-      const vA = (C.skills.focus.vignetteAlpha || 0.28) * focusPulse;
-      this.strokeVignette(g, cx, cy, W * 0.60, H * 0.38, "#06b6d4", vA);
-    }
 
     // 闯关关卡专属视觉环境特效
     const stage = Rules.R.activeStage;
@@ -995,29 +893,6 @@ export class WorldView {
           g.fill();
         }
       }
-    }
-  }
-
-  /**
-   * 径向渐变的描边环近似:外缘 alpha 峰值,向内 smoothstep 淡出到 0。
-   * rings 可传(Cocos 无渐变,环数就是"平滑度/成本"的旋钮;白闪用 fx.flashRings,
-   * 氛围暗角沿用 18)。
-   */
-  private strokeVignette(g: Graphics, cx: number, cy: number, rOuter: number, rInner: number, hex: string, alphaMax: number,
-    rings = 18): void {
-    if (alphaMax <= 0.004) return;
-    const w = Math.max(2, (rOuter - rInner) / rings);
-    const col = new Color();
-    col.fromHEX(hex);
-    for (let i = 0; i < rings; i++) {
-      const u = 1 - i / rings;               // 1=外缘 → 0=内缘
-      const a = alphaMax * (u * u * (3 - 2 * u));
-      if (a <= 0.004) continue;
-      g.strokeColor = new Color(col.r, col.g, col.b, Math.round(a * 255));
-      g.lineWidth = w;
-      const r = rOuter - i * w;
-      g.ellipse(cx, cy, r, r);
-      g.stroke();
     }
   }
 }

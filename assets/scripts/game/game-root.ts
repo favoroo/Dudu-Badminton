@@ -313,8 +313,7 @@ export class GameRoot extends Component {
       this.world.fx.lungeDash(p.x, C.court.groundY, dir);
       this.world.punch(p.x, p.y, C.lunge.castPunch || 1.025);
       this.world.shake(C.lunge.castShake || 3);
-      this.world.whiteFlash(C.lunge.castFlash || 0.22, "#38bdf8");
-      this.floatSideLab({ text: "疾风突进!", color: "#38bdf8", size: 24, life: 46 }, p.x);
+      this.floatSideLab({ text: "疾风突进!", color: "#38bdf8", size: 24, life: 46, plate: "slant" }, p.x);
       this.sfx.play("lunge");
       if (!p.isAI) haptic("light");
     } else if (id === "smash") {
@@ -322,8 +321,7 @@ export class GameRoot extends Component {
       this.world.fx.flameBurst(p.x, p.y - 20);
       this.world.punch(p.x, p.y, C.skills.smash.castPunch || 1.05);
       this.world.shake(C.skills.smash.castShake || 6);
-      this.world.whiteFlash(C.skills.smash.castFlash || 0.55, "#f43f5e");
-      this.floatSideLab({ text: "暴烈重扣!!", color: "#f43f5e", size: 28, life: 52 }, p.x);
+      this.floatSideLab({ text: "暴烈重扣!!", color: "#f43f5e", size: 28, life: 52, plate: "star" }, p.x);
       this.sfx.play("smash");
       if (!p.isAI) haptic("score");
     } else if (id === "magnet") {
@@ -331,8 +329,7 @@ export class GameRoot extends Component {
       this.world.fx.singularityBurst(ball.x, ball.y);
       this.world.punch(ball.x, ball.y, C.skills.magnet.castPunch || 1.045);
       this.world.shake(C.skills.magnet.castShake || 5);
-      this.world.whiteFlash(C.skills.magnet.castFlash || 0.45, "#a855f7");
-      this.floatSideLab({ text: "引力掌控!!", color: "#a855f7", size: 26, life: 48 }, p.x);
+      this.floatSideLab({ text: "引力掌控!!", color: "#a855f7", size: 26, life: 48, plate: "slant" }, p.x);
       this.sfx.play("swing", 0.7);
       if (!p.isAI) haptic("light");
     } else if (id === "focus") {
@@ -343,8 +340,7 @@ export class GameRoot extends Component {
       this.world.fx.timeRupture(p.x, p.y - 28);
       this.world.punch(p.x, p.y, C.skills.focus.castPunch || 1.035);
       this.world.shake(C.skills.focus.castShake || 4);
-      this.world.whiteFlash(C.skills.focus.castFlash || 0.40, "#06b6d4");
-      this.floatSideLab({ text: "时空领域!!", color: "#06b6d4", size: 26, life: 50 }, p.x);
+      this.floatSideLab({ text: "时空领域!!", color: "#06b6d4", size: 26, life: 50, plate: "slant" }, p.x);
       this.sfx.play("whiff", 0.8);
       if (!p.isAI) haptic("score");
     } else if (id === "flash") {
@@ -352,7 +348,6 @@ export class GameRoot extends Component {
       if (p.flashFrom) this.world.fx.blink(p.flashFrom.x, p.flashFrom.y, p.x, p.y);
       this.world.fx.sweet(ball.x, ball.y, Math.atan2(ball.vy, ball.vx));
       this.setStop(F.hitstopFlashCast || 7);
-      this.world.whiteFlash(F.flashCastFlash || 0.6);
       this.world.shake(F.flashCastShake || 7, 0, Math.atan2(ball.y - p.y, ball.x - p.x));
       this.world.punch(ball.x, ball.y, F.flashCastPunch || 1.05);
       this.floatSideLab(F.flashCastFloat as FloatLabel, p.x, true);
@@ -394,7 +389,7 @@ export class GameRoot extends Component {
                   : TIER_NORMAL;
           const vx = (e.vx as number) ?? 0, vy = (e.vy as number) ?? 0;
           const hitAng = (vx || vy) ? Math.atan2(vy, vx) : undefined;
-          // 六档打击阶梯(hitstop + 震屏 + 镜头 punch + 白闪;赛点重锤另有慢动作)
+          // 六档打击阶梯(hitstop + 震屏 + 镜头 punch;赛点重锤另有慢动作)
           this.setStop((perfect && smash) ? (C.fx.hitstopPerfectSmash || 7)
             : perfect ? (C.fx.hitstopPerfect || 5)
             : (smash && sweet) ? (C.fx.hitstopSweetSmash || 6)
@@ -413,15 +408,6 @@ export class GameRoot extends Component {
           else if (smash) this.world.punch(e.x as number, e.y as number, C.fx.punchSmash || 1.055);
           else if (sweet) this.world.punch(e.x as number, e.y as number, C.fx.punchSweet || 1.025);
           else if ((e.q as number) >= 0.5) this.world.punch(e.x as number, e.y as number, C.fx.punchNormal || 1.012);
-          // 白闪阶梯(老 fx.js hit 的 flash 档;普通档分两阈值:高质量闪 / 踩得还行微闪)
-          this.world.whiteFlash((perfect && smash) || perfect ? (C.fx.flashPerfect || 0.8)
-            : (smash && sweet) ? (C.fx.flashSweetSmash || 0.65)
-            : smash ? (C.fx.flashSmash || 0.55)
-            : sweet ? (C.fx.flashSweet || 0.42)
-            : (e.q as number) >= (C.fx.flashNormalAt || 0.86) ? (C.fx.flashNormal || 0.35)
-            : (e.q as number) >= (C.fx.flashNormalLowAt || 0.6) ? (C.fx.flashNormalLow || 0.18) : 0);
-          // P5 斩劈 cut-in:甜蜜重扣/火热档三道斜带横扫全屏(内含基底白闪,顶替径向环)
-          if (tier >= TIER_SWEET_SMASH) this.world.slashCutin(hitAng ?? 0, tier >= TIER_FIRE);
           // 球体运动学档位:命中这一下给 pop/裙摆炸开/档位辉光定幅度(与丝带同源的一档)
           this.world.shuttleHit(tier, clamp((e.q as number) + (perfect ? 0.2 : 0), 0, 1), heat);
           // 赛点重锤慢动作(老 game.js:训练场单独放行——它永不记分,赛点判定恒 false)
@@ -493,14 +479,12 @@ export class GameRoot extends Component {
             if (skillKind === "lunge") {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET_SMASH);
-              this.world.whiteFlash(0.52, "#38bdf8");
               this.world.shake(11, 0, ang);
               this.world.punch(e.x as number, e.y as number, 1.04);
             } else if (skillKind === "smash") {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_FIRE);
               this.world.fx.flameBurst(e.x as number, e.y as number);
-              this.world.whiteFlash(0.80, "#ff4d4d");
               this.world.shake(18, 0, ang);
               this.world.punch(e.x as number, e.y as number, 1.08);
             } else if (skillKind === "flash") {
@@ -509,7 +493,6 @@ export class GameRoot extends Component {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_FIRE);
               this.world.fx.skyThunder(e.x as number, e.y as number);
-              this.world.whiteFlash(0.88, "#ffe14d");
               this.world.shake(20, 0, ang);
               this.world.punch(e.x as number, e.y as number, (C.fx.flashCastPunch || 1.05) + 0.05);
               if (this.slowmoOn) {
@@ -519,25 +502,23 @@ export class GameRoot extends Component {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
               this.world.fx.singularityBurst(e.x as number, e.y as number);
-              this.world.whiteFlash(0.60, "#a855f7");
               this.world.shake(10, 0, ang);
               this.world.punch(e.x as number, e.y as number, 1.045);
             } else if (skillKind === "focus") {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.sweet(e.x as number, e.y as number, ang);
               this.world.fx.timeRupture(e.x as number, e.y as number);
-              this.world.whiteFlash(0.55, "#06b6d4");
               this.world.shake(8, 0, ang);
               this.world.punch(e.x as number, e.y as number, 1.035);
             }
           } else if (praise && e.lungeShot) {
-            this.floatSideLab({ text: "跨步重击!", color: "#38bdf8", size: 24, life: 48 }, e.x as number);
+            this.floatSideLab({ text: "跨步重击!", color: "#38bdf8", size: 24, life: 48, plate: "slant" }, e.x as number);
             const ang = hitAng ?? this.hitAngOf(e);
             this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
           }
           // 连击热手提示:热度首次烧到 fireAt 时飘一次(连打好球的人才看得到)
           if (praise && (e.heat as number) === (C.heat.fireAt || 3)) {
-            this.floatSideLab({ text: "手感火热!", color: "#ff6a1f", size: 21, life: 46 }, e.x as number);
+            this.floatSideLab({ text: "手感火热!", color: "#ff6a1f", size: 21, life: 46, plate: "slant" }, e.x as number);
           }
           // 跳杀:空中高球必然扣杀的专属飘字(挂场边,与档位字同侧自动错行)
           // 真人看「跳杀!!」学成因,AI 打出来只当对手的高光,不飘教学字
@@ -557,21 +538,22 @@ export class GameRoot extends Component {
             if (lbl) this.world.float(e.x as number, (e.y as number) - 22, lbl.text, lbl.color, lbl.size, lbl.life);
           }
           // 多拍相持里程碑爽点反馈(老 game.js#L314-322;emoji 换 BMP 安全符号)。
-          // 本次追加:里程碑瞬间欢呼 + 白闪 + 震屏,数字大字之外再给一记「阶段性胜利」的体感
+          // 里程碑瞬间欢呼 + 震屏,数字大字之外再给一记「阶段性胜利」的体感
           if (e.rally === 6) {
             this.world.float(C.world.w / 2, 72, "★ 6 拍激烈相持! ★", "#ffe14d", 18, 38);
-            this.sfx.cheer(0.4); this.world.whiteFlash(0.18); this.world.shake(3);
+            this.sfx.cheer(0.4); this.world.shake(3);
           } else if (e.rally === 10) {
             this.world.float(C.world.w / 2, 72, "★ 10 拍巅峰对攻!! ★", "#ff6a1f", 22, 46);
-            this.sfx.cheer(0.7); this.world.whiteFlash(0.24); this.world.shake(4);
+            this.sfx.cheer(0.7); this.world.shake(4);
           } else if (e.rally === 15) {
             this.world.float(C.world.w / 2, 72, "★ 15 拍神仙之战!!! ★", "#00f0ff", 24, 52);
-            this.sfx.cheer(1); this.world.whiteFlash(0.3); this.world.shake(5);
+            this.sfx.cheer(1); this.world.shake(5);
           }
           // 连击压力:回合拖长 → 对手开始下滑。给玩家一个"拖长回合有回报"的可见信号
           // (训练场右半边是喂球机不是对手,不报;分级飘字位置与上面 6 拍里程碑错开)
           if (R.mode !== "drill" && e.rally === C.aiPressure.cueRally && R.players.some((q) => q.isAI)) {
             this.world.float(C.world.w / 2, 96, "对手体力下降!", "#8ef2a3", 20, 44);
+            this.faceSide("right", "sad", 45);
           }
           if (e.timingHint) {
             this.world.float(e.x as number, (e.y as number) - 44, e.timingHint === "early" ? "早了!" : "晚了!", "#ff9664", 14, 36);
@@ -593,7 +575,6 @@ export class GameRoot extends Component {
           this.world.punch(C.court.netX, C.court.groundY - 110, C.fx.punchServe || 1.02);
           if (e.type === "flick") {
             this.world.floatSys(C.world.w / 2, 60, "偷后场!", "#ffd48a", 16, 36);
-            this.world.whiteFlash(C.fx.flashServeFlick || 0.2);
           } else if (e.type === "clear") {
             this.world.floatSys(C.world.w / 2, 60, "高远发球", "#c0d8ff", 16, 36);
           }

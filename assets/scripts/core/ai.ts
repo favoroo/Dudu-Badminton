@@ -40,6 +40,7 @@ function fresh(): AiState {
 function reset(p: Player): void { p.ai = fresh(); p.ai.whiffsSeen = p.stats.whiffs; }
 
 const D = (p: Player) => (p.aiDiff ? C.diffs[p.aiDiff] : C.diffs.normal);
+const SM = (p: Player) => (p.aiDiff ? C.aiSmashDefense[p.aiDiff] : C.aiSmashDefense.normal);
 
 // 把球往前推 n 步(不改原对象)
 // 这里**不再自己抄一份循环**。从前它只算阻尼与 Pace.g,不认重力倍率、不认侧风、
@@ -203,8 +204,15 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   const S = p.ai || (p.ai = fresh());
   const inp: PlayerInput = { left: false, right: false, jumpPressed: false, jumpHeld: false, swingAim: null, lungePressed: false };
   const d = D(p);
+  const incoming = ball.live && !ball.held && ball.lastHitter !== p.side;
   S.pressure = rallyPressure(d);         // 连击压力:本回合 rally 越长越大(先算,情绪修正要吃它)
   const em = emotionModifiers(p, S, d);  // 情绪 + 压力修正后的参数
+
+  // 连击压力极大(体力枯竭 <= 25%): 角色面部呈现流汗/疲倦表情
+  if (S.pressure >= 0.75 && (p.faceT ?? 0) <= 0 && incoming) {
+    p.face = "sad";
+    p.faceT = 20;
+  }
 
   // 冷却/动作计时
   if (S.tauntCd > 0) S.tauntCd--;
@@ -250,15 +258,27 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   }
 
   // ---------- 周期重规划(反应速度) ----------
-  const incoming = ball.live && !ball.held && ball.lastHitter !== p.side;
+  const isSmash = incoming && ball.shot?.kind === "smash";
+  const sm = SM(p);
+  const baseZone = Rules.R.mode === "2v2" ? Math.min(C.doubles.aiZone, d.zone) : d.zone;
+  if (isSmash) {
+    p.zoneScale = baseZone * sm.zoneMul;
+    p.aiAimErr = d.shotErr + sm.shotErrAdd;
+  } else {
+    p.zoneScale = baseZone;
+    p.aiAimErr = d.shotErr;
+  }
+
   S.tick--;
   if (incoming && S.tick <= 0) {
     S.tick = d.tick;
     const runTo = (x: number) => Math.abs(x - p.x) / (C.player.vmax * em.speed);
-    // 从最高可行拦截点往下逐级试:能跳就压,不能跳就老实退到位
+    // 从最高可行拦截点往下逐级试:面对扣杀必须立足防守,不尝试高空迎击
     const aggr = Rules.teamOf(p.side).length > 1 ? Math.min(0.88, em.aggr + C.doubles.aggrBonus) : em.aggr;
-    S.wantSmash = Math.random() < aggr;          // 本回合是否处于进攻心态
-    const ladder = S.wantSmash ? [C.aiReach.attack, C.aiReach.stand, 92] : [C.aiReach.stand, 92];
+    S.wantSmash = isSmash ? false : (Math.random() < aggr); // 本回合是否处于进攻心态
+    const ladder = S.wantSmash
+      ? [C.aiReach.attack, C.aiReach.stand, 92]
+      : (isSmash ? [92, C.aiReach.contact] : [C.aiReach.stand, 92]);
     let ic: Intercept | null = null;
     let reachable = false;
     for (const topH of ladder) {
@@ -267,7 +287,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
       const need = (jumping ? C.player.jumpApex : 0) + 6;
       if (c.t >= runTo(c.x) + need) { ic = c; S.wantSmash = jumping || S.wantSmash; reachable = true; break; }
     }
-    if (!ic) ic = intercept(p, ball, 90, C.aiReach.contact);
+    if (!ic) ic = intercept(p, ball, isSmash ? C.aiReach.contact : 90, C.aiReach.contact);
     // 「怎么都赶不上」:连最低拦截点都来不及到位 —— 用来触发扑救俯冲表现 + 绝望挥拍(不改判定)
     S.hopeless = !reachable;
     // 站位偏差:**每记来球只认定一次**,之后每次重规划都沿用同一个数。
@@ -275,9 +295,14 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     // 92px 等于没写(用户反馈「入门 AI 怎么都能接住」的头号根因)。认定之后它就
     // 一路全速跑向自己那个错的点,最后差一点够不到 —— 这才是「看走眼」。
     // 连击压力在这里加码:回合越往后,这一掷的误差越大(rallyPressure 见上)。
+    // 扣杀突袭:重杀难以准确判断深浅,额外放大站位误差并增加反应延迟。
     if (!S.readRolled) {
       S.readRolled = true;
-      S.readErr = (Math.random() * 2 - 1) * d.read * (1 + S.pressure * C.aiPressure.readMul) * readHardness(p, ball, ic, d);
+      if (isSmash) {
+        S.noticeT = Math.max(S.noticeT, sm.noticeAdd);
+      }
+      const smashRead = isSmash ? sm.readMul : 1;
+      S.readErr = (Math.random() * 2 - 1) * d.read * smashRead * (1 + S.pressure * C.aiPressure.readMul) * readHardness(p, ball, ic, d);
     }
     const err = S.readErr;
     const lo = p.side === "left" ? CO.wallL : CO.netX + CO.netPad;
@@ -288,6 +313,8 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     S.targetX = S.chasing ? clamp(ic.x + err, lo, hi) : zoneHome(p);
     S.ic = S.chasing ? ic : null;
   } else if (!incoming) {
+    p.zoneScale = baseZone;
+    p.aiAimErr = d.shotErr;
     S.targetX = zoneHome(p);
     S.wantSmash = false;
     S.ic = null;
@@ -381,7 +408,10 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   const lead = (ball.live && !ball.held && S.chasing !== false) ? entryLead(p, ball, radius) : -1;
   if (incoming && S.swingLead === null) {
     // 每拍只掷一次:负=早起手,正=晚起手,晚过头就漏球
-    S.swingLead = center + Math.round(rand(-em.timingErr, em.timingErr));
+    // 扣杀来球穿窗极快,时机抖动额外放大,起手稍有偏差即会挥空
+    const smashTiming = isSmash ? sm.timingAdd : 0;
+    const totalTiming = em.timingErr + smashTiming;
+    S.swingLead = center + Math.round(rand(-totalTiming, totalTiming));
   }
   const depth = chooseDepth(p, Rules.rivalsOf(p), CO.groundY - ball.y, S.wantSmash);
   if (lead >= 0 && p.swingT < 0 && S.swingLead !== null && lead <= S.swingLead) inp.swingAim = depth;

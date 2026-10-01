@@ -6,7 +6,7 @@
 // 于是扣杀的圆点稀疏散列、搓球的又挤成一坨,发球/高远/吊球还全都长一个样。
 // 现在改成一条**沿真实路径连续收尖的丝带**:按距离入点、逐点法向偏移、
 // 分若干段分别填色(Graphics 没有渐变,分段是这工程一贯的近似手法 ——
-// 见 world.strokeVignette / court.drawVignette)。
+// 见 court.drawVignette)。
 //
 // 分级炫技落在这里最直白:normal 一条细白纱、sweet 青芯金焰、smash 粗直金橙、
 // sweetSmash 三层烧白、fire 红金四层并在末端打卷 —— 同一套管线,只换层数、

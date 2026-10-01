@@ -2,7 +2,7 @@
 // 全部平衡数值 / 键位 / 配色集中在这里 —— 想调手感只改这个文件
 // 单位约定:1 step = 1/60 s;长度 px;速度 px/step;加速度 px/step²
 // ============================================================
-import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, DrillDef } from "./types";
+import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, DrillDef, AiSmashDefenseDef } from "./types";
 
 // ===== 稀有度元数据:商店卡片框色/角标用;配色只进 config =====
 export const RARITY_META: Record<Rarity, { name: string; color: string }> = {
@@ -953,7 +953,7 @@ export const CFG = {
     floatFadeK: 0.5,           // 全程淡出起点(1=一出现就开始淡)
     // 场边评价字锚点(世界坐标):评价/技能类飘字不贴球,按击球方挂到两侧场边
     // (padX = 距左右边线的锚点 x;y 取网顶上方的空中区)—— 底板从此不挡飞行中的球
-    floatSide: { padX: 100, y: 318 },
+    floatSide: { padX: 100, y: 350 },
     // 飘字底板强度:底板已移到场边,恢复实心墨黑保文字可读(dim=1 原版)。
     // 教训:半透明底板(dim 0.55)在暖色球场上糊成灰,金字反而看不清 ——
     // 可读性靠实底,不挡球靠挪位置;真机仍嫌抢眼再整体调低
@@ -1236,6 +1236,8 @@ export const CFG = {
       // 现在站位由 skills.activate 的 flash 分支拿 Physics.strikeOffset(判定区圆心偏移)
       // 反解脚底,再叠一层保底接触窗口兜住贴网/贴墙被边界夹走、以及极高球顶到悬空上限的情形。
       holdFrames: 5,        // 折跃后滞空蓄力帧数:悬空举拍,不吃重力、不接受移动输入
+      diveVy: 1.8,          // 起拍那一下的下降初速(世界 y 向下为正):被自己那记劈扣的惯量带下来
+                            // —— 闪现后就在折跃位落地,而不是从高点松开重力慢慢飘
       strikeFrames: 10,     // 保底接触窗口(帧):起拍之后这段时间内球一定被扣出去
       guaranteedQ: 0.95,    // 保底接触上报的击球质量:直接吃到 sweet+perfect 那套反馈
       maxHover: 118,        // 悬空离地高度上限(px):比跳跃顶点(~92)略高,是"跃至空中"不是浮在三层楼
@@ -1306,6 +1308,19 @@ export const CFG = {
     cueRally: 7,       // 玩家可见反馈触发拍数(game-root 飘「对手体力下降!」)
   },
 
+  // ===== AI 体力能量槽 (HUD 比分牌 pillR 内部展示) =====
+  // 5 段斜切平行四边形, 随连击压力 S.pressure 逐格扣减
+  // 充沛(5格/青黄) → 消耗(3~4格/橙) → 危险(1~2格/红) → 力竭(0格/暗槽慢闪)
+  aiStaminaBar: {
+    w: 50,             // 总槽宽
+    h: 7,              // 槽高
+    segments: 5,       // 5 段斜切小方块
+    gap: 2.5,          // 格间距
+    skew: -3,          // 斜切角偏移(px)
+    x: -16,            // 相对 pillR 中心 X
+    y: -14,            // 相对 pillR 中心 Y
+  },
+
   // AI 难度:全部走同一套挥拍机制,只是**看走眼更狠、判定区更窄、出手更不准**
   // read=站位认定误差(px) · zone=单打判定区缩放(双打再与 doubles.aiZone 取 min)
   // shotErr=出球落点误差(px,进 player.buildShot 的误差预算,会下网/出界)
@@ -1322,6 +1337,19 @@ export const CFG = {
     normal: { label: "普通", tick: 14, speed: 0.94, read: 35, readFloor: 0.40, zone: 0.94, shotErr: 14, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 1.0, notice: 3 },
     hard:   { label: "困难", tick: 8,  speed: 1.00, read: 32, readFloor: 0.62, zone: 0.96, shotErr: 12, timingErr: 3, aggr: 0.52, composure: 1, crush: 0.3, notice: 2 },
   },
+
+  // ===== AI 扣杀防守难度 (扣杀突破 AI 防线的核心机制) =====
+  // 面对扣杀(shot.kind === 'smash', 包括跳杀、技能重扣、闪现暴扣等):
+  // 1. noticeAdd: 猝不及防的反应延迟(帧, 重杀突袭导致愣神滞后)
+  // 2. readMul: 站位误判放大倍率(重杀下压急, 难以准确预估深浅)
+  // 3. zoneMul: 接杀判定区缩放(重杀力量大、球速快, 防守面积收缩)
+  // 4. timingAdd: 挥拍时机额外误差(帧, 窗口变窄极易起手偏离导致挥空)
+  // 5. shotErrAdd: 勉强接下时的出球失误增量(px, 强吃重杀容易下网/出界送分)
+  aiSmashDefense: {
+    easy:   { noticeAdd: 8, readMul: 2.4, zoneMul: 0.70, timingAdd: 6, shotErrAdd: 50 },
+    normal: { noticeAdd: 6, readMul: 2.0, zoneMul: 0.78, timingAdd: 4, shotErrAdd: 30 },
+    hard:   { noticeAdd: 4, readMul: 1.6, zoneMul: 0.86, timingAdd: 3, shotErrAdd: 20 },
+  } as Record<DiffKey, AiSmashDefenseDef>,
 
   // ===== 生涯成长:赛后奖励 / 等级 / 皮肤经济(纯数值,逻辑在 career.ts) =====
   // 只对带 CPU 的比赛发放(2p 同屏友谊赛不计,防两人互刷);输了也有安慰奖,保证商店始终有进度感
