@@ -18,19 +18,16 @@
 // 用法(仓库根目录):
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/skill-check.js [--preview] [--selftest]
 // ============================================================
+import { makeChecker } from "./harness";
 import { CFG } from "../assets/scripts/core/config";
-import { textW, wrapText } from "../assets/scripts/ui/text-metrics";
+import { textW, wrapText } from "../assets/scripts/core/text-metrics";
 import {
   SK, layoutSkillPlate, plateOverlaps, plateOverflow, skillCardX, skillStatus,
   type PlateItem, type PlateLayout, type SkillLike,
 } from "../assets/scripts/ui/skill-layout";
 
-let fails = 0;
-let checks = 0;
-function ok(cond: boolean, msg: string): void {
-  checks++;
-  if (!cond) { fails++; console.log(`  ✗ ${msg}`); } else { console.log(`  ✓ ${msg}`); }
-}
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 const LIST = CFG.skills.list as unknown as SkillLike[];
 
@@ -200,5 +197,5 @@ if (process.argv.includes("--preview")) {
   }
 }
 
-console.log(`\n${fails === 0 ? "✓" : "✗"} ${checks} 项断言,失败 ${fails}`);
-process.exit(fails === 0 ? 0 : 1);
+console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
+process.exit(h.fails === 0 ? 0 : 1);

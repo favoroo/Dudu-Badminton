@@ -13,7 +13,7 @@
 //     「不溢出、不重叠」是排版性质,不是对某一句文案的假设。
 // 20 关全表在 node 下回归:tools/brief-check.ts。
 // ============================================================
-import { textW, wrapText, type Measure } from "./text-metrics";
+import { textW, wrapText, type Measure } from "../core/text-metrics";
 
 /**
  * 排版常量 —— 字号、行高、块间距、内边距都从这里出,

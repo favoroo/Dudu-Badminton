@@ -22,6 +22,7 @@ import { Ribbon } from "./ribbon";
 import { advanceShuttle, makeShuttleMotion, shuttleImpact } from "./shuttle-motion";
 import { easeOutBack, fadePow } from "./easing";
 import { drawFloatPlate, FloatPlateStyle, measureTextW } from "./p5kit";
+import { applyFont } from "../game/fonts";
 
 const C = CFG;
 
@@ -42,6 +43,8 @@ function makeViewport(): Viewport {
 /** 名牌身份色(与 sprites.ts drawPlayerTag 的用色约定同源) */
 const TAG_MAIN_L = new Color().fromHEX("#ffe14d");
 const TAG_MAIN_R = new Color().fromHEX("#3ea8ff");
+/** 溜冰滑行冰雾:常量色提为模块级(球员循环每帧 new 曾是纯垃圾) */
+const ICE_FOG_COL = new Color(220, 240, 255, 60);
 const TAG_PARTNER = new Color().fromHEX("#6ee7b7");
 const TAG_P2 = new Color().fromHEX("#7fd0ff");
 const TAG_DEFAULT = new Color(255, 255, 255, 173);
@@ -251,6 +254,7 @@ export class WorldView {
       l.lineHeight = 12;
       l.isBold = true;
       l.horizontalAlign = Label.HorizontalAlign.CENTER;
+      applyFont(l, false);
       this.tags.push(l);
     }
   }
@@ -412,6 +416,7 @@ export class WorldView {
       labelNode.layer = Layers.Enum.UI_2D;
       labelNode.addComponent(UITransform);
       const label = labelNode.addComponent(Label);
+      applyFont(label, true);
       labelNode.setParent(node);
       node.setParent(this.floatLayer);
       item = { node, label, plateG, plate: "none", wx: 0, opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
@@ -439,7 +444,7 @@ export class WorldView {
     item.label.string = text;
     item.label.fontSize = size;
     item.label.lineHeight = Math.round(size * 1.15);
-    item.label.color = color.startsWith("#") ? new Color().fromHEX(color) : new Color(255, 255, 255, 255);
+    item.label.color = color.startsWith("#") ? pal(color) : pal("#ffffff");
     item.opacity.opacity = 255;
     // P5 底板:每次 spawn 重画一次(天然规避原生 GraphicsKeepAlive 掉数据,
     // 也比 retainedDraw 少一个坑);带底板的字给 ±3° 随机倾斜,system 字保持正
@@ -649,8 +654,8 @@ export class WorldView {
         this.drawStaminaBar(g, p);
       }
       if (p.sliding && Math.abs(p.sliding) > 1.2) {
-        // 溜冰滑行冰雾轨迹
-        g.fillColor = new Color(220, 240, 255, 60);
+        // 溜冰滑行冰雾轨迹(常量色提为模块级:球员循环里每帧 new 曾是纯垃圾)
+        g.fillColor = ICE_FOG_COL;
         g.ellipse(this.vp.x(rx - (p.sliding > 0 ? 16 : -16)), this.vp.y(C.court.groundY - 2), 12, 3);
         g.fill();
       }

@@ -13,7 +13,9 @@
 //   4) maxScroll == 0 只在「所有行本来就装得下」时成立 —— 否则该有滚动条却没有;
 //   5) 滚动条滑块捏得住(≥34px)也不会比轨道还长,装得下时高度为 0(不画轨道);
 //   6) 松手之后的运动学(惯性/回弹/定位)任何初态都在 5 秒内收进 [0, maxScroll],
-//      不越界、不 NaN、速度只减不增 —— 猛甩一记必须真能从头滚到尾,不然「滑动查看」是假的。
+//      不越界、不 NaN、速度只减不增 —— 猛甩一记必须真能从头滚到尾,不然「滑动查看」是假的;
+//   7) 滑块**位置**:f=0..1 全程整体落在轨道内,f=0 顶缘贴轨道顶、f=1 底缘贴轨道底 ——
+//      旧版把滑块中心钉在轨道顶,上半截戳出网格窗叠到 tab 条上(用户截图里的黄条)。
 // 商品款数直接读 CFG.skins,以后加/删皮肤不用改这里。
 //
 // 另带 --selftest:拿「改动前那套(窗只装两行、没有滚动)」当反例,确认它**会**被报警
@@ -23,18 +25,15 @@
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/shelf-check.js
 //   node .tools-build/tools/shelf-check.js --selftest
 // ============================================================
+import { makeChecker } from "./harness";
 import { CFG } from "../assets/scripts/core/config";
 import { SkinKind } from "../assets/scripts/core/types";
 import {
-  FLING_MIN, SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, thumbHeight,
+  FLING_MIN, SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, thumbCenterY, thumbHeight,
 } from "../assets/scripts/ui/shop-shelf";
 
-let fails = 0;
-let checks = 0;
-function ok(cond: boolean, msg: string): void {
-  checks++;
-  if (!cond) { fails++; console.log(`  ✗ ${msg}`); } else { console.log(`  ✓ ${msg}`); }
-}
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 const S = SHELF;
 const KINDS: SkinKind[] = ["player", "racket", "shuttle", "face"];
@@ -77,11 +76,22 @@ for (const kind of KINDS) {
     ok(L.contentH <= S.h, `${KIND_NAME[kind]}:装得下(${L.contentH} ≤ ${S.h})所以不需要滚动`);
   }
 
-  // 滚动条:要么不画,要么捏得住
+  // 滚动条:要么不画,要么捏得住;且任何滚动位置都整体落在轨道内(不许再戳出窗顶)
   const trackH = S.h - BAR_PAD * 2;
   const th = thumbHeight(trackH, S.h, L.maxScroll);
-  if (L.maxScroll > 0) ok(th >= 34 && th <= trackH, `${KIND_NAME[kind]}:滑块高 ${th.toFixed(0)} 在 [34, ${trackH}] 之间`);
-  else ok(th === 0, `${KIND_NAME[kind]}:装得下时滑块高度 0(不画轨道)`);
+  if (L.maxScroll > 0) {
+    ok(th >= 34 && th <= trackH, `${KIND_NAME[kind]}:滑块高 ${th.toFixed(0)} 在 [34, ${trackH}] 之间`);
+    let inside = true;
+    for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+      const cy = thumbCenterY(trackH, th, f);
+      if (cy - th / 2 < -trackH / 2 - 1e-6 || cy + th / 2 > trackH / 2 + 1e-6) inside = false;
+    }
+    ok(inside, `${KIND_NAME[kind]}:滑块 f=0..1 全程落在轨道内(±${(trackH / 2).toFixed(0)}),不再戳出网格窗`);
+    ok(Math.abs(thumbCenterY(trackH, th, 0) + th / 2 - trackH / 2) < 1e-6,
+      `${KIND_NAME[kind]}:f=0 滑块顶缘正好贴轨道顶(旧公式会高出滑块一半,叠到 tab 条上)`);
+    ok(Math.abs(thumbCenterY(trackH, th, 1) - th / 2 + trackH / 2) < 1e-6,
+      `${KIND_NAME[kind]}:f=1 滑块底缘正好贴轨道底(旧公式够不到,行程被压在轨道上段)`);
+  } else ok(th === 0, `${KIND_NAME[kind]}:装得下时滑块高度 0(不画轨道)`);
 }
 
 // ---------- ② 越界阻尼:窗内不动,窗外压缩但同向 ----------
@@ -191,7 +201,15 @@ if (process.argv.includes("--selftest")) {
   const tinyThumb = (S.h - BAR_PAD * 2) * S.h / (S.h + 10_000);
   ok(tinyThumb < 34 && thumbHeight(S.h - BAR_PAD * 2, S.h, 10_000) >= 34,
     `10000px 货架按比例只有 ${tinyThumb.toFixed(1)}px 滑块,靠下限兜回 ${thumbHeight(S.h - BAR_PAD * 2, S.h, 10_000)}`);
+  // 反例四:旧版滑块位置公式(中心钉在轨道顶)必须被报警 —— 截图里黄条飘到 tab 条上的根因
+  const trackOld = S.h - BAR_PAD * 2;
+  const thOld = thumbHeight(trackOld, S.h, L.maxScroll);
+  const cyOldF0 = trackOld / 2 - 0 * (trackOld - thOld);   // 旧公式 f=0:中心 = 轨道顶
+  ok(cyOldF0 + thOld / 2 > trackOld / 2 + 1,
+    `旧公式 f=0 滑块顶缘戳出轨道顶 ${(cyOldF0 + thOld / 2 - trackOld / 2).toFixed(0)}px —— thumbCenterY 同判据干净`);
+  ok(thumbCenterY(trackOld, thOld, 0) + thOld / 2 <= trackOld / 2 + 1e-6,
+    "同一轨道/滑块下 thumbCenterY(f=0) 不出轨道半步");
 }
 
-console.log(`\n${fails === 0 ? "✓" : "✗"} ${checks} 项断言,失败 ${fails}`);
-process.exit(fails === 0 ? 0 : 1);
+console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
+process.exit(h.fails === 0 ? 0 : 1);

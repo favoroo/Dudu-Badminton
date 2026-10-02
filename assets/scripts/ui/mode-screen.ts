@@ -5,7 +5,7 @@
 // - 用户指令:模式选择不再用弹窗 —— 点首页大色块要「斩进一块新界面」,
 //   返回时斩回来,进出都走 ui-arcade.screenSwap 的斜带转场。
 // - 两块屏骨架同构(暗底 + 氛围 + 返回条 + 三档难度实底大色块条),
-//   差异只在赛前准备区(对练屏独有:球馆 + 技能)与选档后的去向 ——
+//   差异只在赛前准备区(技能胶囊两块屏都有,基类提供;球馆是对练屏独有)与选档后的去向 ——
 //   抽成基类 + buildExtra/onPick 钩子,子类只补差异,不复制骨架。
 // - 三档难度文案统一吃 config.DIFF_PICKS(主菜单旧三卡的展示表收编于此),
 //   色面用 drawSolidBlock 实底大色块,文字用色由 inkOn(accent) 决定。
@@ -22,8 +22,10 @@ import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import {
   ARCADE, cancelFade, drawChevron, drawMenuCard, drawSlantPanel, drawSlantShadow,
-  drawSolidBlock, fadeOutHide, inkOn, makeChip, riseIn, safePad, skewOf, slashIn,
+  drawSolidBlock, fadeOutHide, inkOn, makeChip, riseIn, retainedDraw, safePad, skewOf,
+  slashIn, slantPath, TOUCH_MIN,
 } from "./ui-arcade";
+import { pressable as shellPressable, solidBlock as shellSolidBlock } from "./ui-shell";
 
 const DIM_FAINT = "#6f7ca6";
 
@@ -31,24 +33,24 @@ export abstract class ModeScreen {
   readonly root: Node;
   protected kit: UiKit;
   private readonly title: string;
-  private readonly tag: string;
   private readonly goBack: () => void;
   private bars: Node[] = [];
   private extras: Node[] = [];
   private titleNode!: Node;
   private backNode!: Node;
+  /** 技能胶囊的名字读数:只有调过 buildSkillBadge 的屏才有(基类重绘时要能空转) */
+  private skillNameLabel: Label | null = null;
 
   protected constructor(
     parent: Node, kit: UiKit, name: string,
-    title: string, tag: string, goBack: () => void,
+    title: string, goBack: () => void,
   ) {
     this.kit = kit;
     this.title = title;
-    this.tag = tag;
     this.goBack = goBack;
     this.root = kit.root(parent, name);
     this.root.active = false;
-    kit.dim(this.root, 0.3, 0.55);       // 比主菜单略深:模式屏是「进了一层」
+    kit.dim(this.root, 0.3, 0.55, { bands: false });   // 比主菜单略深:模式屏是「进了一层」
     kit.atmosphere(this.root);
     this.buildHeader();
     this.buildBars();
@@ -84,10 +86,7 @@ export abstract class ModeScreen {
     drawSlantShadow(bg, 96, 40, skewOf(40, 8), 3, 3, 0.45);
     drawSlantPanel(bg, 96, 40, skewOf(40, 8), { face: "#16161f", alpha: 0.96, edge: ARCADE.paper, edgeA: 0.35 });
     this.kit.label(back, "‹ 返回", 13, ARCADE.paper, { disp: true });
-    const bb = back.addComponent(Button);
-    bb.transition = Button.Transition.SCALE;
-    bb.zoomScale = 0.92;
-    bb.target = back;
+    this.pressable(back, 0.92);
     back.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("back");
       this.goBack();
@@ -109,14 +108,14 @@ export abstract class ModeScreen {
     const bs = skewOf(62, 9);
     gg.fillColor = col(ARCADE.slash, 0.97);
     const bw = 96 + this.title.length * 44;
-    slantPath2(gg, bw, 62, bs);
+    slantPath(gg, bw, 62, bs);
     gg.fill();
     gg.fillColor = col(ARCADE.ink, 0.97);
-    slantPath2(gg, bw - 12, 50, bs * 0.92, -4, -2);
+    slantPath(gg, bw - 12, 50, bs * 0.92, -4, -2);
     gg.fill();
     gg.strokeColor = col("#ff6b72", 0.5);
     gg.lineWidth = 1.5;
-    slantPath2(gg, bw, 62, bs);
+    slantPath(gg, bw, 62, bs);
     gg.stroke();
     backing.setParent(holder);
 
@@ -125,8 +124,6 @@ export abstract class ModeScreen {
     t.shadowColor = new Color(0, 0, 0, 140);
     t.shadowOffset = new Vec2(0, -5);
     t.node.setPosition(0, 2, 0);
-    const sub = this.kit.label(holder, this.tag, 11, DIM_FAINT);
-    sub.node.setPosition(0, -38, 0);
 
     holder.setParent(this.root);
     this.titleNode = holder;
@@ -163,7 +160,7 @@ export abstract class ModeScreen {
 
   // ---------- 子类钩子 ----------
 
-  /** 赛前准备区:对练屏 = 球馆 + 技能胶囊;无限屏 = 一句说明。坐标自负 */
+  /** 赛前准备区:对练屏 = 球馆 + 技能胶囊;无限屏 = 一句说明 + 技能胶囊。坐标自负 */
   protected abstract buildExtra(): void;
 
   /** 选档去向:对练 → startMatch;无限 → startEndlessMatch */
@@ -177,20 +174,60 @@ export abstract class ModeScreen {
     this.extras.push(n);
   }
 
+  /**
+   * 核心技能配置胶囊:整块可点,弹技能选择弹窗。装备的是**全局一份**
+   * (Career.equippedSkill,不分模式),所以每块能开赛的模式屏都该就地换技能 ——
+   * 建在基类,子类只决定摆在哪个 y。
+   */
+  protected buildSkillBadge(y: number): void {
+    const skill = new Node("badge:skill");
+    skill.layer = this.root.layer;
+    skill.addComponent(UITransform).setContentSize(640, 46);
+    const sg = skill.addComponent(Graphics);
+    drawSlantShadow(sg, 640, 46, skewOf(46, 4), 4, 5, 0.5);
+    drawSlantPanel(sg, 640, 46, skewOf(46, 4), { face: "#16161f", alpha: 0.94, edge: "#38bdf8", edgeA: 0.5 });
+    makeChip(skill, "SKILL", 9, "#38bdf8", "#0a0e1c").setPosition(-262, 0, 0);
+    this.skillNameLabel = this.txt(skill, "强力跨步", 14, "#38bdf8", -216, 0, 200);
+    this.txt(skill, "赛前可选主动技能 · 更换 ›", 12, DIM_FAINT, 180, 0, 220);
+    this.pressable(skill, 0.96);
+    skill.on(Button.EventType.CLICK, () => {
+      this.kit.sfx.play("ui");
+      this.kit.openSkillDialog(() => this.paintSkillBadge());
+    });
+    skill.setPosition(0, y, 0);
+    skill.setParent(this.root);
+    this.pushExtra(skill);
+  }
+
+  /** 胶囊读数跟着当前装备走(名字与配色都来自技能表) */
+  protected paintSkillBadge(): void {
+    const lbl = this.skillNameLabel;
+    if (!lbl) return;
+    const def = Skills.defOf(Career.equippedSkill());
+    lbl.string = def.name;
+    lbl.color = col(def.accent);
+  }
+
   // ---------- 建块辅助(与 main-menu 同约定) ----------
 
-  /** 实底斜切大色块:自带 Button(SCALE);返回 Graphics 供补画箭标等 */
+  /**
+   * 给手绘节点补上真按钮。**这一步不能省**:`click` 只由 `Button._onTouchEnded` 派发,
+   * 而 TOUCH_* 监听只由 `Button._registerNodeEvent` 在 onEnable 时注册 —— 一个只有
+   * UITransform + Graphics 的节点即便挂了 `on(Button.EventType.CLICK)`,也进不了引擎的
+   * 命中判定(那把表里没有 'click'),结果既不响也不吞触摸:症状是「只有这一排点不动,
+   * 上下装了 Button 的块全好」。0.0.18 把球馆 tab 与技能胶囊从主菜单 card() 迁到手搓
+   * Node 时就是漏了这一行。闸门见 tools/ui-click-check.ts。
+   *
+   * 实现已提到 ui-shell.pressable(四个面板要用同一个工厂,不能各留一份),
+   * 这里保留方法名:调用点三十多处不动,且 ui-click-check 认的还是这个名字。
+   */
+  protected pressable(n: Node, zoom: number): void {
+    shellPressable(n, zoom);
+  }
+
+  /** 实底斜切大色块:自带 Button(SCALE);返回节点供补画箭标等 */
   protected solidBlock(name: string, w: number, h: number, accent: string, slant = 4): Node {
-    const n = new Node(name);
-    n.layer = this.root.layer;
-    n.addComponent(UITransform).setContentSize(w, h);
-    drawSolidBlock(n.addComponent(Graphics), w, h, accent, slant);
-    const b = n.addComponent(Button);
-    b.transition = Button.Transition.SCALE;
-    b.zoomScale = 0.96;
-    b.target = n;
-    n.setParent(this.root);
-    return n;
+    return shellSolidBlock(name, this.root, w, h, accent, slant);
   }
 
   /**
@@ -208,30 +245,19 @@ export abstract class ModeScreen {
   }
 }
 
-/** 斜切平行四边形路径(与 ui-arcade.slantPath 同形;本文件多处要用,就地备一份) */
-function slantPath2(g: Graphics, w: number, h: number, skew: number, cx = 0, cy = 0): void {
-  const s = skew / 2;
-  g.moveTo(-w / 2 + s + cx, -h / 2 + cy);
-  g.lineTo(w / 2 + s + cx, -h / 2 + cy);
-  g.lineTo(w / 2 - s + cx, h / 2 + cy);
-  g.lineTo(-w / 2 - s + cx, h / 2 + cy);
-  g.close();
-}
-
 // ============================================================
 // 对练屏:三档难度 + 球馆 + 技能胶囊 —— 主菜单搬空的「赛前准备」都在这
 // ============================================================
 
 export class MatchSetupScreen extends ModeScreen {
   private courtTabs: Array<{ g: Graphics; name: Label; flag: Node; id: string; accent: string }> = [];
-  private skillNameLabel!: Label;
   /** 作者通道:连点同一个球馆 tab 的计数 / 上一次是哪块 tab / 上一落的时刻 */
   private authorTabId: string | null = null;
   private authorTaps = 0;
   private authorAt = 0;
 
   constructor(parent: Node, kit: UiKit, goBack: () => void) {
-    super(parent, kit, "match-setup", "对练", "MATCH PLAY", goBack);
+    super(parent, kit, "match-setup", "对练", goBack);
     this.buildExtra();
   }
 
@@ -239,26 +265,32 @@ export class MatchSetupScreen extends ModeScreen {
     // 球馆选择(自主菜单迁入):选中 = 该馆主题色描边点亮 + 「使用中」角标
     const courts = new Node("courts");
     courts.layer = this.root.layer;
-    courts.addComponent(UITransform);
+    courts.addComponent(UITransform).setContentSize(640, TOUCH_MIN);
     courts.setPosition(0, -152, 0);
     this.kit.courtThemes().forEach((c, i) => {
       const tab = new Node(`court:${c.id}`);
       tab.layer = courts.layer;
-      tab.addComponent(UITransform).setContentSize(148, 42);
+      // 命中框吃 TOUCH_MIN 下限,墨仍按 42 画(「视觉小、命中大」,同 uiIconButton 那一手)
+      tab.addComponent(UITransform).setContentSize(148, TOUCH_MIN);
       const g = tab.addComponent(Graphics);
       const name = this.kit.label(tab, c.name, 13, ARCADE.paper);
-      // 「使用中」角标:选中才亮,斜切小片贴在卡片右上角
+      // 「使用中」角标:选中才亮,斜切小片贴在卡片右上角。
+      // 这颗角标按选中态 active 开关,而原生侧 Graphics 的渲染数据会在 onDisable 被清、
+      // 重激活不重传 —— 一次画完的它第二次点亮就只剩字没有底,所以登记成可重放。
       const flag = new Node("flag");
       flag.layer = tab.layer;
       flag.addComponent(UITransform).setContentSize(52, 16);
       const fg = flag.addComponent(Graphics);
-      fg.fillColor = col(c.accent);
-      slantPath2(fg, 52, 16, skewOf(16, 10));
-      fg.fill();
+      retainedDraw(fg, () => {
+        fg.fillColor = col(c.accent);
+        slantPath(fg, 52, 16, skewOf(16, 10));
+        fg.fill();
+      });
       this.kit.label(flag, "使用中", 10, "#0a0e1c").node.setPosition(0, 0, 0);
       flag.setPosition(58, 12, 0);
       flag.setParent(tab);
 
+      this.pressable(tab, 0.94);
       tab.on(Button.EventType.CLICK, () => {
         this.kit.sfx.play("ui");
         this.kit.setCourtTheme(c.id);
@@ -272,23 +304,8 @@ export class MatchSetupScreen extends ModeScreen {
     courts.setParent(this.root);
     this.pushExtra(courts);
 
-    // 核心技能配置胶囊(自主菜单迁入):整块可点,弹技能选择弹窗
-    const skill = new Node("badge:skill");
-    skill.layer = this.root.layer;
-    skill.addComponent(UITransform).setContentSize(640, 46);
-    const sg = skill.addComponent(Graphics);
-    drawSlantShadow(sg, 640, 46, skewOf(46, 4), 4, 5, 0.5);
-    drawSlantPanel(sg, 640, 46, skewOf(46, 4), { face: "#16161f", alpha: 0.94, edge: "#38bdf8", edgeA: 0.5 });
-    makeChip(skill, "SKILL", 9, "#38bdf8", "#0a0e1c").setPosition(-262, 0, 0);
-    this.skillNameLabel = this.txt(skill, "强力跨步", 14, "#38bdf8", -216, 0, 200);
-    this.txt(skill, "赛前可选主动技能 · 更换 ›", 12, DIM_FAINT, 180, 0, 220);
-    skill.on(Button.EventType.CLICK, () => {
-      this.kit.sfx.play("ui");
-      this.kit.openSkillDialog(() => this.paintSkillBadge());
-    });
-    skill.setPosition(0, -214, 0);
-    skill.setParent(this.root);
-    this.pushExtra(skill);
+    // 核心技能配置胶囊:整块可点,弹技能选择弹窗
+    this.buildSkillBadge(-214);
   }
 
   protected onPick(d: DiffKey): void {
@@ -317,12 +334,6 @@ export class MatchSetupScreen extends ModeScreen {
       t.name.color = col(active ? ARCADE.paper : "#a7b6dd");
       t.flag.active = active;
     }
-  }
-
-  private paintSkillBadge(): void {
-    const def = Skills.defOf(Career.equippedSkill());
-    this.skillNameLabel.string = def.name;
-    this.skillNameLabel.color = col(def.accent);
   }
 
   // ---------- 作者通道(自主菜单原样迁入) ----------
@@ -357,7 +368,7 @@ export class MatchSetupScreen extends ModeScreen {
 
 export class EndlessScreen extends ModeScreen {
   constructor(parent: Node, kit: UiKit, goBack: () => void) {
-    super(parent, kit, "endless-screen", "无限练习", "ENDLESS", goBack);
+    super(parent, kit, "endless-screen", "无限练习", goBack);
     this.buildExtra();
   }
 
@@ -369,6 +380,14 @@ export class EndlessScreen extends ModeScreen {
     desc.setPosition(0, -152, 0);
     desc.setParent(this.root);
     this.pushExtra(desc);
+
+    // 无限练习同样吃全局装备的技能(doStartEndlessMatch → Career.applyToMatch),
+    // 所以这一屏也得能就地换 —— 原来只能退回对练屏改,改完再进来选难度。
+    this.buildSkillBadge(-214);
+  }
+
+  protected refreshExtra(): void {
+    this.paintSkillBadge();
   }
 
   protected onPick(d: DiffKey): void {

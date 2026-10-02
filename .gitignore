@@ -22,3 +22,6 @@ CHANGELOG.md
 
 # 系统文件
 .DS_Store
+
+# 正式签名密钥与口令 —— 绝不入库(丢了 keystore+口令 = 老用户永远收不到更新)
+/keystore/

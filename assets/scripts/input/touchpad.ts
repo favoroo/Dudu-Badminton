@@ -75,6 +75,7 @@ import {
 import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
 import { cdAlpha, cdText, drawCooldown, drawBlockedSlash, skillAccent } from "./pad-cd";
+import { applyFont } from "../game/fonts";
 
 /** 有按下/抬起两种状态的键;跨步键是纯边沿语义,抬起不动它。
  *  击球键(swing)需要松手检测(清理 held 态),所以也在 release 列表里。
@@ -909,6 +910,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     lb.enableOutline = true;
     lb.outlineColor = skinColor(PS.labelOutline, 1);
     lb.outlineWidth = 2;
+    applyFont(lb, true);
     ln.setPosition(0, -r * 0.62);
     labelOp = ln.addComponent(UIOpacity);
     labelOp.opacity = Math.round(PS.labelA * Settings.padAlpha * 255);
@@ -935,6 +937,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     cb.enableOutline = true;
     cb.outlineColor = skinColor(CFG.padSkin.cd.numOutlineColor, 1);
     cb.outlineWidth = CFG.padSkin.cd.numOutline;
+    applyFont(cb, true);
     cdOp = cn.addComponent(UIOpacity);
     cdOp.opacity = 0;
     cn.setParent(node);
@@ -961,6 +964,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     bl.enableOutline = true;
     bl.outlineColor = skinColor(B.outline, 1);
     bl.outlineWidth = 2.5;
+    applyFont(bl, true);
     bn.setPosition(0, r * B.dyK);
     badgeOp = bn.addComponent(UIOpacity);
     badgeOp.opacity = 0;
@@ -988,6 +992,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     hb.outlineColor = skinColor(CFG.padSkin.cd.numOutlineColor, 1);
     hb.outlineWidth = 2;
     hb.color = skinColor(CDK.hintColor, CDK.hintA);
+    applyFont(hb, false);
     hn.setPosition(0, r * CDK.hintDyK);
     hintOp = hn.addComponent(UIOpacity);
     hintOp.opacity = 0;

@@ -25,13 +25,13 @@
       "appABIs": [
         "arm64-v8a"
       ],
-      "useDebugKeystore": true,
+      "useDebugKeystore": false,
       "resizeableActivity": true,
       "maxAspectRatio": "2.4",
-      "keystorePath": "",
-      "keystorePassword": "",
-      "keystoreAlias": "",
-      "keystoreAliasPassword": "",
+      "keystorePath": "/Users/a1/Documents/01Code/dudu-cocos/keystore/release.keystore",
+      "keystorePassword": "8FE0IMIldEOcYMXXPCOMaNpb",
+      "keystoreAlias": "dudu",
+      "keystoreAliasPassword": "8FE0IMIldEOcYMXXPCOMaNpb",
       "appBundle": false,
       "androidInstant": false,
       "inputSDK": false,

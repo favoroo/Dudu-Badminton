@@ -18,7 +18,7 @@
 // token 跟着消费者走」(ARCADE / PAL / TOUCH_MIN / BRIEF / STRIP_* 都在各自模块里)。
 // CFG.skills.list 里的 desc·cooldownFrames·unlockLevel·accent 是**内容**,一个都不许动。
 // ============================================================
-import { textW, wrapText, type Measure } from "./text-metrics";
+import { textW, wrapText, type Measure } from "../core/text-metrics";
 
 /** 与 ui-arcade.skewOf 同式(本模块零 cc 不能 import;改斜切角两边一起看) */
 function shearOf(h: number, deg: number): number {

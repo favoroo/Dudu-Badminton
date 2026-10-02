@@ -1,12 +1,14 @@
 {
   "name": "dudu-cocos",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "uuid": "7891AA56-9025-4DB4-8100-4392643E0D6A",
   "creator": {
     "version": "3.8.8"
   },
   "scripts": {
-    "preview": "python3 -m http.server 8899 --bind 127.0.0.1 --directory build/web-mobile"
+    "preview": "python3 -m http.server 8899 --bind 127.0.0.1 --directory build/web-mobile",
+    "test:build": "tsc -p tools/tsconfig.json && tsc -p tools/tsconfig.check.json",
+    "test": "npm run -s test:build && node tools/test-all.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

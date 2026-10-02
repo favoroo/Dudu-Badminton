@@ -20,6 +20,8 @@ export interface DrillRec {
 }
 
 export interface Profile {
+  /** 存档版本:目前恒 1,只作标记。将来字段语义变卦时按 v 写一次性迁移(现状是零迁移补默认) */
+  v: number;
   level: number;
   exp: number;
   coins: number;
@@ -29,6 +31,8 @@ export interface Profile {
   equippedSkill?: SkillId;
   streak: number;
   bestStreak: number;
+  /** 无限练习手动收局的个人单局最高分(最长相持共用 stats.maxRally) */
+  bestEndlessScore: number;
   /** 训练场进度:关卡 id → 最好成绩。老档缺这个字段由 profile() 逐字段补默认,零迁移 */
   drills: Record<string, DrillRec>;
   /** 生涯累积统计 (胜负场次/扣杀/甜区/完美/最长回合) */
@@ -56,11 +60,13 @@ let cache: Profile | null = null;
 let sandbox = false;
 
 const fresh = (): Profile => ({
+  v: 1,
   level: 1, exp: 0, coins: C.career.startCoins,
   owned: KINDS.map((k) => DEFAULTS[k].id),
   equipped: { player: DEFAULTS.player.id, racket: DEFAULTS.racket.id, shuttle: DEFAULTS.shuttle.id, face: DEFAULTS.face.id },
   equippedSkill: "lunge",
   streak: 0, bestStreak: 0,
+  bestEndlessScore: 0,
   drills: {},
   stats: {
     matches: 0,
@@ -75,11 +81,17 @@ const fresh = (): Profile => ({
 
 function profile(): Profile {
   if (!cache) cache = Object.assign(fresh(), load<Partial<Profile>>(KEY, {}));
-  // 旧档缺新字段就地补齐,以后加字段不用写迁移
+  // 旧档缺新字段就地补齐,以后加字段不用写迁移(真要动老字段语义时再按 v 分支)
   const ref = fresh();
   for (const k of Object.keys(ref) as (keyof Profile)[]) {
     if (!(k in cache)) (cache as unknown as Record<string, unknown>)[k] = ref[k];
   }
+  if (typeof cache.v !== "number") cache.v = 1;
+  // 类型防御:上面的循环只补「缺键」不纠「错型」—— 手改存档/上游写坏一个 null 时,
+  // owned=null 会在 owned.includes 处 TypeError,商店/结算/生涯全链路跟着崩
+  if (!Array.isArray(cache.owned)) cache.owned = ref.owned;
+  if (!cache.equipped || typeof cache.equipped !== "object") cache.equipped = ref.equipped;
+  if (typeof cache.bestEndlessScore !== "number" || !Number.isFinite(cache.bestEndlessScore)) cache.bestEndlessScore = 0;
   if (!cache.stats || typeof cache.stats !== "object") cache.stats = fresh().stats;
   for (const sk of Object.keys(ref.stats) as (keyof Profile["stats"])[]) {
     if (!(sk in cache.stats)) cache.stats[sk] = ref.stats[sk];
@@ -174,8 +186,14 @@ export interface SettleResult {
 
 // ---------- 赛后结算:发奖励 + 升级,返回明细给 UI 展示 ----------
 // 2p 同屏没有 CPU,属友谊赛:不发奖励、连胜清零(防两人互相刷币)
-function settle({ mode, diff, won, stats, longestRally }: {
+// campaign:闯关首通按战前简报承诺的关卡奖励(stage.rewards)发放,重打回落难度表;
+// 由 game 层从 campaign-clear 事件取出 firstClear 与奖励传入(rules 里 recordStageClear
+// 先于本函数执行,到这时「是不是首通」只能从事件侧带过来)。
+// scores:无限练习收局时的终局比分,用于单局最高分落盘。
+function settle({ mode, diff, won, stats, longestRally, scores, campaign }: {
   mode: string; diff: DiffKey; won: boolean; stats?: MatchStats; longestRally?: number;
+  scores?: [number, number];
+  campaign?: { firstClear: boolean; coins: number; exp: number };
 }): SettleResult | null {
   const p = profile();
 
@@ -192,6 +210,11 @@ function settle({ mode, diff, won, stats, longestRally }: {
 
   if (mode === "2p") { p.streak = 0; saveProfile(); return null; }
 
+  // 无限练习收局:单局个人最高分落盘(从前这个模式永不结算,什么都留不下)
+  if (mode === "endless" && scores) {
+    p.bestEndlessScore = Math.max(p.bestEndlessScore || 0, scores[0]);
+  }
+
   const R0 = C.career.rewards[diff] || C.career.rewards.normal;
   const mul = mode === "2v2" ? C.career.doublesMul : 1;
   const B = C.career.bonus;
@@ -204,9 +227,12 @@ function settle({ mode, diff, won, stats, longestRally }: {
 
   // 连胜加成只乘金币,按结算前的连胜数算(首胜无加成,第二连胜起 +10%)
   const streakBonus = won ? Math.min(p.streak * B.streakStep, B.streakCap) : 0;
-  const baseCoin = Math.round((won ? R0.win : R0.lose) * mul);
+  // 闯关首通:基础金币/经验换成关卡奖励(表现分与连胜照常叠加,只多不少);
+  // 重打不走这一支 —— 简报承诺的是「首通 +N」,按次发等于回头刷第 1 关印钞。
+  const stageFirst = mode === "campaign" && !!campaign && !!campaign.firstClear;
+  const baseCoin = Math.round(stageFirst ? campaign!.coins : (won ? R0.win : R0.lose) * mul);
   const coin = Math.round((baseCoin + perf) * (1 + streakBonus));
-  const exp = Math.round((won ? R0.expWin : R0.expLose) * mul);
+  const exp = Math.round(stageFirst ? campaign!.exp : (won ? R0.expWin : R0.expLose) * mul);
 
   p.streak = won ? p.streak + 1 : 0;
   p.bestStreak = Math.max(p.bestStreak, p.streak);
@@ -218,6 +244,7 @@ function settle({ mode, diff, won, stats, longestRally }: {
   return {
     coin, exp, perf, baseCoin, streakBonus,
     streak: p.streak, levelUps,
+    first: stageFirst,
     unlocked: skinsUnlockedAt(levelUps),
   };
 }

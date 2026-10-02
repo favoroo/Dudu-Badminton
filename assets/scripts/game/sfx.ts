@@ -23,15 +23,32 @@ const NAMES = [
 const nearest = (v: number, opts: number[]): number =>
   opts.reduce((best, o) => (Math.abs(o - v) < Math.abs(best - v) ? o : best), opts[0]);
 
+// GameRoot 与 UIManager 各持一个 Sfx 实例(两边都要在自己的组件里 this.sfx.play,
+// 这是分层现状,不硬改)。但从前各实例自己 loadDir 一遍、往 Canvas 挂一个
+// AudioSource —— 资产缓存让内存不翻倍,目录扫描与播放器却是实打实的双份。
+// 这里把「加载结果 + 播放器」提为模块级共享:谁先 load 谁负责拉资源,后来者复用。
+let sharedSrc: AudioSource | null = null;
+let sharedLoading = false;
+const sharedClips = new Map<string, AudioClip>();
+
 export class Sfx {
   private src: AudioSource | null = null;
-  private clips = new Map<string, AudioClip>();
+  private readonly clips = sharedClips;
 
-  /** 异步加载;未就绪时 play 静默丢弃(音效不该弄挂游戏) */
+  /** 异步加载;未就绪时 play 静默丢弃(音效不该弄挂游戏)。幂等:重复调用/多实例只拉一次 */
   load(node: Node, done?: () => void): void {
+    if (this.src) { done && done(); return; }            // 本实例已加载
+    if (sharedSrc || sharedLoading) {                    // 别的实例已加载/在加载 → 复用
+      this.src = sharedSrc;
+      done && done();
+      return;
+    }
+    sharedLoading = true;
     this.src = node.addComponent(AudioSource);
+    sharedSrc = this.src;
     resources.loadDir("audio/sfx", AudioClip, (err, clips) => {
-      if (!err) for (const c of clips) this.clips.set(c.name, c);
+      sharedLoading = false;
+      if (!err) for (const c of clips) sharedClips.set(c.name, c);
       done && done();
     });
   }

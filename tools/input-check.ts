@@ -14,16 +14,14 @@
 //
 // 用法(先 npx tsc -p tools/tsconfig.json 编译):
 //   node .tools-build/tools/input-check.js
+import { makeChecker } from "./harness";
 import { newPad, press, release, cancelJump, clearEdges, buildIntent, resetPadHolds, tickHolds, setTargetX } from "../assets/scripts/input/pad";
 import { Player } from "../assets/scripts/core/player";
 import { CFG } from "../assets/scripts/core/config";
 import type { PlayerInput } from "../assets/scripts/core/types";
 
-let bad = 0;
-const ok = (cond: boolean, msg: string): void => {
-  console.log(`${cond ? "✓" : "✗"} ${msg}`);
-  if (!cond) bad++;
-};
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 /** 只关心跨步的输入,其余字段给中性默认 */
 const lungeInp = (dir: number): PlayerInput => ({
@@ -102,10 +100,20 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
 }
 
 // ---------- ⑤ 逻辑层兜底:方向没解出来时朝网跨 ----------
+// 0.0.16 起 lunge 走技能通道(player.update 里 `skillHit && ball && canActivate`),
+// 夹具必须喂一颗球才进得了触发分支 —— 从前这里全传 null,六条断言常红两批版本。
 
 {
+  // lunge 的 canActivate/activate 只看人(在地面/未挥拍/未跨步),球只要非 null 即可
+  const mkBall = () => ({
+    x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0,
+    live: false, held: true, owner: null, lastHitter: null,
+    crossed: false, netted: false, shot: null, sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
+  });
+
   const p = Player.create("left");
-  Player.update(p, lungeInp(0), null);
+  Player.update(p, lungeInp(0), mkBall());
   ok(p.lungeT >= 0 && p.lungeDir === p.facing, `lungeDir=0(静止)→ 兜底面向方向(实得 ${p.lungeDir},facing=${p.facing})`);
   // 按下当帧就要爆发:旧结构先推进再判触发,移动中按下会先吃 1 帧旧移动,手感像顿了一下
   ok(p.lungeT === 1 && Math.abs(p.vx) === CFG.lunge.speed,
@@ -113,19 +121,19 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
 
   const q = Player.create("left");
   const before = q.x;
-  for (let i = 0; i < 6; i++) Player.update(q, i === 0 ? lungeInp(-1) : { ...lungeInp(-1), lungePressed: false }, null);
+  for (let i = 0; i < 6; i++) Player.update(q, i === 0 ? lungeInp(-1) : { ...lungeInp(-1), lungePressed: false }, mkBall());
   ok(q.x < before, `往左跨真的往左移动了(Δx=${(q.x - before).toFixed(1)})`);
 
   // 挥拍期间不许跨步:跨步是全身承诺,不能和白送的一拍叠在一起
   const r = Player.create("left");
   r.swingT = 2;
-  Player.update(r, lungeInp(1), null);
+  Player.update(r, lungeInp(1), mkBall());
   ok(r.lungeT === -1, "挥拍中按下跨步不触发");
 
   // 爆发结束只进冷却,不吃慢速惩罚:冷却期里按方向键要能立刻全速跑走
   // (旧恢复期把速度硬钳到 35%,移动中跨步比干跑还慢,像急刹)
   const c = Player.create("left");
-  for (let i = 0; i < 7; i++) Player.update(c, i === 0 ? lungeInp(1) : { ...lungeInp(1), lungePressed: false }, null);
+  for (let i = 0; i < 7; i++) Player.update(c, i === 0 ? lungeInp(1) : { ...lungeInp(1), lungePressed: false }, mkBall());
   ok(c.lungeT === -1 && c.lungeCd > 0, `爆发结束进入冷却(lungeT=${c.lungeT}, cd=${c.lungeCd})`);
   Player.update(c, { ...lungeInp(0), lungePressed: false, right: true }, null);
   ok(c.vx === CFG.player.vmax, `冷却期移动不受限,一帧回到全速(vx=${c.vx})`);
@@ -139,7 +147,7 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
   });
   for (let i = 0; i < 12; i++) Player.update(m, runInp(true), null);  // 跑到全速
   ok(Math.abs(m.vx - CFG.player.vmax) < 0.01, `先跑到全速(vx=${m.vx.toFixed(2)})`);
-  Player.update(m, runInp(true, true), null);  // 全速中按跨步
+  Player.update(m, runInp(true, true), mkBall());  // 全速中按跨步
   ok(m.vx > CFG.lunge.speed + 1,
     `跑动中跨步叠加冲量:vx 应超过纯爆发速 ${CFG.lunge.speed}(实得 ${m.vx.toFixed(2)})`);
 }
@@ -315,5 +323,5 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
   ok(pad.targetX === undefined, "resetPadHolds 成功清除 targetX");
 }
 
-console.log(bad === 0 ? "\n输入意图层自洽 ✓" : `\n${bad} 项未通过`);
-process.exit(bad === 0 ? 0 : 1);
+console.log(h.bad === 0 ? "\n输入意图层自洽 ✓" : `\n${h.bad} 项未通过`);
+process.exit(h.bad === 0 ? 0 : 1);

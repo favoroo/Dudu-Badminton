@@ -12,6 +12,7 @@
 //
 // 用法(先 npx tsc -p tools/tsconfig.json 编译):
 //   node .tools-build/tools/settings-check.js
+import { makeChecker } from "./harness";
 import { setStorageBackend, type KVStorage } from "../assets/scripts/core/utils";
 import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, JOYSTICK_LIMIT, JOYSTICK_BASE, SLIDER_BASE, SLIDER_LIMIT, PAD_ACTIONS, railGeo } from "../assets/scripts/core/settings";
 import { CFG } from "../assets/scripts/core/config";
@@ -24,11 +25,8 @@ class MemKV implements KVStorage {
   setItem(k: string, v: string): void { this.m.set(k, v); }
 }
 
-let bad = 0;
-const ok = (cond: boolean, msg: string): void => {
-  console.log(`${cond ? "✓" : "✗"} ${msg}`);
-  if (!cond) bad++;
-};
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9;
 
 /** 每个用例一套干净盘,免得写盘顺序互相污染 */
@@ -419,5 +417,5 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(hs.v.hapticOn === false && hs.v.hapticLevel === other, "总闸与强度互不干扰:关掉不影响已设的档");
 }
 
-console.log(`\n${bad === 0 ? "全部通过" : `${bad} 项失败`}`);
-process.exit(bad === 0 ? 0 : 1);
+console.log(`\n${h.bad === 0 ? "全部通过" : `${h.bad} 项失败`}`);
+process.exit(h.bad === 0 ? 0 : 1);

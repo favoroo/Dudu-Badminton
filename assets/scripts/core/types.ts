@@ -253,7 +253,20 @@ export interface Player {
   flashFrom?: { x: number; y: number } | null;
   /** 时空减速领域持续帧 */
   focusT?: number;
-  stats: { hits: number; smashes: number; sweets: number; perfects: number; whiffs: number };
+  stats: {
+    hits: number; smashes: number; sweets: number; perfects: number; whiffs: number;
+    // ---- 闯关三星判据的逐局计数(球员随每局重建,天然按局归零) ----
+    lungeShots: number;      // 飞扑窗口内击球
+    jumpSmashes: number;     // 跳杀(空中高球烈焰扣杀)
+    iaiStrikes: number;      // 居合一闪拔刀斩
+    skillCasts: number;      // 技能成功释放次数
+    deepShots: number;       // 底线深球(真实落点深度 ≥ C.star.deepDepth)
+    netIntercepts: number;   // 网前精准截击(网带附近甜区/完美回球)
+    airHits: number;         // 腾空击球(占比判据的分子)
+    empReturns: number;      // EMP 故障期间(rally ≥ C.star.empRally)的回球
+    zonePenalties: number;   // 踩禁区触电次数
+    exhausted: number;       // 体力曾进入枯竭(0/1,取「曾经发生」语义)
+  };
   /** rules.step 每步记下的输入快照(调试用) */
   lastInp?: PlayerInput;
   racketSkin?: SkinDef;
@@ -368,6 +381,10 @@ export interface ShotResult {
   skillKind?: SkillId;
   /** 闯关挑战模式:居合一闪拔刀斩 */
   iaiStrike?: boolean;
+  /** 出手瞬间人在腾空(三星判据「空中击球占比」的分子口径) */
+  airborne?: boolean;
+  /** 出手瞬间处于极滑滑行状态(三星判据「滑行击球得分」的口径) */
+  sliding?: boolean;
 }
 
 // ---------- 事件 ----------

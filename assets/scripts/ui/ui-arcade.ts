@@ -11,65 +11,43 @@
 // 例外是 retainedDraw() 那一条:节点被 deactivate 再 activate 时原生侧会掉渲染数据,
 // 所以「会被按状态开关」的底块都登记一份可重放的绘制,激活时 clear()+重画。
 // ============================================================
-import { BlockInputEvents, Button, Color, Component, Font, Graphics, Label, Node, resources, sys, Tween, tween, UIOpacity, UITransform, Vec3, view, Widget, _decorator } from "cc";
+import { BlockInputEvents, Button, Color, Component, Font, Graphics, Label, Layers, Node, sys, Tween, tween, UIOpacity, UITransform, Vec3, view, Widget, _decorator } from "cc";
 import { CFG } from "../core/config";
-import { textW } from "./text-metrics";
+import { textW } from "../core/text-metrics";
+import { applyFont, getBodyFont, getDisplayFont, onBodyFont, onDisplayFont } from "../game/fonts";
+import { C, TOUCH, inkFor, isBright } from "./p5-tokens";
+
+export { applyFont, getBodyFont, getDisplayFont, onBodyFont, onDisplayFont };
 
 const { ccclass } = _decorator;
 
 // ---------- 设计令牌(P5「暗红斩劈」:红黑白主导,黄点缀) ----------
-export const ARCADE = {
-  ink: "#07070d",        // 最深底(P5 黑)
-  navy: "#101018",       // 面板底(原深蓝 navy 换血为近黑)
-  navy2: "#1a1a26",      // 按钮底/面板上层
-  panelTop: "#20202e",   // 面板渐变上端
-  line: "#2c2c3a",       // 描线
-  paper: "#f5efe1",      // 暖纸白(正文/大字)
-  paperDim: "#cfc7b4",
-  acid: "#ffe14d",       // 荧光黄:二级点缀(金币/连击/TO 徽章)
-  acidEdge: "#b79b12",
-  acidDk: "#8a7514",
-  slash: "#e60012",      // P5 主红:主按钮/横幅/强调块
-  slashDk: "#8f000b",    // 主红的厚底边
-  red: "#ff4d4d",        // 队色红(与球衣同源,别当主红用)
-  blue: "#3ea8ff",       // 队色蓝
-  wood: "#c8703a",       // 暖木
-  good: "#7dff9e",
-  bad: "#ff6b6b",
-  cyan: "#00f0ff",
-  dim: "#8f9cbe",
-  dimDeep: "#6f7ca6",
-};
+// 值与语义的唯一真话在 p5-tokens.ts(零 cc,node 断言也吃它)。这里只是**再导出**:
+// 历史上 ARCADE 被 ui 层各处直接引用,换成 `import { C }` 会铺满几十个文件,
+// 所以保留 ARCADE 这个名字与全部键名,面板层不必为了统一配色去改 import。
+export const ARCADE = C;
+export { C as TOKENS };
 
-// ---------- 显示字体:子集化的中文标题黑体(见 tools/make-font-subset.py) ----------
-// 挂标题/比分大字/横幅;加载失败(资源未导入、低端机)静默回退系统字体,调用方无需判空。
-let displayFont: Font | null = null;
-const fontWaiters: Array<(f: Font) => void> = [];
-
-/** 标题/大字专用字体;尚未加载完成时返回 null(调用方先按系统字体走) */
-export function getDisplayFont(): Font | null { return displayFont; }
-
-/** 字体就绪回调(已就绪则立即调):给先建好的 Label 补挂字体用 */
-export function onDisplayFont(cb: (f: Font) => void): void {
-  if (displayFont) { cb(displayFont); return; }
-  fontWaiters.push(cb);
-}
-
-try {
-  resources.load("fonts/dudu-display", Font, (err, asset) => {
-    if (!err && asset && asset.isValid) {
-      displayFont = asset;
-      for (const cb of fontWaiters.splice(0)) cb(asset);
-    }
-  });
-} catch { /* 无 resources 的运行环境忽略:一律系统字体 */ }
+// ---------- 面板层语法(P5 大色块):形状在 p5-shapes 出点列,画笔在 p5-paint ----------
+// 这里再导出,面板一律 `import { drawPosterPlate } from "./ui-arcade"` 就够了。
+// 为什么要拆三层:形状算成点列(零 cc)才能在 node 里出图与断言,
+// 而 tools/cc-stub.ts 只桩得住 Color + Graphics —— 于是出图与实机共用同一份形状代码。
+export {
+  drawBevelSlot, drawHalftone, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
+  drawSectionBand, drawSliderFace, drawSlantKnob, drawStarGlyph, drawToggleFace,
+  paintP5,
+} from "./p5-paint";
+export type { BadgeKind, CardOpts, HalftoneOpts, PlateOpts, SliderDL } from "./p5-shapes";
+export { bandDL, blockDL, cardDL, halftoneCount, plateDL, slotDL, sliderDL, styleOf, toggleDL } from "./p5-shapes";
+export { ROLE, SLANT, HALFTONE, INK_TEXT, inkFor, isBright, contrast } from "./p5-tokens";
+export type { Role } from "./p5-tokens";
 
 // ---------- 移动端触控令牌(统一从这把尺子出,不再每个面板各写各的) ----------
 
 /** 触控目标最小高度(世界单位):1 单位 ≈ 0.15mm,44 ≈ 6.6mm,是拇指点准的下限 */
-export const TOUCH_MIN = 44;
+export const TOUCH_MIN = TOUCH.min;
 /** 关停类小按钮(返回 ✕ 等)的命中区边长:视觉小、命中大 */
-export const ICON_HIT = 56;
+export const ICON_HIT = TOUCH.iconHit;
 
 // ---------- 安全区:三处私有实现收编成一份 ----------
 
@@ -250,6 +228,7 @@ export function uiIconButton(
   l.horizontalAlign = Label.HorizontalAlign.CENTER;
   l.verticalAlign = Label.VerticalAlign.CENTER;
   l.color = ac(opts.fg ?? ARCADE.paper);
+  applyFont(l, false);
   const b = n.addComponent(Button);
   b.transition = Button.Transition.SCALE;
   b.zoomScale = 0.9;
@@ -285,6 +264,126 @@ export function acShade(hex: string, k: number, alpha = 1): Color {
  * `import { textW } from "./ui-arcade"` 的调用点也一律不动。
  */
 export { textW };
+
+// ---------- 盒模型:Label 权威工厂 + 横排/网格布局原语 ----------
+
+/**
+ * 全站唯一一份「摆一个 Label」的实现。从前 5 份工厂各抄各的
+ * (campaign / career / drill / widgets / ui-manager.uiLabel),锚点策略、
+ * 行高系数、对齐默认值彼此漂移 —— campaign 面板「按 align 设锚点」修好了
+ * 战前简报糊出弹窗,同类的修复却只落在五份里的两份(career 的 align=2
+ * 至今没有右锚,drill 干脆不管锚点)。
+ *
+ * 这里只做「构造」不做「翻案」:五个调用方以薄委托接入,把各自的现状
+ * 编码成显式参数 —— 行为逐位不变,分叉从此只在参数表上可见。
+ * 想把某个厂改到权威语义(如 anchor:"align"),改它自己的委托一行即可,
+ * 其余四家不会被动跟着变。
+ */
+export interface MkLabelOpts {
+  x?: number;
+  y?: number;
+  /** contentSize 宽(默认 200;Label 按节点 contentSize 排字,不设会让长文案溢出) */
+  w?: number;
+  /** 行数:contentSize 高按它乘(多行文本必须撑高,否则 CLAMP 会裁掉后续行) */
+  lines?: number;
+  /** Label.lineHeight(绝对 px;不传 = round(size × 1.25)) */
+  lineH?: number;
+  /** contentSize 高(绝对 px;不传 = round(size × 1.35) × lines) */
+  contentH?: number;
+  /** 水平对齐 0 左 / 1 中 / 2 右(默认 1 中;各厂默认不同,委托方显式传) */
+  align?: 0 | 1 | 2;
+  /**
+   * 锚点策略:"align" = 跟对齐走(左对齐左锚、右对齐右锚,x 即文本缘,长文案
+   * 不再朝反方向伸半个框宽);"center" = 恒中心(历史行为)。不传 = 不动锚点。
+   */
+  anchor?: "align" | "center";
+  overflow?: Label.Overflow;
+  outline?: string | Color;
+  outlineW?: number;
+  /** true = 挂标题黑体(MiSans-Heavy);默认正文字体 */
+  disp?: boolean;
+  opacity?: number;
+  /** false = 完全不碰 contentSize(ui-manager.uiLabel 的历史语义:留给引擎自量) */
+  sizing?: boolean;
+}
+
+export function mkLabel(
+  parent: Node, name: string, text: string,
+  size: number, color: string | Color,
+  opts: MkLabelOpts = {},
+): Label {
+  const o = opts;
+  const n = new Node(name);
+  n.layer = Layers.Enum.UI_2D;
+  const ut = n.addComponent(UITransform);
+  if (o.sizing !== false) {
+    const lines = o.lines ?? 1;
+    ut.setContentSize(o.w ?? 200, o.contentH ?? Math.round(size * 1.35) * lines);
+    if (o.anchor !== undefined) {
+      const a = o.anchor === "align" ? (o.align === 0 ? 0 : o.align === 2 ? 1 : 0.5) : 0.5;
+      ut.setAnchorPoint(a, 0.5);
+    }
+  }
+  if (o.x !== undefined || o.y !== undefined) n.setPosition(o.x ?? 0, o.y ?? 0, 0);
+  n.setParent(parent);
+  const l = n.addComponent(Label);
+  l.string = text;
+  l.fontSize = size;
+  l.lineHeight = o.lineH ?? Math.round(size * 1.25);
+  l.horizontalAlign = o.align ?? 1;
+  l.verticalAlign = 1;
+  if (o.overflow !== undefined) l.overflow = o.overflow;
+  l.color = typeof color === "string" ? ac(color) : color;
+  if (o.outline) {
+    l.enableOutline = true;
+    l.outlineColor = typeof o.outline === "string" ? ac(o.outline) : o.outline;
+    l.outlineWidth = o.outlineW ?? 2;
+  }
+  applyFont(l, !!o.disp);
+  if (o.opacity != null) n.addComponent(UIOpacity).opacity = o.opacity;
+  return l;
+}
+
+/**
+ * 横排轨道:`-totalW/2 + i*(w+gap)` 手搓横排的唯一算术。
+ * 输入各项宽度与缝宽,返回**每项左缘**的 x 坐标(行总宽居中于 0;align 0=贴左,2=贴右)。
+ * 节点是中心锚就自己 +w/2,左锚直接用 —— 轨道只有一份真话,锚点语义留在调用方。
+ */
+export function hbox(ws: number[], gap: number, align: 0 | 1 | 2 = 1): number[] {
+  const totalW = ws.reduce((s, w) => s + w, 0) + gap * Math.max(0, ws.length - 1);
+  const start = align === 1 ? -totalW / 2 : align === 0 ? 0 : -totalW;
+  let x = start;
+  return ws.map((w) => {
+    const left = x;
+    x += w + gap;
+    return left;
+  });
+}
+
+export interface GridSpec {
+  cols: number;
+  /** 单元宽/高与横竖缝 */
+  cw: number; ch: number; gapX: number; gapY: number;
+  /** 第一行顶边的 y(通常 = 内容区高的一半 - 顶部留白) */
+  top: number;
+}
+
+/**
+ * 网格单元**中心**坐标(career/drill 的卡片网格、生涯战绩卡都曾手抄这套):
+ * col 居中横排、row 从 top 向下。单元节点一律中心锚。
+ */
+export function gridCenters(n: number, g: GridSpec): { x: number; y: number }[] {
+  const totalW = g.cols * g.cw + (g.cols - 1) * g.gapX;
+  const out: { x: number; y: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const col = i % g.cols, row = Math.floor(i / g.cols);
+    out.push({
+      x: -totalW / 2 + col * (g.cw + g.gapX) + g.cw / 2,
+      y: g.top - row * (g.ch + g.gapY) - g.ch / 2,
+    });
+  }
+  return out;
+}
 
 // ---------- 一次绘制的 Graphics 的「复活」 ----------
 
@@ -513,53 +612,10 @@ export function drawVeil(g: Graphics, w: number, h: number, centerA: number, edg
   }
 }
 
-// ---------- 玻璃卡:球场透得过,字还站得住 ----------
-
-/**
- * 半透明「毛玻璃」底:深色压住背景保证对比度 + 白描边 + 顶边高光。
- * 用于菜单卡片/列表项这类要贴在球场上展示的表面。
- * 两层底:近黑层压对比,再叠一层 navy-2 蓝灰「色底」—— 深色球馆背景上
- * 纯近黑半透明看不出卡片的形状,蓝灰层让按钮在任何背景下都显出底色。
- * slant≠0 时切成平行四边形(跳过圆角专属的半面高光)。
- */
-export function drawGlassCard(g: Graphics, w: number, h: number, r = 10, darkA = 0.42, accentHex?: string, slant = 0): void {
-  const drawBody = (): void => {
-    if (slant !== 0) {
-      slantPath(g, w, h, skewOf(h, slant));
-      g.fill();
-      return;
-    }
-    g.roundRect(-w / 2, -h / 2, w, h, r);
-    g.fill();
-  };
-  g.fillColor = ac(ARCADE.ink, darkA);
-  drawBody();
-  g.fillColor = ac(ARCADE.navy2, darkA * 0.6);
-  drawBody();
-  if (slant === 0) {
-    g.fillColor = ac("#ffffff", 0.06);
-    g.roundRect(-w / 2, h / 2 - h * 0.5, w, h * 0.5, r);
-    g.fill();
-  }
-  g.strokeColor = ac(accentHex ?? ARCADE.paper, accentHex ? 0.75 : 0.3);
-  g.lineWidth = accentHex ? 2 : 1.5;
-  drawBody();
-  g.stroke();
-  if (slant !== 0) {
-    const s = skewOf(h, slant) / 2;
-    g.strokeColor = ac("#ffffff", 0.12);
-    g.lineWidth = 1;
-    g.moveTo(-w / 2 + s + 3, -h / 2);
-    g.lineTo(w / 2 + s - 3, -h / 2);
-    g.stroke();
-    return;
-  }
-  // 顶缘高光:老 kbd / 面板 border 上沿提亮
-  g.strokeColor = ac("#ffffff", 0.1);
-  g.lineWidth = 1;
-  g.roundRect(-w / 2 + 3, -h / 2 + 3, w - 6, h - 6, Math.max(2, r - 3));
-  g.stroke();
-}
+// ---------- 玻璃卡:已删除 ----------
+// drawGlassCard(半透明胶囊 + 白描边 + 圆角)曾用于菜单卡片与开关/滑杆轨道。
+// 四面板 P5 改版后零引用:卡片走 drawP5Card、凹陷走 drawBevelSlot、开关行走 toggleDL。
+// 刻意**不保留**:留着它,下一个面板就会再拿它画回玻璃胶囊 —— 那正是本轮清掉的长相。
 
 // ---------- 主菜单卡片:要「站在」球场上,而不是透出去 ----------
 
@@ -662,11 +718,16 @@ export function drawMenuCard(g: Graphics, w: number, h: number, r = 12, o: MenuC
 /**
  * 亮色面上用墨黑字还是纸白字:按相对亮度判(绿/黄/青/纸白 → 墨黑,斩劈红 → 纸白)。
  * 大色块是整面实底,字的对比度就是可读性,不许调用方各拍一个。
+ * 真身在 p5-tokens.isBright(零 cc,node 断言吃那一份);这里保持布尔语义与历史一致 ——
+ * 亮度公式是朴素加权和而非 sRGB 线性化,换成线性的会把首页 hero 那块红的字色翻面。
  */
 export function inkOn(hex: string): boolean {
-  const c = ac(hex);
-  const l = (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
-  return l > 0.5;   // 亮面 → true(配墨黑字)
+  return isBright(hex);
+}
+
+/** 大色块上的字色(墨黑 / 纸白),直接给 Label.color 用;inkOn 的「取色」版 */
+export function inkHex(faceHex: string): string {
+  return inkFor(faceHex);
 }
 
 /**
@@ -910,6 +971,7 @@ export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid,
   l.horizontalAlign = Label.HorizontalAlign.CENTER;
   l.verticalAlign = Label.VerticalAlign.CENTER;
   l.color = ac(fg);
+  applyFont(l, false);
 
   n.setParent(parent);
   return n;

@@ -16,19 +16,16 @@
 // 用法(仓库根目录):
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/brief-check.js [--preview] [--selftest]
 // ============================================================
+import { makeChecker } from "./harness";
 import { CAMPAIGN_STAGES } from "../assets/scripts/core/campaign";
-import { textW, wrapText } from "../assets/scripts/ui/text-metrics";
+import { textW, wrapText } from "../assets/scripts/core/text-metrics";
 import {
   BRIEF, BRIEF_BTN, BRIEF_HEADS, briefOverlaps, briefOverflow, layoutBrief,
   type BriefItem, type BriefLayout, type BriefStage,
 } from "../assets/scripts/ui/brief-layout";
 
-let fails = 0;
-let checks = 0;
-function ok(cond: boolean, msg: string): void {
-  checks++;
-  if (!cond) { fails++; console.log(`  ✗ ${msg}`); } else { console.log(`  ✓ ${msg}`); }
-}
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 /** campaign-panel.PW / PH —— 面板尺寸改了要同步这里(同 strip-check 的口径) */
 const PANEL_W = 880, PANEL_H = 480;
@@ -153,5 +150,5 @@ if (process.argv.includes("--preview")) {
   }
 }
 
-console.log(`\n${fails === 0 ? "✓" : "✗"} ${checks} 项断言,失败 ${fails}`);
-process.exit(fails === 0 ? 0 : 1);
+console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
+process.exit(h.fails === 0 ? 0 : 1);

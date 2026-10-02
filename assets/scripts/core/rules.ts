@@ -13,7 +13,7 @@ import { Player as Pl } from "./player";
 import { AI } from "./ai";
 import { Skills } from "./skills";
 import { Ball, DiffKey, GameEvent, Player, PlayerInput, TeamSide } from "./types";
-import { CampaignManager, StageDef } from "./campaign";
+import { CampaignManager, StageDef, StarFacts, evaluateStars } from "./campaign";
 
 const C = CFG;
 const CO = C.court;
@@ -55,6 +55,8 @@ export interface RulesState {
   deuce: boolean;
   /** 当前闯关挑战关卡 (campaign 模式独占) */
   activeStage?: StageDef | null;
+  /** 最后一局(闯关)挣到的星数:结算页显示用,非闯关/败局为 undefined */
+  lastStars?: number;
   /** 以下字段在 newMatch / pause 时赋值 */
   humans?: number;
   serveWait: number;
@@ -100,6 +102,26 @@ const teamOf = (s: TeamSide): Player[] => {
 const mateOf = (p: Player): Player | null => teamOf(p.side).find((q) => q !== p) || null;
 const rivalsOf = (p: Player): Player[] => teamOf(other(p.side));
 const labelOf = (s: TeamSide): string => teamOf(s)[0].teamLabel;
+
+// ---------- 逐局审计:三星判据里「球/比分侧」的计数 ----------
+// 击球侧计数挂在球员 stats 上(见 applyShot,球员随每局重建天然归零);这里是
+// 比赛级的事件侧计数:发球失误、扣杀直接得分、滑行制胜拍、激光轨触发,以及
+// 「最后一分的原因」(末球扣杀判据)。newMatch/startCampaign 重置。
+interface MatchAudit {
+  serveFaults: number;
+  smashScores: number;
+  slidingScores: number;
+  laserBoosts: number;
+  /** 激光充能沿检测:上一模拟步球是否已处于 boost 态 */
+  laserPrev: boolean;
+  lastReason: string;
+  lastScorer: TeamSide | null;
+}
+const freshAudit = (): MatchAudit => ({
+  serveFaults: 0, smashScores: 0, slidingScores: 0, laserBoosts: 0,
+  laserPrev: false, lastReason: "", lastScorer: null,
+});
+let audit = freshAudit();
 
 // 该不该由这名球员去接:双打按「离落点更近的人接」。
 // 不能用"球降到可击高度的点"分工 —— 羽毛球落地很陡,那个点永远偏靠前场网口,
@@ -179,6 +201,8 @@ function resetModifiers(): void {
 
 function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   resetModifiers();
+  audit = freshAudit();
+  R.lastStars = undefined;
 
   R.mode = mode;
   R.diff = diff || "normal";
@@ -228,6 +252,8 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
 function startCampaign(stage: StageDef): void {
   R.activeStage = stage;
   CampaignManager.recordAttempt(stage.id);
+  audit = freshAudit();
+  R.lastStars = undefined;
 
   Physics.setEnvModifier({
     // oscillate 却没有 windX 时兜 config 那个基准,别在逻辑里写字面量 ——
@@ -325,6 +351,9 @@ function beginPoint(): void {
     old.owner = s; old.lastHitter = R.server;
     old.crossed = false; old.netted = false;
     old.shot = null;
+    // 激光充能是「这一段飞行」的标记:上一分的 boost 残留不清,下一分的边沿检测
+    // 会把旧状态当成新触发白记一次(判星口径),渲染层也会多亮一段
+    old.laserBoosted = false;
     old.sq = 1; old.sqPrev = 1;
   } else {
     // 首球:无历史球,直接到位
@@ -336,6 +365,7 @@ function beginPoint(): void {
   R.state = "SERVE";
   R.timer = C.scoring.servePause;
   R.serveWait = 0;
+  audit.laserPrev = false;             // 新的一分,激光充能沿从头算
   for (const p of R.players) { AI.reset(p); Skills.resetPoint(p); p.heat = 0; }   // 连击热手与技能随新的一分复位
   emit("point-start", { server: R.server });
 }
@@ -357,6 +387,17 @@ function applyShot(ball: Ball, shot: ShotLike): void {
   ball.shot = shot;
   R.rally++;
   R.longestRally = Math.max(R.longestRally, R.rally);
+  // 三星判据的击球侧计数:全部读 shot 上已定的真实字段,不在这里重算几何。
+  // 球员随每局重建,这些计数天然按局归零。
+  const st = shot.hitter.stats;
+  if (shot.lungeShot) st.lungeShots++;
+  if (shot.jumpSmash) st.jumpSmashes++;
+  if (shot.iaiStrike) st.iaiStrikes++;
+  if (shot.airborne) st.airHits++;
+  if (shot.depth >= C.star.deepDepth) st.deepShots++;
+  if (Math.abs(shot.contactX - CO.netX) <= C.star.netZone && (shot.sweet || shot.perfect)) st.netIntercepts++;
+  // EMP 故障期回球:与渲染层 empActive 同一阈值(rally ≥ empRally 才算「故障期间」)
+  if (shot.hitter.side === "left" && R.rally >= C.star.empRally) st.empReturns++;
   emit("hit", {
     side: shot.hitter.side, idx: shot.hitter.idx, kind: shot.kind, q: shot.q, sweet: shot.sweet,
     perfect: shot.perfect, timingHint: shot.timingHint || null,
@@ -515,6 +556,10 @@ function step(inputs: PlayerInput[]): void {
   // 瞬时正弦值,于是 getEnvModifier() 读回来的不是关卡那个数,兜底还得靠字面量 0.18)。
   // 现在 windX 恒为基准,任一时刻的风由 physics 按环境相位算 —— 界面与物理读同一句真话。
   Physics.step(ball);
+  // 激光加速轨触发沿:球这一步被磁轨充能且是左队击出的球 → 记一次(三星判据)。
+  // 沿检测 + beginPoint 清 laserPrev,一记充能只记一次,不会跨分残留。
+  if (ball.laserBoosted && !audit.laserPrev && ball.lastHitter === "left") audit.laserBoosts++;
+  audit.laserPrev = !!ball.laserBoosted;
   // 球体形变恢复:每帧向 1 逼近,击球瞬间的压扁逐渐回到正常
   ball.sqPrev = ball.sq;
   ball.sq = approach(ball.sq, 1, C.fx.ballSquashRecovery || 0.15);
@@ -599,6 +644,20 @@ function score(scorerSide: TeamSide, reason: string): void {
     return;
   }
 
+  // 三星判据的比分侧计数(各模式照记,判星只在闯关消费):
+  // 扣杀直接得分 / 滑行中的制胜拍 / 最后一分口径。发球失误 = 整分只打了发球那一拍
+  // (rally===1)就自己出界/下网/未过网,任何对方触拍都会把 rally 推到 2。
+  if (scorerSide === "left") {
+    if (reason === "扣杀得分") audit.smashScores++;
+    if (R.ball && R.ball.shot && R.ball.shot.sliding) audit.slidingScores++;
+  }
+  if (R.rally === 1 && R.ball && R.ball.lastHitter === "left"
+    && (reason === "出界" || reason === "下网" || reason === "未过网")) {
+    audit.serveFaults++;
+  }
+  audit.lastReason = reason;
+  audit.lastScorer = scorerSide;
+
   R.scores[teamIdx(scorerSide)]++;
   R.server = other(scorerSide);      // 输的一方拿发球权(家里定的规则,不是真实羽毛球规则)
   R.serveIdx++;                      // 双打:同队两人轮换发球
@@ -645,10 +704,15 @@ function score(scorerSide: TeamSide, reason: string): void {
       R.msg = winner === "left" ? `挑战成功！${stage.title}` : `挑战失败，请再接再厉！`;
       let stars = 0;
       if (winner === "left") {
-        stars = 1;
-        if (myScore - opScore >= 2) stars++;
-        if (opScore === 0 || R.longestRally >= 8) stars++;
+        // 判星:按本关 starsCheck 逐条求值(与战前简报展示的文案一一对应);
+        // 关卡缺判据时回落旧的通用三条,行为与历史版本一致
+        const ev = evaluateStars(stage.starsCheck, starFacts(true));
+        stars = ev >= 0 ? ev
+          : 1
+            + (myScore - opScore >= 2 ? 1 : 0)
+            + (opScore === 0 || R.longestRally >= 8 ? 1 : 0);
         const res = CampaignManager.recordStageClear(stage, myScore, opScore, stars);
+        R.lastStars = stars;
         emit("campaign-clear", {
           stageId: stage.id,
           stageNo: stage.stageNo,
@@ -671,7 +735,7 @@ function score(scorerSide: TeamSide, reason: string): void {
     return;
   }
 
-  // 无限模式:不判赛点与终局,比分正常累加,倒计时结束后继续发球
+// 无限练习:不判赛点与终局,比分正常累加,倒计时结束后继续发球
   if (R.mode === "endless") {
     emit("score", { side: scorerSide, reason, matchOver: false, score: R.scores.slice() });
     return;
@@ -708,6 +772,18 @@ function resume(): void {
   if (R.state !== "PAUSED") return;
   R.state = R.prevState || "RALLY";
   emit("resumed", {});
+}
+
+// 无限练习手动收局:按当前比分判胜负,走正常 matchOver 结算链(发奖励/生涯统计/
+// 结算页)。从前 endless 永不 matchOver,唯一出口是暂停回主菜单 —— 打了多久、
+// 最高多少分全不留档,也没有一分奖励,练习局是个「没有结局的循环」。
+function endEndless(): void {
+  if (R.mode !== "endless" || R.state === "OVER") return;
+  R.winner = R.scores[0] >= R.scores[1] ? "left" : "right";
+  R.state = "OVER";
+  R.reason = "练习收官";
+  R.msg = R.winner === "left" ? "练习收官,漂亮的对抗!" : "练习收官,下次再战!";
+  emit("match-over", { winner: R.winner });
 }
 
 function restart(): void {
@@ -770,6 +846,9 @@ function matchPointInfo(): { active: boolean; side: TeamSide | "both" | null; la
 export interface TeamStats {
   hits: number; smashes: number; sweets: number; perfects: number; whiffs: number;
   sweetRate: number; perfectRate: number;
+  lungeShots: number; jumpSmashes: number; iaiStrikes: number; skillCasts: number;
+  deepShots: number; netIntercepts: number; airHits: number; empReturns: number;
+  zonePenalties: number; exhausted: number;
 }
 
 const statsOf = (s: TeamSide): TeamStats => {
@@ -777,15 +856,44 @@ const statsOf = (s: TeamSide): TeamStats => {
     acc.hits += p.stats.hits; acc.smashes += p.stats.smashes;
     acc.sweets += p.stats.sweets; acc.perfects += p.stats.perfects;
     acc.whiffs += p.stats.whiffs;
+    acc.lungeShots += p.stats.lungeShots; acc.jumpSmashes += p.stats.jumpSmashes;
+    acc.iaiStrikes += p.stats.iaiStrikes; acc.skillCasts += p.stats.skillCasts;
+    acc.deepShots += p.stats.deepShots; acc.netIntercepts += p.stats.netIntercepts;
+    acc.airHits += p.stats.airHits; acc.empReturns += p.stats.empReturns;
+    acc.zonePenalties += p.stats.zonePenalties; acc.exhausted += p.stats.exhausted;
     return acc;
-  }, { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 } as TeamStats);
+  }, {
+    hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0,
+    lungeShots: 0, jumpSmashes: 0, iaiStrikes: 0, skillCasts: 0,
+    deepShots: 0, netIntercepts: 0, airHits: 0, empReturns: 0,
+    zonePenalties: 0, exhausted: 0,
+  } as TeamStats);
   res.sweetRate = res.hits > 0 ? Math.round((res.sweets / res.hits) * 100) : 0;
   res.perfectRate = res.hits > 0 ? Math.round((res.perfects / res.hits) * 100) : 0;
   return res;
 };
 
+// 判星用的逐局事实快照:左队击球统计 + 比赛级审计 + 比分,一次拼齐给 evaluateStars。
+// 拆成独立函数是让 campaign-check 能在 node 下直接喂假数据回归判据,不用跑整局。
+function starFacts(won: boolean): StarFacts {
+  const L = statsOf("left");
+  return {
+    won,
+    myScore: R.scores[0], opScore: R.scores[1],
+    longestRally: R.longestRally,
+    hits: L.hits, smashes: L.smashes, sweets: L.sweets, perfects: L.perfects, whiffs: L.whiffs,
+    lungeShots: L.lungeShots, jumpSmashes: L.jumpSmashes, iaiStrikes: L.iaiStrikes,
+    skillCasts: L.skillCasts, deepShots: L.deepShots, netIntercepts: L.netIntercepts,
+    airHits: L.airHits, empReturns: L.empReturns, zonePenalties: L.zonePenalties,
+    exhausted: L.exhausted,
+    serveFaults: audit.serveFaults, smashScores: audit.smashScores,
+    slidingScores: audit.slidingScores, laserBoosts: audit.laserBoosts,
+    lastSmash: audit.lastScorer === "left" && audit.lastReason === "扣杀得分",
+  };
+}
+
 export const Rules = {
-  R, newMatch, startCampaign, resetModifiers, step, restart, pause, resume, isMatchPoint, isPlaying, matchPointInfo, beginPoint, winTarget,
+  R, newMatch, startCampaign, resetModifiers, step, restart, pause, resume, endEndless, isMatchPoint, isPlaying, matchPointInfo, beginPoint, winTarget,
   applyAiTier,
-  teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, labelOf, setTrailHook,
+  teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, starFacts, labelOf, setTrailHook,
 };

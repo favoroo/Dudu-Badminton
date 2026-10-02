@@ -1,5 +1,5 @@
 {
-  "//": "回归编译(只编 core/** + tools/**,外加 ui 下六个零 cc 依赖的纯函数文件:text-metrics / release-notes / editor-strip / shop-shelf / brief-layout / skill-layout,更新弹窗的折行、编辑器顶栏的排版、商店货架的几何、战前简报的堆块、技能详情板的排版都要在 node 下断言)。core/update-service.ts 直接用 XMLHttpRequest,故 lib 带 DOM,与 tsconfig.check.json 一致。",
+  "//": "回归编译(只编 core/** + tools/**,外加 ui 下五个零 cc 依赖的纯函数文件:release-notes / editor-strip / shop-shelf / brief-layout / skill-layout(text-metrics 已归入 core/),更新弹窗的折行、编辑器顶栏的排版、商店货架的几何、战前简报的堆块、技能详情板的排版都要在 node 下断言)。core/update-service.ts 直接用 XMLHttpRequest,故 lib 带 DOM,与 tsconfig.check.json 一致。",
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
@@ -17,11 +17,16 @@
   "include": [
     "./**/*.ts",
     "../assets/scripts/core/**/*.ts",
-    "../assets/scripts/ui/text-metrics.ts",
+    "../assets/scripts/ui/p5-tokens.ts",
+    "../assets/scripts/ui/p5-shapes.ts",
+    "../assets/scripts/ui/p5-paint.ts",
     "../assets/scripts/ui/release-notes.ts",
     "../assets/scripts/ui/editor-strip.ts",
     "../assets/scripts/ui/shop-shelf.ts",
     "../assets/scripts/ui/brief-layout.ts",
-    "../assets/scripts/ui/skill-layout.ts"
+    "../assets/scripts/ui/skill-layout.ts",
+    "../assets/scripts/ui/settings-layout.ts",
+    "../assets/scripts/ui/campaign-layout.ts",
+    "../assets/scripts/ui/drill-layout.ts"
   ]
 }

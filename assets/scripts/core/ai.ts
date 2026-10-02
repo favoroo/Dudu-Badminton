@@ -180,11 +180,12 @@ function emotionModifiers(p: Player, S: AiState, d: ReturnType<typeof D>): Emoti
   const targetEmotion = clamp(diff / 5 - pr * 0.5, -1, 1);
   S.emotion = approach(S.emotion, targetEmotion, 0.08);
   const c = d.composure;
-  // 返回修正后的难度参数
+  // 返回修正后的难度参数(注意 emotion 落后时为负,别按直觉读反 —— 从前 speed 那行
+  // 注释写反过:「落后跑更快」实际公式是落后收步,调整手感时以公式为准)
   return {
     aggr: d.aggr * (1 - S.emotion * 0.25),        // 落后时更激进(+25%),领先时更保守(-25%)
-    timingErr: d.timingErr * (1 + S.emotion * 0.2 * c) + pr * AP.timingAdd, // 落后更准 + 长回合手抖
-    speed: d.speed * (1 + S.emotion * 0.08 * c) * (1 - pr * AP.speedMul),   // 落后跑更快·长回合腿沉
+    timingErr: d.timingErr * (1 + S.emotion * 0.2 * c) + pr * AP.timingAdd, // 落后更准(composure 闸)+ 长回合手抖
+    speed: d.speed * (1 + S.emotion * 0.08 * c) * (1 - pr * AP.speedMul),   // 落后收步更稳(composure 闸)·长回合腿沉
   };
 }
 

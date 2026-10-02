@@ -29,7 +29,7 @@
 // 版面按设计分辨率 960×540 排;内容收在 ±380 内(可见宽最窄就是 16:9 的 960),
 // 卡片顶边 201 低于 HUD 记分牌底边 203,从暂停页打开时不会挡住身后的比分。
 // ============================================================
-import { _decorator, Button, Color, Component, Graphics, Label, Layers, Node, UITransform, Vec2 } from "cc";
+import { _decorator, Button, Component, Graphics, Label, Layers, Node, UITransform } from "cc";
 import { Settings, PAD_LIMIT, JOYSTICK_LIMIT, SLIDER_LIMIT, type MoveMode } from "../core/settings";
 import { CFG } from "../core/config";
 import { Pace, paceIndexOf, paceTierById } from "../core/pace";
@@ -37,24 +37,36 @@ import { Gait, gaitIndexOf, gaitTierById } from "../core/gait";
 import { hapticIndexOf, hapticLabel, hapticLevelId } from "../core/haptic";
 import { haptic, hapticCancel, hapticStatus } from "../game/haptics";
 import type { UiKit } from "./ui-manager";
-import { ac, cancelFade, drawArcadeButton, drawHardShadow, fadeOutHide, riseIn, safePad, slamIn } from "./ui-arcade";
+import { cancelFade, fadeOutHide, riseIn, safePad, slamIn, SLANT, type Role } from "./ui-arcade";
+import { ROLE } from "./p5-tokens";
+import { sectionTitle, solidTab, type TabHandle } from "./ui-shell";
 import type { Slider, Toggle } from "./widgets";
 import { stripAt, stripLayout } from "./editor-strip";
+import {
+  controlLayout, donePos, hapticTestRow, mediaLayout, SET, strengthRow, tabRow,
+} from "./settings-layout";
 import { newPad } from "../input/pad";
 import { buildTouchPad, type PadSlot, type TouchPadHandle } from "../input/touchpad";
 
 const { ccclass } = _decorator;
 
-const PW = 760, PH = 424;      // 卡片尺寸
-const CARD_Y = -11;            // 卡片中心下移:顶边 201 仍低于 HUD 记分牌底边 203
+// 版面常量全部搬进 settings-layout.ts(纯函数,由 tools/panel-check.ts 在 node 下断言
+// 不重叠、不溢出)。这里只留 PW/PH 两个别名:「调整位置」顶栏与 strip-check 共用着它们。
+const PW = SET.pw, PH = SET.ph;
+const CARD_Y = SET.cardY;
+const COL_X = SET.colX;                 // 两页小节标题与行标签的统一左缘
 
-const TAB_W = 176, TAB_H = 40, TAB_GAP = 12;
-const TAB_Y = 144;             // tab 栏行心:上离标题留白,下离小节标题(y=104)留白
-
-/** 控件列几何:左列标签左缘、手感行滑杆中心/档名左缘 */
-const COL_X = -PW / 2 + 20;            // -340,两页小节标题与行标签的统一左缘
-const TIER_SLIDER_X = -52;             // 滑杆(宽 300)中心:-202..98,两侧各留 92
-const TIER_CAPTION_X = 190;            // 档名左缘:190..340,右缘与内容区对齐
+/**
+ * 各区块用哪个角色色 —— 色即功能,一律查 p5-tokens.ROLE,不在面板里写 hex。
+ * 旧版这一页所有小节标题都是同一支荧光黄裸文字,读起来像"整页一个主题";
+ * 现在颜色在报结构:红=当前 tab、青=声音、黄=画面、绿=手感。
+ */
+const ROLE_TAB: Role = "primary";
+const ROLE_SOUND: Role = "info";
+const ROLE_SCREEN: Role = "star";
+const ROLE_FEEL: Role = "drill";
+/** 衬纸后面那张错位副衬:整页用主红,与首页 hero 同色同源 */
+const BAND_HEX = ROLE.primary.face;
 
 type SettingsTab = "control" | "media";
 
@@ -69,12 +81,13 @@ const MODES: Array<{ mode: MoveMode; label: string; tip: string }> = [
   { mode: "buttons", label: "按键", tip: "经典左右两键全速 · 左手独立按键跳跃" },
 ];
 
-interface TabBtn { key: SettingsTab; node: Node; g: Graphics; label: Label; }
-
 @ccclass("SettingsPanel")
 export class SettingsPanel extends Component {
   private kit!: UiKit;
   private root: Node | null = null;
+
+  /** 面板根节点:供 ui-manager 做 screenSwap 退场用(退场仍走 hide(),那里有清理) */
+  get rootNode(): Node | null { return this.root; }
   private card: Node | null = null;
   private listView: Node | null = null;
   private editView: Node | null = null;
@@ -84,7 +97,9 @@ export class SettingsPanel extends Component {
   /** 当前 tab 与对应的页节点;切页 = discardPage() + buildPage(),从不复用画过的子树 */
   private tab: SettingsTab = "control";
   private page: Node | null = null;
-  private tabs: TabBtn[] = [];
+  private tabs: TabHandle[] = [];
+  /** tabs 与 TAB_DEFS 同序:工厂只管画,「第几格是哪个页」由这张平行表记住 */
+  private tabKeys: SettingsTab[] = [];
   /** 球速档位滑杆:与 sizeSlider/alphaSlider 一样存独立字段,**绝不 push 进 this.sliders**
    *  —— repaint() 按下标 0/1 同步音效/音乐音量,混进去会把音量滑杆指错。 */
   private paceSlider: Slider | null = null;
@@ -98,7 +113,7 @@ export class SettingsPanel extends Component {
   private selected: PadSlot | null = "left";
   private sizeLabel: Label | null = null;
   private modeTipLabel: Label | null = null;
-  private modeBtns: Array<{ mode: MoveMode; node: Node; g: Graphics; label: Label }> = [];
+  private modeBtns: Array<{ mode: MoveMode; tab: TabHandle }> = [];
   private toggles: Toggle[] = [];
   private sliders: Slider[] = [];
   private offChange: (() => void) | null = null;
@@ -129,6 +144,7 @@ export class SettingsPanel extends Component {
     this.padHandle = null;
     this.discardPage();
     this.tabs = [];
+    this.tabKeys = [];
     this.tab = "control";
     this.sizeSlider = null;
     this.alphaSlider = null;
@@ -150,74 +166,59 @@ export class SettingsPanel extends Component {
 
     // 外壳的一切内容都挂在这个容器下 —— openEditor 靠它一整块收起,背景才露出球场。
     // 用 kit.root 而不是裸 Node:dim 的 Widget 要往父级的 UITransform 上对齐,
-    // 裸 Node 没有它 → 暗底停在 960×540,宽屏两侧那一条触摸会漏到世界里(见文件头)。
+    // 裸节点没有它 → 暗底停在 960×540,宽屏两侧那一条触摸会漏到世界里(见文件头)。
     this.listView = this.kit.root(this.root, "list-view");
 
-    // 中心压得比主菜单暗:这一屏是读字调参数的,不是看球场的
-    this.kit.dim(this.listView, 0.5, 0.78);
+    // 中心压得比主菜单暗:这一屏是读字调参数的,不是看球场的。
+    // bands:false —— 这一屏的主角是衬纸本身,遮罩再叠两道红带就把注意力抢走了。
+    this.kit.dim(this.listView, 0.5, 0.78, { bands: false });
 
-    const card = this.kit.panel(this.listView, PW, PH, { r: 16, alpha: 0.94 });
+    // 衬纸(L1):一张撕下来的黑纸垫在红纸上,标题带叠网点。
+    // 旧写法是「navy 竖向渐变 + 14 圆角」—— 那是通用深色弹窗,不是 P5。
+    const card = this.kit.panel(this.listView, PW, PH, {
+      bandHex: BAND_HEX, tear: 16, halftone: true, alpha: 0.96,
+    });
     this.card = card.node;
     this.card.setPosition(0, CARD_Y, 0);
 
-    const title = this.kit.label(this.card, "设置", 26, P.accent);
-    title.node.setPosition(0, 186, 0);
-    title.enableShadow = true;
-    title.shadowColor = new Color(0, 0, 0, 130);
-    title.shadowOffset = new Vec2(0, -4);
+    const title = this.kit.label(this.card, "设置", 26, P.accent, { disp: true, shadow: true, shadowDrop: 4 });
+    title.node.setPosition(0, SET.titleY, 0);
 
-    const done = this.kit.button(this.card, "完成", 150, 48, { style: "primary", size: 17 });
-    done.setPosition(PW / 2 - 98, 176, 0);
+    const dp = donePos();
+    const done = this.kit.button(this.card, "完成", 150, SET.doneBtn.h, { style: "primary", size: 17 });
+    done.setPosition(dp.x, dp.y, 0);
     done.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.close(); });
 
     this.buildTabBar(this.card!);
     this.buildPage();
   }
 
-  /** tab 栏:手绘 Graphics(跟移动方式分段同一套),选中态由 paintTabs() 重画切换 */
+  /**
+   * tab 栏:走 ui-shell.solidTab —— 与「移动方式」三选一同一个工厂。
+   * 旧写法是这里画一遍、buildControlPage 里再画一遍(两份 drawHardShadow +
+   * drawArcadeButton(r=8, slant=0)),圆角、零斜切,与全站大色块无关。
+   */
   private buildTabBar(card: Node): void {
-    const total = TAB_DEFS.length * TAB_W + (TAB_DEFS.length - 1) * TAB_GAP;
+    const xs = tabRow(TAB_DEFS.length);
     this.tabs = TAB_DEFS.map((d, i) => {
-      const n = new Node(`tab-${d.key}`);
-      n.layer = Layers.Enum.UI_2D;
-      n.addComponent(UITransform).setContentSize(TAB_W, TAB_H);
-      n.setPosition(-total / 2 + TAB_W / 2 + i * (TAB_W + TAB_GAP), TAB_Y, 0);
-      n.setParent(card);
-
-      const g = n.addComponent(Graphics);
-      const lNode = new Node("text");
-      lNode.layer = Layers.Enum.UI_2D;
-      lNode.addComponent(UITransform).setContentSize(TAB_W, TAB_H);
-      lNode.setParent(n);
-      const l = lNode.addComponent(Label);
-      l.string = d.label;
-      l.fontSize = 15;
-      l.lineHeight = TAB_H;
-      l.horizontalAlign = Label.HorizontalAlign.CENTER;
-      l.verticalAlign = Label.VerticalAlign.CENTER;
-
-      const btn = n.addComponent(Button);
-      btn.transition = Button.Transition.SCALE;
-      btn.zoomScale = 0.94;
-      btn.target = n;
-      n.on(Button.EventType.CLICK, () => {
+      const t = solidTab({
+        name: `tab-${d.key}`, parent: card, label: d.label,
+        w: SET.tab.w, h: SET.tab.h, role: ROLE_TAB, size: 15, tear: true,
+      });
+      t.node.setPosition(xs[i], SET.tab.y, 0);
+      this.tabKeys.push(d.key);
+      t.node.on(Button.EventType.CLICK, () => {
         if (this.tab === d.key) return;
         this.kit.sfx.play("ui");
         this.switchTab(d.key);
       });
-      return { key: d.key, node: n, g, label: l };
+      return t;
     });
     this.paintTabs();
   }
 
   private paintTabs(): void {
-    const P = this.kit.pal;
-    for (const t of this.tabs) {
-      const active = t.key === this.tab;
-      drawHardShadow(t.g, TAB_W, TAB_H, 8, 3, 3, 0.4);
-      drawArcadeButton(t.g, TAB_W, TAB_H, active ? "primary" : "ghost", 8);
-      t.label.color = ac(active ? "#fff5f2" : P.text);
-    }
+    this.tabs.forEach((t, i) => t.paint(this.tabKeys[i] === this.tab));
   }
 
   // ---------- 页:切页即销毁重建 ----------
@@ -260,36 +261,23 @@ export class SettingsPanel extends Component {
   /** 操控页:移动方式分段 + 调整位置/重置默认 + 手感两档(球速/移速) */
   private buildControlPage(page: Node): void {
     const P = this.kit.pal;
-    this.txt(page, "移动方式", 15, P.accent, COL_X, 104, 200);
+    const K = controlLayout();
+    const wOf = (b: { left: number; right: number }): number => b.right - b.left;
+    const cOf = (b: { left: number; right: number }): number => b.left + (b.right - b.left) / 2;
 
-    // 三档分段选择器: [ 摇杆 ] [ 滑轨 ] [ 按键 ](整组居中)
-    this.modeBtns = [];
-    const btnW = 120, btnH = 44, gap = 14;
-    const totalW = MODES.length * btnW + (MODES.length - 1) * gap;
-    MODES.forEach((mItem, idx) => {
-      const n = new Node(`mode-btn-${mItem.mode}`);
-      n.layer = Layers.Enum.UI_2D;
-      n.addComponent(UITransform).setContentSize(btnW, btnH);
-      n.setPosition(-totalW / 2 + btnW / 2 + idx * (btnW + gap), 62, 0);
-      n.setParent(page);
-      const g = n.addComponent(Graphics);
+    // 小节标题 = 分区色带(L2):整面 accent 实底 + 墨黑字。
+    // 旧写法是一行荧光黄裸文字 —— P5 里没有「裸排飘字」这回事,标题得占住一块色。
+    this.band(page, "移动方式", ROLE_SCREEN, K.sectionMove);
 
-      const lNode = new Node("text");
-      lNode.layer = Layers.Enum.UI_2D;
-      lNode.addComponent(UITransform).setContentSize(btnW, btnH);
-      lNode.setParent(n);
-      const l = lNode.addComponent(Label);
-      l.string = mItem.label;
-      l.fontSize = 15;
-      l.lineHeight = btnH;
-      l.horizontalAlign = Label.HorizontalAlign.CENTER;
-      l.verticalAlign = Label.VerticalAlign.CENTER;
-
-      const btn = n.addComponent(Button);
-      btn.transition = Button.Transition.SCALE;
-      btn.zoomScale = 0.94;
-      btn.target = n;
-      n.on(Button.EventType.CLICK, () => {
+    // 三档分段选择器:与 tab 栏同一个工厂(选中=实底色块,未选=凹陷槽)
+    this.modeBtns = MODES.map((mItem, idx) => {
+      const b = K.modes[idx];
+      const t = solidTab({
+        name: `mode-${mItem.mode}`, parent: page, label: mItem.label,
+        w: wOf(b), h: b.h, role: ROLE_TAB, size: 15,
+      });
+      t.node.setPosition(cOf(b), b.cy, 0);
+      t.node.on(Button.EventType.CLICK, () => {
         if (Settings.moveMode === mItem.mode) return;
         this.kit.sfx.play("ui");
         Settings.setPart({ moveMode: mItem.mode });
@@ -297,26 +285,26 @@ export class SettingsPanel extends Component {
         this.pick(mItem.mode === "joystick" ? "joystick" : mItem.mode === "slider" ? "slider" : "left");
         this.updateModeSelector();
       });
-
-      this.modeBtns.push({ mode: mItem.mode, node: n, g, label: l });
+      return { mode: mItem.mode, tab: t };
     });
 
-    // 模式提示:居中一行,随选中档变化(updateModeSelector 刷新文案)
-    const tip = this.kit.label(page, "", 12, P.dim);
+    // 模式提示:随选中档变化(updateModeSelector 刷新文案)
+    const tip = this.kit.label(page, "", 12, P.dim, { align: 0 });
     const tipUt = tip.node.getComponent(UITransform)!;
-    tipUt.setContentSize(420, 16);
+    tipUt.setContentSize(wOf(K.modeTip), K.modeTip.h);
     tip.overflow = Label.Overflow.CLAMP;
-    tip.node.setPosition(0, 28, 0);
+    tip.node.setPosition(cOf(K.modeTip), K.modeTip.cy, 0);
     this.modeTipLabel = tip;
     this.updateModeSelector();
 
     // 「调整位置」进 EDIT;「重置默认」一行两颗,不再竖着占两条
-    const adjust = this.kit.button(page, "调整位置", 190, 46, { style: "primary", size: 17 });
-    adjust.setPosition(-83, -20, 0);
+    const [adjBox, rstBox] = K.actions;
+    const adjust = this.kit.button(page, "调整位置", wOf(adjBox), adjBox.h, { style: "primary", size: 17 });
+    adjust.setPosition(cOf(adjBox), adjBox.cy, 0);
     adjust.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.openEditor(); });
 
-    const reset = this.kit.button(page, "重置默认", 150, 46, { size: 15 });
-    reset.setPosition(103, -20, 0);
+    const reset = this.kit.button(page, "重置默认", wOf(rstBox), rstBox.h, { size: 15 });
+    reset.setPosition(cOf(rstBox), rstBox.cy, 0);
     reset.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("ui");
       Settings.resetPad();
@@ -325,90 +313,96 @@ export class SettingsPanel extends Component {
     });
 
     // ---------- 手感两档(球速 / 移速)----------
-    // 行距 42 = uiSlider 触摸区 34 + 8。用滑杆而不是分段按钮:八档 / 六档分段在
-    // 一行里放不下;而 uiSlider 同页已用多根,原生侧安全(Graphics 每次 paint 都
-    // clear() 重放,不碰 active=false 那个坑 —— 见文件头)。
-    this.txt(page, "手感", 15, P.accent, COL_X, -84, 46);
-    this.txt(page, "球速下一球起效 · 移速立即生效", 12, P.dim, COL_X + 56, -84, 330);
+    // 用滑杆而不是分段按钮:八档 / 六档分段在一行里放不下。行心一律由 settings-layout
+    // 的 rowPitch 推 —— 上一版手写 -124/-164,滑杆触摸区从 34 抬到 44 之后那两行会
+    // 重叠 4px:屏幕上看不出来,按下就是错档。
+    this.band(page, "手感", ROLE_FEEL, K.sectionFeel);
+    this.txt(page, "球速下一球起效 · 移速立即生效", 12, P.dim, K.feelHint.left, K.feelHint.cy, wOf(K.feelHint));
 
-    const mkTierRow = (label: string, y: number, n: number, idx: number,
+    const mkTierRow = (label: string, i: number, n: number, idx: number,
       apply: (i: number) => void, commit: () => void): Slider => {
-      this.txt(page, label, 14, P.text, COL_X, y, 46);
-      const sl = this.kit.slider(page, 300, { min: 0, max: n - 1, step: 1, value: idx });
-      sl.node.setPosition(TIER_SLIDER_X, y, 0);
+      const row = K.tiers[i];
+      this.txt(page, label, 14, P.text, row.name.left, row.y, wOf(row.name));
+      const sl = this.kit.slider(page, wOf(row.slider), {
+        min: 0, max: n - 1, step: 1, value: idx, ticks: n,
+      });
+      sl.node.setPosition(cOf(row.slider), row.y, 0);
       // 拖动 60Hz:只改内存(原生 setItem 是同步文件 IO),档名跟着 repaint 的订阅刷新
       sl.onChange((v) => apply(Math.round(v)));
       sl.onCommit(() => { Settings.flush(); commit(); });
       return sl;
     };
 
-    this.paceSlider = mkTierRow("球速", -124, CFG.pace.tiers.length, paceIndexOf(Settings.paceTier),
+    this.paceSlider = mkTierRow("球速", 0, CFG.pace.tiers.length, paceIndexOf(Settings.paceTier),
       (i) => Settings.setPart({ paceTier: CFG.pace.tiers[i].id }, false),
       () => this.kit.toast(`球速「${this.paceCaption()}」· 下一球起生效`));
-    this.paceValueLabel = this.txt(page, this.paceCaption(), 13, P.text, TIER_CAPTION_X, -124, 150);
+    this.paceValueLabel = this.txt(page, this.paceCaption(), 13, P.text,
+      K.tiers[0].caption.left, K.tiers[0].y, wOf(K.tiers[0].caption));
 
-    this.gaitSlider = mkTierRow("移速", -164, CFG.gait.tiers.length, gaitIndexOf(Settings.gaitTier),
+    this.gaitSlider = mkTierRow("移速", 1, CFG.gait.tiers.length, gaitIndexOf(Settings.gaitTier),
       (i) => Settings.setPart({ gaitTier: CFG.gait.tiers[i].id }, false),
       () => this.kit.toast(`移速「${this.gaitCaption()}」· 已生效`));
-    this.gaitValueLabel = this.txt(page, this.gaitCaption(), 13, P.text, TIER_CAPTION_X, -164, 150);
+    this.gaitValueLabel = this.txt(page, this.gaitCaption(), 13, P.text,
+      K.tiers[1].caption.left, K.tiers[1].y, wOf(K.tiers[1].caption));
   }
 
   /** 声音画面页:左子列「声音与震动」,右子列「画面」,中线 x=0 分界 */
   private buildMediaPage(page: Node): void {
-    const P = this.kit.pal;
-    const togX = -268;                 // 左子列开关(宽 140)中心:-338..-198
-    const volX = -125;                 // 左子列音量滑杆(宽 130)中心:-190..-60
-    const hintX = 200;                 // 右子列开关(宽 280)中心:60..340
-    const rows = [56, 0, -56, -112, -168];  // 前三行沿用,后两行给震动的强度/试震
+    const M = mediaLayout();
+    const wOf = (b: { left: number; right: number }): number => b.right - b.left;
+    const cOf = (b: { left: number; right: number }): number => b.left + (b.right - b.left) / 2;
 
-    this.txt(page, "声音与震动", 15, P.accent, COL_X, 104, 200);
-    this.txt(page, "画面", 15, P.accent, 60, 104, 120);
+    this.band(page, "声音与震动", ROLE_SOUND, M.sectionLeft);
+    this.band(page, "画面", ROLE_SCREEN, M.sectionRight);
 
-    const sfxTog = this.kit.toggle(page, "音效", 140, {
-      get: () => Settings.v.sfxOn,
-      set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ sfxOn: v }); },
-    });
-    sfxTog.node.setPosition(togX, rows[0], 0);
-    this.toggles.push(sfxTog);
-
-    const sfxSl = this.kit.slider(page, 130, { min: 0, max: 1, step: 0.05, value: Settings.v.sfxVol });
-    sfxSl.node.setPosition(volX, rows[0], 0);
-    this.wireVolume(sfxSl, "sfxVol", "sfxOn");
-
-    const bgmTog = this.kit.toggle(page, "音乐", 140, {
-      get: () => Settings.v.bgmOn,
-      set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ bgmOn: v }); },
-    });
-    bgmTog.node.setPosition(togX, rows[1], 0);
-    this.toggles.push(bgmTog);
-
-    const bgmSl = this.kit.slider(page, 130, { min: 0, max: 1, step: 0.05, value: Settings.v.bgmVol });
-    bgmSl.node.setPosition(volX, rows[1], 0);
-    this.wireVolume(bgmSl, "bgmVol", "bgmOn");
-
-    // 震动反馈:特殊击打/技能/得分的触觉短震(移动端才有体感,Web 大概率被浏览器忽略)
-    const hapticTog = this.kit.toggle(page, "震动反馈", 140, {
-      get: () => Settings.v.hapticOn,
-      set: (v) => {
-        this.kit.sfx.play("ui");
-        Settings.setPart({ hapticOn: v });
-        // 关掉就把待发放一起丢掉,不许有"已经关了还震一下"的尾巴
-        if (!v) hapticCancel();
-        else this.kit.toast("震动已开 · 点「试震」验一下");
+    // 左列:音效 / 音乐 各带一根音量滑杆,震动反馈单独一行
+    const togDefs = [
+      {
+        get: () => Settings.v.sfxOn,
+        set: (v: boolean) => { this.kit.sfx.play("ui"); Settings.setPart({ sfxOn: v }); },
       },
+      {
+        get: () => Settings.v.bgmOn,
+        set: (v: boolean) => { this.kit.sfx.play("ui"); Settings.setPart({ bgmOn: v }); },
+      },
+      {
+        get: () => Settings.v.hapticOn,
+        set: (v: boolean) => {
+          this.kit.sfx.play("ui");
+          Settings.setPart({ hapticOn: v });
+          // 关掉就把待发放一起丢掉,不许有"已经关了还震一下"的尾巴
+          if (!v) hapticCancel();
+          else this.kit.toast("震动已开 · 点「试震」验一下");
+        },
+      },
+    ];
+    M.toggles.forEach((r, i) => {
+      const t = this.kit.toggle(page, r.label, wOf(r.toggle), togDefs[i]);
+      t.node.setPosition(cOf(r.toggle), r.toggle.cy, 0);
+      this.toggles.push(t);
     });
-    hapticTog.node.setPosition(togX, rows[2], 0);
-    this.toggles.push(hapticTog);
+
+    const volDefs: Array<[("sfxVol" | "bgmVol"), ("sfxOn" | "bgmOn"), number]> = [
+      ["sfxVol", "sfxOn", Settings.v.sfxVol],
+      ["bgmVol", "bgmOn", Settings.v.bgmVol],
+    ];
+    M.toggles.forEach((r, i) => {
+      if (!r.vol) return;
+      const [vk, onk, v0] = volDefs[i];
+      const sl = this.kit.slider(page, wOf(r.vol), { min: 0, max: 1, step: 0.05, value: v0 });
+      sl.node.setPosition(cOf(r.vol), r.vol.cy, 0);
+      this.wireVolume(sl, vk, onk);
+    });
 
     // ---------- 震动:强度档 + 试震 + 状态读数 ----------
     // 为什么三样一起给:上一版只有开关,用户看不到"到底是哪一环断了"就只能猜。
-    // 强度行(标签 34 + 滑杆 150 + 档名 60)整条落在左子列 -338..-80,与音量滑杆同宽不撞。
-    this.txt(page, "强度", 14, P.text, -338, rows[3], 34);
-    const hSl = this.kit.slider(page, 150, {
+    const ST = strengthRow();
+    this.txt(page, "强度", 14, this.kit.pal.text, ST.name.left, ST.name.cy, wOf(ST.name));
+    const hSl = this.kit.slider(page, wOf(ST.slider), {
       min: 0, max: CFG.haptic.levels.length - 1, step: 1,
-      value: hapticIndexOf(Settings.hapticLevel),
+      value: hapticIndexOf(Settings.hapticLevel), ticks: CFG.haptic.levels.length,
     });
-    hSl.node.setPosition(-225, rows[3], 0);
+    hSl.node.setPosition(cOf(ST.slider), ST.slider.cy, 0);
     // 拖动只改内存(原生 setItem 是同步文件 IO),松手才落盘并当场试震一下
     hSl.onChange((v) => Settings.setPart({ hapticLevel: hapticLevelId(v) }, false));
     hSl.onCommit(() => {
@@ -418,10 +412,12 @@ export class SettingsPanel extends Component {
       haptic("smash");
     });
     this.hapticSlider = hSl;
-    this.hapticValueLabel = this.txt(page, hapticLabel(Settings.hapticLevel), 13, P.text, -140, rows[3], 60);
+    this.hapticValueLabel = this.txt(page, hapticLabel(Settings.hapticLevel), 13, this.kit.pal.text,
+      ST.caption.left, ST.caption.cy, wOf(ST.caption));
 
-    const testBtn = this.kit.button(page, "试震", 110, 40, { size: 15 });
-    testBtn.setPosition(-283, rows[4], 0);
+    const TS = hapticTestRow();
+    const testBtn = this.kit.button(page, "试震", wOf(TS.btn), TS.btn.h, { size: 15 });
+    testBtn.setPosition(cOf(TS.btn), TS.btn.cy, 0);
     testBtn.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("ui");
       // 三档连打:轻/中/最重各一下,顺带验证 core/haptic.ts 的排队(同帧三件事都得响得出)
@@ -431,19 +427,30 @@ export class SettingsPanel extends Component {
     });
 
     // 状态读数:这一行就是「为什么没震」的答案,不是装饰
-    this.hapticStatusLabel = this.txt(page, hapticStatus(), 11, P.dim, 60, rows[4], 280);
+    this.hapticStatusLabel = this.txt(page, hapticStatus(), 11, this.kit.pal.dim,
+      TS.status.left, TS.status.cy, wOf(TS.status));
 
-    const mkHint = (text: string, key: "hintLanding" | "hintShake" | "hintFloat", y: number): void => {
-      const t = this.kit.toggle(page, text, 280, {
+    const hintDefs: Array<[string, "hintLanding" | "hintShake" | "hintFloat"]> = [
+      ["落点预测圈", "hintLanding"],
+      ["屏幕震动", "hintShake"],
+      ["飘字提示", "hintFloat"],
+    ];
+    M.hints.forEach((b, i) => {
+      const [text, key] = hintDefs[i];
+      const t = this.kit.toggle(page, text, wOf(b), {
         get: () => (Settings.v as unknown as Record<string, boolean>)[key],
         set: (v) => { this.kit.sfx.play("ui"); Settings.setPart({ [key]: v } as never); },
       });
-      t.node.setPosition(hintX, y, 0);
+      t.node.setPosition(cOf(b), b.cy, 0);
       this.toggles.push(t);
-    };
-    mkHint("落点预测圈", "hintLanding", rows[0]);
-    mkHint("屏幕震动", "hintShake", rows[1]);
-    mkHint("飘字提示", "hintFloat", rows[2]);
+    });
+  }
+
+  /** 小节色带:整面 accent 实底 + 由亮度算出的字色,左锚摆文字 */
+  private band(parent: Node, text: string, role: Role, b: { left: number; right: number; cy: number; h: number }): void {
+    const w = b.right - b.left;
+    const n = sectionTitle(`sec:${text}`, parent, text, role, w, b.h, 13);
+    n.setPosition(b.left + w / 2, b.cy, 0);
   }
 
   /**
@@ -471,14 +478,7 @@ export class SettingsPanel extends Component {
 
   private updateModeSelector(): void {
     const cur = Settings.moveMode;
-    const P = this.kit.pal;
-    const btnW = 120, btnH = 44;
-    for (const b of this.modeBtns) {
-      const active = b.mode === cur;
-      drawHardShadow(b.g, btnW, btnH, 8, 3, 3, 0.4);
-      drawArcadeButton(b.g, btnW, btnH, active ? "primary" : "ghost", 8);
-      b.label.color = ac(active ? "#fff5f2" : P.text);
-    }
+    for (const b of this.modeBtns) b.tab.paint(b.mode === cur);
     const item = MODES.find((m) => m.mode === cur);
     if (this.modeTipLabel && item) {
       this.modeTipLabel.string = item.tip;

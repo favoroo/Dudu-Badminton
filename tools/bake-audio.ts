@@ -7,7 +7,9 @@
 // 参数与老 audio.js 逐一对照,游戏运行时不再有任何合成开销。
 //
 // 用法: npx tsc -p tools/tsconfig.json && node .tools-build/tools/bake-audio.js
-// 产物: assets/resources/audio/sfx/*.wav
+// 产物: assets/resources/audio/sfx/*.wav(音效保持 wav:短样本零解码延迟)
+//       本脚本末段还烘焙 bgm stem 到 assets/resources/audio/bgm/*.wav ——
+//       那部分是循环长样本,分发格式为 ogg,烘焙后必须跑 node .tools-build/tools/oggify.js
 // ============================================================
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";

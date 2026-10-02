@@ -63,6 +63,8 @@ export interface StageDef {
     exp: number;
   };
   starsGoal: [string, string, string];
+  /** 三星判据(与 starsGoal 文案一一对应;缺省时 rules 回落通用三条) */
+  starsCheck: [StarCond, StarCond, StarCond];
 }
 
 export interface StageRec {
@@ -70,6 +72,93 @@ export interface StageRec {
   clears: number;              // 通关次数
   bestScore: string;           // 如 "3-1"
   attempts: number;
+}
+
+// ---------- 三星判据:结构化判据与 starsGoal 文案一一对应 ----------
+//
+// 从前判星写死三条通用规则(rules.ts:胜 / 净胜2 / 零封或长回合≥8),战前简报展示的
+// starsGoal 文案(「无发球失误」「飞扑救球 3 次」…)只是装饰,从未被真的判定过。
+// 现在每关配一份 starsCheck,判星 = 逐条求值。加新判据:这里加一个 k 分支 +
+// rules.ts 的 starFacts() 补对应计数 + campaign-check 里补正反例。
+
+/** 一条可判定的三星条件(判别联合,k = 判据名) */
+export type StarCond =
+  | { k: "win" }                          // 赢得对局
+  | { k: "netLead"; n: number }           // 净胜对手 ≥ n 分
+  | { k: "opScoreAtMost"; n: number }     // 失分不超过 n 分
+  | { k: "shutout" }                      // 零封:对手 0 分(零失误零丢分)
+  | { k: "perfects"; n: number }          // 完美击球 ≥ n 次
+  | { k: "sweets"; n: number }            // 甜区击球 ≥ n 次
+  | { k: "smashes"; n: number }           // 扣杀(出手) ≥ n 次
+  | { k: "noWhiff" }                      // 全程 0 次空挥(含「未被假球欺骗」)
+  | { k: "rallyAtLeast"; n: number }      // 完成一记 ≥ n 拍的回合
+  | { k: "noServeFault" }                 // 无发球失误
+  | { k: "lungeSaves"; n: number }        // 飞扑救球 ≥ n 次
+  | { k: "smashScores"; n: number }       // 扣杀直接得分 ≥ n 次
+  | { k: "jumpSmashes"; n: number }       // 高空烈焰扣杀(跳杀) ≥ n 次
+  | { k: "deepShots"; n: number }         // 底线深球 ≥ n 次
+  | { k: "iaiStrikes"; n: number }        // 居合一闪 ≥ n 次
+  | { k: "netIntercepts"; n: number }     // 网前精准截击 ≥ n 次
+  | { k: "airShotRatio"; pct: number }    // 空中击球占比超过 pct%
+  | { k: "skillCasts"; n: number }        // 释放技能 ≥ n 次
+  | { k: "noZonePenalty" }                // 未触发禁区惩罚
+  | { k: "empReturns"; n: number }        // EMP 故障期间成功回球 ≥ n 次
+  | { k: "laserBoosts"; n: number }       // 触发激光加速球 ≥ n 次
+  | { k: "noExhausted" }                  // 全程体力未枯竭
+  | { k: "slidingScores"; n: number }     // 滑行中击球得分 ≥ n 次
+  | { k: "lastSmash" };                   // 最后一球以扣杀得分
+
+/** 判星用的逐局事实(全部来自 rules 的真实统计,见 rules.starFacts) */
+export interface StarFacts {
+  won: boolean;
+  myScore: number;
+  opScore: number;
+  longestRally: number;
+  hits: number; smashes: number; sweets: number; perfects: number; whiffs: number;
+  lungeShots: number; jumpSmashes: number; iaiStrikes: number; skillCasts: number;
+  deepShots: number; netIntercepts: number; airHits: number; empReturns: number;
+  zonePenalties: number; exhausted: number;
+  serveFaults: number; smashScores: number; slidingScores: number; laserBoosts: number;
+  /** 最后一分的得分原因是否为左队(玩家)的扣杀得分 */
+  lastSmash: boolean;
+}
+
+/** 单条判据求值(纯函数,campaign-check 直接喂数据回归) */
+export function checkStarCond(c: StarCond, f: StarFacts): boolean {
+  switch (c.k) {
+    case "win": return f.won;
+    case "netLead": return f.myScore - f.opScore >= c.n;
+    case "opScoreAtMost": return f.opScore <= c.n;
+    case "shutout": return f.opScore === 0;
+    case "perfects": return f.perfects >= c.n;
+    case "sweets": return f.sweets >= c.n;
+    case "smashes": return f.smashes >= c.n;
+    case "noWhiff": return f.whiffs === 0;
+    case "rallyAtLeast": return f.longestRally >= c.n;
+    case "noServeFault": return f.serveFaults === 0;
+    case "lungeSaves": return f.lungeShots >= c.n;
+    case "smashScores": return f.smashScores >= c.n;
+    case "jumpSmashes": return f.jumpSmashes >= c.n;
+    case "deepShots": return f.deepShots >= c.n;
+    case "iaiStrikes": return f.iaiStrikes >= c.n;
+    case "netIntercepts": return f.netIntercepts >= c.n;
+    case "airShotRatio": return f.hits >= CFG.star.airMinHits && (f.hits > 0 ? (f.airHits / f.hits) * 100 : 0) > c.pct;
+    case "skillCasts": return f.skillCasts >= c.n;
+    case "noZonePenalty": return f.zonePenalties === 0;
+    case "empReturns": return f.empReturns >= c.n;
+    case "laserBoosts": return f.laserBoosts >= c.n;
+    case "noExhausted": return f.exhausted === 0;
+    case "slidingScores": return f.slidingScores >= c.n;
+    case "lastSmash": return f.lastSmash;
+  }
+}
+
+/** 三星判星:逐条求值,通过几条给几星(0..3)。关卡缺 starsCheck 时调用方回落通用三条 */
+export function evaluateStars(check: StarCond[] | undefined, f: StarFacts): number {
+  if (!check || check.length !== 3) return -1;   // 让调用方走 fallback
+  let n = 0;
+  for (const c of check) if (checkStarCond(c, f)) n++;
+  return n;
 }
 
 const STORAGE_KEY = "dudu_campaign_progress";
@@ -95,6 +184,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 150, exp: 60 },
     starsGoal: ["赢得对局", "净胜对手 2 分以上", "无发球失误"],
+    starsCheck: [{ k: "win" }, { k: "netLead", n: 2 }, { k: "noServeFault" }],
   },
   {
     id: "beach_2",
@@ -114,6 +204,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 180, exp: 70 },
     starsGoal: ["赢得对局", "使用飞扑救球至少 3 次", "失分不超过 1 分"],
+    starsCheck: [{ k: "win" }, { k: "lungeSaves", n: 3 }, { k: "opScoreAtMost", n: 1 }],
   },
   {
     id: "beach_3",
@@ -133,6 +224,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 200, exp: 80 },
     starsGoal: ["赢得对局", "打出至少 2 次完美击球", "净胜对手 2 分以上"],
+    starsCheck: [{ k: "win" }, { k: "perfects", n: 2 }, { k: "netLead", n: 2 }],
   },
   {
     id: "beach_4",
@@ -153,6 +245,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 240, exp: 95 },
     starsGoal: ["赢得对局", "完成至少 2 次扣杀得分", "失分不超过 2 分"],
+    starsCheck: [{ k: "win" }, { k: "smashScores", n: 2 }, { k: "opScoreAtMost", n: 2 }],
   },
   {
     id: "beach_5",
@@ -174,6 +267,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 300, exp: 120 },
     starsGoal: ["赢得对局", "打出至少 3 次高空烈焰扣杀", "净胜对手 3 分以上"],
+    starsCheck: [{ k: "win" }, { k: "jumpSmashes", n: 3 }, { k: "netLead", n: 3 }],
   },
 
   // ==================== 第二章：竹林道场 (Bamboo Dojo) ====================
@@ -195,6 +289,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 260, exp: 100 },
     starsGoal: ["赢得对局", "打出至少 3 次底线深球", "零失误零丢分"],
+    starsCheck: [{ k: "win" }, { k: "deepShots", n: 3 }, { k: "shutout" }],
   },
   {
     id: "dojo_2",
@@ -214,6 +309,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 300, exp: 120 },
     starsGoal: ["赢得对局", "触发居合一闪至少 2 次", "净胜对手 2 分以上"],
+    starsCheck: [{ k: "win" }, { k: "iaiStrikes", n: 2 }, { k: "netLead", n: 2 }],
   },
   {
     id: "dojo_3",
@@ -234,6 +330,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 320, exp: 130 },
     starsGoal: ["赢得对局", "失分不超过 1 分", "回合数达到 8 拍以上"],
+    starsCheck: [{ k: "win" }, { k: "opScoreAtMost", n: 1 }, { k: "rallyAtLeast", n: 8 }],
   },
   {
     id: "dojo_4",
@@ -253,6 +350,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 350, exp: 140 },
     starsGoal: ["赢得对局", "全程 0 次空挥失误", "打出至少 3 次甜区击球"],
+    starsCheck: [{ k: "win" }, { k: "noWhiff" }, { k: "sweets", n: 3 }],
   },
   {
     id: "dojo_5",
@@ -273,6 +371,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 400, exp: 160 },
     starsGoal: ["赢得对局", "未触发任何禁区惩罚", "净胜对手 2 分以上"],
+    starsCheck: [{ k: "win" }, { k: "noZonePenalty" }, { k: "netLead", n: 2 }],
   },
 
   // ==================== 第三章：赛博街区 (Cyber Neon) ====================
@@ -294,6 +393,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 320, exp: 130 },
     starsGoal: ["赢得对局", "在 EMP 故障期间成功回球 2 次", "净胜对手 2 分以上"],
+    starsCheck: [{ k: "win" }, { k: "empReturns", n: 2 }, { k: "netLead", n: 2 }],
   },
   {
     id: "cyber_2",
@@ -313,6 +413,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 350, exp: 140 },
     starsGoal: ["赢得对局", "未被假球欺骗失误", "失分不超过 1 分"],
+    starsCheck: [{ k: "win" }, { k: "noWhiff" }, { k: "opScoreAtMost", n: 1 }],
   },
   {
     id: "cyber_3",
@@ -332,6 +433,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 380, exp: 150 },
     starsGoal: ["赢得对局", "触发激光加速球至少 2 次", "扣杀得分至少 2 次"],
+    starsCheck: [{ k: "win" }, { k: "laserBoosts", n: 2 }, { k: "smashScores", n: 2 }],
   },
   {
     id: "cyber_4",
@@ -353,6 +455,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 420, exp: 170 },
     starsGoal: ["赢得对局", "空中击球占比超过 70%", "净胜对手 2 分以上"],
+    starsCheck: [{ k: "win" }, { k: "airShotRatio", pct: 70 }, { k: "netLead", n: 2 }],
   },
   {
     id: "cyber_5",
@@ -373,6 +476,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 500, exp: 200 },
     starsGoal: ["赢得对局", "在一局内释放技能至少 6 次", "打出至少 3 次扣杀"],
+    starsCheck: [{ k: "win" }, { k: "skillCasts", n: 6 }, { k: "smashes", n: 3 }],
   },
 
   // ==================== 第四章：黄昏馆 (Dusk Arena) ====================
@@ -394,6 +498,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 360, exp: 150 },
     starsGoal: ["赢得对局", "完成一记 10 拍以上长回合", "失分不超过 1 分"],
+    starsCheck: [{ k: "win" }, { k: "rallyAtLeast", n: 10 }, { k: "opScoreAtMost", n: 1 }],
   },
   {
     id: "arena_2",
@@ -413,6 +518,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 400, exp: 160 },
     starsGoal: ["赢得对局", "全程体力未进入枯竭耗尽状态", "净胜对手 2 分以上"],
+    starsCheck: [{ k: "win" }, { k: "noExhausted" }, { k: "netLead", n: 2 }],
   },
   {
     id: "arena_3",
@@ -432,6 +538,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 420, exp: 170 },
     starsGoal: ["赢得对局", "在滑行状态下击球得分至少 2 次", "失分不超过 1 分"],
+    starsCheck: [{ k: "win" }, { k: "slidingScores", n: 2 }, { k: "opScoreAtMost", n: 1 }],
   },
   {
     id: "arena_4",
@@ -451,6 +558,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     },
     rewards: { coins: 450, exp: 180 },
     starsGoal: ["赢得对局", "失分不超过 1 分", "完成至少 2 次网前精准截击"],
+    starsCheck: [{ k: "win" }, { k: "opScoreAtMost", n: 1 }, { k: "netIntercepts", n: 2 }],
   },
   {
     id: "arena_5",
@@ -471,12 +579,15 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     modifiers: {},
     rewards: { coins: 888, exp: 400 },
     starsGoal: ["连拿 2 分绝杀夺冠", "最后一球以扣杀得分", "打出至少 1 次完美击球"],
+    starsCheck: [{ k: "win" }, { k: "lastSmash" }, { k: "perfects", n: 1 }],
   },
 ];
 
 // ---------- 闯关模式存档与进度管理 ----------
 
 export interface CampaignProgress {
+  /** 存档版本:目前恒 1,只作标记(与 settings 的 v 同一约定) */
+  v: number;
   records: Record<string, StageRec>;
   unlockedMaxStageNo: number;
 }
@@ -485,6 +596,7 @@ let progressCache: CampaignProgress | null = null;
 
 function freshProgress(): CampaignProgress {
   return {
+    v: 1,
     records: {},
     unlockedMaxStageNo: 1, // 默认第 1 关解锁
   };
@@ -511,7 +623,9 @@ export const CampaignManager = {
     if (!progressCache) {
       const saved = load<Partial<CampaignProgress>>(STORAGE_KEY, {});
       progressCache = {
-        records: saved.records || {},
+        v: typeof saved.v === "number" ? saved.v : 1,
+        // 错型防御:records 被手改/写坏成非对象时,下面所有 records[x] 读取都会崩
+        records: saved.records && typeof saved.records === "object" ? saved.records : {},
         unlockedMaxStageNo: typeof saved.unlockedMaxStageNo === "number" ? Math.max(1, saved.unlockedMaxStageNo) : 1,
       };
     }

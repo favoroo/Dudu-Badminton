@@ -9,7 +9,8 @@
 // 合成原语(tone/noise/Biquad)与 bake-audio.ts 同源、自包含。
 //
 // 用法: npx tsc -p tools/tsconfig.json && node .tools-build/tools/bake-bgm.js
-// 产物: assets/resources/audio/bgm/*.wav
+//       && node .tools-build/tools/oggify.js   ← 分发格式是 ogg,烘焙后必须转码
+// 产物: assets/resources/audio/bgm/*.wav(经 oggify 转成 .ogg 并删 wav)
 // ============================================================
 import { writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";

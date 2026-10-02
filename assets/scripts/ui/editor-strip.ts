@@ -10,7 +10,7 @@
 //
 // 依赖纪律:只 import ./text-metrics(同样零 cc),不 import cc —— 否则 node 下跑不了。
 // ============================================================
-import { textW } from "./text-metrics";
+import { textW } from "../core/text-metrics";
 
 export type StripKey = "name" | "size" | "alphaName" | "alpha" | "reset" | "done";
 export type StripKind = "label" | "slider" | "button";

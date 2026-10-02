@@ -16,18 +16,15 @@
 // 用法(仓库根目录):
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/strip-check.js
 // ============================================================
+import { makeChecker } from "./harness";
 import {
   BTN_TEXT_PAD, STRIP_GAP, STRIP_PANEL_W, STRIP_SIDE_PAD,
   stripLayout, stripOverlaps, stripTextOverflow, type StripLayout,
 } from "../assets/scripts/ui/editor-strip";
-import { textW } from "../assets/scripts/ui/text-metrics";
+import { textW } from "../assets/scripts/core/text-metrics";
 
-let fails = 0;
-let checks = 0;
-function ok(cond: boolean, msg: string): void {
-  checks++;
-  if (!cond) { fails++; console.log(`  ✗ ${msg}`); } else { console.log(`  ✓ ${msg}`); }
-}
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 console.log("编辑器顶栏:不重叠 / 不溢出 / 放得进面板\n");
 
@@ -106,5 +103,5 @@ if (process.argv.includes("--selftest")) {
   console.log(`  参照:textW("透明度",14) = ${textW("透明度", 14)} + 按钮内边距下限 ${BTN_TEXT_PAD}`);
 }
 
-console.log(`\n${fails === 0 ? "✓" : "✗"} ${checks} 项断言,失败 ${fails}`);
-process.exit(fails === 0 ? 0 : 1);
+console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
+process.exit(h.fails === 0 ? 0 : 1);

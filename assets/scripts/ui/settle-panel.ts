@@ -13,7 +13,7 @@ import type { DrillResult } from "../core/drill";
 import type { StageDef } from "../core/campaign";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, slantPath, skewOf, textW } from "./ui-arcade";
+import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, ROLE, slantPath, skewOf, textW } from "./ui-arcade";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -92,7 +92,9 @@ export class SettlePanel {
     kit.dim(this.root, 0.28, 0.55);
     kit.atmosphere(this.root);
 
-    const card = kit.panel(this.root, CW, CH, { r: 18, alpha: 0.91 });
+    const card = kit.panel(this.root, CW, CH, {
+      r: 18, alpha: 0.94, bandHex: ROLE.primary.face, tear: 16,
+    });
     this.card = card.node;
     this.card.setPosition(0, 2, 0);
     this.cardOp = this.card.addComponent(UIOpacity);
@@ -299,13 +301,11 @@ export class SettlePanel {
     }
   }
 
-  /** 荣誉胶囊:底块宽度跟着字数走(老 .match-badge 的 fit-content) */
+  /** 荣誉胶囊:底块宽度跟着字数走(老 .match-badge 的 fit-content);测宽走全站唯一尺 */
   private renderBadge(b: SettleBadge | null): void {
     this.badgeBg.node.active = !!b;
     if (!b) return;
-    let cw = 0;
-    for (let i = 0; i < b.title.length; i++) cw += b.title.charCodeAt(i) > 255 ? 1 : 0.6;
-    const w = Math.min(CW - 60, Math.round(cw * 13 + 34));
+    const w = Math.min(CW - 60, textW(b.title, 13) + 34);
     const g = this.badgeBg;
     g.clear();
     g.fillColor = col("#ffffff", 0.1);
@@ -411,8 +411,10 @@ export class SettlePanel {
     }
     this.barWrap.active = true;
     const drillNotFirst = p.kind === "drill" && res.first === false;
+    // 奖励来源标签:训练首通 / 闯关首通(战前简报承诺的关卡奖励到账)/ 普通比赛
+    const rewardLabel = p.kind === "drill" ? "首次通关" : res.first ? "首通奖励" : "比赛奖励";
     this.coinLine.string = res.coin > 0
-      ? `${p.kind === "drill" ? "首次通关" : "比赛奖励"} 金币 +${res.coin} · 经验 +${res.exp}`
+      ? `${rewardLabel} 金币 +${res.coin} · 经验 +${res.exp}`
       : (drillNotFirst ? "已通关 · 重打不重复发奖励" : "金币 +0");
     // 明细行:基础金币(按难度)+ 表现加成 + 连胜系数
     const parts: string[] = [`基础 ${res.baseCoin}`];

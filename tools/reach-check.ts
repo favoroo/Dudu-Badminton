@@ -14,6 +14,7 @@
 //   §4 键盘 / 摇杆 / 滑轨三种输入画像的跑位帧与横滑提交延迟。
 //
 // 用法(先 npx tsc -p tools/tsconfig.json):node .tools-build/tools/reach-check.js
+import { makeChecker } from "./harness";
 import { CFG } from "../assets/scripts/core/config";
 import { Pace } from "../assets/scripts/core/pace";
 import { Gait } from "../assets/scripts/core/gait";
@@ -24,11 +25,8 @@ import type { Ball, PlayerInput } from "../assets/scripts/core/types";
 const C = CFG;
 const CO = C.court;
 
-let bad = 0;
-const ok = (cond: boolean, msg: string): void => {
-  console.log(`${cond ? "✓" : "✗"} ${msg}`);
-  if (!cond) bad++;
-};
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 const IDS = C.pace.tiers.map((t) => t.id);
 const sOf = (id: string): number => C.pace.tiers.find((t) => t.id === id)!.s;
@@ -362,5 +360,5 @@ console.log("\n=== §5 移速档:脚速换一档,接同一拍还剩几帧 ===");
   Gait.apply(C.gait.default);   // 别让后面的段落带着临时档位跑
 }
 
-console.log(`\n${bad === 0 ? "反应预算与输入画像自洽 ✓" : `${bad} 项断言失败`}`);
-process.exit(bad === 0 ? 0 : 1);
+console.log(`\n${h.bad === 0 ? "反应预算与输入画像自洽 ✓" : `${h.bad} 项断言失败`}`);
+process.exit(h.bad === 0 ? 0 : 1);

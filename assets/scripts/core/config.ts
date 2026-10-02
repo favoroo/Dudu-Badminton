@@ -1431,7 +1431,7 @@ export const CFG = {
 
   // ===== 作者通道:真机测试用的隐藏手势 =====
   // 在主菜单连点同一个球馆 tab `taps` 下 → 等级拉到 career.level.cap、金币设为 coins,
-  // 省掉「为了测商店/技能解锁反复打局」。判定与执行在 main-menu.ts + career.maxOut()。
+  // 省掉「为了测商店/技能解锁反复打局」。判定与执行在 mode-screen.ts 的 authorTap() + career.maxOut()。
   // 只在内存生效:拉满后 profile 不再落盘(career.sandbox),重开应用退回原档,每次进应用都要重新连点。
   // 想让别人拿到包时没有这条路:把 enabled 置 false(唯一的开关,别改手势参数)。
   author: {
@@ -1439,6 +1439,18 @@ export const CFG = {
     taps: 6,        // 连点次数
     gapMs: 1200,    // 相邻两下的最长间隔;点慢了就重新计数,正常选馆不会误触
     coins: 99999,   // 拉满后的金币(全商店皮肤合计 ≈ 7400,这里够买穿一整轮)
+  },
+
+  // ===== 三星判据阈值:判据类型见 campaign.ts 的 StarCond,文案在关卡表 starsGoal =====
+  // 从前判星写死三条通用规则(胜/净胜2/零封或长回合),与战前简报展示的 starsGoal 文案
+  // 完全对不上 —— 玩家看到的第 2/3 星条件从未被真的判定过。现在每关配结构化判据,
+  // 这张表只放判据共用的物理阈值。
+  star: {
+    deepDepth: 0.8,     // 「底线深球」:真实落点深度 ≥ 此值(aimDepth.deep = 0.92 为瞄准档)
+    netZone: 96,        // 「网前截击」:接触点离网带 ≤ 此 px 且甜区/完美
+    empRally: 3,        // 「EMP 故障期间」:与渲染层 empActive 同款阈值(world.ts rally>=3)
+    slideSpeed: 2.2,    // 「滑行击球」:极滑关 |vx| ≥ 此值即算滑行中(含按住方向的高速)
+    airMinHits: 6,      // 「空中击球占比」:总击球数低于此不判(防一两拍就 100% 通过)
   },
 
   // 皮肤表(见文件顶部的 SKINS):挂在 CFG 树上,沿用「手感与经济之外的一切数据都在 CFG」的心智
@@ -1452,6 +1464,8 @@ export const CFG = {
   bodies: BODIES,
 };
 
+// 菜单入口数据表(决策②的原始数据)。目前 mode-screen 自绘入口、没有代码消费者;
+// 留作桌面版/双人入口恢复时的现成数据,别按死代码删。
 export const MENU: MenuEntry[] = [
   { id: "2p",     label: "双人对战",   tag: "LOCAL VS",  desc: "同屏对打 · 各占键盘一半", mode: "2p", diff: null },
   { id: "1p-easy",   label: "单人 · 简单", tag: "EASY",   desc: "AI 反应慢、常打飞,适合热身", mode: "1p", diff: "easy" },
@@ -1587,9 +1601,3 @@ export const DRILLS: DrillDef[] = [
 
 // 难度档位 key 的具名类型再导出,供 Rules/AI 的查表处使用(diffs 的 key 即权威定义)
 export type { DiffKey };
-
-// 当前平台的菜单入口(决策②):手机版砍掉双人同屏,桌面全量
-export function menuForPlatform(): MenuEntry[] {
-  if (!CFG.mobileOnly) return MENU;
-  return MENU.filter((m) => m.mode === "1p");
-}

@@ -75,7 +75,12 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     skill: Skills.initSkillState((opts.skill && opts.skill.id) || "lunge"),
     flashT: 0,
     focusT: 0,
-    stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
+    stats: {
+      hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0,
+      lungeShots: 0, jumpSmashes: 0, iaiStrikes: 0, skillCasts: 0,
+      deepShots: 0, netIntercepts: 0, airHits: 0, empReturns: 0,
+      zonePenalties: 0, exhausted: 0,
+    },
     stamina: activePlayerModifier?.staminaSystem ? 100 : undefined,
     isExhausted: false,
     zenMeter: 0,
@@ -126,6 +131,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   if (skillHit && ball && Skills.canActivate(p, ball)) {
     const success = Skills.activate(p, ball, dir);
     if (success && p.skill) {
+      p.stats.skillCasts++;             // 三星判据「释放技能 N 次」:lunge 也是五技能之一,计入
       inp.onSkill && inp.onSkill(p, p.skill.id);
       if (p.skill.id === "lunge" && inp.onLunge) {
         inp.onLunge(p);
@@ -200,6 +206,8 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
       p.stamina = Math.min(100, p.stamina + 0.34);
     }
     p.isExhausted = p.stamina < 25;
+    // 三星判据「全程体力未枯竭」:取曾经发生语义,进过枯竭态就记账(可恢复,但记录不撤销)
+    if (p.isExhausted) p.stats.exhausted = 1;
   }
 
   // 禁足区警报与僵直
@@ -211,6 +219,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     if (p.x >= dangerX) {
       p.forbiddenWarn = 24;
       p.vx = -3.5;
+      p.stats.zonePenalties++;          // 三星判据「未触发任何禁区惩罚」
     }
   }
 
@@ -501,8 +510,10 @@ function settle(p: PlayerEntity, ball: Ball, best: SwingBestShot): ShotResult {
 
   const lungeShot = p.lungeShotT > 0;
   // 跳杀:空中 + 击球点够高 = 必然扣杀并加力(真人与 AI 同一通道;闪现折跃天然满足)。
-  // 击球点高度取记账帧的球位(结算晚 1~3 帧,球已被打出去,当帧位置不再是击球点)
-  const jumpSmash = !p.onGround && (CO.groundY - best.by) >= C.jumpSmash.minHeight;
+  // 击球点高度取记账帧的球位(结算晚 1~3 帧,球已被打出去,当帧位置不再是击球点)。
+  // 注意:若输入为 near(左滑短球),意图是起跳收力点杀/劈吊,不转扣杀。
+  const isNear = typeof p.swingAim === "string" ? p.swingAim === "near" : (typeof p.swingAim === "number" && p.swingAim < C.shotClass.netDepth);
+  const jumpSmash = !p.onGround && (CO.groundY - best.by) >= C.jumpSmash.minHeight && !isNear;
   // 出手瞬间把球钉回记账帧的接触点:结算比记账晚 1~2 帧,球又飞/坠了一段,而弹道是
   // 按接触点解的 —— 从当帧位置起飞整段偏移(下坠中的慢球尤其明显:低 20px 起飞 = 下网)。
   // px/py 一并回到记账帧的上一帧位,渲染插值/拍头扫掠看到的仍是「飞向接触点」的那一段。
@@ -613,6 +624,9 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     // 瞄准档位只在字符串瞄准(真人路径 mid/deep/near)时有意义;AI 直接给数值深度,不上报
     aim: typeof p.swingAim === "string" ? p.swingAim : undefined,
     skillKind: sm.skillKind,
+    // 三星判据用的出手瞬间状态:空中占比 / 极滑滑行(极滑关 frictionMul<0.5 且速度够快)
+    airborne: !p.onGround,
+    sliding: (activePlayerModifier?.frictionMul ?? 1) < 0.5 && Math.abs(p.vx) >= C.star.slideSpeed,
   };
 }
 
@@ -623,7 +637,11 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
  * 跳杀成因前置:空中 + 高球直接报扣杀,不等求解器反推。
  */
 function previewKind(p: PlayerEntity, ball: Ball): ShotResult["kind"] {
-  if (!p.onGround && (CO.groundY - ball.y) >= C.jumpSmash.minHeight) return "smash";
+  const isNear = typeof p.swingAim === "string" ? p.swingAim === "near" : false;
+  if (!p.onGround && (CO.groundY - ball.y) >= C.jumpSmash.minHeight) {
+    if (isNear) return "slash";
+    return "smash";
+  }
   const q = 1 - C.sweet.coreRatio;
   return buildShot(p, ball, { q, sweet: true, dEdge: 0, heat: 0 }).kind;
 }

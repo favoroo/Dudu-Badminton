@@ -18,9 +18,18 @@ import { Ball, FaceKind, Player, SkinDef, SkinKind, Theme } from "../core/types"
 import { drawHeadStill, drawPlayer, drawRacketStill, drawShuttle, hueColor, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
-import { drawArcadeButton, drawHardShadow, drawMenuCard, drawVeil, fadeOutHide, makeCoinIcon, pressFx, retainedDraw, slamIn, textW, uiIconButton } from "./ui-arcade";
-import type { BtnStyle } from "./ui-arcade";
-import { SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, thumbHeight } from "./shop-shelf";
+import {
+  ac, applyFont, drawBevelSlot, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
+  drawSlantPanel, drawSlantShadow, drawSawtooth, drawStarGlyph, drawVeil, fadeOutHide,
+  gridCenters, hbox, inkFor, makeChip, makeCoinIcon, mkLabel as uiMkLabel, pressFx,
+  retainedDraw, ROLE, skewOf, slamIn, SLANT, slantPath, textW, TOUCH_MIN, uiIconButton,
+} from "./ui-arcade";
+import { C } from "./p5-tokens";
+import { solidTab, type TabHandle } from "./ui-shell";
+import {
+  SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, SHOP,
+  shopContent, shopStats, shopTabs, shopTopBar, thumbCenterY, thumbHeight,
+} from "./shop-shelf";
 import type { ScrollMotion } from "./shop-shelf";
 
 const { ccclass } = _decorator;
@@ -53,6 +62,10 @@ const DRILL_STARS_MAX = DRILLS.length * 3;
 // ---------- 货架滚动(网格超过一屏时才有意义) ----------
 /** 滚动条:贴在可视窗右缘内侧的覆盖式细条(4 列时卡片块两侧各有 56px 留白,不压卡) */
 const BAR_W = 4, BAR_X = GRID_W / 2 - 7, BAR_PAD = 12;
+/** 滚动条配色提为常量:_drawBar 滚动期间每帧都跑,Color 别在帧里现造(同 advanceScroll 的纪律)
+ *  值由令牌表给 —— 轨道是「暗部之间的分隔线」C.line 上抬一档,滑块是货币色 acid。 */
+const BAR_TRACK_COLOR = ac(C.dim, 0.12);
+const BAR_THUMB_COLOR = ac(C.acid, 0.55);
 /** 手指走出这么多**设计像素**就不算「点卡片」了,算滑动。
  *  960×540 在横屏手机上约 2 倍缩放,10 ≈ Android 的 8dp touch slop,再小就开始误吞点击。 */
 const DRAG_SLOP = 10;
@@ -60,32 +73,28 @@ const DRAG_SLOP = 10;
 const RUBBER = 0.35;
 /** 松手之后的惯性/回弹/定位运动学在 shop-shelf.advanceScroll(常数也在那边) */
 
-// 配色(对齐老 base.css 的街机令牌:acid 荧光黄 + 暖纸白 + navy)
+// 配色:**值全部派生自 p5-tokens.C**(那张表是面板层唯一说真话的地方)。
+// 这里保留 COL 这套历史短名与 Color 实例 —— 本文件几十处 mkLabel/Graphics 直接吃 Color,
+// 一次性改完风险大于收益;但「同一个 hex 在五处各写一遍」的病到此为止。
+// 旧注释里那句「白 5% 压在 panelBg 上只有 1.1:1」的临时补丁(tabBg/tabEdge)已随
+// tab 换成 solidTab 一起删掉 —— 未选中态现在是凹陷槽,靠明暗凹凸读,不靠描边。
 const COL = {
-  overlay: new Color(7, 7, 13, 110),          // --ink 遮罩基准(渐变由 drawVeil 补)
-  panelBg: new Color(16, 16, 24, 228),        // 面板黑:半透,身后球场还看得见
-  cardBg: new Color(26, 26, 38, 208),         // 卡片黑(面板抬一档)
-  cardSel: new Color(255, 225, 77, 255),      // --acid 选中描边
-  cardSelBg: new Color(255, 225, 77, 26),     // 选中卡内的 acid 薄染
-  cardEquip: new Color(21, 56, 42, 208),
-  cardLock: new Color(16, 16, 24, 170),
-  // 未选中 tab:白 5% 压在 panelBg 上只有 1.1:1,读不出一格一格的形状。
-  // 改成抬一档的 navy-2 + 冷灰描边 —— 未选中也要「能点」的样子。
-  tabBg: new Color(26, 26, 38, 235),
-  tabEdge: new Color(159, 176, 216, 90),
-  tabSel: new Color(255, 225, 77, 255),       // acid 芯片
-  accent: new Color(255, 225, 77, 255),
-  gold: new Color(255, 225, 77, 255),
-  hot: new Color(255, 106, 31, 255),
-  cyan: new Color(0, 240, 255, 255),
-  green: new Color(125, 255, 158, 255),       // --good
-  white: new Color(245, 239, 225, 255),       // --paper 暖纸白
-  dimWhite: new Color(159, 176, 216, 200),
-  dimGray: new Color(140, 153, 190, 235),
-  // 经验槽:白 9% 在 navy 面板上等于没有 —— 改成往下压的暗槽,空/满一眼分得清
-  expBg: new Color(5, 7, 15, 150),
-  expEdge: new Color(159, 176, 216, 70),
-  expFill: new Color(184, 255, 94, 255),      // 老 .exp-bar 的青柠→acid 渐变主色
+  overlay: ac(C.ink, 0.43),
+  panelBg: ac(C.navy, 0.89),
+  cardBg: ac(C.navy2, 0.82),
+  cardSel: ac(C.acid),
+  cardEquip: ac(ROLE.drill.dk, 0.82),
+  cardLock: ac(C.navy, 0.67),
+  accent: ac(C.acid),
+  gold: ac(C.acid),
+  hot: ac("#ff6a1f"),
+  cyan: ac(C.cyan),
+  green: ac(C.good),
+  white: ac(C.paper),
+  dimWhite: ac(C.dim, 0.78),
+  dimGray: ac(C.dimDeep, 0.92),
+  expBg: ac(C.ink, 0.59),
+  expFill: ac(C.acid),
 };
 
 // ---------- UI 辅助 ----------
@@ -104,23 +113,15 @@ function mkLabel(
   opts?: { x?: number; y?: number; w?: number; align?: number; lines?: number },
 ): Label {
   const o = opts ?? {};
-  const n = new Node(name);
-  n.layer = Layers.Enum.UI_2D;
-  // 多行文本按行数撑高节点,否则 Overflow.CLAMP 会把后续行裁掉
-  const ut = n.addComponent(UITransform);
-  ut.setContentSize(o.w ?? 200, size * 1.4 * (o.lines ?? 1));
-  // 左对齐标签用左锚点,x 即文本左边缘,避免文本框向左延伸到图标区域
-  if ((o.align ?? 0) === 0) ut.setAnchorPoint(0, 0.5);
-  if (o.x !== undefined || o.y !== undefined) n.setPosition(o.x ?? 0, o.y ?? 0, 0);
-  n.setParent(parent);
-  const l = n.addComponent(Label);
-  l.string = text;
-  l.fontSize = size;
-  l.lineHeight = Math.round(size * 1.3);
-  l.horizontalAlign = o.align ?? 0;
-  l.verticalAlign = 1;
-  l.color = color;
-  return l;
+  // 委托权威 mkLabel:align→锚点映射与旧行为逐位一致(现役调用只用 align 0/1;
+  // 旧实现里「align=2 没有右锚」的暗坑顺带被治好,行为变化仅限从未调用的组合)。
+  return uiMkLabel(parent, name, text, size, color, {
+    x: o.x, y: o.y, w: o.w, lines: o.lines,
+    lineH: Math.round(size * 1.3),
+    contentH: size * 1.4 * (o.lines ?? 1),
+    align: (o.align ?? 0) as 0 | 1 | 2,
+    anchor: "align",
+  });
 }
 
 /** 解析 CSS 颜色:支持 #hex 与 rgb()/rgba()(Cocos 的 fromHEX 不认 rgba 字符串) */
@@ -133,18 +134,18 @@ function parseColor(s: string, fallback: Color): Color {
   try { return new Color().fromHEX(s); } catch { return fallback; }
 }
 
-/** Graphics 画圆角矩形(填充+描边) */
-function drawRR(g: Graphics, w: number, h: number, r: number, fill: Color, stroke?: Color, lw = 2) {
-  const hw = w / 2, hh = h / 2;
-  g.fillColor = fill;
-  g.roundRect(-hw, -hh, w, h, r);
+/** Color → hex 串:p5-shapes 吃 hex(零 cc),而履历格的颜色是从 COL 的 Color 来的 */
+function hexOf(c: Color): string {
+  const h2 = (v: number): string => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${h2(c.r)}${h2(c.g)}${h2(c.b)}`;
+}
+
+/** 传说款的四尖星印章:同色实心 + 墨圆心(与首页标题右上角那枚同一画法) */
+function drawStarSeal(g: Graphics, cx: number, cy: number, r: number, hex: string): void {
+  drawStarGlyph(g, cx, cy, r, true, hex);
+  g.fillColor = ac(C.ink, 1);
+  g.circle(cx, cy, r * 0.18);
   g.fill();
-  if (stroke) {
-    g.strokeColor = stroke;
-    g.lineWidth = lw;
-    g.roundRect(-hw, -hh, w, h, r);
-    g.stroke();
-  }
 }
 
 // ---------- 预览辅助 ----------
@@ -171,7 +172,12 @@ function dummyPlayer(theme: Theme, racketSkin: SkinDef, ov: Partial<Player> = {}
     hitLock: 0, contactFlash: 0, speedMul: 1, aiAimErr: 0,
     zoneScale: 1, score: 0, smashGlow: 0, sweetGlow: 0, perfectGlow: 0, heat: 0,
     hitRecoil: 0, lungeT: -1, lungeDir: 0, lungeCd: 0, lungeShotT: 0,
-    stats: { hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0 },
+    stats: {
+      hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0,
+      lungeShots: 0, jumpSmashes: 0, iaiStrikes: 0, skillCasts: 0,
+      deepShots: 0, netIntercepts: 0, airHits: 0, empReturns: 0,
+      zonePenalties: 0, exhausted: 0,
+    },
     racketSkin,
     faceSkin: { id: "face-auto", kind: "face", name: "auto", price: 0, faceStyle: "auto" },
     hideTag: true,
@@ -312,7 +318,7 @@ export class CareerPanel extends Component {
     this._dragMoved = false;
     this._vel = 0;
     this._easeTo = null;
-    this._tabGraphics = [];
+    this._tabHandles = [];
     this._toastNode = null;
     this._toastLabel = null;
     this._toastOpacity = null;
@@ -345,6 +351,9 @@ export class CareerPanel extends Component {
   // ---------- 内部状态 ----------
 
   private root: Node | null = null;
+
+  /** 面板根节点:供 ui-manager 做 screenSwap 退场用(退场仍走 hide(),那里有清理) */
+  get rootNode(): Node | null { return this.root; }
   private _panelNode: Node | null = null;
   private _onCloseCb: (() => void) | null = null;
   private _kind: SkinKind | "stats" = "player";
@@ -390,7 +399,7 @@ export class CareerPanel extends Component {
   private _easeTo: number | null = null;
   /** advanceScroll 的复用出参:每帧都要跑,不每次造对象 */
   private readonly _motion: ScrollMotion = { y: 0, v: 0, easeTo: null };
-  private _tabGraphics: Array<{ g: Graphics; l: Label; ut: UITransform }> = [];
+  private _tabHandles: TabHandle[] = [];
   private _toastNode: Node | null = null;
   private _toastG: Graphics | null = null;
   private _toastLabel: Label | null = null;
@@ -419,13 +428,15 @@ export class CareerPanel extends Component {
     // 商店打开时不要让点击漏到下面的虚拟按键上(菜单的遮罩此时已隐藏)
     overlay.addComponent(BlockInputEvents);
 
-    // 面板背景(硬偏移阴影 + navy 底:老 .panel 的贴纸感)
+    // 面板衬纸(L1):一张撕下来的黑纸垫在荧光黄副衬上,标题带叠网点。
+    // 副衬用黄不用首页的红 —— 商店的角色色是「星星/货币」,与首页那块「闯关」同档。
     const panel = mkNode("panel", this.root, PW, PH);
     panel.setPosition(0, -10, 0);
     this._panelNode = panel;
     const pg = panel.addComponent(Graphics);
-    drawHardShadow(pg, PW, PH, 16, 6, 6, 0.55);
-    drawRR(pg, PW, PH, 16, COL.panelBg, new Color(245, 239, 225, 36), 1.5);
+    retainedDraw(pg, () => drawPosterPlate(pg, PW, PH, {
+      bandHex: ROLE.star.face, teeth: 20, halftone: true,
+    }));
 
     this._buildTopBar(panel);
     this._buildTabBar(panel);
@@ -437,6 +448,7 @@ export class CareerPanel extends Component {
     this._toastNode.setPosition(0, -PH / 2 + 20, 0);
     this._toastG = mkNode("toast-plate", this._toastNode, 400, 36).addComponent(Graphics);
     this._toastLabel = mkNode("toast-label", this._toastNode, 400, 36).addComponent(Label);
+    applyFont(this._toastLabel, false);
     this._toastLabel.string = "";
     this._toastLabel.fontSize = 16;
     this._toastLabel.lineHeight = 22;
@@ -448,41 +460,57 @@ export class CareerPanel extends Component {
   }
 
   // ----- 顶部状态栏 -----
+  // 五件的位置全部由 shop-shelf.shopTopBar() 给(一条从左到右的轨道)。
+  // 以前这里每件各拍一个 x,给 Lv 加斜切牌之后牌就盖住了等级名 —— 判据见 shopOverlaps()。
   private _buildTopBar(panel: Node) {
-    const bar = mkNode("topBar", panel, PW - 20, 48);
-    bar.setPosition(0, PH / 2 - 28, 0);
+    const T = shopTopBar();
+    const bar = mkNode("topBar", panel, PW - 20, SHOP.topBar.h);
+    bar.setPosition(0, SHOP.topBar.cy, 0);
+    const cx = (b: { left: number; right: number }): number => (b.left + b.right) / 2;
 
-    // Lv.
-    this._lvLabel = mkLabel(bar, "lv", "Lv.1", 20, COL.gold, { x: -PW / 2 + 50, y: 8, w: 60 });
+    // Lv. 牌:斜切红底 + 右缘撕纸(抄 main-menu 左上那枚,同一语汇)
+    const lvW = T.lv.right - T.lv.left, lvH = T.lv.h;
+    const lvPlate = mkNode("lv-plate", bar, lvW, lvH);
+    lvPlate.setPosition(cx(T.lv), 0, 0);
+    const lpg = lvPlate.addComponent(Graphics);
+    const lvSkew = skewOf(lvH, SLANT.band);
+    retainedDraw(lpg, () => {
+      drawSlantShadow(lpg, lvW, lvH, lvSkew, 3, 3, 0.5);
+      drawSlantPanel(lpg, lvW, lvH, lvSkew, { face: C.slash, alpha: 0.97, edge: ROLE.primary.edge, edgeA: 0.8 });
+      drawSawtooth(lpg, 8, lvH - 16, 3, C.slashDk, 0.95, "right", lvW / 2 + 4, 0);
+    });
+    this._lvLabel = mkLabel(bar, "lv", "Lv.1", 20, ac(C.paper), { x: cx(T.lv), y: 0, w: lvW - 16 });
 
     // 等级名
     this._lvNameLabel = mkLabel(bar, "lvName", LV_NAMES[0], 13, COL.dimWhite, {
-      x: -PW / 2 + 130, y: 8, w: 100,
+      x: cx(T.lvName), y: 0, w: T.lvName.right - T.lvName.left,
     });
 
-    // 经验条
-    const expBg = mkNode("expBg", bar, 200, 14);
-    expBg.setPosition(-PW / 2 + 310, 8, 0);
+    // 经验条:槽 = 凹陷槽(上缘压暗、下缘接光,读作「挖进去的一条」,不描边)
+    const expW = T.exp.right - T.exp.left;
+    const expBg = mkNode("expBg", bar, expW, T.exp.h);
+    expBg.setPosition(cx(T.exp), 0, 0);
     const expBgG = expBg.addComponent(Graphics);
-    drawRR(expBgG, 200, 14, 7, COL.expBg, COL.expEdge, 1);
+    retainedDraw(expBgG, () => drawBevelSlot(expBgG, expW, T.exp.h, SLANT.block));
 
-    const expFillNode = mkNode("expFill", bar, 196, 10);
-    expFillNode.setPosition(-PW / 2 + 310, 8, 0);
+    const expFillNode = mkNode("expFill", bar, expW - 4, 10);
+    expFillNode.setPosition(cx(T.exp), 0, 0);
     this._expFill = expFillNode.addComponent(Graphics);
 
     this._expLabel = mkLabel(bar, "expNum", "0 / 80 EXP", 12, COL.dimWhite, {
-      x: -PW / 2 + 310, y: -10, w: 200, align: 1,
+      x: cx(T.exp), y: -18, w: expW, align: 1,
     });
 
     // 金币(Graphics 图标 + 数字,替代 🪙 emoji)
-    makeCoinIcon(bar, PW / 2 - 155, 6, 9);
+    const coinW = T.coins.right - T.coins.left;
+    makeCoinIcon(bar, T.coins.left + 10, 0, 9);
     this._coinsLabel = mkLabel(bar, "coins", "50", 18, COL.gold, {
-      x: PW / 2 - 136, y: 6, w: 80, align: 0,
+      x: T.coins.left + 26 + (coinW - 26) / 2, y: 0, w: coinW - 26, align: 1,
     });
 
     // 返回按钮:命中区 56(视觉圆底 44),Button.CLICK 自带按压反馈
-    const back = uiIconButton(bar, "✕", { bg: "#6e2029", edge: "#ff8a8a", fontSize: 20 });
-    back.setPosition(PW / 2 - 40, 6, 0);
+    const back = uiIconButton(bar, "✕", { bg: C.slashDk, edge: ROLE.primary.edge, fontSize: 20 });
+    back.setPosition(cx(T.close), 0, 0);
     back.on(Button.EventType.CLICK, () => {
       this._onCloseCb?.();
       this.hide();
@@ -491,52 +519,47 @@ export class CareerPanel extends Component {
 
   // ----- Tab 栏 -----
   private _buildTabBar(panel: Node) {
-    const bar = mkNode("tabs", panel, PW - 20, 38);
-    bar.setPosition(0, PH / 2 - 73, 0);
-    this._tabGraphics = [];
+    const tabs = shopTabs();
+    const bar = mkNode("tabs", panel, PW - 20, SHOP.tabs.h);
+    bar.setPosition(0, SHOP.tabs.cy, 0);
+    this._tabHandles = [];
 
-    const tw = (PW - 20) / KIND_ALL.length;
     KIND_ALL.forEach((k, i) => {
-      const tab = mkNode(`tab-${k}`, bar, tw - 4, 32);
-      tab.setPosition(-((PW - 20) / 2) + tw * i + tw / 2, 0, 0);
-
-      const g = tab.addComponent(Graphics);
-      const ut = tab.getComponent(UITransform)!;
-
-      drawRR(g, tw - 4, 32, 8, COL.tabBg, COL.tabEdge, 1.5);
-      const l = mkLabel(tab, `tabLabel-${k}`, KIND_LABEL[k], 15, COL.dimWhite, {
-        x: 0, y: 0, w: tw - 8, align: 1,
+      const b = tabs[i];
+      // 选中 = 整面荧光黄实底 + 墨黑字;未选 = 凹陷槽 + dim 字。
+      // 旧写法是 navy2 底 + 白 5% 描边(约 1.1:1),用户读出来是「这一格坏了」。
+      const h = solidTab({
+        name: `tab-${k}`, parent: bar, label: KIND_LABEL[k],
+        w: b.right - b.left, h: b.h, role: "star", size: 15,
       });
-
-      tab.on(Node.EventType.TOUCH_END, () => {
+      h.node.setPosition((b.left + b.right) / 2, 0, 0);
+      h.node.on(Button.EventType.CLICK, () => {
         if (this._kind === k) return;
         this._setKind(k as SkinKind | "stats");
       });
-      pressFx(tab);   // 裸触摸交互补按压反馈,与 Button 风格统一
-
-      this._tabGraphics.push({ g, l, ut });
+      this._tabHandles.push(h);
     });
   }
 
   // ----- 内容区(左:网格 右:预览) -----
   private _buildContent(panel: Node) {
-    const cy = PH / 2 - 94 - CONTENT_H / 2;
-
     // 左:卡片网格(货架在 _ensureGridShell 里建,这里只留一块地)
+    // 顶栏 / tab / 内容区 / 履历格的 y 全部来自 shop-shelf 的 SHOP 栈(判据 shopOverlaps)
+    const K = shopContent(CONTENT_H);
     const left = mkNode("gridArea", panel, GRID_W, CONTENT_H);
-    left.setPosition(-((PW - 20) / 2) + GRID_W / 2 + 5, cy, 0);
+    left.setPosition((K.grid.left + K.grid.right) / 2, K.grid.cy, 0);
     this._gridNode = left;
 
     // 右:预览
     const right = mkNode("previewArea", panel, PREVIEW_W, CONTENT_H);
-    right.setPosition(((PW - 20) / 2) - PREVIEW_W / 2 - 5, cy, 0);
+    right.setPosition((K.preview.left + K.preview.right) / 2, K.preview.cy, 0);
     this._previewArea = right;
 
     const prevBg = right.addComponent(Graphics);
     // 切到「履历」页时这块整列会 active=false,再切回来得重画(原生侧 onDisable 会清渲染数据)
     retainedDraw(prevBg, () => {
-      drawRR(prevBg, PREVIEW_W, CONTENT_H, 12, new Color(15, 18, 28, 220),
-        new Color(159, 176, 216, 80), 1.5);
+      // 试衣间是一块小衬纸:副衬用青(专项/展示),撕口留 10 齿
+      drawPosterPlate(prevBg, PREVIEW_W, CONTENT_H, { bandHex: ROLE.info.face, teeth: 10, edge: false });
     });
 
     // 预览 Graphics
@@ -545,13 +568,16 @@ export class CareerPanel extends Component {
     this._previewGfx = gfxNode.addComponent(Graphics);
 
     // 预览名称:贴在人物脚下、动作按钮上方(按钮要落在拇指够得着的下沿)
-    this._previewName = mkLabel(right, "prevName", "", 16, COL.white, { y: -CONTENT_H / 2 + 87, w: PREVIEW_W - 20, align: 1 });
+    this._previewName = mkLabel(right, "prevName", "", 16, COL.white, {
+      y: K.name.cy - K.preview.cy, w: K.name.right - K.name.left, align: 1,
+    });
 
     // 动作按钮 —— 商店唯一的成交入口。
     // 点卡片只「选中」(换试衣间 + 换按钮文案),金币只有按这里才动:
-    // 皮肤买了不能退,一tap 就扣钱的手感在触摸端就是误触。
+    // 皮肤买了不能退,一点就扣钱的手感在触摸端就是误触。
     const act = mkNode("action", right, ACT_W, ACT_H);
-    act.setPosition(0, -CONTENT_H / 2 + 35, 0);
+    act.setPosition((K.action.left + K.action.right) / 2 - (K.preview.left + K.preview.right) / 2,
+      K.action.cy - K.preview.cy, 0);
     this._actNode = act;
     this._actGfx = act.addComponent(Graphics);
     // 切到履历页时 previewArea 整块会 active=false,回到商店时靠 retainedDraw 重放底块
@@ -648,7 +674,10 @@ export class CareerPanel extends Component {
     this._drawBar();
   }
 
-  /** 覆盖式细滚动条:位置随货架走,装得下时整条不画(不留没意义的轨道) */
+  /** 覆盖式细滚动条:位置随货架走,装得下时整条不画(不留没意义的轨道)。
+   *  滑块中心由 shop-shelf.thumbCenterY 给:f=0 顶缘贴轨道顶、f=1 底缘贴轨道底 ——
+   *  旧版在这里手写 `trackH/2 - f*(trackH-thumbH)`,把滑块中心钉在轨道顶,
+   *  上半截戳出网格窗叠到 tab 条上(用户截图里那根飘着的黄条)。 */
   private _drawBar() {
     const g = this._barG;
     if (!g || !g.isValid) return;
@@ -657,11 +686,11 @@ export class CareerPanel extends Component {
     const trackH = CONTENT_H - BAR_PAD * 2;
     const thumbH = thumbHeight(trackH, CONTENT_H, this._maxScroll);
     const f = clamp(this._scrollY / this._maxScroll, 0, 1);
-    const cy = trackH / 2 - f * (trackH - thumbH);
-    g.fillColor = new Color(159, 176, 216, 30);
+    const cy = thumbCenterY(trackH, thumbH, f);
+    g.fillColor = BAR_TRACK_COLOR;
     g.roundRect(-BAR_W / 2, -trackH / 2, BAR_W, trackH, BAR_W / 2);
     g.fill();
-    g.fillColor = new Color(255, 225, 77, 140);
+    g.fillColor = BAR_THUMB_COLOR;
     g.roundRect(-BAR_W / 2, cy - thumbH / 2, BAR_W, thumbH, BAR_W / 2);
     g.fill();
   }
@@ -762,7 +791,7 @@ export class CareerPanel extends Component {
     const list = this._list();
     const lay = shelfLayout(list.length);
     const cols = lay.cols;
-    const totalW = cols * CARD_W + (cols - 1) * GAP;
+    const lefts = hbox(Array(cols).fill(CARD_W), GAP);
     const prof = Career.profile();
 
     // 行数决定货架多高:超过窗高才有得滚,滚动条也才有得画(算法与出处见 shop-shelf.ts)
@@ -778,8 +807,8 @@ export class CareerPanel extends Component {
     }
 
     list.forEach((s, i) => {
-      const col = i % cols, row = Math.floor(i / cols);
-      const x = -totalW / 2 + col * (CARD_W + GAP) + CARD_W / 2;
+      const row = Math.floor(i / cols);
+      const x = lefts[i % cols] + CARD_W / 2;
       const y = rowTopY(row) - CARD_H / 2;
 
       const equipped = prof.equipped[this._kind as SkinKind] === s.id;
@@ -788,7 +817,10 @@ export class CareerPanel extends Component {
       const broke = !owned && !locked && prof.coins < s.price;
       const rarity = s.rarity ?? "common";
       const rmeta = CFG.rarity[rarity];
-      const rarityCol = parseColor(rmeta.color, COL.white);
+      // 稀有度色只有**一个**出处:config 的 RARITY_META(它带着中文名与色值)。
+      // 不在面板里另拍一套紫色 —— 本轮改版要消灭的就是「同一套色在五处各存一份」。
+      const rarityHex = rmeta.color;
+      const rarityCol = parseColor(rarityHex, COL.white);
 
       // 卡片节点
       const card = mkNode(`card-${i}`, host, CARD_W, CARD_H);
@@ -796,20 +828,20 @@ export class CareerPanel extends Component {
 
       const g = card.addComponent(Graphics);
       const sel = i === this._sel;
-      // 边框层级:装备中(绿) > 选中(acid) > 稀有度色 > 默认冷灰
-      const borderCol = equipped ? COL.green
-        : sel ? COL.cardSel
-          : rarity !== "common" ? rarityCol
-            : new Color(107, 124, 166, 170);
-      const bgCol = equipped ? COL.cardEquip : locked ? COL.cardLock : COL.cardBg;
-      if (sel) drawHardShadow(g, CARD_W, CARD_H, 8, 4, 4, 0.5);   // 选中卡浮起(老 .skin-card.sel)
-      drawRR(g, CARD_W, CARD_H, 8, bgCol, borderCol, sel ? 2.5 : 1.5);
-      if (rarity === "legendary") {
-        // 传说款:外圈再罩一道同色微光,货架上第一个被看到
-        g.strokeColor = new Color(rarityCol.r, rarityCol.g, rarityCol.b, 80);
-        g.lineWidth = 5;
-        g.roundRect(-CARD_W / 2 - 2.5, -CARD_H / 2 - 2.5, CARD_W + 5, CARD_H + 5, 10.5);
-        g.stroke();
+      // 卡片 = 墨面 + 顶部一条稀有度色带 + 同色 keyline(cardDL)。
+      // **不整面涂稀有度色**:一屏 8~16 张各涂满黄/紫/蓝会排成五色彩虹,
+      // 而 P5 的底色语言是红黑白主导 + 点缀 —— 色只负责报「这卡什么档」。
+      // 层级仍是:装备中(绿带 + glow)> 选中(acid 带 + glow)> 稀有度色带 > 锁定。
+      const bandHex = equipped ? C.good : sel ? C.acid : rarity !== "common" ? rarityHex : C.line;
+      retainedDraw(g, () => drawP5Card(g, CARD_W, CARD_H, bandHex, {
+        bandH: 24,
+        locked: locked || (!equipped && !sel && rarity === "common"),
+        glow: equipped || sel,
+        teeth: 0,
+      }));
+      if (rarity === "legendary" && !locked) {
+        // 传说款:右上角一枚同色四尖星印章,货架上第一个被看到(旧版是一圈 5px 微光描边)
+        drawStarSeal(g, CARD_W / 2 - 13, CARD_H / 2 - 13, 9, rarityHex);
       }
 
       // 缩略图区域
@@ -821,13 +853,9 @@ export class CareerPanel extends Component {
 
       // 稀有度角标(common 不挂,基础款保持素净)
       if (rarity !== "common") {
-        const chip = mkNode("rarity", card, 34, 14);
-        chip.setPosition(-CARD_W / 2 + 19, CARD_H / 2 - 8, 0);
-        const cg = chip.addComponent(Graphics);
-        drawRR(cg, 34, 14, 7,
-          new Color(rarityCol.r, rarityCol.g, rarityCol.b, 240),
-          new Color(10, 13, 24, 190), 1);
-        mkLabel(chip, "rarityTxt", rmeta.name, 9, new Color(12, 14, 22, 255), { y: -1, w: 34, align: 1 });
+        // 稀有度角标:斜切小片,面色即稀有度色,字色由亮度算(不再硬写墨黑)
+        const chip = makeChip(card, rmeta.name, 9, rarityHex, inkFor(rarityHex), SLANT.band);
+        chip.setPosition(-CARD_W / 2 + 21, CARD_H / 2 - 8, 0);
       }
 
       // 名称
@@ -838,7 +866,7 @@ export class CareerPanel extends Component {
 
       // 状态行
       let statusText: string, statusColor: Color;
-      if (equipped) { statusText = "✓ 装备中"; statusColor = COL.green; }
+      if (equipped) { statusText = "装备中"; statusColor = COL.green; }
       else if (owned) { statusText = "已拥有"; statusColor = COL.dimWhite; }
       else if (locked) { statusText = `Lv.${s.unlockLevel} 解锁`; statusColor = COL.dimGray; }
       else { statusText = `金币 ${s.price}`; statusColor = broke ? COL.dimGray : COL.gold; }
@@ -855,19 +883,13 @@ export class CareerPanel extends Component {
       }
 
       // 锁定遮罩(独立子节点:一个节点只能挂一个 renderable,card 已有背景 Graphics)
+      // 锁定/买不起:凹陷槽本身已经把卡压暗了,不再叠一层圆角黑罩(那会把斜切边露在外面)。
+      // 只补一枚锁形印章 —— 用 Graphics,不用 🔒:原生 Android 没有彩色 emoji 字体。
       if (locked) {
-        const ovNode = mkNode("lock-mask", card, CARD_W, CARD_H);
+        const ovNode = mkNode("lock-mark", card, 26, 26);
+        ovNode.setPosition(0, 6, 0);
         const ov = ovNode.addComponent(Graphics);
-        ov.fillColor = new Color(0, 0, 0, 120);
-        ov.roundRect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H, 8);
-        ov.fill();
-      }
-      if (broke && !owned) {
-        const ovNode = mkNode("broke-mask", card, CARD_W, CARD_H);
-        const ov = ovNode.addComponent(Graphics);
-        ov.fillColor = new Color(0, 0, 0, 110);
-        ov.roundRect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H, 8);
-        ov.fill();
+        retainedDraw(ov, () => drawRankBadge(ov, "lock", 24, C.dimDeep));
       }
 
       // 点击 = 只选中:右侧试衣间马上换人,下方按钮改口径;金币不动
@@ -926,21 +948,25 @@ export class CareerPanel extends Component {
   }
 
   /** 按钮此刻该说什么 —— 买不成时把「为什么不行」直接写在按钮上,不用点了才知道 */
-  private _actView(): { text: string; style: BtnStyle; fg: Color } {
+  /**
+   * 按钮三态:面色 + 字色成对给出。`face: null` = 凹陷槽(不可成交的状态),
+   * 有面 = 整块实底大色块 —— 商店里唯一花钱的地方必须是最亮的那一块。
+   * 字色一律 inkFor(面色),不再硬写「浅粉白」。
+   */
+  private _actView(): { text: string; face: string | null; fg: Color } {
     const kind = this._kind;
-    if (kind === "stats") return { text: "", style: "ghost", fg: COL.dimGray };
+    if (kind === "stats") return { text: "", face: null, fg: COL.dimGray };
     const s = this._list()[this._sel];
-    if (!s) return { text: "", style: "ghost", fg: COL.dimGray };
+    if (!s) return { text: "", face: null, fg: COL.dimGray };
 
     const p = Career.profile();
-    if (p.equipped[kind] === s.id) return { text: "✓ 已经装备", style: "ghost", fg: COL.green };
-    if (Career.owns(s.id)) return { text: "装备上身", style: "ghost", fg: COL.white };
-    if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, style: "ghost", fg: COL.dimGray };
-    if (p.coins < s.price) return { text: `金币不足 · 还差 ${s.price - p.coins}`, style: "ghost", fg: COL.dimGray };
-    // 红面 primary 上要用浅字(P5 主按钮:斩劈红面白字)
-    const primaryFg = new Color(255, 245, 242, 255);
-    if (s.price === 0) return { text: "免费领取", style: "primary", fg: primaryFg };
-    return { text: `购买 · ${s.price} 金币`, style: "primary", fg: primaryFg };
+    if (p.equipped[kind] === s.id) return { text: "已经装备", face: null, fg: COL.green };
+    if (Career.owns(s.id)) return { text: "装备上身", face: ROLE.star.face, fg: ac(inkFor(ROLE.star.face)) };
+    if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, face: null, fg: COL.dimGray };
+    if (p.coins < s.price) return { text: `金币不足 · 还差 ${s.price - p.coins}`, face: null, fg: COL.dimGray };
+    const buyFg = ac(inkFor(ROLE.primary.face));
+    if (s.price === 0) return { text: "免费领取", face: ROLE.primary.face, fg: buyFg };
+    return { text: `购买 · ${s.price} 金币`, face: ROLE.primary.face, fg: buyFg };
   }
 
   /** 底块单独走一遍,好让 retainedDraw 的重放和状态刷新用同一张脸 */
@@ -948,7 +974,9 @@ export class CareerPanel extends Component {
     const g = this._actGfx;
     if (!g || !g.isValid) return;
     g.clear();
-    drawArcadeButton(g, ACT_W, ACT_H, this._actView().style);
+    const face = this._actView().face;
+    if (face) drawP5Block(g, ACT_W, ACT_H, face, SLANT.button);
+    else drawBevelSlot(g, ACT_W, ACT_H, SLANT.button);
   }
 
   private _updateAction() {
@@ -1007,7 +1035,7 @@ export class CareerPanel extends Component {
     // 履历页没有商店预览可看,统计卡直接铺满面板宽(老 .career-stats-page 也是整页网格)
     if (!this._statsNode) {
       this._statsNode = mkNode("statsPage", this._gridNode.parent!, PW - 40, CONTENT_H);
-      this._statsNode.setPosition(0, PH / 2 - 94 - CONTENT_H / 2, 0);
+      this._statsNode.setPosition(0, shopContent(CONTENT_H).grid.cy, 0);
     }
 
     // 清空旧统计卡片
@@ -1029,24 +1057,25 @@ export class CareerPanel extends Component {
       { num: `${st.perfects}`, label: "完美击球", sub: "", color: COL.cyan },
       { num: `${st.sweets}`, label: "甜区命中", sub: "", color: COL.gold },
       { num: `${st.maxRally} 拍`, label: "最长相持", sub: "", color: COL.white },
-      { num: `${totalStars} / ${DRILL_STARS_MAX} ★`, label: "训练评级", sub: "", color: COL.cyan },
+      { num: `${p.bestEndlessScore || 0} 分`, label: "无限模式纪录", sub: `训练 ${totalStars}/${DRILL_STARS_MAX} ★`, color: COL.cyan },
     ];
 
-    const cw = 268, ch = 120, cgap = 16, cols = 3;
-    const totalW = cols * cw + (cols - 1) * cgap;
+    // 六格的格位由 shopStats() 给(与 shopOverlaps/shopOverflow 同一套数)
+    const boxes = shopStats(CONTENT_H);
 
     cards.forEach((c, i) => {
-      const col = i % cols, row = Math.floor(i / cols);
-      const x = -totalW / 2 + col * (cw + cgap) + cw / 2;
-      const y = CONTENT_H / 2 - 20 - row * (ch + cgap) - ch / 2;
+      const b = boxes[i];
+      const x = (b.left + b.right) / 2, y = b.cy - shopContent(CONTENT_H).grid.cy;
 
+      const cw = b.right - b.left, ch = b.h;
       const node = mkNode(`stat-${i}`, this._statsNode!, cw, ch);
       node.setPosition(x, y, 0);
       const g = node.addComponent(Graphics);
-      drawRR(g, cw, ch, 12, new Color(25, 30, 45, 200), c.color, 1.5);
+      // 六格统计:墨面 + 一条该数据的色带,数字仍用色带同色 —— 色是数据编码,不是墙漆
+      retainedDraw(g, () => drawP5Card(g, cw, ch, hexOf(c.color), { bandH: 26, teeth: 0 }));
 
       // 数值
-      mkLabel(node, "num", c.num, 30, c.color, { y: 24, w: cw - 16, align: 1 });
+      mkLabel(node, "num", c.num, 30, c.color, { y: 20, w: cw - 16, align: 1 });
       // 标题
       mkLabel(node, "label", c.label, 15, COL.white, { y: -12, w: cw - 16, align: 1 });
       // 副标题:只有真数据才占位(装饰性口号已删)
@@ -1155,8 +1184,10 @@ export class CareerPanel extends Component {
       const g = this._toastG;
       g.node.getComponent(UITransform)!.setContentSize(w, 36);
       g.clear();
-      drawHardShadow(g, w, 36, 8, 3, 3, 0.45);
-      drawMenuCard(g, w, 36, 8, { accent: "#ffe14d", tint: 0.05, bar: 4, edge: 0, alpha: 0.96 });
+      // toast 也走大色块:整面荧光黄 + 墨黑字,与「装备上身」那颗键同一张脸。
+      // 旧写法是 drawMenuCard(深底 + 4px 左色条 + 手拍的 "#ffe14d")—— 同一块黄在
+      // 一个文件里两种长相、两个出处,正是本轮收口的对象。
+      drawP5Block(g, w, 36, ROLE.star.face, SLANT.band);
     }
     this._toastOpacity.opacity = 255;
     this._toastTimer = 1.7; // 1.7秒后淡出
@@ -1187,13 +1218,7 @@ export class CareerPanel extends Component {
     this._coinsLabel.string = `${p.coins}`;
 
     // Tab 高亮(acid 芯片 + 深字:老 .shop-tab.sel)
-    this._tabGraphics.forEach((tab, i) => {
-      const active = KIND_ALL[i] === this._kind;
-      tab.g.clear();
-      drawRR(tab.g, tab.ut.contentSize.width, tab.ut.contentSize.height, 8,
-        active ? COL.tabSel : COL.tabBg, active ? undefined : COL.tabEdge, 1.5);
-      tab.l.color = active ? new Color(20, 16, 10, 255) : COL.dimWhite;
-    });
+    this._tabHandles.forEach((h, i) => h.paint(KIND_ALL[i] === this._kind));
 
     // 内容区
     if (this._kind === "stats") {
@@ -1224,8 +1249,9 @@ export class CareerPanel extends Component {
     g.clear();
     const w = 196 * clamp(ratio, 0, 1);
     if (w > 0) {
-      g.fillColor = COL.expFill;
-      g.roundRect(-98, -5, w, 10, 5);
+      // 进度是同斜率的实底块 —— 槽是凹的、进度是凸出来的那截,立体关系才成立
+      g.fillColor = ac(C.acid, 0.96);
+      slantPath(g, w, 10, skewOf(10, SLANT.block), -98 + w / 2, 0);
       g.fill();
     }
   }

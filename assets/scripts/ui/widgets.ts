@@ -7,9 +7,21 @@
 // 依赖纪律:本文件只 import `cc` 与 `./ui-arcade`,**绝不 import ui-manager** ——
 // ui-manager 会把这两个构件挂进 UiKit 发给面板,反手 import 就成环。
 // (ui-arcade 自己只 import cc,同理。)
+//
+// P5 化(本轮):这两个构件原来全是「玻璃胶囊 + 光滑圆」—— 圆角轨道、白实心圆旋钮、
+// 胶囊开关带圆钮,三件光滑物叠在一行里,与全站的大色块语言毫无关系。现在:
+//   轨道 = 凹陷槽(上缘压暗、下缘接光,读作「挖进去」,不描边);
+//   填充 = 同斜率的实底斜切块(凸出来的那截);
+//   旋钮 = 斜切方块(墨底垫层 + 同色压暗 + 面 + 顶缘高光);
+//   开关 = 整行按 on/off 走实底色块 / 凹陷槽,状态另有「开 / 关」文字读数。
+// 读数这条不许省:外观淡出不等于把读数一起抹掉(设置页音量此前只有滑杆没有数字,
+// 用户报过一次「看不见透明度滑杆」就是同一类病)。触摸区一律抬到 TOUCH_MIN=44。
 // ============================================================
 import { Button, Color, EventTouch, Graphics, Label, Layers, Node, UITransform, Vec3, v3 } from "cc";
-import { ARCADE, ac, drawGlassCard, drawHardShadow } from "./ui-arcade";
+import { ARCADE, ac, applyFont, mkLabel as uiMkLabel, retainedDraw, TOUCH_MIN } from "./ui-arcade";
+import { C, inkFor, type Role } from "./p5-tokens";
+import { styleOf, TOGGLE_READOUT_W } from "./p5-shapes";
+import { drawSliderFace, drawToggleFace, sliderDL } from "./p5-paint";
 
 const tmpV = new Vec3();
 
@@ -20,21 +32,29 @@ const tmpV = new Vec3();
  */
 function mkLabel(parent: Node, text: string, size: number, colorHex: string,
   leftEdge: number, w: number): Label {
-  const n = new Node("label");
-  n.layer = Layers.Enum.UI_2D;
-  const ut = n.addComponent(UITransform);
-  ut.setContentSize(w, Math.round(size * 1.35));
-  n.setParent(parent);
-  n.setPosition(leftEdge + w / 2, 0, 0);
-  const l = n.addComponent(Label);
-  l.string = text;
-  l.fontSize = size;
-  l.lineHeight = Math.round(size * 1.22);
-  l.horizontalAlign = 0;             // 左对齐(0 左 / 1 中 / 2 右)
-  l.verticalAlign = 1;
-  l.overflow = Label.Overflow.CLAMP;
-  l.color = ac(colorHex);
-  return l;
+  // 委托权威 mkLabel。锚点保持 center + 节点摆 leftEdge + w/2:滑杆/开关行的
+  // x 坐标都是按这个语义调的,与 campaign 的左锚语义不同源,别顺手"统一"。
+  return uiMkLabel(parent, "label", text, size, ac(colorHex), {
+    x: leftEdge + w / 2, w,
+    lineH: Math.round(size * 1.22),
+    contentH: Math.round(size * 1.35),
+    align: 0,                        // 左对齐(0 左 / 1 中 / 2 右)
+    anchor: "center",
+    overflow: Label.Overflow.CLAMP,
+  });
+}
+
+/** 右对齐读数:x 传「文字右缘」,给开关行末与滑杆尾部的读数用 */
+function mkRight(parent: Node, text: string, size: number, colorHex: string,
+  rightEdge: number, w: number): Label {
+  return uiMkLabel(parent, "readout", text, size, ac(colorHex), {
+    x: rightEdge, w,
+    lineH: Math.round(size * 1.22),
+    contentH: Math.round(size * 1.35),
+    align: 2,
+    anchor: "align",
+    overflow: Label.Overflow.CLAMP,
+  });
 }
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -50,10 +70,20 @@ export interface SliderOpts {
   step?: number;
   /** 初始值;不传取 min..max 的中值 */
   value?: number;
-  /** 强调色(默认荧光黄) */
+  /** 强调色(默认荧光黄);给了 role 则按「色即功能」取面色 */
   accent?: string;
-  /** 轨道高度,默认 14;整条触摸区固定 34 高,手指好点 */
+  role?: Role;
+  /** 轨道高度,默认 14;整条触摸区固定 TOUCH_MIN(44) 高,手指点得着 */
   trackH?: number;
+  /**
+   * 轨道右缘的读数(音量百分比、档位名)。传函数则每次 paint 重取 ——
+   * 「只有滑杆没有数」是用户报过的老病:滑杆能看个大概,但 0.8 和 0.85 分不出来。
+   */
+  readout?: string | (() => string);
+  /** 读数框宽,默认 96 */
+  readoutW?: number;
+  /** 离散档位数:>1 时在轨道下缘画刻度,让「能停在哪儿」看得见 */
+  ticks?: number;
 }
 
 export interface Slider {
@@ -68,24 +98,26 @@ export interface Slider {
 }
 
 /**
- * 水平滑杆:玻璃轨道 + 强调色填充 + 圆旋钮。
+ * 水平滑杆:凹陷槽轨道 + 实底斜切填充 + 斜切旋钮。
  * 取值走引擎 Slider 的同一条数学 —— UI 单位即世界单位,不需要任何缩放系数。
  */
 export function uiSlider(parent: Node, w: number, opts: SliderOpts = {}): Slider {
   const min = opts.min ?? 0;
   const max = opts.max ?? 1;
   const step = opts.step ?? 0;
-  const accent = opts.accent ?? ARCADE.acid;
+  const accent = opts.role ? styleOf(opts.role).face : (opts.accent ?? ARCADE.acid);
   const trackH = opts.trackH ?? 14;
   let val = opts.value ?? (min + max) / 2;
 
   const node = new Node("slider");
   node.layer = Layers.Enum.UI_2D;
   const ut = node.addComponent(UITransform);
-  ut.setContentSize(w, 34);          // 触摸区比轨道高,手指点得着
+  ut.setContentSize(w, TOUCH_MIN);    // 触摸区比轨道高,手指点得着
   node.setParent(parent);
 
   const g = node.addComponent(Graphics);
+  const readout = opts.readout === undefined ? null
+    : mkRight(node, "", 13, C.dim, w / 2 + 8 + (opts.readoutW ?? 96), opts.readoutW ?? 96);
 
   const snap = (v: number): number => {
     const c = v < min ? min : v > max ? max : v;
@@ -98,23 +130,11 @@ export function uiSlider(parent: Node, w: number, opts: SliderOpts = {}): Slider
 
   const paint = (): void => {
     const t = max > min ? clamp01((val - min) / (max - min)) : 0;
-    const fillW = w * t;
-    const knobX = -w / 2 + fillW;
     g.clear();
-    drawGlassCard(g, w, trackH, trackH / 2, 0.5);
-    if (fillW > trackH * 0.6) {
-      g.fillColor = ac(accent, 0.9);
-      g.roundRect(-w / 2, -trackH / 2, fillW, trackH, trackH / 2);
-      g.fill();
+    drawSliderFace(g, sliderDL(w, trackH, t, accent, opts.ticks ?? 0));
+    if (readout && opts.readout) {
+      readout.string = typeof opts.readout === "function" ? opts.readout() : opts.readout;
     }
-    // 旋钮:实心白点 + 强调色描边,压在最右/最左也留得出一半在外面看得见的视觉
-    g.fillColor = ac("#ffffff", 0.95);
-    g.circle(knobX, 0, 8);
-    g.fill();
-    g.strokeColor = ac(accent);
-    g.lineWidth = 3;
-    g.circle(knobX, 0, 8);
-    g.stroke();
   };
 
   const valueAt = (e: EventTouch): number => {
@@ -146,7 +166,9 @@ export function uiSlider(parent: Node, w: number, opts: SliderOpts = {}): Slider
   node.on(Node.EventType.TOUCH_END, end);
   node.on(Node.EventType.TOUCH_CANCEL, end);      // 拖出轨道外松手走 CANCEL
 
-  paint();
+  // 登记成可重放:本构件用裸 TOUCH 监听、切页时整树 destroy(见 settings-panel 文件头),
+  // 但一旦被祖先连带 deactivate,原生侧会掉渲染数据 —— 而 paint 本来就是 clear + 重画。
+  retainedDraw(g, paint);
 
   return {
     node,
@@ -167,6 +189,11 @@ export interface ToggleOpts {
   set(v: boolean): void;
   /** 关的时候是否也留着标签文字(默认留,只压暗) —— 全灰会让人以为是禁用了 */
   dimWhenOff?: boolean;
+  /** 开时的角色色,默认 star(荧光黄);亮面自动配墨黑字 */
+  role?: Role;
+  /** 右缘读数文案,默认「开 / 关」;传 "" 关掉读数(不推荐:状态得看得见) */
+  onText?: string;
+  offText?: string;
 }
 
 export interface Toggle {
@@ -176,12 +203,13 @@ export interface Toggle {
 }
 
 /**
- * 一行开关:玻璃底卡 + 左标签 + 右侧滑块式指示。
- * 整行即按钮(点哪儿都算),不用把手指瞄准那颗小方块。
+ * 一行开关:整行即按钮(点哪儿都算),开 = 实底大色块、关 = 凹陷槽。
  * 声音反馈交给调用方(kit.sfx.play("ui")),原始构件不耦合 Sfx。
+ * 行高取 TOUCH_MIN:旧值 40 低于拇指点准下限,而且和滑杆排在一列时对不齐。
  */
 export function uiToggle(parent: Node, text: string, w: number, opts: ToggleOpts): Toggle {
-  const h = 40;
+  const h = TOUCH_MIN;
+  const face = styleOf(opts.role ?? "star").face;
   const node = new Node(`toggle:${text}`);
   node.layer = Layers.Enum.UI_2D;
   const ut = node.addComponent(UITransform);
@@ -189,32 +217,23 @@ export function uiToggle(parent: Node, text: string, w: number, opts: ToggleOpts
   node.setParent(parent);
 
   const g = node.addComponent(Graphics);
-  const knobW = 22, knobH = 22;
-  const trackW = 46;
-  const trackX = w / 2 - trackW / 2 - 10;      // 轨道贴在行右侧
+  // 右端布局:读数占最后 TOGGLE_READOUT_W,斜纹记号再往左 44 —— 两个数都跟 toggleDL 同源,
+  // 上一版在这里手拍 20/12,记号画到了读数位上,「开」字被斜纹压住(出图抓到的)。
+  const readoutRight = w / 2 - 8;
+  const labelRight = w / 2 - TOGGLE_READOUT_W - 30;   // 记号起点再留 4
 
-  // 左标签:左缘贴卡边留 14,宽度让开右侧轨道
-  const label = mkLabel(node, text, 15, ARCADE.paper, -w / 2 + 14, w - trackW - 34);
+  // 左标签:左缘贴行边留 14,宽度让开右端的记号与读数
+  const label = mkLabel(node, text, 15, ARCADE.paper, -w / 2 + 14, labelRight - (-w / 2 + 14));
+  const state = mkRight(node, "", 13, C.dim, readoutRight, TOGGLE_READOUT_W - 8);
 
   const paint = (): void => {
     const on = !!opts.get();
     g.clear();
-    drawHardShadow(g, w, h, 9, 3, 3, 0.4);
-    drawGlassCard(g, w, h, 9, on ? 0.5 : 0.36, on ? ARCADE.acid : undefined);
-    // 轨道
-    g.fillColor = ac(ARCADE.ink, on ? 0.55 : 0.7);
-    g.roundRect(trackX - trackW / 2, -knobH / 2, trackW, knobH, knobH / 2);
-    g.fill();
-    g.strokeColor = ac(on ? ARCADE.acid : ARCADE.dim, on ? 0.9 : 0.5);
-    g.lineWidth = 2;
-    g.roundRect(trackX - trackW / 2, -knobH / 2, trackW, knobH, knobH / 2);
-    g.stroke();
-    // 旋钮:开在右、关在左
-    const kx = trackX + (on ? trackW / 2 - knobH / 2 - 2 : -trackW / 2 + knobH / 2 + 2);
-    g.fillColor = ac(on ? ARCADE.acid : "#5b6690");
-    g.circle(kx, 0, knobH / 2 - 2);
-    g.fill();
-    label.color = ac(on ? ARCADE.paper : (opts.dimWhenOff === false ? ARCADE.paper : ARCADE.dim));
+    drawToggleFace(g, w, h, on, face);
+    label.color = ac(on ? inkFor(face) : (opts.dimWhenOff === false ? ARCADE.paper : ARCADE.dim));
+    const txt = on ? (opts.onText ?? "开") : (opts.offText ?? "关");
+    state.string = txt;
+    state.color = ac(on ? inkFor(face) : ARCADE.dim);
   };
 
   // 用 Button 而不是裸 TOUCH_END:本仓库每个可点行都是 Button(SCALE),
@@ -225,6 +244,6 @@ export function uiToggle(parent: Node, text: string, w: number, opts: ToggleOpts
   b.target = node;
   node.on(Button.EventType.CLICK, () => opts.set(!opts.get()));
 
-  paint();
+  retainedDraw(g, paint);
   return { node, paint, destroy() { node.destroy(); } };
 }

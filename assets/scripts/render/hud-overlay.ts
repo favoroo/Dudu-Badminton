@@ -11,6 +11,7 @@
 import { Color, Graphics, Label, Layers, Node, Tween, tween, UITransform, Vec3 } from "cc";
 import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
+import type { Ball } from "../core/types";
 import { Physics } from "../core/physics";
 import { Settings } from "../core/settings";
 import { Rules } from "../core/rules";
@@ -19,6 +20,7 @@ import { meter, winU, targetZoneFor } from "./drill-anim";
 import type { Viewport } from "./world";
 import { pal, withAlpha } from "./palette";
 import { drawCrossMark, drawTaper } from "./p5kit";
+import { applyFont } from "../game/fonts";
 
 const C = CFG;
 const CO = C.court;
@@ -35,6 +37,7 @@ function txt(parent: Node, name: string, size: number): Label {
   l.string = "";          // Label 默认串是 "label",不清掉会漏出调试浮字
   l.fontSize = size;
   l.lineHeight = Math.round(size * 1.15);
+  applyFont(l, true);
   return l;
 }
 
@@ -61,6 +64,8 @@ export class HudOverlay {
   private pathEnd = 3;          // 0 落地 / 1 撞网 / 2 出海侧 / 3 被截断(未知)
   private pathLandX = 0;
   private endBuf = new Int8Array(1);
+  /** 隔帧积分的去重标记:上一次积分对应的 shot 引用(换拍立即重算,不显示旧弧) */
+  private pathShot: Ball["shot"] | null = null;
   // ---------- 时机环状态(game-root.updateSwingCue 每帧喂;null = 无来球不画)----------
   // progress: 收缩进度 0..1(1 = 收满贴球);locked: fc ≤ 最佳按拍帧的白闪档
   private ring: { zx: number; zy: number; zr: number; progress: number; locked: boolean } | null = null;
@@ -89,7 +94,13 @@ export class HudOverlay {
     // ---------- 落点预测(六层叠画,见 config.landing 的注释)----------
     // 设置页的「落点预测圈」开关掐这一处:只关预测圈,拍数徽标与训练时机条不受影响
     if (b && b.live && !b.held && b.shot && Settings.hintLanding) {
-      this.integrateOnce(b.x, b.y, b.vx, b.vy);
+      // 每 2 渲染帧才真积分一次,隔帧复用上一条弧(缓冲原地保留,零 GC):
+      // 球一帧只挪几个像素,虚线滞后一帧不可辨,90~240 步积分成本直接砍半。
+      // 换了新拍(shot 引用变化)则立即重算,不给上一拍留下残影。
+      if (t % 2 === 0 || this.pathShot !== b.shot) {
+        this.integrateOnce(b.x, b.y, b.vx, b.vy);
+        this.pathShot = b.shot;
+      }
       this.landingMarker(R, t);
     }
 
@@ -191,7 +202,13 @@ export class HudOverlay {
       g.rect(mx - 1.6, cy - h / 2 - 3, 3.2, h + 6);
       g.fill();
     }
-    this.timingBars = this.timingBars.filter((tb) => tb.life > 0);
+    // 过期条原地压缩(同 world.compactGhosts 的写法):这行曾在有存活条时每帧 filter 出新数组
+    let alive = 0;
+    for (let i = 0; i < this.timingBars.length; i++) {
+      const tb = this.timingBars[i];
+      if (tb.life > 0) this.timingBars[alive++] = tb;
+    }
+    this.timingBars.length = alive;
   }
 
   // ---------- 热手火苗刻度:左上角一排锯齿小火苗,亮格数 = 当前连击热度 ----------

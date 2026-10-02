@@ -38,6 +38,16 @@ export NDK_ROOT="$ANDROID_NDK_HOME"
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:/Users/a1/.local/bin/node-bin/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH"
 ```
 
+> build.sh 对以上路径的读法是「环境变量优先,上述值兜底」;换机器改环境变量即可,不必改脚本。
+>
+> **签名(2026-10-02 起)**:release 包用正式 keystore(`keystore/release.keystore`,别名 `dudu`,
+> 口令在本机 `keystore/secret.txt` 保管,**该目录不入库**)。`build-android.json` 已切
+> `useDebugKeystore: false`。release.py 发布前会比对 APK 与 keystore 的 SHA-256 指纹,
+> 签名不符/keystore 丢失都会被拦下 —— 丢了 keystore 文件+口令,老用户就永远收不到覆盖安装更新。
+>
+> **三道闸**:①任何一步失败即停(全部 `|| true` 已移除);②`build/android/data` 里必须有比
+> 本次构建开始更新的文件(防「Cocos 失败 → Gradle 打旧数据」);③应用名 sed 注入后回读校验。
+
 ### 2. Cocos Creator CLI Native Export
 
 Build the native project using `build-android.json` located at the project root:

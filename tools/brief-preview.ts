@@ -19,7 +19,7 @@
 // ============================================================
 import { mkdirSync, writeFileSync } from "fs";
 import { CAMPAIGN_STAGES } from "../assets/scripts/core/campaign";
-import { textW } from "../assets/scripts/ui/text-metrics";
+import { textW } from "../assets/scripts/core/text-metrics";
 import { BRIEF, BRIEF_BTN, briefOverlaps, briefOverflow, layoutBrief, type BriefItem, type BriefLayout } from "../assets/scripts/ui/brief-layout";
 
 /** 与 campaign-panel 同款的块配色 */

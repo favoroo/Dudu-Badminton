@@ -22,18 +22,15 @@
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/haptic-check.js
 //   node .tools-build/tools/haptic-check.js --selftest
 // ============================================================
+import { makeChecker } from "./harness";
 import { CFG } from "../assets/scripts/core/config";
 import {
   HapticCaps, HapticGate, HapticKey, HapticSeg, hasPulse, hapticIndexOf, hapticLabel,
   hapticLevelId, plan, segPower, shotKey,
 } from "../assets/scripts/core/haptic";
 
-let fails = 0;
-let checks = 0;
-function ok(cond: boolean, msg: string): void {
-  checks++;
-  if (!cond) { fails++; console.log(`  ✗ ${msg}`); } else { console.log(`  ✓ ${msg}`); }
-}
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 const H = CFG.haptic;
 /** 击球五档(与 fx 的 hitstop / shake / punch 三套阶梯同序);普通档故意不在表里 —— 不震 */
@@ -218,6 +215,6 @@ if (process.argv.includes("--selftest")) {
   ok(ladderViolations(cur).length === 0, "同一判据下现行五档阶梯是干净的");
 }
 
-console.log(`\n${fails === 0 ? "✓" : "✗"} ${checks} 项断言,失败 ${fails}`);
+console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
 console.log("真机才能验的:实际摸不摸得到(马达类型/系统触感总闸)、三档强度是否拉得开、双段脉冲的节奏感。");
-process.exit(fails === 0 ? 0 : 1);
+process.exit(h.fails === 0 ? 0 : 1);

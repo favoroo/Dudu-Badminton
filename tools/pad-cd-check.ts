@@ -22,19 +22,16 @@
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/pad-cd-check.js
 //   node .tools-build/tools/pad-cd-check.js --selftest
 // ============================================================
+import { makeChecker } from "./harness";
 import {
   CD, CD_TOP, cdAlpha, cdArcs, cdRingR, cdText, skillAccent,
 } from "../assets/scripts/input/pad-cd";
 import { CFG } from "../assets/scripts/core/config";
 import { PAD_BASE, PAD_LIMIT } from "../assets/scripts/core/settings";
-import { textW } from "../assets/scripts/ui/text-metrics";
+import { textW } from "../assets/scripts/core/text-metrics";
 
-let fails = 0;
-let checks = 0;
-function ok(cond: boolean, msg: string): void {
-  checks++;
-  if (!cond) { fails++; console.log(`  ✗ ${msg}`); } else { console.log(`  ✓ ${msg}`); }
-}
+const h = makeChecker({});
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 // ---------- 亮度:引擎的 UI 混合就发生在 sRGB 通道上,所以照这个模型合成 ----------
 type RGB = [number, number, number];
@@ -305,5 +302,5 @@ if (process.argv.includes("--selftest")) {
   ok(cdRingR(rMin) + CD.ringW / 2 < rMin, "现在的环位按 ringW 比例内收,最小档也在圆内");
 }
 
-console.log(`\n${fails === 0 ? "✓" : "✗"} ${checks} 项断言,失败 ${fails}`);
-process.exit(fails === 0 ? 0 : 1);
+console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
+process.exit(h.fails === 0 ? 0 : 1);

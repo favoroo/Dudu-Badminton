@@ -11,7 +11,7 @@
 // 输出的是「物理行」而不是「逻辑行」:折行后每行自带 indent / h / lead,
 // 弹窗按 y 累加摆放即可,行宽 w 已保证 <= textW 可用宽 —— 溢出在类型上就不可能。
 // ============================================================
-import { textUnits, type Measure } from "./text-metrics";
+import { textUnits, type Measure } from "../core/text-metrics";
 
 /** 行类型:小节标题(`### x`)/ 列表项(`- x`、`1. x`)/ 普通段落 */
 export type NoteKind = "section" | "item" | "para";

@@ -14,27 +14,21 @@
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/notes-check.js
 //   node .tools-build/tools/notes-check.js --verbose   # 顺带打印文本态排版预览
 // ============================================================
+import { makeChecker } from "./harness";
 import {
   buildNotes, fitNotesBox, inlineSpans, NOTE, NOTE_BOX, noteTextW, parseReleaseNotes,
 } from "../assets/scripts/ui/release-notes";
-import { textW } from "../assets/scripts/ui/text-metrics";
+import { textW } from "../assets/scripts/core/text-metrics";
 
 /** update-dialog 的卡头/卡尾高度之和 —— 改那边要同步这里,否则 4 号断言会红 */
 const CARD_STACK = 99 + 149;
 /** 裁切窗内缩(update-dialog.VIEW_INSET) */
 const VIEW_INSET = 5;
 
-let fails = 0;
-let checks = 0;
+const h = makeChecker({ printPass: false });
 const verbose = process.argv.includes("--verbose");
 
-function ok(cond: boolean, msg: string): void {
-  checks++;
-  if (!cond) {
-    fails++;
-    console.log(`  ✗ ${msg}`);
-  }
-}
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 /** 语法噪音:出现任何一条都算「把 markdown 原样糊到屏幕上」 */
 const NOISE: Array<[RegExp, string]> = [
@@ -200,8 +194,8 @@ ok(spans.every((s) => !/[*`]/.test(s.text)), "行内语法符号没洗掉");
 const kinds = parseReleaseNotes("### 小节\n- 项\n1. 有序\n普通段落").map((l) => l.kind).join(",");
 ok(kinds === "section,item,item,para", `行分类异常:${kinds}`);
 
-console.log(`\n${fails === 0 ? "✓" : "✗"} ${checks} 项断言,失败 ${fails}`);
+console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
 console.log(`  v0.0.8:${v008.lines} 行 / 内容 ${v008.height} / 框 ${v008.boxH} / 滚动 ${v008.scrollable ? "是" : "否"}`);
 console.log(`  畸形:  ${messy.lines} 行 / 内容 ${messy.height} / 框 ${messy.boxH} / 滚动 ${messy.scrollable ? "是" : "否"}`);
 console.log(`  超长:  ${huge.lines} 行 / 内容 ${huge.height} / 框 ${huge.boxH} / 滚动 ${huge.scrollable ? "是" : "否"}`);
-process.exit(fails === 0 ? 0 : 1);
+process.exit(h.fails === 0 ? 0 : 1);

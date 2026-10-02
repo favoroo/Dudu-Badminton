@@ -41,6 +41,7 @@
 //   node .tools-build/tools/ui-hide-check.js -v       # 打印每个面板的判定明细
 //   node .tools-build/tools/ui-hide-check.js --selftest
 // ============================================================
+import { makeChecker } from "./harness";
 import { readFileSync, readdirSync, existsSync } from "fs";
 import { join } from "path";
 
@@ -199,11 +200,8 @@ function auditFadeHelpers(raw: string): string[] {
   return issues;
 }
 
-let bad = 0;
-const ok = (cond: boolean, msg: string): void => {
-  if (cond || verbose) console.log(`${cond ? "✓" : "✗"} ${msg}`);
-  if (!cond) bad++;
-};
+const h = makeChecker({ verbose });
+const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 // ---------- 反例自检:三条规则各配一个必须报警的样本(规则脚本最怕悄悄全绿) ----------
 if (selftest) {
@@ -225,7 +223,7 @@ if (selftest) {
     `show(): void { cancelFade(this.root); this.root.active = true; }`,
     `hide(): void { fadeOutHide(this.root, () => { this.root.active = false; }); }`,
   ].join("\n");
-  ok(audit("sample-bad.ts", badSample).length === 1, `反例(遮罩裸监听常驻)被报警`);
+  ok(audit("sample-h.bad.ts", badSample).length === 1, `反例(遮罩裸监听常驻)被报警`);
   ok(audit("sample-good.ts", goodSample).length === 0, `正例(挂卸成对 + 退场 destroy)全绿`);
   ok(audit("sample-deactivate.ts", deactivateSample).length === 1, `反例(退场回调里 active=false)被报警`);
 
@@ -285,5 +283,5 @@ ok(fadeIssues.length === 0, fadeIssues.length ? fadeIssues.join("\n  ") : "ui-ar
 
 console.log(judged === 0
   ? "✗ 一个面板都没扫到 —— UI 目录路径不对?"
-  : `${bad === 0 ? "✓" : "✗"} 面板退场卫生:${judged} 个 fadeOutHide 收 root 的面板 + 主菜单归途 + 淡出契约 2 条,${bad} 处问题`);
-process.exit(judged === 0 || bad > 0 ? 1 : 0);
+  : `${h.bad === 0 ? "✓" : "✗"} 面板退场卫生:${judged} 个 fadeOutHide 收 root 的面板 + 主菜单归途 + 淡出契约 2 条,${h.bad} 处问题`);
+process.exit(judged === 0 || h.bad > 0 ? 1 : 0);

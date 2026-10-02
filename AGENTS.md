@@ -8,7 +8,7 @@
 从老仓库 `嘟嘟02`(零依赖 canvas 版)重构而来,目标平台:**Android APK + 微信小游戏**。
 老仓库保留为行为对照基准,手感以它为准。
 
-- 当前版本:`0.0.6`(见 `package.json` 与 `assets/scripts/core/version.ts`)
+- 当前版本:`0.0.19`(见 `package.json` 与 `assets/scripts/core/version.ts`;发版时由 dudu-release 联动递增)
 - 设计分辨率:960×540,FIXED_HEIGHT 适配
 - 包名:`com.dudu.badminton`
 - 远端仓库:GitHub `favoroo/Dudu-Badminton` + Gitee `favo9/dudu-badminton`
@@ -26,9 +26,13 @@
 | 改击打/轨迹/球体特效 | 数值全在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `fx` 段;丝带 [ribbon.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/ribbon.ts) + 球体运动学 [shuttle-motion.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/shuttle-motion.ts) + 粒子 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts) + 缓动 [easing.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/easing.ts);出图验收 `node .tools-build/tools/fx-preview.js` |
 | 改手机震动(触觉) | 强度表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `haptic` 段(键名与 `fx` 六档同源,强度=时长×振幅两维);判据与排队在 [haptic.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/haptic.ts)(零 cc:`shotKey`/`plan`/`HapticGate`),平台出口在 [haptics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/haptics.ts)(Android 反射 `AppActivity.vibrate(ms,amp)` / 微信 `wx.vibrateShort` / Web `navigator.vibrate`,失败不静默 —— `hapticStatus()` 给设置页读数);Java 桥与能力探测在 `native/engine/android/app/src/com/cocos/game/AppActivity.java`;档位「轻/标准/强」在设置页声音画面 tab(存 `Settings.hapticLevel`),验收 `node .tools-build/tools/haptic-check.js`(+`--selftest`)。**改 Java 侧必须重打 APK 才生效** |
 | 改 P5 视觉构件(尖刺环/星芒/斜切/飘字底板/斩劈 cut-in) | render 层 [p5kit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/p5kit.ts),UI 层 [ui-arcade.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-arcade.ts);规范见下方「开发规范」P5 条 |
+| 改面板层配色/斜切档/色即功能 | 令牌唯一真话 [p5-tokens.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-tokens.ts)(零 cc:`C` 色板、`SLANT` 只许 3/5/6/10 四档、`ROLE` 六角色、`RARITY` 用 config 的 `RARITY_META`、`inkFor`/`contrast`、网点预算)。`ARCADE`/`PAL` 是它的再导出/派生,**别再抄一份色表** |
+| 改面板形状(衬纸/大色块/卡片/凹陷槽/开关/滑杆/网点/印章) | 形状出点列 [p5-shapes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-shapes.ts)(零 cc),画笔 [p5-paint.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-paint.ts)(只 import cc 的 Color/Graphics ⇒ **node 跑得动**),ui-arcade 再导出。**卡片用 `drawP5Card`(墨面 + 一条色带)不要整面实底** —— 一屏十几张会排成彩虹,大色块留给少数大面。出图 `node .tools-build/tools/panel-preview.js --out .tools-build/panel-preview` |
+| 改面板的可点件工厂 | [ui-shell.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-shell.ts) 的 `solidTab`/`solidBlock`/`sectionTitle`/`bevelSlot`/`pressable`(**一律自带 `addComponent(Button)`** —— 漏了就是「点了没反应」,闸门 `tools/ui-click-check.js`)。四面板经 `UiKit` 的 `plate/block/tab/title/slot/press` 取用 |
+| 改四面板排版(设置/闯关大厅/训练场/商店) | 版式是零 cc 纯函数:`ui/settings-layout.ts`、`ui/campaign-layout.ts`、`ui/drill-layout.ts`、`ui/shop-shelf.ts`(`SHOP`/`shopTopBar`/`shopTabs`/`shopContent`/`shopStats`)。各导出 `XOverlaps()`/`XOverflow()` 判据,统一由 `node .tools-build/tools/panel-check.js`(+`--selftest`)断言:对比度 ≥4.0、网点 ≤900 点、可点件 ≥44、不撞不溢出、文案无 emoji 与桌面键名。**改任何一块坐标都要去判据里核** |
 | 主循环/事件分发 | [game-root.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/game-root.ts) |
 | UI 面板/菜单 | [ui-manager.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-manager.ts) |
-| 作者通道(测试拉满档) | 主菜单连点**同一个**球馆 tab 6 下 → 等级满 + 金币 99999,**只在内存生效、本局不落盘**(重开退回原档,每次进应用要重新连点)。参数 `CFG.author`(发版想关掉置 `enabled: false`)、手势判定 `main-menu.ts` 的 `authorTap()`、执行与沙箱 `career.maxOut()` / `career.sandboxed()` |
+| 作者通道(测试拉满档) | 对练屏连点**同一个**球馆 tab 6 下 → 等级满 + 金币 99999,**只在内存生效、本局不落盘**(重开退回原档,每次进应用要重新连点)。参数 `CFG.author`(发版想关掉置 `enabled: false`)、手势判定 `mode-screen.ts` 的 `MatchSetupScreen.authorTap()`(0.0.18 随球馆 tab 从主菜单迁来)、执行与沙箱 `career.maxOut()` / `career.sandboxed()` |
 | 更新弹窗/更新说明排版 | [update-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/update-dialog.ts) + 折行算法 [release-notes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/release-notes.ts) |
 | 改「调整位置」顶栏排版 | [editor-strip.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/editor-strip.ts)(纯函数,回归见 `tools/strip-check.ts`)+ [settings-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settings-panel.ts) 消费它 |
 | 改闯关大厅/进度/「下一关」 | 关卡表与 `getNextStage()`·`getStageByNo()` 在 [campaign.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/campaign.ts);大厅(直达条、卡片「▶ 下一关」印章、tab 自动聚焦)在 [campaign-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/campaign-panel.ts);结算页那颗「下一关 ▶ 第 N 关」在 [settle-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settle-panel.ts) 的 `buildActions()`(按钮整排按场景重建);验收 `node .tools-build/tools/campaign-check.js` |
@@ -36,7 +40,7 @@
 | 改虚拟按键能放在哪儿 | [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 的 `clampDelta`(唯一约束 = 整块留在可视区内) |
 | 改技能键的冷却读数 | 浓度/几何/文案全在 [pad-cd.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/pad-cd.ts)(零 cc 依赖:`cdAlpha`·`cdArcs`·`cdText`·`drawCooldown`),取值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `padSkin.cd` 段,[touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 只照参数摆笔 + 挂键心秒数 Label,剩余秒数由 `game-root.ts` 喂;回归 `node .tools-build/tools/pad-cd-check.js`、出图 `node .tools-build/tools/pad-cd-preview.js` |
 | 改 AI 难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `diffs` 段(`read`=每记球只认定一次的站位误差 / `zone`=CPU 判定区 / `shotErr`=出球误差 / `composure`=落后是否变强),生效逻辑在 [ai.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/ai.ts),落档到球员在 `rules.ts` 的 `applyAiTier()`;验收 `node .tools-build/tools/ai-check.js`(三档胜负口径) |
-| 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、出图 `node .tools-build/tools/flash-preview.js` |
+| 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、出图 `node .tools-build/tools/flash-preview.js` |
 | 改技能配置弹窗排版 | [skill-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-layout.ts)(纯函数:详情板折行 + 右对齐块按实测宽倒推 + 面板竖排留缝,回归见 `tools/skill-check.ts`)+ [skill-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-dialog.ts) 只照坐标摆 —— 卡片只留「标签/名字/CD/装备」,完整说明在底部详情板,点卡片切换 |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
@@ -177,6 +181,31 @@ node .tools-build/tools/pad-cd-preview.js --out .tools-build/pad-cd-preview   # 
 #    「什么都点不动」(opacity 0 不参与命中判定,只有 active=false 才不吃))
 node .tools-build/tools/ui-hide-check.js
 node .tools-build/tools/ui-hide-check.js --selftest   # 反例(修好之前的真实写法)必须被报警
+
+# 7.2 点击链路卫生(exit 0;用户现场:「对练屏点这个切换场地、还有切换技能都没有反应了」。
+#     根因不是遮挡也不是挡板 —— 那两处只有 UITransform+Graphics,却挂着
+#     `on(Button.EventType.CLICK)`:click 只由 Button._onTouchEnded 派发,TOUCH_* 监听也只由
+#     Button._registerNodeEvent 注册,所以这种节点连命中判定都进不去(既不响也不吞触摸)。
+#     症状因此很挑:同屏装了 Button 的块(返回/三档难度)全好,唯独漏挂的那一排死。
+#     断言:凡 `const X = new Node(` 又 `X.on(...CLICK)` 的,必须见过 `X.addComponent(Button)`
+#     或被传进一个「会往参数上装 Button」的助手(pressable/solidBlock 这类,自动识别)。
+#     与 7 正好互补:那边管「有监听却没卸」,这边管「根本没有触摸入口」。
+#     改 UI 里任何手搓节点(0.0.18 从 main-menu 的 card() 迁到 mode-screen 时就把那行迁丢了))
+node .tools-build/tools/ui-click-check.js
+node .tools-build/tools/ui-click-check.js --selftest   # 反例(漏挂 Button 的真实写法)必须被报警
+node .tools-build/tools/ui-click-check.js -v           # 每文件明细:已装/工厂免检/链式不追/报警
+
+# 7.4 P5 面板语法闸门(exit 0;四面板大色块改版的地基。防的是四类**不会崩、只会安静地
+#     难看/难点**的坏:①面色与字色对比不够 —— 商店旧 tab 是 navy2 底 + 白 5% 描边,约
+#     1.1:1,用户读出来是「这一格坏了」而不是「没被选中」;②网点超预算 —— 这套语法里
+#     唯一按面积堆绘制量的件,只准压标题带,铺满整块衬底 1566 点会拖死中低端机;
+#     ③行距撞字 —— 开关/滑杆抬到触控下限 44 后,手写行距会重叠几个 px,屏幕看不出、
+#     按下就是错档;④emoji 与桌面键名 —— 原生无彩色 emoji 字体(🔒 变方框),手机上
+#     「[K / 左键]」是无效指令。断言吃 p5-tokens 与四个 layout 模块的真实数据;
+#     --selftest 喂**改动前的真实旧写法**,必须全被拦下 —— 否则这套尺子没牙齿)
+node .tools-build/tools/panel-check.js
+node .tools-build/tools/panel-check.js --selftest
+node .tools-build/tools/panel-preview.js --out .tools-build/panel-preview   # 语法样张 + 四面板拼装(与真机同一批多边形,可直接 Chrome 出 PNG)
 
 # 7.5 击打/轨迹/球体特效预览与几何断言(exit 0;NaN 坐标、丝带点数上限、粒子预算、
 #     羽片拆片、滞后角追踪各有一条断言兜着 —— 特效改坏了先在 node 里出图看,别上真机猜)

@@ -23,6 +23,7 @@ import { Color, Graphics } from "cc";
 import { CFG } from "../core/config";
 import { Player, Ball, FaceKind, SkinDef, SwingStyle, Theme } from "../core/types";
 import { Physics } from "../core/physics";
+import { textW } from "../core/text-metrics";
 import { lerp, clamp, TAU, D2R } from "../core/utils";
 import { pal, withAlpha } from "./palette";
 import { armIK, legIK, poseLerp, farFK, lut, Pose, Pt2 } from "./rig";
@@ -1362,11 +1363,11 @@ function drawPlayerTag(g: Graphics, vp: Viewport, p: Player, x: number, y: numbe
   // 建议表现层在 (vp.x(x), vp.y(tagY+0.5)) 挂 Label 补上,与胶囊同一节点方便回收。
 }
 
-// canvas measureText 的替代:按 800 9.5px 估宽(全角 9.5,半角 6.4),胶囊宽度误差 1~2px
+// canvas measureText 的替代:名牌胶囊 @9.5px 的估宽,委托 core/text-metrics 的
+// 全站唯一尺(全角 1.05、半角 0.62 × 字号)。从前这里是独立的一份(9.5/6.4 固定值、
+// 全角判定用 0x2e80),₽ 这类字符与全站口径不一致;统一后胶囊宽差在 1~2px 内,无感。
 function estTextWidth(s: string): number {
-  let w = 0;
-  for (const ch of s) w += ch.charCodeAt(0) > 0x2e80 ? 9.5 : 6.4;
-  return w;
+  return textW(s, 9.5);
 }
 
 // ---------- 头:脸面注册表 + 队色发带(商店「面部皮肤」) ----------

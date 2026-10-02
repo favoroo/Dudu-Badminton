@@ -20,7 +20,7 @@ import { SkillId } from "../core/types";
 import type { UiKit } from "./ui-manager";
 import {
   ac, ARCADE, cancelFade, drawHardShadow, drawMenuCard, drawSlantShadow, fadeOutHide,
-  makeChip, retainedDraw, slamIn, skewOf, slantPath,
+  makeChip, retainedDraw, ROLE, slamIn, skewOf, slantPath,
 } from "./ui-arcade";
 import {
   layoutSkillPlate, SK, SK_HINT_LINE, skillCardX, skillCd,
@@ -73,6 +73,7 @@ export class SkillDialog {
       r: 16,
       bgAlpha: 0.95,
       scan: true,
+      bandHex: ROLE.info.face, tear: 12,
     });
     this.card.node.setPosition(0, 0, 0);
 
@@ -323,6 +324,11 @@ export class SkillDialog {
     cancelFade(this.root);
     this.dim.off(Node.EventType.TOUCH_START, this.onDimTap, this);
     this.dim.on(Node.EventType.TOUCH_START, this.onDimTap, this);
+    // 兄弟顺序即渲染顺序,而本弹窗在 ui-manager.start() 里造得比闯关大厅早(大厅、商店这类
+    // 常驻面板都是它之后 addComponent 出来的)—— 从大厅点技能胶囊就会弹到面板背后:
+    // 看不见、点不着,只有回到对练屏才正常。每次打开把自己抬到最上层。
+    const parent = this.root.parent;
+    if (parent) this.root.setSiblingIndex(parent.children.length - 1);
     this.root.active = true;
     // 每次打开都跟着实际装备走(等级、装备都可能在上次关闭后变了)
     this.selectedId = Career.equippedSkill();

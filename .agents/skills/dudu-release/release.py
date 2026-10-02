@@ -175,6 +175,73 @@ def version_code_from_version(ver: str) -> int:
         return 1
 
 
+# ---------------------------------------------------------------- 签名与新鲜度
+
+def keytool_bin() -> str:
+    for cand in (os.environ.get('JAVA_HOME'),
+                 '/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home'):
+        if cand and (Path(cand) / 'bin' / 'keytool').exists():
+            return str(Path(cand) / 'bin' / 'keytool')
+    return 'keytool'
+
+
+def android_build_cfg() -> dict:
+    cfg = json.loads((REPO_ROOT / 'build-android.json').read_text())
+    return cfg.get('packages', {}).get('android', {})
+
+
+def _sha256_fingerprint(text: str) -> str:
+    m = re.search(r'SHA256:\s*([0-9A-F]{2}(?::[0-9A-F]{2}){31})', text)
+    return m.group(1) if m else ''
+
+
+def latest_apksigner() -> str | None:
+    bt = Path(os.environ.get('ANDROID_HOME') or Path.home() / 'Library/Android/sdk') / 'build-tools'
+    if not bt.exists():
+        return None
+    best, best_key = None, None
+    for d in bt.iterdir():
+        cand = d / 'apksigner'
+        if d.is_dir() and cand.exists():
+            key = [int(x) if x.isdigit() else 0 for x in d.name.split('.')]
+            if best_key is None or key > best_key:
+                best, best_key = str(cand), key
+    return best
+
+
+def keystore_cert_sha256() -> str:
+    """正式 keystore 的证书指纹(路径/口令/别名都从 build-android.json 读,单一事实来源)"""
+    ks = android_build_cfg()
+    path = Path(ks.get('keystorePath') or REPO_ROOT / 'keystore' / 'release.keystore')
+    if not path.exists():
+        raise RuntimeError(
+            f'正式 keystore 不存在: {path}\n'
+            '  (签名文件与口令在本地 keystore/ 目录保管,不入库;丢了它老用户永远收不到更新)')
+    r = run([keytool_bin(), '-list', '-v', '-keystore', str(path),
+             '-alias', ks.get('keystoreAlias') or 'dudu',
+             '-storepass', ks.get('keystorePassword') or ''])
+    if r.returncode != 0:
+        raise RuntimeError(f'读 keystore 失败(口令/别名不对?): {(r.stderr or r.stdout)[-300:]}')
+    return _sha256_fingerprint(r.stdout)
+
+
+def apk_cert_sha256(apk: Path) -> str:
+    """APK 主签名证书指纹。keytool 走 JAR(v1)签名;v2-only 时退 apksigner"""
+    r = run([keytool_bin(), '-printcert', '-jarfile', str(apk)])
+    if r.returncode == 0:
+        fp = _sha256_fingerprint(r.stdout)
+        if fp:
+            return fp
+    signer = latest_apksigner()
+    if signer:
+        r = run([signer, 'verify', '--print-certs', str(apk)])
+        m = re.search(r'SHA-256 digest:\s*([0-9a-f]{64})', r.stdout, re.I)
+        if m:
+            h = m.group(1).upper()
+            return ':'.join(h[i:i + 2] for i in range(0, 64, 2))
+    return ''
+
+
 def cmd_build(args) -> None:
     pkg_ver, ts_ver = read_project_versions()
     target_ver = args.version.lstrip('vV')
@@ -212,6 +279,26 @@ def cmd_build(args) -> None:
 
         if not src:
             raise RuntimeError('未找到 release APK 产物(debug 包不再作为回退发布)')
+
+        # ---- 产物新鲜度:APK 必须比 build/android/data 新(build.sh 已有一道,双保险)。
+        # 从前 Cocos 构建失败也继续走 Gradle,拿上一次的旧 JS 资源打出「新版本号+旧内容」的包。
+        data_dir = REPO_ROOT / 'build' / 'android' / 'data'
+        if data_dir.exists() and src.stat().st_mtime < data_dir.stat().st_mtime:
+            raise RuntimeError('release APK 比 build/android/data 还旧 —— 疑似陈旧产物,拒绝交付')
+
+        # ---- 签名校验:必须与 keystore/release.keystore 同证书。
+        # 从前 release 包一直用 Cocos 自带 debug.keystore 签:换机器构建 → 签名变化 →
+        # 用户只能卸载重装(存档全没)。现在发布前在这里核指纹,谁把 useDebugKeystore
+        # 改回去、或换了 keystore,都会被当场拦下而不是发出去之后才发现。
+        expect = keystore_cert_sha256()
+        actual = apk_cert_sha256(src)
+        if not expect or not actual:
+            raise RuntimeError('读不到证书指纹(keystore 或 APK 侧),拒绝盲发')
+        if expect != actual:
+            raise RuntimeError(
+                f'APK 签名与正式 keystore 不一致,拒绝发布!\n'
+                f'  APK:      {actual}\n  keystore: {expect}')
+        log(f'签名校验通过: SHA256 {actual[:35]}…')
 
         shutil.copyfile(src, dst)
         digest = sha256_file(dst)

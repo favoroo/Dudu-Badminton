@@ -11,6 +11,7 @@
 // ============================================================
 import { Color, Graphics } from "cc";
 import { TAU, clamp } from "../core/utils";
+import { textW } from "../core/text-metrics";
 import { withAlpha } from "./palette";
 
 // ---------- 确定性随机:出生定形,逐帧零 rand ----------
@@ -278,13 +279,11 @@ export function drawCutinBands(
 // ---------- 文案宽度 ----------
 
 /**
- * 文案宽度估算(与 ui/text-metrics 同尺:全角 1.05、半角 0.62)。
- * render 层飘字底板要用,但 render 不 import ui,这里按同一把尺重出。
+ * 文案宽度估算 —— 直接委托 core/text-metrics 的 textW(全站唯一一把尺)。
+ * 从前这里按「同一把尺」手抄了一份(render 不 import ui 的旧约束所致);
+ * text-metrics 归入 core 后 render 可以正大光明 import,抄本删除,
+ * 全角/半角口径(含 ₽ 这类 >0xFF 字符算宽)从此只有一份真话。
  */
 export function measureTextW(text: string, size: number): number {
-  let w = 0;
-  for (const ch of text) {
-    w += ch.charCodeAt(0) > 0xff ? 1.05 : 0.62;
-  }
-  return w * size;
+  return textW(text, size);
 }

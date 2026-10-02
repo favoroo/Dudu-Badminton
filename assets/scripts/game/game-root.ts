@@ -46,6 +46,9 @@ export class GameRoot extends Component {
   private stopFrames = 0;      // hitstop:世界定格的剩余步数(老 FX.stop 的精简版)
 
   private swingCueArmed = true; // 按拍预告「到点了」一次性闪环的闩:来球退回前瞻线外再重新武装
+  /** 闯关 campaign-clear 事件暂存:rules 里 recordStageClear 先于 settle 执行,
+   *  「是不是首通」与关卡奖励只能从事件侧带过来,match-over 结算时消费掉 */
+  private campClear: { firstClear: boolean; coins: number; exp: number } | null = null;
   /** 球种预告缓存:一次 previewKind ≈ 28 条弹道 trace(数千次积分),旧版每渲染帧全跑一遍。
    *  同一拍飞行中球种几乎不变,这里按「球的 shot 引用」命中缓存、每 10 帧兜底刷新一次,
    *  一拍从 ~60 次求解降到 1-6 次;徽标更新节奏肉眼无感。 */
@@ -197,9 +200,17 @@ export class GameRoot extends Component {
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     // 氛围暗角输入(长回合金晕/赛点红晕在渲染层只读消费)
     this.world.setAtmo(R.state, R.rally, Rules.isMatchPoint());
-    this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"), R.rally);
-    // 画布内世界提示(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
-    this.world.hudOverlay.draw(R, this.world.frameT);
+    // ---------- 面板态渲染降频 ----------
+    // frozen 态(MENU/PAUSED/OVER/CAREER/DRILLS/DRILLDONE)下模拟已停、粒子/飘字/震屏
+    // 全部冻住,面板底下没有会动的游戏对象 —— 每帧全量重绘(动态层+球员+HUD,
+    // 一帧 500+ 次 fill/stroke)纯烧电发热。每 4 渲染帧画一次(60Hz 锁帧下 ≈15fps):
+    // 呼吸/海浪这类纯装饰慢下来无感;UI 面板的弹出/淡出是引擎 tween 驱动,不受影响。
+    // BGM 与触摸在上方已各自跑完,不跟着降频。回到对局态立即恢复满帧。
+    if (!(C.frozen as string[]).includes(R.state) || this.frameT % 4 === 0) {
+      this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"), R.rally);
+      // 画布内世界提示(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
+      this.world.hudOverlay.draw(R, this.world.frameT);
+    }
   }
 
   // ---------- 定格帧数统一入口 ----------
@@ -693,6 +704,15 @@ export class GameRoot extends Component {
           this.sfx.cheer(0.8);
           this.bgm.onDeuce();
           break;
+        case "campaign-clear": {
+          // 闯关通关事件:第一消费者是这里(结算奖励),文案展示在大厅/简报各有各的出处
+          this.campClear = {
+            firstClear: !!e.firstClear,
+            coins: (e.rewards as { coins: number })?.coins ?? 0,
+            exp: (e.rewards as { exp: number })?.exp ?? 0,
+          };
+          break;
+        }
         case "match-over": {
           const youWon = R.mode === "2p" ? true : e.winner === "left";
           this.sfx.play(youWon ? "win" : "lose");
@@ -706,10 +726,14 @@ export class GameRoot extends Component {
           if (youWon) {
             this.world.fx.confetti(C.world.w / 2, C.court.groundY - 120);
           }
-          // 生涯结算(2p 友谊赛返回 null,不发奖)
+          // 生涯结算(2p 友谊赛返回 null,不发奖);闯关首通带关卡奖励,无限练习带终局比分
+          const camp = R.mode === "campaign" ? this.campClear : null;
+          this.campClear = null;
           const res = Career.settle({
             mode: R.mode, diff: R.diff, won: e.winner === "left",
             stats: Rules.statsOf("left"), longestRally: R.longestRally,
+            scores: [R.scores[0], R.scores[1]],
+            campaign: camp ?? undefined,
           });
           if (res) {
             if (res.levelUps.length) this.sfx.play("levelup");

@@ -453,7 +453,7 @@ function solveShot(x0: number, y0: number, dir: number, depth: number, loft: num
     floorClear: best ? deg : null, floorReach,
     kind: "clear",
   };
-  result.kind = classify(result, d, y0);
+  result.kind = classify(result, d, y0, x0);
   return result;
 }
 
@@ -487,15 +487,17 @@ function loftFor(depth: number, contactH: number, quality: number): number {
 // 速度阈值比的是**基准速度**(Pace.ref 折回 s=1):否则慢档里同一记重杀会被念成「劈吊」,
 // 飘字、hit 音效、丝带档位、生涯每杀奖励全跟着档漂 —— 标签该只说「这打得多狠」,
 // 不该说「此刻球速档位是几」。角度/高度是纯几何量,不折。
-function classify(shot: { deg: number; speed: number }, depth: number, y0: number): ShotKind {
+function classify(shot: { deg: number; speed: number }, depth: number, y0: number, x0?: number): ShotKind {
   const SC = C.shotClass;
   const h = CO.groundY - y0;               // 击球点高度
   const v = Pace.ref(shot.speed);          // 世界速度 → 基准速度
   if (shot.deg < SC.smashDeg && h > SC.smashH && v > SC.smashSpeed) return "smash";
-  if (shot.deg < SC.slashDeg && h > SC.slashH) return "slash";
   if (shot.deg > SC.lobDeg) return "lob";
-  // 落点贴网就是网前小球 —— 不再要求击球点低:轻击为了过网被抬到 30~50° 时,
-  // 它依然是打在网前的小球,不该叫「高远球」(放网提示与 hit 音效都读这个标签)
+  // 离网距离 > 前发球线至网距离(108px)为中后场。中后场高位(h > slashH)下切到前场 = 点杀/劈吊(slash)
+  // 低出射角(deg < slashDeg)下切(如中场平抽下切/网前扑杀)亦属此类
+  const isBackcourt = x0 != null ? Math.abs(x0 - CO.netX) > (CO.netX - CO.shortServeL) : false;
+  if (h > SC.slashH && (shot.deg < SC.slashDeg || (isBackcourt && depth < SC.netDepth))) return "slash";
+  // 网前轻放贴网(或低位放网) = 网前小球/搓放(netshot)
   if (depth < SC.netDepth) return "netshot";
   if (shot.deg < SC.driveDeg) return "drive";
   return "clear";

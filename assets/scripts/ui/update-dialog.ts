@@ -18,10 +18,10 @@
 import { Button, Color, EventTouch, Graphics, Label, Mask, Node, sys, UITransform, Vec2 } from "cc";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { cancelFade, drawArcadePanel, drawChevron, drawHardShadow, fadeOutHide, retainedDraw, slamIn, textW } from "./ui-arcade";
+import { cancelFade, drawArcadePanel, drawChevron, drawHardShadow, fadeOutHide, retainedDraw, ROLE, slamIn, textW } from "./ui-arcade";
 import { buildNotes, fitNotesBox, NOTE, NOTE_BOX } from "./release-notes";
 import type { NoteLine } from "./release-notes";
-import { DownloadProgress, UpdateInfo, UpdateService } from "../core/update-service";
+import { DownloadProgress, UpdateInfo, UpdateService } from "../game/update-service";
 
 /** 进度条轨道几何(与 ui-arcade 面板宽度配套) */
 const TRACK_X = -190;
@@ -113,7 +113,9 @@ export class UpdateDialog {
     kit.dim(this.root, 0.4, 0.74);
 
     // 居中卡片(高度随更新说明伸缩,show 时重绘)
-    this.card = kit.panel(this.root, CARD_W, BOX_MIN_H + HEAD_H + FOOT_H, { r: 16 });
+    this.card = kit.panel(this.root, CARD_W, BOX_MIN_H + HEAD_H + FOOT_H, {
+      r: 16, bandHex: ROLE.primary.face, tear: 12,
+    });
     this.card.node.setPosition(0, 0, 0);
 
     // 标题
@@ -129,7 +131,8 @@ export class UpdateDialog {
     this.sizeLabel = kit.label(this.card.node, "大小: -- MB", 12, P.dim);
 
     // 更新日志底框(高度随公告行数自适应,show 时重绘)
-    const notesBox = kit.panel(this.card.node, BOX_W, BOX_MIN_H, { r: 8 });
+    // plate:false —— 这是嵌在衬纸里的小框,再走一遍衬纸会叠出第二层撕口与第二道硬阴影
+    const notesBox = kit.panel(this.card.node, BOX_W, BOX_MIN_H, { r: 8, plate: false, noShadow: true });
     this.notesBoxG = notesBox;
     this.notesBoxNode = notesBox.node;
 

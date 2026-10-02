@@ -79,7 +79,10 @@ public class AppActivity extends CocosActivity {
     /**
      * 取可用马达:没有 Context / 系统没有 VibratorService / 该设备无马达,一律返回 null。
      * Android 12(API 31)起 VIBRATOR_SERVICE 已废弃,改用 VibratorManager.getDefaultVibrator(),
-     * 所以这里按 SDK_INT 分叉;低版本仍走 getSystemService(minSdk=21 上 VibratorManager 不存在)。
+     * 所以这里按 SDK_INT 分叉。注意:API31+ 必须用 VIBRATOR_MANAGER_SERVICE("vibrator_manager",
+     * 返回的才是 VibratorManager)—— 旧写法拿 VIBRATOR_SERVICE 强转 VibratorManager 会抛
+     * ClassCastException 被 catch 吞掉,所有 Android 12+ 机型被误报「无振动马达」。
+     * 低版本仍走 VIBRATOR_SERVICE(minSdk=21 上 VibratorManager 不存在)。
      */
     private static Vibrator vib() {
         if (sContext == null) return null;
@@ -87,7 +90,7 @@ public class AppActivity extends CocosActivity {
             Vibrator v;
             if (Build.VERSION.SDK_INT >= 31) {
                 android.os.VibratorManager vm =
-                    (android.os.VibratorManager) sContext.getSystemService(Context.VIBRATOR_SERVICE);
+                    (android.os.VibratorManager) sContext.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
                 v = (vm == null) ? null : vm.getDefaultVibrator();
             } else {
                 v = (Vibrator) sContext.getSystemService(Context.VIBRATOR_SERVICE);

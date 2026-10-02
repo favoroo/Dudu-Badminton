@@ -18,7 +18,7 @@
 // ============================================================
 import {
   BlockInputEvents, Button, Color, Component, director, Director,
-  Font, Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Widget,
+  Font, Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Vec2, Widget,
   view, _decorator,
 } from "cc";
 import { CFG, DRILLS } from "../core/config";
@@ -32,9 +32,13 @@ import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
 import { courtRenderer, CourtThemeItem } from "../render/court";
-import { ARCADE, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawSlantShadow, drawVeil, drawVignette, getDisplayFont, onDisplayFont, screenSwap, skewOf, slashWipe, textW, TOUCH_MIN } from "./ui-arcade";
+import { ARCADE, applyFont, drawArcadeButton, drawArcadePanel, drawHardShadow, drawMenuCard, drawScanlines, drawSlantShadow, drawVeil, drawVignette, getDisplayFont, mkLabel as uiMkLabel, onDisplayFont, screenSwap, skewOf, slantPath, slashWipe, textW, TOUCH_MIN } from "./ui-arcade";
 import { SkillDialog } from "./skill-dialog";
 import type { BtnStyle } from "./ui-arcade";
+import { C, SLANT, inkFor, type Role } from "./p5-tokens";
+import { drawP5Block, drawPosterPlate } from "./p5-paint";
+import { bevelSlot, posterPlate, pressable, sectionTitle, solidBlock, solidTab } from "./ui-shell";
+import { styleOf } from "./p5-shapes";
 import { MainMenu } from "./main-menu";
 import { Hud } from "./hud";
 import { PausePanel } from "./pause-panel";
@@ -47,26 +51,32 @@ import { SettingsPanel } from "./settings-panel";
 import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
 import { MatchSetupScreen, EndlessScreen } from "./mode-screen";
-import type { UpdateInfo } from "../core/update-service";
+import type { UpdateInfo } from "../game/update-service";
 
 const { ccclass } = _decorator;
 
 // ---------- 调色板(P5「暗红斩劈」:红黑白主导,黄降为点缀;与 ui-arcade.ARCADE 同源) ----------
+// 值全部派生自 p5-tokens.C(唯一配色真话)。这里保留 PAL 这套**历史键名**,
+// 因为面板层按 PAL 写了十几年:PAL.panel = ARCADE.navy、PAL.accent = ARCADE.acid、
+// PAL.danger = ARCADE.bad、PAL.text = ARCADE.paper。
+// ⚠ 唯一语义陷阱:PAL.line 是「描边基色 = 暖纸白,配 alpha 用」(hud/settle/update-dialog
+// 都拿它当 strokeColor),而 ARCADE.line 是暗部之间的分隔线 #2c2c3a —— 两个 line 不是一回事。
+// 新代码要暗部分隔线请直接从 C.line 取,别摸 P.line。
 export const PAL = {
-  ink: "#07070d",         // 最深底(P5 黑)
-  panel: "#101018",       // 面板底(近黑)
-  panelLight: "#1a1a26",  // 按钮底
-  line: "#f5efe1",        // 描边基色(暖纸白,配 alpha 用)
-  accent: "#ffe14d",      // 荧光黄 —— 二级点缀(金币/连击/经验条),与 CFG.colors.accent 同源
-  slash: "#e60012",       // P5 主红:主按钮/横幅/强调块
-  cyan: "#00f0ff",
-  red: "#ff4d4d",         // 队色红(与球衣同源,勿当主红用)
-  blue: "#3ea8ff",        // 队色蓝
-  wood: "#c8703a",        // 暖木(球场氛围色)
-  text: "#f5efe1",        // 暖纸白正文
-  dim: "#8f9cbe",
-  danger: "#ff6b6b",      // --bad
-  good: "#7dff9e",
+  ink: C.ink,           // 最深底(P5 黑)
+  panel: C.navy,        // 面板底(近黑)
+  panelLight: C.navy2,  // 按钮底
+  line: C.paper,        // 描边基色(暖纸白,配 alpha 用)
+  accent: C.acid,       // 荧光黄 —— 二级点缀(金币/连击/经验条)
+  slash: C.slash,       // P5 主红:主按钮/横幅/强调块
+  cyan: C.cyan,
+  red: C.red,           // 队色红(与球衣同源,勿当主红用)
+  blue: C.blue,         // 队色蓝
+  wood: C.wood,         // 暖木(球场氛围色)
+  text: C.paper,        // 暖纸白正文
+  dim: C.dim,
+  danger: C.bad,
+  good: C.good,
 };
 
 /** hex(+alpha) → cc.Color;Graphics/Label 逐帧赋值时引擎内部会拷贝,放心用临时实例 */
@@ -86,35 +96,31 @@ export interface LabelOpts {
   opacity?: number;
   /** 挂子集化标题黑体(tools/make-font-subset.py 的产物);加载完成前先按系统字体渲染 */
   disp?: boolean;
+  /**
+   * 硬阴影(墨黑 140α、向下 5px)。此前八个文件各自手写
+   * `enableShadow + shadowColor + shadowOffset` 三行,数值还各拍各的 —— 收进这里。
+   */
+  shadow?: boolean;
+  /** 阴影下移量(世界单位),默认 5;只在 shadow 为真时生效 */
+  shadowDrop?: number;
 }
 
 export function uiLabel(parent: Node, text: string, size: number, colorHex: string | Color, opts: LabelOpts = {}): Label {
-  const n = new Node("label");
-  n.layer = Layers.Enum.UI_2D;
-  n.addComponent(UITransform);
-  n.setParent(parent);
-  const l = n.addComponent(Label);
-  l.string = text;
-  l.fontSize = size;
-  l.lineHeight = Math.round(size * 1.22);
-  l.horizontalAlign = opts.align ?? 1;
-  l.verticalAlign = 1;
-  l.color = typeof colorHex === "string" ? col(colorHex) : colorHex;
-  if (opts.outline) {
-    l.enableOutline = true;
-    l.outlineColor = col(opts.outline);
-    l.outlineWidth = opts.outlineW ?? 2;
+  // 委托权威 mkLabel;sizing:false 是本厂的历史语义 —— 不设 contentSize,
+  // 宽高留给引擎自量(全站几十处调用点的排版都按这个假设摆的,别改)。
+  const l = uiMkLabel(parent, "label", text, size, colorHex, {
+    sizing: false,
+    align: (opts.align ?? 1) as 0 | 1 | 2,
+    lineH: Math.round(size * 1.22),
+    outline: opts.outline, outlineW: opts.outlineW,
+    disp: opts.disp,
+    opacity: opts.opacity,
+  });
+  if (opts.shadow) {
+    l.enableShadow = true;
+    l.shadowColor = col(C.ink, 0.55);
+    l.shadowOffset = new Vec2(0, -(opts.shadowDrop ?? 5));
   }
-  if (opts.disp) {
-    const apply = (f: Font | null): void => {
-      if (!f || !l.isValid) return;
-      l.font = f;
-      l.useSystemFont = false;
-    };
-    apply(getDisplayFont());
-    if (!getDisplayFont()) onDisplayFont(apply);
-  }
-  if (opts.opacity != null) n.addComponent(UIOpacity).opacity = opts.opacity;
   return l;
 }
 
@@ -129,32 +135,47 @@ export interface BtnOpts {
   style?: BtnStyle;
   /** 斜切角度(度),默认 6;传 0 回到圆角矩形 */
   slantDeg?: number;
+  /**
+   * 给一个「色即功能」的角色 → 整面实底大色块按钮(荧光黄确认键、绿色练成键…)。
+   * 传了就绕开 style:面色取 ROLE[role].face,字色由 inkFor 算,不许调用点再拍。
+   */
+  role?: Role;
 }
 
 /**
  * 街机按钮:硬偏移阴影 + 厚底 3D(primary)/浮起(ghost)+ Label;
  * 按压反馈用 Button(SCALE),与老 .btn:active 的「按下去」等价。
  * 高度钳到 TOUCH_MIN:移动端拇指点准的下限,低于它的按钮一律抬到 44。
- * P5 化:默认 6° 斜切平行四边形,primary 为斩劈红面白字。
+ * P5 化:默认 6° 斜切平行四边形,primary 为斩劈红面纸白字。
  */
 export function uiButton(parent: Node, text: string, w: number, h: number, opts: BtnOpts = {}): Node {
   h = Math.max(h, TOUCH_MIN);
-  const style: BtnStyle = opts.style
-    ?? (opts.bg === PAL.accent || opts.bg === PAL.slash || opts.bg?.toLowerCase() === "#ffe14d" ? "primary" : "ghost");
-  const slantDeg = opts.slantDeg ?? 6;
+  const slantDeg = opts.slantDeg ?? SLANT.button;
   const n = new Node(`btn:${text}`);
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(w, h);
   const g = n.addComponent(Graphics);
-  if (slantDeg !== 0) {
-    drawSlantShadow(g, w, h, skewOf(h, slantDeg), 4, 4, 0.5);
-    drawArcadeButton(g, w, h, style, 9, skewOf(h, slantDeg));
+  if (opts.role) {
+    // 整面实底:色占满这块面,不是只亮一条边 —— 与首页五块入口同一画法
+    const st = styleOf(opts.role);
+    drawP5Block(g, w, h, st.face, slantDeg === 0 ? SLANT.button : slantDeg);
+    uiLabel(n, text, opts.size ?? 18, opts.fg ?? st.text);
   } else {
-    drawHardShadow(g, w, h, 9, 4, 4, 0.5);
-    drawArcadeButton(g, w, h, style);
+    const style: BtnStyle = opts.style
+      ?? (opts.bg === PAL.accent || opts.bg === PAL.slash || opts.bg?.toLowerCase() === "#ffe14d" ? "primary" : "ghost");
+    if (slantDeg !== 0) {
+      drawSlantShadow(g, w, h, skewOf(h, slantDeg), 4, 4, 0.5);
+      drawArcadeButton(g, w, h, style, 9, skewOf(h, slantDeg));
+    } else {
+      drawHardShadow(g, w, h, 9, 4, 4, 0.5);
+      drawArcadeButton(g, w, h, style);
+    }
+    // 字色由面色亮度算:斩劈红面 → 纸白,亮面 → 墨黑。旧写法硬写 "#fff5f2",
+    // 谁把 primary 换成荧光黄就会拿到一行白字印在黄底上。
+    const face = style === "primary" ? C.slash : style === "danger" ? "#6e2029" : C.navy2;
+    const fg = opts.fg ?? (style === "ghost" ? PAL.text : inkFor(face));
+    uiLabel(n, text, opts.size ?? 18, fg);
   }
-  const fg = opts.fg ?? (style === "primary" ? "#fff5f2" : PAL.text);
-  uiLabel(n, text, opts.size ?? 18, fg);
   const b = n.addComponent(Button);
   b.transition = Button.Transition.SCALE;
   b.zoomScale = 0.94;
@@ -177,19 +198,43 @@ export interface PanelOpts {
   alpha?: number;
   /** 斜切角度(度),默认 3(轻微斜切的 P5 衬纸感);传 0 回到圆角矩形 */
   slantDeg?: number;
+  /**
+   * 衬纸副面色(那张错位垫在底下的纸),默认斩劈红。
+   * 面板用它跟自己的主角色挂钩:闯关大厅给红、商店给黄。
+   */
+  bandHex?: string;
+  /** 下缘撕纸齿数,默认 18;0 = 不撕 */
+  tear?: number;
+  /** 面板衬纸上叠一层网点;默认关 —— 点数按面积走,大面板要显式开并看预算 */
+  halftone?: boolean;
+  /** false = 回到旧的「渐变底 + 描边」画法。嵌套小卡与灰度逃生口用,别默认关 */
+  plate?: boolean;
 }
 
-/** 街机面板:硬偏移阴影 + 渐变底 + 描边 + 内高光;P5 化后默认 3° 斜切 */
+/**
+ * 面板衬纸(L1):斜切硬阴影 → 错位 accent 副衬 → 墨面 → 下缘撕纸齿 → 顶缘高光。
+ * 一张「撕下来垫在红纸上的黑纸」,与首页标题衬底同一配方。
+ * plate:false 保留旧的渐变底画法(嵌套在小卡里的双层衬纸会糊成一团,那种地方要关)。
+ */
 export function uiPanel(parent: Node, w: number, h: number, opts: PanelOpts = {}): Graphics {
   const n = new Node("panel");
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(w, h);
   const g = n.addComponent(Graphics);
-  const slantDeg = opts.slantDeg ?? 3;
-  if (slantDeg !== 0) {
+  const slantDeg = opts.slantDeg ?? SLANT.plate;
+  const plate = opts.plate !== false;
+  if (plate && slantDeg !== 0) {
+    drawPosterPlate(g, w, h, {
+      slant: slantDeg,
+      bandHex: opts.bandHex ?? C.slash,
+      teeth: opts.tear ?? 18,
+      halftone: opts.halftone,
+      edge: !opts.noShadow,
+    });
+  } else if (slantDeg !== 0) {
     const skew = skewOf(h, slantDeg);
     if (!opts.noShadow) drawSlantShadow(g, w, h, skew, 6, 6, 0.45);
-    drawArcadePanel(g, w, h, opts.r ?? 14, opts.alpha ?? 0.93, skew);
+    drawArcadePanel(g, w, h, opts.r ?? 14, opts.alpha ?? 0.93, slantDeg);
   } else {
     if (!opts.noShadow) drawHardShadow(g, w, h, opts.r ?? 14, 6, 6, 0.45);
     drawArcadePanel(g, w, h, opts.r ?? 14, opts.alpha ?? 0.93);
@@ -203,8 +248,10 @@ export function uiPanel(parent: Node, w: number, h: number, opts: PanelOpts = {}
  * 全屏暗遮罩 + BlockInputEvents:弹窗层级压过虚拟按键,且触摸不再穿透到世界。
  * 两个 alpha = 老 .screen 的 radial-gradient(中心 centerA → 四周 edgeA):
  * 中心透一点,球场才看得见;外围压暗,居中的字才站得住。
+ * bands:false 关掉那两道斩劈红斜带 —— 身后已有同语汇衬底的屏(首页、对练屏)要关,
+ * 否则「氛围层」叠成第二块面板,反而把球场糊没了。
  */
-export function uiDim(parent: Node, centerA = 0.52, edgeA = 0.82): Node {
+export function uiDim(parent: Node, centerA = 0.52, edgeA = 0.82, o: { bands?: boolean } = {}): Node {
   const n = new Node("dim");
   n.layer = Layers.Enum.UI_2D;
   n.addComponent(UITransform).setContentSize(CFG.world.w, CFG.world.h);
@@ -220,8 +267,17 @@ export function uiDim(parent: Node, centerA = 0.52, edgeA = 0.82): Node {
   g.fill();
   // 渐变:可见区域内再往四周叠加,叠加完正好收到 edgeA(增量要按「还剩多少不透明」折算)
   const vs = view.getVisibleSize();
-  drawVeil(g, Math.max(CFG.world.w, vs.width), Math.max(CFG.world.h, vs.height),
-    0, Math.max(0, (edgeA - centerA) / (1 - Math.min(0.999, centerA))));
+  const vw = Math.max(CFG.world.w, vs.width), vh = Math.max(CFG.world.h, vs.height);
+  drawVeil(g, vw, vh, 0, Math.max(0, (edgeA - centerA) / (1 - Math.min(0.999, centerA))));
+  if (o.bands !== false) {
+    // 两道斩劈红斜带:P5 海报的「跨页一刀」。α 压得很低 —— 这层是氛围不是内容,
+    // 盖过内容就成了第二块面板。首页/对练屏自己有同语汇的衬底,那边显式传 bands:false。
+    for (const [y, hh, a] of [[vh * 0.30, 74, 0.10], [-vh * 0.34, 46, 0.07]] as const) {
+      g.fillColor = col(C.slash, a);
+      slantPath(g, vw * 1.5, hh, skewOf(hh, 12), -vw * 0.06, y);
+      g.fill();
+    }
+  }
   n.addComponent(BlockInputEvents);
   n.setParent(parent);
   return n;
@@ -284,6 +340,19 @@ export interface UiKit {
   slider: typeof uiSlider;
   /** 一行式开关(整行即按钮) */
   toggle: typeof uiToggle;
+  // ---------- P5 面板语法(形状在 p5-shapes 出点列,画笔在 p5-paint;见各文件头) ----------
+  /** L1 衬纸:面板本体那张「撕下来的黑纸」 */
+  plate: typeof posterPlate;
+  /** L3 实底大色块:tab / 卡片 / 入口条,自带 Button */
+  block: typeof solidBlock;
+  /** 分段选择器的一格(选中=实底色块,未选=凹陷槽);要自己接 paint(sel) */
+  tab: typeof solidTab;
+  /** L2 分区色带当小节标题 */
+  title: typeof sectionTitle;
+  /** L3′ 凹陷槽:经验槽、轨道、锁定态底 */
+  slot: typeof bevelSlot;
+  /** 给已经画好底的手搓节点补上真 Button(漏了就是「点了没反应」,闸门见 ui-click-check) */
+  press: typeof pressable;
   toast(msg: string): void;
   toggleMute(): boolean;
   readonly muted: boolean;
@@ -292,6 +361,8 @@ export interface UiKit {
   startDrill(id: string): void;
   restartCurrent(): void;
   quitToMenu(): void;
+  /** 无限练习手动收局:按当前比分判胜负并走正常结算(仅暂停页在 endless 模式露出) */
+  endEndless(): void;
   openCareer(): void;
   openDrills(): void;
   openCampaign(): void;
@@ -516,6 +587,7 @@ export class UIManager extends Component {
         this.careerPanel?.hide();
         this.drillPanel?.hide();
         this.campaignPanel?.hide();
+        this.pausePanel?.hide();          // 无限练习「结束本局」从暂停页直接进 OVER,得把暂停卡收掉
         this.hud?.setPlaying(true);
         this.settlePanel?.show(this.takeSettle("match"));
         break;
@@ -524,6 +596,7 @@ export class UIManager extends Component {
         this.careerPanel?.hide();
         this.drillPanel?.hide();
         this.campaignPanel?.hide();
+        this.pausePanel?.hide();
         this.hud?.setPlaying(true);
         this.settlePanel?.show(this.takeSettle("drill"));
         break;
@@ -561,13 +634,20 @@ export class UIManager extends Component {
           next: won && after && CampaignManager.isStageUnlocked(after.stageNo) ? after : null,
         };
         if (won) {
+          // 星标进徽章:本局挣到的星(rules 判定,与战前简报承诺的判据一一对应),
+          // 结算页当场可看,不用回大厅才知道 —— 从前 match-over 的 stars 是死数据
+          const ns = typeof R.lastStars === "number" ? R.lastStars : 0;
           badge = {
-            title: `★ 关卡突破 · ${stage.title} (${stage.badge})`,
+            title: `★ 关卡突破 · ${stage.title} (${stage.badge}) · ${"★".repeat(ns)}${"☆".repeat(3 - ns)}`,
             color: PAL.accent,
           };
         } else {
           badge = { title: `挑战失败 · ${stage.title}`, color: PAL.dim };
         }
+      } else if (R.mode === "endless" && won && R.scores[0] > 0
+        && Career.profile().bestEndlessScore === R.scores[0]) {
+        // 无限练习收局正好创下个人最高分时,用纪录徽章替掉通用称号
+        badge = { title: `∞ 练习新纪录 · 单局 ${R.scores[0]} 分`, color: "#7fd0ff" };
       }
       return {
         kind,
@@ -723,66 +803,80 @@ export class UIManager extends Component {
       .start();
   }
 
+  /**
+   * 四块面板的进出都套 `screenSwap`(与对练 / 无限练习同一套斜带扫屏):
+   * 墨黑宽带 + 斩劈红窄带先后扫过,带子盖住屏幕的中点上换页,换页过程观众看不到。
+   * 之前这四块只有面板自己的 slamIn 砸落,菜单是「直接消失再出现」,与首页点进对练
+   * 的手感不是一套东西 —— 用户明确要的就是这条扫屏。
+   *
+   * 两点不能想当然:
+   *   1) `out` 交出去时 screenSwap 内部走 fadeOutHide,所以**不再**另调 menu.hide()
+   *      (它就是同一个 fadeOutHide,调两次会把退场 tween 重起到一半上);
+   *   2) 退场必须在 showIn 回调里调 `panel.hide()` 而不是把根节点丢给 screenSwap 了事 ——
+   *      hide() 里还注销着键盘监听、复位动画状态、销毁整树,漏了就是「第二次打开失灵」。
+   */
   private openCareer(): void {
     if (!this.careerPanel) {
       this.careerPanel = this.node.addComponent(CareerPanel);
     }
-    this.menu.hide();
-    this.careerPanel.show(this.node, () => {
-      this.careerPanel?.hide();
-      this.menu.show();
-    });
+    const panel = this.careerPanel;
+    screenSwap(this.node, this.menu.root, () => panel.show(this.node, () => {
+      screenSwap(this.node, null, () => { panel.hide(); this.menu.show(); });
+    }));
   }
 
   private openDrills(): void {
     if (!this.drillPanel) {
       this.drillPanel = this.node.addComponent(DrillPanel);
     }
-    this.menu.hide();
-    this.drillPanel.show(
+    const panel = this.drillPanel;
+    screenSwap(this.node, this.menu.root, () => panel.show(
       this.node,
       (drill) => {
-        this.drillPanel?.hide();
+        // 进对局走 slashWipe(开赛那条黑带),这里只收面板 —— 别叠两层扫屏
+        panel.hide();
         this.doStartDrill(drill.id);
       },
       () => {
-        this.drillPanel?.hide();
-        this.menu.show();
+        screenSwap(this.node, null, () => { panel.hide(); this.menu.show(); });
       },
-    );
+    ));
   }
 
   /**
    * 闯关大厅和 career / drills 一样是「浮在 MENU 之上的一屏」:Rules 状态全程不动,
    * 所以关完的归途必须命令式给回来。少这一句的后果不是难看,是**卡死** ——
    * 菜单被 hide 掉、状态又没有变化沿,onState 永远不会再跑,屏幕上只剩一座空球场
-   * (用户报的「进入闯关模式后什么按钮都看不到」)。
+   * (用户报的「进入闯关模式后什么按钮都看不到」)。加了扫屏之后这条更要守住:
+   * 归途的 `menu.show()` 就挂在扫屏回调里,少调一次等于把卡死藏在动画后面。
    */
   private openCampaign(): void {
-    this.menu.hide();
-    this.campaignPanel.show(() => {
-      this.campaignPanel.hide();
-      this.menu.show();
-    });
+    const panel = this.campaignPanel;
+    screenSwap(this.node, this.menu.root, () => panel.show(() => {
+      screenSwap(this.node, null, () => { panel.hide(); this.menu.show(); });
+    }));
   }
 
   /**
    * 设置页。从暂停页进来时关完要回暂停页,不能漏进主菜单 ——
    * onState 只在状态**变化沿**触发,而 PAUSED → (开着设置) → PAUSED 根本没有变化沿,
    * 所以恢复只能命令式做,和 openCareer 同一个套路。
+   * 被扫出去的那一屏随「从哪儿来」变:暂停页 / 主菜单二选一。
    */
   private openSettings(): void {
     if (!this.settingsPanel) {
       this.settingsPanel = this.node.addComponent(SettingsPanel);
     }
+    const panel = this.settingsPanel;
     const fromPause = Rules.R.state === "PAUSED";
-    if (!fromPause) this.menu.hide();
-    else this.pausePanel.hide();
-    this.settingsPanel.show(this.node, this.kit, () => {
-      this.settingsPanel?.hide();
-      if (fromPause) this.pausePanel.show();
-      else this.menu.show();
-    });
+    screenSwap(this.node, fromPause ? this.pausePanel.root : this.menu.root,
+      () => panel.show(this.node, this.kit, () => {
+        screenSwap(this.node, null, () => {
+          panel.hide();
+          if (fromPause) this.pausePanel.show();
+          else this.menu.show();
+        });
+      }));
   }
 
   private cycleCourtTheme(): string {
@@ -816,6 +910,12 @@ export class UIManager extends Component {
       atmosphere: uiAtmosphere,
       slider: uiSlider,
       toggle: uiToggle,
+      plate: posterPlate,
+      block: solidBlock,
+      tab: solidTab,
+      title: sectionTitle,
+      slot: bevelSlot,
+      press: pressable,
       toast: (m) => this.toast(m),
       toggleMute: () => this.toggleMute(),
       get muted() { return Settings.allMuted; },
@@ -824,6 +924,10 @@ export class UIManager extends Component {
       startDrill: (id) => this.doStartDrill(id),
       restartCurrent: () => this.doRestart(),
       quitToMenu: () => this.doQuit(),
+      endEndless: () => {
+        this.sfx.play("ui");
+        Rules.endEndless();               // OVER 态由状态轮询接结算页,这里只管收局
+      },
       openCareer: () => this.openCareer(),
       openDrills: () => this.openDrills(),
       openCampaign: () => this.openCampaign(),

@@ -15,12 +15,12 @@ import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import {
   ARCADE, cancelFade, drawChevron, drawSlantPanel, drawSlantShadow, drawSawtooth,
-  drawSolidBlock, fadeOutHide, floatLoop, inkOn, makeChip, makeCoinIcon,
-  riseIn, safePad, skewOf, slashIn, slantPath, stopLoops,
+  drawSolidBlock, fadeOutHide, inkOn, makeChip, makeCoinIcon,
+  riseIn, safePad, skewOf, slashIn, slantPath,
 } from "./ui-arcade";
-import { textW } from "./text-metrics";
+import { textW } from "../core/text-metrics";
 import { APP_VERSION_NAME } from "../core/version";
-import { UpdateService } from "../core/update-service";
+import { UpdateService } from "../game/update-service";
 
 /** 大色块字色:亮面配墨黑,斩劈红面配纸白(由亮度算,不逐块手拍) */
 const inkOf = (accent: string): string => (inkOn(accent) ? "#0a0e1c" : "#f5efe1");
@@ -40,7 +40,8 @@ export class MainMenu {
   private riseNodes: Array<{ node: Node; delay: number }> = [];
   /** 顶栏徽章的斩入队列:与 rise 分开,show 时侧向 slashIn */
   private slashNodes: Array<{ node: Node; delay: number }> = [];
-  private titleNode: Node | null = null;
+  /** 标题衬底节点:show 时一次性 slashIn,落位后静止(无循环动画) */
+  private titleBackNode: Node | null = null;
   /** 半透明暗底节点:入场时从全黑淡到半透,让身后球场渐渐显出来 */
   private dimNode: Node | null = null;
 
@@ -51,44 +52,20 @@ export class MainMenu {
     this.root.active = false;
 
     // 暗底:中心只压到 0.22,四周收到 0.5 —— 换球馆时身后那座场子清晰可见
-    this.dimNode = kit.dim(this.root, 0.22, 0.5);
+    this.dimNode = kit.dim(this.root, 0.22, 0.5, { bands: false });
     // 扫描线 + 暗角:老 #scan / .grain 的街机厅氛围(轻量,不能再糊一层)
     kit.atmosphere(this.root);
 
-    // ---------- 顶部条(P5 化):左上 Lv 红牌,右上金币/声音/设置级联 ----------
-    // 老版四枚徽章用固定 x 散排一行,宽屏下离角落越来越远,看着"孤零零";
-    // 现在全部 Widget 角锚(safePad 避让刘海),右上三块轻微重叠错位 —— P5 菜单的层叠感。
+    // ---------- 顶部条(P5 化):左上 Lv+金币级联,右上声音/设置级联 ----------
+    // 等级与金币归拢到左上级联(用户指令:左边等级、右边金币,显示在一块);
+    // 老版徽章用固定 x 散排一行,宽屏下离角落越来越远,看着"孤零零";
+    // 现在两组各用 Widget 角锚(safePad 避让刘海),块间轻微错位 —— P5 菜单的层叠感。
     // 徽章高度 44 = 触控下限;斜切统一 10°,入场改侧向 slashIn。
     const sp = safePad();
     const chipSkew = skewOf(44, 10);
 
-    const lvNode = new Node("lv-badge");
-    lvNode.layer = this.root.layer;
-    lvNode.addComponent(UITransform).setContentSize(116, 44);
-    const lvg = lvNode.addComponent(Graphics);
-    drawSlantShadow(lvg, 116, 44, chipSkew, 4, 4, 0.5);
-    drawSlantPanel(lvg, 116, 44, chipSkew, { face: ARCADE.slash, alpha: 0.97, edge: "#ff6b72", edgeA: 0.8 });
-    drawSawtooth(lvg, 8, 26, 4, ARCADE.slashDk, 0.95, "right", 52, 0);   // 右缘撕纸边
-    this.lvLabel = kit.label(lvNode, "Lv.1", 18, "#fff5f2", { disp: true });
-    const lvWd = lvNode.addComponent(Widget);
-    lvWd.isAlignLeft = true; lvWd.left = sp.left;
-    lvWd.isAlignTop = true; lvWd.top = 14 + sp.top;
-    lvWd.updateAlignment();
-    lvNode.setParent(this.root);
-
-    // 右上级联容器:锚点 (1, 0.5) —— 子块坐标从右缘往左排,宽屏自动贴角
-    const cluster = new Node("corner-cluster");
-    cluster.layer = this.root.layer;
-    cluster.addComponent(UITransform).setContentSize(360, 60);
-    cluster.getComponent(UITransform)!.setAnchorPoint(1, 0.5);
-    cluster.setParent(this.root);
-    const clWd = cluster.addComponent(Widget);
-    clWd.isAlignRight = true; clWd.right = sp.right;
-    clWd.isAlignTop = true; clWd.top = 14 + sp.top;
-    clWd.updateAlignment();
-
-    /** 右上级联的斜切徽章:黑面为主,级联下沉,后建者压在先建者上面 */
-    const cornerChip = (name: string, w: number, x: number, y: number, face: string, edgeHex: string): Node => {
+    /** 顶栏斜切徽章:黑面为主,级联下沉,后建者压在先建者上面 */
+    const cornerChip = (parent: Node, name: string, w: number, x: number, y: number, face: string, edgeHex: string): Node => {
       const n = new Node(name);
       n.layer = this.root.layer;
       n.addComponent(UITransform).setContentSize(w, 44);
@@ -96,17 +73,51 @@ export class MainMenu {
       drawSlantShadow(g, w, 44, chipSkew, 3, 3, 0.45);
       drawSlantPanel(g, w, 44, chipSkew, { face, alpha: 0.96, edge: edgeHex, edgeA: face === ARCADE.slash ? 0.8 : 0.4 });
       n.setPosition(x, y, 0);
-      n.setParent(cluster);
+      n.setParent(parent);
       return n;
     };
 
-    const coinBadge = cornerChip("coin", 140, -242, 8, "#16161f", ARCADE.line);
+    // 左上级联容器:锚点 (0, 0.5) —— 子块坐标从左缘往右排,宽屏自动贴角
+    const leftCluster = new Node("left-cluster");
+    leftCluster.layer = this.root.layer;
+    leftCluster.addComponent(UITransform).setContentSize(256, 60);
+    leftCluster.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
+    leftCluster.setParent(this.root);
+    const lcWd = leftCluster.addComponent(Widget);
+    lcWd.isAlignLeft = true; lcWd.left = sp.left;
+    lcWd.isAlignTop = true; lcWd.top = 14 + sp.top;
+    lcWd.updateAlignment();
+
+    const lvNode = new Node("lv-badge");
+    lvNode.layer = this.root.layer;
+    lvNode.addComponent(UITransform).setContentSize(116, 44);
+    const lvg = lvNode.addComponent(Graphics);
+    drawSlantShadow(lvg, 116, 44, chipSkew, 4, 4, 0.5);
+    drawSlantPanel(lvg, 116, 44, chipSkew, { face: ARCADE.slash, alpha: 0.97, edge: "#ff6b72", edgeA: 0.8 });
+    drawSawtooth(lvg, 8, 26, 4, ARCADE.slashDk, 0.95, "right", 52, 0);   // 右缘撕纸边,兼作与金币牌的分隔
+    this.lvLabel = kit.label(lvNode, "Lv.1", 18, "#fff5f2", { disp: true });
+    lvNode.setPosition(58, 0, 0);
+    lvNode.setParent(leftCluster);
+
+    // 金币牌贴在 Lv 牌右侧(用户指令:左等级右金币),错位 6px 延续级联感
+    const coinBadge = cornerChip(leftCluster, "coin", 140, 186, 6, "#16161f", ARCADE.line);
     makeCoinIcon(coinBadge, -46, 0, 9);   // Graphics 金币(替代 🪙 emoji,原生平台无彩色 emoji 字体)
     this.coinLabel = kit.label(coinBadge, "0", 16, P.accent, { disp: true });
     this.coinLabel.node.setPosition(12, 0, 0);
 
+    // 右上级联容器:锚点 (1, 0.5) —— 子块坐标从右缘往左排,宽屏自动贴角
+    const rightCluster = new Node("right-cluster");
+    rightCluster.layer = this.root.layer;
+    rightCluster.addComponent(UITransform).setContentSize(240, 60);
+    rightCluster.getComponent(UITransform)!.setAnchorPoint(1, 0.5);
+    rightCluster.setParent(this.root);
+    const clWd = rightCluster.addComponent(Widget);
+    clWd.isAlignRight = true; clWd.right = sp.right;
+    clWd.isAlignTop = true; clWd.top = 14 + sp.top;
+    clWd.updateAlignment();
+
     // 「声音」= 音效 + 音乐两条总线一起切(单独的开关在设置页里)
-    const soundBadge = cornerChip("sound", 92, -136, 2, "#16161f", ARCADE.line);
+    const soundBadge = cornerChip(rightCluster, "sound", 92, -136, 2, "#16161f", ARCADE.line);
     this.soundLabel = kit.label(soundBadge, "声音", 13, P.dim);
     const sndBtn = soundBadge.addComponent(Button);
     sndBtn.transition = Button.Transition.SCALE;
@@ -118,7 +129,7 @@ export class MainMenu {
       this.paintSound();
     });
 
-    const setBadge = cornerChip("settings", 84, -42, -4, ARCADE.slash, "#ff6b72");
+    const setBadge = cornerChip(rightCluster, "settings", 84, -42, -4, ARCADE.slash, "#ff6b72");
     kit.label(setBadge, "设置", 13, "#fff5f2").node.setPosition(0, 0, 0);
     const setBtn = setBadge.addComponent(Button);
     setBtn.transition = Button.Transition.SCALE;
@@ -134,26 +145,17 @@ export class MainMenu {
       { node: soundBadge, delay: 0.1 }, { node: setBadge, delay: 0.15 },
     );
 
-    // ---------- 街机海报标题:红黑斜切衬底 +「嘟嘟」荧光黄 +「羽毛球」暖纸白 ----------
-    // P5 化:标题压在一块错位叠层的红黑斜切衬纸上,大字换子集化标题黑体
+    // ---------- 街机海报标题:单块大红斜切色块 + 两段大字 ----------
+    // 返工定稿:去黄衬/锯齿/星芒/逐字错位,衬底与下方五块模式色块同款
+    // (drawSolidBlock 厚底边语言),标题即「第六块大色块」;入场一次性,落位全静止。
     const backing = new Node("title-backing");
     backing.layer = this.root.layer;
     backing.addComponent(UITransform);
     const bgg = backing.addComponent(Graphics);
-    const bs = skewOf(74, 9);
-    drawSlantShadow(bgg, 372, 74, bs, 7, 7, 0.55);
-    bgg.fillColor = col(ARCADE.slash, 0.97);
-    slantPath(bgg, 372, 74, bs);
-    bgg.fill();
-    bgg.fillColor = col(ARCADE.ink, 0.97);
-    slantPath(bgg, 372 - 14, 74 - 12, bs * 0.92, -5, -3);
-    bgg.fill();
-    bgg.strokeColor = col("#ff6b72", 0.5);
-    bgg.lineWidth = 1.5;
-    slantPath(bgg, 372, 74, bs);
-    bgg.stroke();
+    drawSolidBlock(bgg, 372, 74, ARCADE.slash, 9);   // 自带硬阴影/厚底边/高光/描边
     backing.setPosition(0, 190, 0);
     backing.setParent(this.root);
+    this.titleBackNode = backing;
 
     const t1 = kit.label(this.root, "嘟嘟", 54, P.accent, { disp: true });
     t1.node.setPosition(-81, 190, 0);
@@ -163,11 +165,9 @@ export class MainMenu {
       t.enableShadow = true;
       t.shadowColor = new Color(0, 0, 0, 140);
       t.shadowOffset = new Vec2(0, -6);
-      t.node.angle = 1.5;                 // 与斜切衬纸同向的轻微仰角
+      t.node.angle = 1.5;                 // 与斜切色块同向的轻微仰角
       this.riseNodes.push({ node: t.node, delay: 0.16 });
     }
-    this.titleNode = t1.node;
-    stopLoops(t2.node); // 浮动只挂在一个节点上,两个都停过再启
 
     // ---------- 五块实底大色块(P5 海报面):对练为主入口,右列 2×2 ----------
     // 对练 = 左侧整柱斩劈红(进对练屏选难度/球馆/技能);
@@ -334,14 +334,10 @@ export class MainMenu {
         .call(() => cover.destroy()).start();
     }
 
-    // 街机海报式入场:顶栏斩入 → 标题 → 大色块逐级 rise
+    // 街机海报式入场:顶栏斩入 → 标题衬底斩入 → 文字与大色块逐级 rise
     for (const s of this.slashNodes) slashIn(s.node, s.delay, -38, -6);
     for (const r of this.riseNodes) riseIn(r.node, r.delay);
-    // 标题浮动等 rise 落位后再起(floatLoop 会停掉同一节点的位移动画)
-    if (this.titleNode) {
-      const tn = this.titleNode;
-      tween(tn).delay(0.8).call(() => { if (tn.isValid && this.root.active) floatLoop(tn, 3, 1.6); }).start();
-    }
+    if (this.titleBackNode) slashIn(this.titleBackNode, 0.1, -30, -4);
 
     // 冷启动静默检测(节流 24 小时)
     if (!this.checkedStartup && UpdateService.instance.shouldRunStartupCheck()) {

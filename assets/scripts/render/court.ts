@@ -53,14 +53,25 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+// colRgba/hslToRgb 记忆化:动态层每帧几百次调用曾全是 new Color,是周期性 GC 尖峰的
+// 一大源(与 palette.ts 的 withAlpha 同一思路)。alpha 按 1/32 分桶、hsl 色相取整——
+// 量化误差肉眼不可辨;缓存有上限兜底防键爆炸。返回实例为**共享只读**:Graphics 的
+// fillColor/strokeColor 赋值时引擎内部会 .set() 拷贝,调用方不得改写返回值。
+const colCache = new Map<number, Color>();
 function colRgba(r: number, g: number, b: number, a = 1): Color {
-  return new Color(r, g, b, Math.round(clamp(a, 0, 1) * 255));
+  const k = clamp(a, 0, 1);
+  const idx = Math.round(k * 32);
+  const key = ((r & 255) * 256 + (g & 255)) * 256 * 33 + (b & 255) * 33 + idx;
+  let hit = colCache.get(key);
+  if (!hit) {
+    if (colCache.size > 8192) colCache.clear();
+    hit = new Color(r, g, b, Math.round(k * 255));
+    colCache.set(key, hit);
+  }
+  return hit;
 }
 
-function hslToRgb(h: number, s: number, l: number, a = 1): Color {
-  h = ((h % 360) + 360) % 360 / 360;
-  s = clamp(s, 0, 1);
-  l = clamp(l, 0, 1);
+function hslCompute(h: number, s: number, l: number, a255: number): Color {
   let r: number, g: number, b: number;
   if (s === 0) {
     r = g = b = l;
@@ -83,8 +94,35 @@ function hslToRgb(h: number, s: number, l: number, a = 1): Color {
     Math.round(r * 255),
     Math.round(g * 255),
     Math.round(b * 255),
-    Math.round(clamp(a, 0, 1) * 255)
+    a255
   );
+}
+
+const hslCache = new Map<number, Color>();
+function hslToRgb(h: number, s: number, l: number, a = 1): Color {
+  const hh = Math.round(((h % 360) + 360) % 360);
+  const ss = Math.round(clamp(s, 0, 1) * 64);
+  const ll = Math.round(clamp(l, 0, 1) * 64);
+  const idx = Math.round(clamp(a, 0, 1) * 32);
+  const key = (hh * 65 + ss) * 65 * 33 + ll * 33 + idx;
+  let hit = hslCache.get(key);
+  if (!hit) {
+    if (hslCache.size > 8192) hslCache.clear();
+    hit = hslCompute(hh / 360, ss / 64, ll / 64, Math.round(clamp(a, 0, 1) * 255));
+    hslCache.set(key, hit);
+  }
+  return hit;
+}
+
+// 正弦查表:cyber 动态层每帧为 44 栋楼 ×16 窗各算一次 sin(704 次/帧),全花在
+// 「这扇窗亮不亮」这种用途上。256 档查表最大误差 <1%,闪烁阈值判定肉眼无感。
+const SIN_N = 256;
+const SIN_TAB = new Float32Array(SIN_N);
+for (let i = 0; i < SIN_N; i++) SIN_TAB[i] = Math.sin((i / SIN_N) * Math.PI * 2);
+function sinFast(x: number): number {
+  let i = Math.floor(x * (SIN_N / (Math.PI * 2))) % SIN_N;
+  if (i < 0) i += SIN_N;
+  return SIN_TAB[i];
 }
 
 // ------------------------------------------------------------
@@ -715,7 +753,7 @@ export class CourtRenderer {
         size: 1.5 + rnd() * 2.5,
         speedY: -0.4 - rnd() * 0.8,
         speedX: (rnd() - 0.5) * 0.3,
-        color: rnd() > 0.5 ? new Color(0, 240, 255, 255) : new Color(255, 0, 127, 255),
+        color: rnd() > 0.5 ? colRgba(0, 240, 255, 1) : colRgba(255, 0, 127, 1),
         alpha: 0.3 + rnd() * 0.5,
       });
     }
@@ -1000,17 +1038,17 @@ export class CourtRenderer {
       TOTAL_W,
       CO.groundY,
       [
-        { stop: 0, color: new Color(6, 9, 20, 255) },
-        { stop: 0.35, color: new Color(11, 16, 34, 255) },
-        { stop: 0.75, color: new Color(16, 22, 46, 255) },
-        { stop: 1, color: new Color(20, 28, 56, 255) },
+        { stop: 0, color: colRgba(6, 9, 20, 1) },
+        { stop: 0.35, color: colRgba(11, 16, 34, 1) },
+        { stop: 0.75, color: colRgba(16, 22, 46, 1) },
+        { stop: 1, color: colRgba(20, 28, 56, 1) },
       ],
       12
     );
 
     // 2. 顶棚金属双弦钢桁架与交叉斜腹杆
-    fillRect(g, vp, -EXT_W, 10, TOTAL_W, 4, new Color(24, 34, 60, 255));
-    fillRect(g, vp, -EXT_W, 28, TOTAL_W, 4, new Color(20, 28, 50, 255));
+    fillRect(g, vp, -EXT_W, 10, TOTAL_W, 4, colRgba(24, 34, 60, 1));
+    fillRect(g, vp, -EXT_W, 28, TOTAL_W, 4, colRgba(20, 28, 50, 1));
 
     g.strokeColor = colRgba(35, 48, 82, 0.65);
     g.lineWidth = 1.5;
@@ -1024,9 +1062,9 @@ export class CourtRenderer {
     g.stroke();
 
     // 3. 远景赛会滚动 LED 横幅
-    fillRect(g, vp, -EXT_W, 84, TOTAL_W, 34, new Color(13, 19, 38, 255));
-    fillRect(g, vp, -EXT_W, 84, TOTAL_W, 2, new Color(36, 50, 90, 255));
-    fillRect(g, vp, -EXT_W, 116, TOTAL_W, 2, new Color(24, 34, 64, 255));
+    fillRect(g, vp, -EXT_W, 84, TOTAL_W, 34, colRgba(13, 19, 38, 1));
+    fillRect(g, vp, -EXT_W, 84, TOTAL_W, 2, colRgba(36, 50, 90, 1));
+    fillRect(g, vp, -EXT_W, 116, TOTAL_W, 2, colRgba(24, 34, 64, 1));
 
     // LED 跑马方块 → 慢速层 drawArenaSlow(相位动得很慢,不必每帧重铺 83 个方块)
 
@@ -1039,16 +1077,16 @@ export class CourtRenderer {
       TOTAL_W,
       212,
       [
-        { stop: 0, color: new Color(12, 18, 36, 255) },
-        { stop: 1, color: new Color(18, 26, 52, 255) },
+        { stop: 0, color: colRgba(12, 18, 36, 1) },
+        { stop: 1, color: colRgba(18, 26, 52, 1) },
       ],
       6
     );
 
     const steps = [156, 182, 208, 234, 260];
     for (const sy of steps) {
-      fillRect(g, vp, -EXT_W, sy - 4, TOTAL_W, 4, new Color(8, 12, 26, 255));
-      fillRect(g, vp, -EXT_W, sy, TOTAL_W, 2, new Color(29, 40, 74, 255));
+      fillRect(g, vp, -EXT_W, sy - 4, TOTAL_W, 4, colRgba(8, 12, 26, 1));
+      fillRect(g, vp, -EXT_W, sy, TOTAL_W, 2, colRgba(29, 40, 74, 1));
     }
 
     // 观众 bob 群 → 慢速层 drawArenaSlow;闪光灯/毛巾 → 动态层 drawArenaDyn
@@ -1075,15 +1113,15 @@ export class CourtRenderer {
       TOTAL_W,
       102,
       [
-        { stop: 0, color: new Color(16, 23, 48, 255) },
-        { stop: 1, color: new Color(20, 28, 56, 255) },
+        { stop: 0, color: colRgba(16, 23, 48, 1) },
+        { stop: 1, color: colRgba(20, 28, 56, 1) },
       ],
       5
     );
 
     // 裁判高椅 (Umpire Chair, x: 442~464)
     const uy = 352;
-    g.strokeColor = new Color(37, 49, 84, 255);
+    g.strokeColor = colRgba(37, 49, 84, 1);
     g.lineWidth = 2;
     g.moveTo(vp.x(446), vp.y(CO.groundY - 2));
     g.lineTo(vp.x(452), vp.y(uy + 20));
@@ -1095,21 +1133,21 @@ export class CourtRenderer {
     }
     g.stroke();
     // 裁判座板与顶板
-    fillRect(g, vp, 444, uy + 20, 22, 3, new Color(61, 79, 130, 255));
-    fillRect(g, vp, 442, uy + 2, 2, 20, new Color(42, 55, 96, 255));
-    fillRect(g, vp, 464, uy + 2, 2, 20, new Color(42, 55, 96, 255));
-    fillRect(g, vp, 440, uy, 26, 3, new Color(71, 92, 150, 255));
+    fillRect(g, vp, 444, uy + 20, 22, 3, colRgba(61, 79, 130, 1));
+    fillRect(g, vp, 442, uy + 2, 2, 20, colRgba(42, 55, 96, 1));
+    fillRect(g, vp, 464, uy + 2, 2, 20, colRgba(42, 55, 96, 1));
+    fillRect(g, vp, 440, uy, 26, 3, colRgba(71, 92, 150, 1));
     // 裁判剪影与记分卡
-    fillCircle(g, vp, 454, uy + 10, 3.8, new Color(22, 32, 58, 255));
-    fillRect(g, vp, 451, uy + 14, 7, 7, new Color(22, 32, 58, 255));
-    fillRect(g, vp, 456, uy + 16, 4, 3, new Color(56, 74, 122, 255));
+    fillCircle(g, vp, 454, uy + 10, 3.8, colRgba(22, 32, 58, 1));
+    fillRect(g, vp, 451, uy + 14, 7, 7, colRgba(22, 32, 58, 1));
+    fillRect(g, vp, 456, uy + 16, 4, 3, colRgba(56, 74, 122, 1));
 
     // 司线员剪影 (Linesmen)
     for (const lx of [54, 906]) {
-      fillRect(g, vp, lx - 7, CO.groundY - 14, 14, 14, new Color(24, 34, 61, 255));
-      fillCircle(g, vp, lx, CO.groundY - 25, 4.2, new Color(18, 25, 46, 255));
-      fillRect(g, vp, lx - 4, CO.groundY - 20, 8, 10, new Color(21, 32, 56, 255));
-      fillRect(g, vp, lx - 1, CO.groundY - 19, 2, 5, new Color(220, 38, 38, 255));
+      fillRect(g, vp, lx - 7, CO.groundY - 14, 14, 14, colRgba(24, 34, 61, 1));
+      fillCircle(g, vp, lx, CO.groundY - 25, 4.2, colRgba(18, 25, 46, 1));
+      fillRect(g, vp, lx - 4, CO.groundY - 20, 8, 10, colRgba(21, 32, 56, 1));
+      fillRect(g, vp, lx - 1, CO.groundY - 19, 2, 5, colRgba(220, 38, 38, 1));
     }
 
     // A-Board 广告挡板
@@ -1121,13 +1159,13 @@ export class CourtRenderer {
       TOTAL_W,
       38,
       [
-        { stop: 0, color: new Color(28, 38, 74, 255) },
-        { stop: 0.2, color: new Color(19, 26, 52, 255) },
-        { stop: 1, color: new Color(13, 19, 38, 255) },
+        { stop: 0, color: colRgba(28, 38, 74, 1) },
+        { stop: 0.2, color: colRgba(19, 26, 52, 1) },
+        { stop: 1, color: colRgba(13, 19, 38, 1) },
       ],
       4
     );
-    fillRect(g, vp, -EXT_W, 431, TOTAL_W, 2, new Color(61, 78, 128, 255));
+    fillRect(g, vp, -EXT_W, 431, TOTAL_W, 2, colRgba(61, 78, 128, 1));
     fillRect(g, vp, -EXT_W, 433, TOTAL_W, 1, colRgba(255, 255, 255, 0.12));
     fillRect(g, vp, -EXT_W, 467, TOTAL_W, 3, colRgba(0, 0, 0, 0.55));
 
@@ -1140,10 +1178,10 @@ export class CourtRenderer {
 
     // 6. 悬挂排灯灯具外形
     for (const lamp of LAMPS) {
-      fillRect(g, vp, lamp - 22, 10, 2, 22, new Color(32, 42, 72, 255));
-      fillRect(g, vp, lamp + 20, 10, 2, 22, new Color(32, 42, 72, 255));
+      fillRect(g, vp, lamp - 22, 10, 2, 22, colRgba(32, 42, 72, 1));
+      fillRect(g, vp, lamp + 20, 10, 2, 22, colRgba(32, 42, 72, 1));
 
-      g.fillColor = new Color(30, 39, 68, 255);
+      g.fillColor = colRgba(30, 39, 68, 1);
       g.moveTo(vp.x(lamp - 34), vp.y(30));
       g.lineTo(vp.x(lamp + 34), vp.y(30));
       g.lineTo(vp.x(lamp + 40), vp.y(42));
@@ -1151,9 +1189,9 @@ export class CourtRenderer {
       g.close();
       g.fill();
 
-      fillRect(g, vp, lamp - 34, 31, 68, 2, new Color(65, 80, 125, 255));
-      fillRect(g, vp, lamp - 36, 41, 72, 4, new Color(255, 249, 230, 255));
-      fillRect(g, vp, lamp - 30, 42, 60, 2, new Color(255, 255, 255, 255));
+      fillRect(g, vp, lamp - 34, 31, 68, 2, colRgba(65, 80, 125, 1));
+      fillRect(g, vp, lamp - 36, 41, 72, 4, colRgba(255, 249, 230, 1));
+      fillRect(g, vp, lamp - 30, 42, 60, 2, colRgba(255, 255, 255, 1));
     }
 
     // 8. 【核心·实木地板延伸】：延伸至 BOTTOM_WY (720)，厚度 250px
@@ -1166,10 +1204,10 @@ export class CourtRenderer {
       TOTAL_W,
       BOTTOM_WY - CO.groundY,
       [
-        { stop: 0, color: new Color(200, 112, 58, 255) },
-        { stop: 0.25, color: new Color(171, 91, 40, 255) },
-        { stop: 0.6, color: new Color(110, 53, 20, 255) },
-        { stop: 1, color: new Color(55, 24, 8, 255) },
+        { stop: 0, color: colRgba(200, 112, 58, 1) },
+        { stop: 0.25, color: colRgba(171, 91, 40, 1) },
+        { stop: 0.6, color: colRgba(110, 53, 20, 1) },
+        { stop: 1, color: colRgba(55, 24, 8, 1) },
       ],
       12
     );
@@ -1193,9 +1231,9 @@ export class CourtRenderer {
       matW,
       matH,
       [
-        { stop: 0, color: new Color(25, 84, 62, 255) },
-        { stop: 0.45, color: new Color(20, 69, 51, 255) },
-        { stop: 1, color: new Color(13, 49, 36, 255) },
+        { stop: 0, color: colRgba(25, 84, 62, 1) },
+        { stop: 0.45, color: colRgba(20, 69, 51, 1) },
+        { stop: 1, color: colRgba(13, 49, 36, 1) },
       ],
       6
     );
@@ -1211,9 +1249,9 @@ export class CourtRenderer {
     fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, colRgba(255, 238, 195, 0.55));
 
     // 【专属延展细节】：底部近景场边哑光防滑包边收边条 (wy: 680~720)
-    fillRect(g, vp, -EXT_W, 680, TOTAL_W, 40, new Color(24, 18, 14, 255));
+    fillRect(g, vp, -EXT_W, 680, TOTAL_W, 40, colRgba(24, 18, 14, 1));
     fillRect(g, vp, -EXT_W, 680, TOTAL_W, 2, colRgba(255, 255, 255, 0.12));
-    fillRect(g, vp, -EXT_W, 683, TOTAL_W, 3, new Color(234, 179, 8, 200)); // 专业防滑警戒黄线
+    fillRect(g, vp, -EXT_W, 683, TOTAL_W, 3, colRgba(234, 179, 8, 200/255)); // 专业防滑警戒黄线
 
     // 9. 标线
     this.drawLines(g, vp, colRgba(255, 248, 235, 0.92), colRgba(255, 248, 235, 0.55));
@@ -1371,12 +1409,12 @@ export class CourtRenderer {
       const cy = CO.groundY + 20;
       const headBob = Math.sin(time * 0.015 + side * 2) * 2;
       // 身体
-      fillEllipse(g, vp, cx, cy + 8, 10, 14, new Color(20, 25, 40, 220));
+      fillEllipse(g, vp, cx, cy + 8, 10, 14, colRgba(20, 25, 40, 220/255));
       // 头部
-      fillCircle(g, vp, cx + headBob, cy - 8, 7, new Color(20, 25, 40, 220));
+      fillCircle(g, vp, cx + headBob, cy - 8, 7, colRgba(20, 25, 40, 220/255));
       // 水壶
-      fillRect(g, vp, cx + side * 14, cy + 10, 5, 8, new Color(60, 130, 200, 180));
-      fillRect(g, vp, cx + side * 14.5, cy + 7, 4, 3, new Color(60, 130, 200, 180));
+      fillRect(g, vp, cx + side * 14, cy + 10, 5, 8, colRgba(60, 130, 200, 180/255));
+      fillRect(g, vp, cx + side * 14.5, cy + 7, 4, 3, colRgba(60, 130, 200, 180/255));
     }
   }
 
@@ -1393,10 +1431,10 @@ export class CourtRenderer {
       TOTAL_W,
       270,
       [
-        { stop: 0, color: new Color(37, 99, 235, 255) },
-        { stop: 0.35, color: new Color(56, 189, 248, 255) },
-        { stop: 0.8, color: new Color(125, 211, 252, 255) },
-        { stop: 1, color: new Color(186, 230, 253, 255) },
+        { stop: 0, color: colRgba(37, 99, 235, 1) },
+        { stop: 0.35, color: colRgba(56, 189, 248, 1) },
+        { stop: 0.8, color: colRgba(125, 211, 252, 1) },
+        { stop: 1, color: colRgba(186, 230, 253, 1) },
       ],
       10
     );
@@ -1415,10 +1453,10 @@ export class CourtRenderer {
       TOTAL_W,
       CO.groundY - 250,
       [
-        { stop: 0, color: new Color(2, 132, 199, 255) },
-        { stop: 0.4, color: new Color(3, 105, 161, 255) },
-        { stop: 0.85, color: new Color(7, 89, 133, 255) },
-        { stop: 1, color: new Color(12, 74, 110, 255) },
+        { stop: 0, color: colRgba(2, 132, 199, 1) },
+        { stop: 0.4, color: colRgba(3, 105, 161, 1) },
+        { stop: 0.85, color: colRgba(7, 89, 133, 1) },
+        { stop: 1, color: colRgba(12, 74, 110, 1) },
       ],
       8
     );
@@ -1426,30 +1464,30 @@ export class CourtRenderer {
     // (焦散光斑/帆船/跃鱼/浪线/太阳/云/海鸥 → 动态层 drawBeachDyn)
 
     // 6. 左侧热带椰子树剪影 (带微风叶片摆动)
-    g.strokeColor = new Color(69, 36, 16, 255);
+    g.strokeColor = colRgba(69, 36, 16, 1);
     g.lineWidth = 14;
     g.moveTo(vp.x(35), vp.y(CO.groundY));
     g.quadraticCurveTo(vp.x(80), vp.y(240), vp.x(110), vp.y(120));
     g.stroke();
 
     // 树冠椰子
-    fillCircle(g, vp, 106, 126, 5, new Color(56, 26, 6, 255));
-    fillCircle(g, vp, 114, 128, 4.5, new Color(56, 26, 6, 255));
-    fillCircle(g, vp, 110, 134, 4.5, new Color(56, 26, 6, 255));
+    fillCircle(g, vp, 106, 126, 5, colRgba(56, 26, 6, 1));
+    fillCircle(g, vp, 114, 128, 4.5, colRgba(56, 26, 6, 1));
+    fillCircle(g, vp, 110, 134, 4.5, colRgba(56, 26, 6, 1));
 
     // 柔韧风动椰树叶簇 → 动态层 drawBeachDyn
 
     // 7. 右侧木质遮阳伞与躺椅
-    fillRect(g, vp, 880, 310, 6, 160, new Color(120, 53, 15, 255));
+    fillRect(g, vp, 880, 310, 6, 160, colRgba(120, 53, 15, 1));
     // 红白相间伞盖
-    g.fillColor = new Color(239, 68, 68, 255);
+    g.fillColor = colRgba(239, 68, 68, 1);
     g.moveTo(vp.x(810), vp.y(335));
     g.lineTo(vp.x(950), vp.y(335));
     g.lineTo(vp.x(883), vp.y(290));
     g.close();
     g.fill();
 
-    g.fillColor = new Color(255, 255, 255, 255);
+    g.fillColor = colRgba(255, 255, 255, 1);
     for (let sx = 825; sx <= 935; sx += 30) {
       g.moveTo(vp.x(sx), vp.y(335));
       g.lineTo(vp.x(sx + 15), vp.y(335));
@@ -1458,7 +1496,7 @@ export class CourtRenderer {
       g.fill();
     }
     // 躺椅
-    g.strokeColor = new Color(180, 83, 9, 255);
+    g.strokeColor = colRgba(180, 83, 9, 1);
     g.lineWidth = 3.5;
     g.moveTo(vp.x(820), vp.y(440));
     g.lineTo(vp.x(855), vp.y(460));
@@ -1474,11 +1512,11 @@ export class CourtRenderer {
       TOTAL_W,
       BOTTOM_WY - CO.groundY,
       [
-        { stop: 0, color: new Color(253, 230, 138, 255) },
-        { stop: 0.25, color: new Color(252, 211, 77, 255) },
-        { stop: 0.6, color: new Color(245, 158, 11, 255) },
-        { stop: 0.85, color: new Color(217, 119, 6, 255) },
-        { stop: 1, color: new Color(154, 76, 10, 255) }, // 近景略暗干沙
+        { stop: 0, color: colRgba(253, 230, 138, 1) },
+        { stop: 0.25, color: colRgba(252, 211, 77, 1) },
+        { stop: 0.6, color: colRgba(245, 158, 11, 1) },
+        { stop: 0.85, color: colRgba(217, 119, 6, 1) },
+        { stop: 1, color: colRgba(154, 76, 10, 1) }, // 近景略暗干沙
       ],
       12
     );
@@ -1498,7 +1536,7 @@ export class CourtRenderer {
     // 10. 海风风丝 → 动态层 drawBeachDyn
 
     // 9. 沙滩防滑编织织带标线
-    this.drawLines(g, vp, new Color(2, 132, 199, 255), colRgba(2, 132, 199, 0.65));
+    this.drawLines(g, vp, colRgba(2, 132, 199, 1), colRgba(2, 132, 199, 0.65));
   }
 
   /** 动态层:焦散/帆船/跃鱼/浪线/太阳/云/海鸥/椰树叶簇/沙地闪光/潮汐湿痕/海风风丝 —— 每渲染帧 */
@@ -1519,7 +1557,7 @@ export class CourtRenderer {
       if (boat.x < -EXT_W) boat.x = W + 40;
       const by = boat.y + Math.sin(time * 0.05 + boat.bobPh) * 1.6;
 
-      fillRect(g, vp, boat.x - 7, by, 14, 3, new Color(30, 58, 95, 255));
+      fillRect(g, vp, boat.x - 7, by, 14, 3, colRgba(30, 58, 95, 1));
       g.fillColor = colRgba(255, 255, 255, 0.90);
       g.moveTo(vp.x(boat.x - 2), vp.y(by - 1));
       g.lineTo(vp.x(boat.x - 2), vp.y(by - 12));
@@ -1618,7 +1656,7 @@ export class CourtRenderer {
 
     // 柔韧风动椰树叶簇
     const fronds = [-0.9, -0.5, -0.1, 0.3, 0.7, 1.1, 1.5];
-    g.strokeColor = new Color(22, 101, 52, 255);
+    g.strokeColor = colRgba(22, 101, 52, 1);
     g.lineWidth = 4;
     for (const a of fronds) {
       const sway = Math.sin(time * 0.032 + a * 2.0) * 0.07;
@@ -1683,10 +1721,10 @@ export class CourtRenderer {
       TOTAL_W,
       CO.groundY,
       [
-        { stop: 0, color: new Color(8, 4, 20, 255) },
-        { stop: 0.4, color: new Color(19, 9, 38, 255) },
-        { stop: 0.8, color: new Color(26, 11, 54, 255) },
-        { stop: 1, color: new Color(38, 14, 69, 255) },
+        { stop: 0, color: colRgba(8, 4, 20, 1) },
+        { stop: 0.4, color: colRgba(19, 9, 38, 1) },
+        { stop: 0.8, color: colRgba(26, 11, 54, 1) },
+        { stop: 1, color: colRgba(38, 14, 69, 1) },
       ],
       12
     );
@@ -1717,7 +1755,7 @@ export class CourtRenderer {
       if (b.antenna) {
         const ax = b.x + b.antenna.offX;
         const ay = topY - b.antenna.h;
-        fillRect(g, vp, ax, ay, 1.5, b.antenna.h, new Color(71, 85, 105, 255));
+        fillRect(g, vp, ax, ay, 1.5, b.antenna.h, colRgba(71, 85, 105, 1));
       }
 
       // 点阵发光窗格
@@ -1735,16 +1773,16 @@ export class CourtRenderer {
 
     // 4. 赛博全息 HUD 标语屏
     fillRect(g, vp, -EXT_W, 72, TOTAL_W, 32, colRgba(10, 4, 25, 0.85));
-    fillRect(g, vp, -EXT_W, 72, TOTAL_W, 2, new Color(255, 0, 127, 255));
-    fillRect(g, vp, -EXT_W, 102, TOTAL_W, 2, new Color(0, 240, 255, 255));
+    fillRect(g, vp, -EXT_W, 72, TOTAL_W, 2, colRgba(255, 0, 127, 1));
+    fillRect(g, vp, -EXT_W, 102, TOTAL_W, 2, colRgba(0, 240, 255, 1));
 
     // (滚动科技色块/全息旋转广告 → 动态层 drawCyberDyn)
 
     // 5. 顶棚激光发射器(双色霓虹光幕 → 动态层 drawCyberDyn)
     for (const lamp of LAMPS) {
       const isPink = lamp === 480;
-      fillRect(g, vp, lamp - 24, 0, 48, 18, new Color(26, 11, 54, 255));
-      fillRect(g, vp, lamp - 20, 14, 40, 4, isPink ? new Color(255, 0, 127, 255) : new Color(0, 240, 255, 255));
+      fillRect(g, vp, lamp - 24, 0, 48, 18, colRgba(26, 11, 54, 1));
+      fillRect(g, vp, lamp - 20, 14, 40, 4, isPink ? colRgba(255, 0, 127, 1) : colRgba(0, 240, 255, 1));
     }
 
     // 向上反重力漂浮数码粒子 → 动态层 drawCyberDyn
@@ -1758,10 +1796,10 @@ export class CourtRenderer {
       TOTAL_W,
       BOTTOM_WY - CO.groundY,
       [
-        { stop: 0, color: new Color(16, 9, 34, 255) },
-        { stop: 0.35, color: new Color(24, 13, 50, 255) },
-        { stop: 0.7, color: new Color(33, 15, 68, 255) },
-        { stop: 1, color: new Color(12, 6, 26, 255) },
+        { stop: 0, color: colRgba(16, 9, 34, 1) },
+        { stop: 0.35, color: colRgba(24, 13, 50, 1) },
+        { stop: 0.7, color: colRgba(33, 15, 68, 1) },
+        { stop: 1, color: colRgba(12, 6, 26, 1) },
       ],
       10
     );
@@ -1783,12 +1821,12 @@ export class CourtRenderer {
     // (大楼霓虹倒影/导光缆脉冲数据流 → 动态层 drawCyberDyn)
 
     // 地面发光边线与霓虹光斑(边线在静态层;光斑 → 动态层 drawCyberDyn)
-    fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, new Color(0, 240, 255, 255));
+    fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, colRgba(0, 240, 255, 1));
 
     // (地面霓虹光斑/飞行器/霓虹雨丝 → 动态层 drawCyberDyn)
 
     // 7. 发光双色场地标线
-    this.drawLines(g, vp, new Color(0, 240, 255, 255), colRgba(255, 0, 127, 0.85));
+    this.drawLines(g, vp, colRgba(0, 240, 255, 1), colRgba(255, 0, 127, 0.85));
   }
 
   /** 动态层:警示红灯/窗户闪烁/滚动色块/全息广告/霓虹光幕/数码粒子/倒影/导光缆/光斑/飞行器/雨丝 —— 每渲染帧 */
@@ -1797,20 +1835,20 @@ export class CourtRenderer {
     for (const b of this.cyberBuildings) {
       if (!b.antenna) continue;
       const ay = CO.groundY - b.h - b.antenna.h;
-      const blink = Math.sin(time * 0.07 + b.antenna.beaconPh);
+      const blink = sinFast(time * 0.07 + b.antenna.beaconPh);
       if (blink > 0.2) {
-        fillCircle(g, vp, b.x + b.antenna.offX + 0.75, ay, 2.2, new Color(239, 68, 68, 255));
+        fillCircle(g, vp, b.x + b.antenna.offX + 0.75, ay, 2.2, colRgba(239, 68, 68, 1));
       }
     }
 
-    // 楼宇窗户随机闪烁 — 个别窗户随机亮灭
+    // 楼宇窗户随机闪烁 — 个别窗户随机亮灭(sin 查表:704 次/帧的热点)
     for (let bi = 0; bi < this.cyberBuildings.length; bi++) {
       const b = this.cyberBuildings[bi];
       const topY = CO.groundY - b.h;
       for (let r = 0; r < 8; r++) {
         for (let col = 0; col < 2; col++) {
           const winIdx = bi * 16 + r * 2 + col;
-          const flk = Math.sin(time * 0.03 + winIdx * 2.7);
+          const flk = sinFast(time * 0.03 + winIdx * 2.7);
           if (flk > 0.85) {
             const fa = (flk - 0.85) / 0.15 * 0.6;
             const wCol = col % 2 ? colRgba(0, 240, 255, fa) : colRgba(255, 0, 127, fa);
@@ -1893,7 +1931,7 @@ export class CourtRenderer {
 
       const pulseT = (time * 1.6) % (tr.x2 - tr.x1);
       const pxX = tr.x1 + pulseT;
-      const pCol = tr.hue === 190 ? new Color(0, 240, 255, 255) : new Color(255, 0, 127, 255);
+      const pCol = tr.hue === 190 ? colRgba(0, 240, 255, 1) : colRgba(255, 0, 127, 1);
       fillRect(g, vp, pxX - 6, tr.y - 1.5, 12, 3, pCol);
     }
 
@@ -1979,10 +2017,10 @@ export class CourtRenderer {
       TOTAL_W,
       CO.groundY,
       [
-        { stop: 0, color: new Color(22, 32, 36, 255) },
-        { stop: 0.4, color: new Color(33, 47, 52, 255) },
-        { stop: 0.75, color: new Color(43, 61, 66, 255) },
-        { stop: 1, color: new Color(54, 75, 79, 255) },
+        { stop: 0, color: colRgba(22, 32, 36, 1) },
+        { stop: 0.4, color: colRgba(33, 47, 52, 1) },
+        { stop: 0.75, color: colRgba(43, 61, 66, 1) },
+        { stop: 1, color: colRgba(54, 75, 79, 1) },
       ],
       10
     );
@@ -2008,16 +2046,16 @@ export class CourtRenderer {
     );
 
     // 2. 日式木构挑檐椽条与斗拱 (屋檐梁顶)
-    fillRect(g, vp, -EXT_W, 0, TOTAL_W, 22, new Color(28, 20, 14, 255));
-    fillRect(g, vp, -EXT_W, 22, TOTAL_W, 6, new Color(54, 34, 21, 255));
+    fillRect(g, vp, -EXT_W, 0, TOTAL_W, 22, colRgba(28, 20, 14, 1));
+    fillRect(g, vp, -EXT_W, 22, TOTAL_W, 6, colRgba(54, 34, 21, 1));
     for (let x = -EXT_W + 12; x < TOTAL_W; x += 32) {
-      fillRect(g, vp, x, 24, 14, 26, new Color(38, 23, 13, 255));
-      fillRect(g, vp, x + 2, 48, 10, 4, new Color(82, 50, 28, 255));
+      fillRect(g, vp, x, 24, 14, 26, colRgba(38, 23, 13, 1));
+      fillRect(g, vp, x + 2, 48, 10, 4, colRgba(82, 50, 28, 1));
     }
 
     // 3. 青翠修竹竹林剪影与竹节高光
     for (const b of this.dojoBamboos) {
-      const col = b.colorTone > 0.5 ? new Color(25, 51, 38, 255) : new Color(36, 68, 52, 255);
+      const col = b.colorTone > 0.5 ? colRgba(25, 51, 38, 1) : colRgba(36, 68, 52, 1);
       g.fillColor = col;
       g.moveTo(vp.x(b.x - b.w / 2), vp.y(45));
       g.lineTo(vp.x(b.x + b.w / 2), vp.y(45));
@@ -2027,7 +2065,7 @@ export class CourtRenderer {
       g.fill();
 
       for (const jy of b.joints) {
-        fillRect(g, vp, b.x - b.w / 2 - 2, jy, b.w + 4, 3, new Color(66, 107, 84, 255));
+        fillRect(g, vp, b.x - b.w / 2 - 2, jy, b.w + 4, 3, colRgba(66, 107, 84, 1));
       }
     }
 
@@ -2047,8 +2085,8 @@ export class CourtRenderer {
       g.fill();
     }
 
-    fillRect(g, vp, -EXT_W, 280, TOTAL_W, 4, new Color(56, 35, 21, 255));
-    fillRect(g, vp, -EXT_W, 426, TOTAL_W, 4, new Color(38, 23, 13, 255));
+    fillRect(g, vp, -EXT_W, 280, TOTAL_W, 4, colRgba(56, 35, 21, 1));
+    fillRect(g, vp, -EXT_W, 426, TOTAL_W, 4, colRgba(38, 23, 13, 1));
     g.strokeColor = colRgba(56, 35, 21, 0.65);
     g.lineWidth = 2;
     for (let x = -EXT_W; x < TOTAL_W; x += 40) {
@@ -2076,23 +2114,23 @@ export class CourtRenderer {
       TOTAL_W,
       620 - CO.groundY,
       [
-        { stop: 0, color: new Color(132, 150, 109, 255) },
-        { stop: 0.4, color: new Color(113, 131, 91, 255) },
-        { stop: 1, color: new Color(82, 99, 62, 255) },
+        { stop: 0, color: colRgba(132, 150, 109, 1) },
+        { stop: 0.4, color: colRgba(113, 131, 91, 1) },
+        { stop: 1, color: colRgba(82, 99, 62, 1) },
       ],
       8
     );
 
     // 榻榻米黑布包边拼接格
-    g.strokeColor = new Color(56, 35, 21, 255);
+    g.strokeColor = colRgba(56, 35, 21, 1);
     g.lineWidth = 3;
     for (let tx = -EXT_W; tx < TOTAL_W; tx += 96) {
-      strokeRect(g, vp, tx, CO.groundY, 96, 620 - CO.groundY, new Color(56, 35, 21, 255), 2.5);
+      strokeRect(g, vp, tx, CO.groundY, 96, 620 - CO.groundY, colRgba(56, 35, 21, 1), 2.5);
     }
     fillRect(g, vp, -EXT_W, CO.groundY, TOTAL_W, 2, colRgba(254, 240, 138, 0.45));
 
     // 【专属延展细节】：底部深褐色和风实木回廊缘侧 (Engawa / 縁側, wy: 620~720)
-    fillRect(g, vp, -EXT_W, 620, TOTAL_W, 6, new Color(24, 14, 8, 255)); // 黑漆包边收边木条
+    fillRect(g, vp, -EXT_W, 620, TOTAL_W, 6, colRgba(24, 14, 8, 1)); // 黑漆包边收边木条
     fillVerticalGradient(
       g,
       vp,
@@ -2101,20 +2139,20 @@ export class CourtRenderer {
       TOTAL_W,
       94,
       [
-        { stop: 0, color: new Color(42, 21, 12, 255) },
-        { stop: 0.5, color: new Color(32, 15, 8, 255) },
-        { stop: 1, color: new Color(18, 8, 4, 255) },
+        { stop: 0, color: colRgba(42, 21, 12, 1) },
+        { stop: 0.5, color: colRgba(32, 15, 8, 1) },
+        { stop: 1, color: colRgba(18, 8, 4, 1) },
       ],
       5
     );
 
     // 实木横向长地板分缝与铜钉
     for (let py = 648; py < 720; py += 22) {
-      fillRect(g, vp, -EXT_W, py, TOTAL_W, 2, new Color(14, 6, 2, 255));
+      fillRect(g, vp, -EXT_W, py, TOTAL_W, 2, colRgba(14, 6, 2, 1));
       fillRect(g, vp, -EXT_W, py + 2, TOTAL_W, 1, colRgba(255, 255, 255, 0.08));
     }
     for (let px = -EXT_W + 40; px < TOTAL_W; px += 80) {
-      fillCircle(g, vp, px, 638, 1.8, new Color(217, 119, 6, 200)); // 金铜固定泡钉
+      fillCircle(g, vp, px, 638, 1.8, colRgba(217, 119, 6, 200/255)); // 金铜固定泡钉
     }
 
     // 缘侧踏石 — 深灰绿椭圆踏石带湿润光泽
@@ -2128,7 +2166,7 @@ export class CourtRenderer {
     // 萤火虫 → 动态层 drawDojoDyn
 
     // 8. 暗朱红场地标线
-    this.drawLines(g, vp, new Color(220, 38, 38, 255), colRgba(220, 38, 38, 0.65));
+    this.drawLines(g, vp, colRgba(220, 38, 38, 1), colRgba(220, 38, 38, 0.65));
   }
 
   /** 动态层:竹叶簇/灯笼/樱花瓣/线香烟雾/萤火虫 —— 每渲染帧 */
@@ -2143,7 +2181,7 @@ export class CourtRenderer {
           const leafAngle = (li - 1) * 0.4 + gust * 0.3;
           const lx = topX + Math.sin(leafAngle) * 12 + this.windX * 0.8;
           const ly = 42 + li * 5;
-          fillEllipse(g, vp, lx, ly, 8, 2, new Color(45, 85, 60, 200));
+          fillEllipse(g, vp, lx, ly, 8, 2, colRgba(45, 85, 60, 200/255));
         }
       }
       bambooIdx++;
@@ -2151,7 +2189,7 @@ export class CourtRenderer {
 
     // 5. 暖色和纸折叠灯笼 (Lanterns，带烛火明灭呼吸)
     for (const l of this.dojoLanterns) {
-      fillRect(g, vp, l.x - 1, 45, 2, l.y - 45 - l.r, new Color(69, 40, 21, 255));
+      fillRect(g, vp, l.x - 1, 45, 2, l.y - 45 - l.r, colRgba(69, 40, 21, 1));
       const candleFlicker = Math.sin(time * 0.11 + l.x) * 2;
       const glowR = (l.r * 2.2 + candleFlicker) * (1.0 + glow * 0.15);
 
@@ -2168,9 +2206,9 @@ export class CourtRenderer {
       );
 
       // 灯笼实体
-      fillEllipse(g, vp, l.x, l.y, l.r, l.r * 1.25, new Color(234, 88, 12, 255));
-      fillRect(g, vp, l.x - l.r * 0.7, l.y - l.r * 1.25, l.r * 1.4, 4, new Color(38, 23, 13, 255));
-      fillRect(g, vp, l.x - l.r * 0.7, l.y + l.r * 1.25 - 4, l.r * 1.4, 4, new Color(38, 23, 13, 255));
+      fillEllipse(g, vp, l.x, l.y, l.r, l.r * 1.25, colRgba(234, 88, 12, 1));
+      fillRect(g, vp, l.x - l.r * 0.7, l.y - l.r * 1.25, l.r * 1.4, 4, colRgba(38, 23, 13, 1));
+      fillRect(g, vp, l.x - l.r * 0.7, l.y + l.r * 1.25 - 4, l.r * 1.4, 4, colRgba(38, 23, 13, 1));
     }
 
     // 6. 随风漂浮盘旋的淡粉樱花瓣与竹叶
@@ -2190,10 +2228,10 @@ export class CourtRenderer {
     // 线香烟雾 — 纤细 sin 曲线烟雾从香炉升起
     for (const inc of this.dojoIncenses) {
       // 香炉底座
-      fillEllipse(g, vp, inc.baseX, inc.baseY + 2, 8, 4, new Color(60, 50, 40, 255));
-      fillRect(g, vp, inc.baseX - 6, inc.baseY - 4, 12, 6, new Color(80, 65, 50, 255));
+      fillEllipse(g, vp, inc.baseX, inc.baseY + 2, 8, 4, colRgba(60, 50, 40, 1));
+      fillRect(g, vp, inc.baseX - 6, inc.baseY - 4, 12, 6, colRgba(80, 65, 50, 1));
       // 香棍
-      fillRect(g, vp, inc.baseX - 0.5, inc.baseY - 18, 1, 16, new Color(160, 130, 80, 255));
+      fillRect(g, vp, inc.baseX - 0.5, inc.baseY - 18, 1, 16, colRgba(160, 130, 80, 1));
       // 烟雾曲线
       for (const seg of inc.segments) {
         const sx = inc.baseX + seg.dx + Math.sin(time * 0.012 + seg.phase) * (6 + seg.dy * 0.1);
@@ -2277,50 +2315,50 @@ export class CourtRenderer {
       g.stroke();
 
       // 拉线上的木质紧线滑块
-      fillRect(g, vp, x - 20, gy - 16, 4, 3, new Color(160, 100, 45, 255));
-      fillRect(g, vp, x + 16, gy - 16, 4, 3, new Color(160, 100, 45, 255));
+      fillRect(g, vp, x - 20, gy - 16, 4, 3, colRgba(160, 100, 45, 1));
+      fillRect(g, vp, x + 16, gy - 16, 4, 3, colRgba(160, 100, 45, 1));
 
       // 地面地锚木桩
-      fillRect(g, vp, x - 40, gy - 4, 5, 7, new Color(92, 43, 9, 255));
-      fillRect(g, vp, x + 35, gy - 4, 5, 7, new Color(92, 43, 9, 255));
+      fillRect(g, vp, x - 40, gy - 4, 5, 7, colRgba(92, 43, 9, 1));
+      fillRect(g, vp, x + 35, gy - 4, 5, 7, colRgba(92, 43, 9, 1));
 
       // 原木十字底桩
-      fillRect(g, vp, x - 14, gy - 2, 28, 5, new Color(110, 55, 18, 255));
+      fillRect(g, vp, x - 14, gy - 2, 28, 5, colRgba(110, 55, 18, 1));
       // 左右配重沙袋
-      fillEllipse(g, vp, x - 8, gy - 1, 7, 4, new Color(220, 192, 140, 255));
-      fillEllipse(g, vp, x + 8, gy - 1, 7, 4, new Color(212, 184, 132, 255));
+      fillEllipse(g, vp, x - 8, gy - 1, 7, 4, colRgba(220, 192, 140, 1));
+      fillEllipse(g, vp, x + 8, gy - 1, 7, 4, colRgba(212, 184, 132, 1));
       // 沙袋十字捆扎封口线
       drawLine(g, vp, x - 12, gy - 1, x - 4, gy - 1, colRgba(120, 70, 25, 0.6), 1);
       drawLine(g, vp, x + 4, gy - 1, x + 12, gy - 1, colRgba(120, 70, 25, 0.6), 1);
     } else if (this.currentTheme === "cyber") {
       // 赛博专属: 磁吸合金八角底座与呼吸能量指示灯
-      fillRect(g, vp, x - 14, gy - 2, 28, 5, new Color(16, 10, 32, 255));
-      strokeRect(g, vp, x - 14, gy - 2, 28, 5, new Color(0, 240, 255, 180), 1);
-      fillRect(g, vp, x - 10, gy - 4, 20, 2, new Color(30, 18, 55, 255));
+      fillRect(g, vp, x - 14, gy - 2, 28, 5, colRgba(16, 10, 32, 1));
+      strokeRect(g, vp, x - 14, gy - 2, 28, 5, colRgba(0, 240, 255, 180/255), 1);
+      fillRect(g, vp, x - 10, gy - 4, 20, 2, colRgba(30, 18, 55, 1));
 
       const breath = 0.5 + Math.sin(this.time * 0.08) * 0.5;
       fillCircle(g, vp, x, gy, 2, colRgba(0, 240, 255, 0.7 + breath * 0.3));
       fillConcentricGlow(g, vp, x, gy, 8, 4, colRgba(0, 240, 255, 0.35 * breath), colRgba(0, 0, 0, 0), 2);
     } else if (this.currentTheme === "dojo") {
       // 和风道场专属: 双层黑漆实木方台与金铜包角
-      fillRect(g, vp, x - 13, gy - 1, 26, 4, new Color(32, 18, 12, 255));
-      fillRect(g, vp, x - 9, gy - 4, 18, 3, new Color(48, 28, 18, 255));
+      fillRect(g, vp, x - 13, gy - 1, 26, 4, colRgba(32, 18, 12, 1));
+      fillRect(g, vp, x - 9, gy - 4, 18, 3, colRgba(48, 28, 18, 1));
       // 四角金铜包边
-      fillRect(g, vp, x - 13, gy - 1, 3, 4, new Color(217, 119, 6, 220));
-      fillRect(g, vp, x + 10, gy - 1, 3, 4, new Color(217, 119, 6, 220));
-      fillCircle(g, vp, x, gy - 2.5, 1.2, new Color(245, 180, 50, 255));
+      fillRect(g, vp, x - 13, gy - 1, 3, 4, colRgba(217, 119, 6, 220/255));
+      fillRect(g, vp, x + 10, gy - 1, 3, 4, colRgba(217, 119, 6, 220/255));
+      fillCircle(g, vp, x, gy - 2.5, 1.2, colRgba(245, 180, 50, 1));
     } else {
       // 专业球馆 (Arena): 铸铁 T 型防滑配重底座与安全警示反光条
-      fillRect(g, vp, x - 12, gy - 1, 24, 4, new Color(26, 32, 48, 255));
-      fillRect(g, vp, x - 9, gy - 3, 18, 2, new Color(38, 46, 68, 255));
+      fillRect(g, vp, x - 12, gy - 1, 24, 4, colRgba(26, 32, 48, 1));
+      fillRect(g, vp, x - 9, gy - 3, 18, 2, colRgba(38, 46, 68, 1));
       fillRect(g, vp, x - 9, gy - 3, 18, 1, colRgba(120, 140, 185, 0.45)); // 倒角高光
       // 警示黄色反光块
-      fillRect(g, vp, x - 7, gy, 14, 1.5, new Color(234, 179, 8, 220));
+      fillRect(g, vp, x - 7, gy, 14, 1.5, colRgba(234, 179, 8, 220/255));
       // 沉头固定螺栓
-      fillCircle(g, vp, x - 8, gy + 1, 0.9, new Color(90, 105, 135, 255));
-      fillCircle(g, vp, x + 8, gy + 1, 0.9, new Color(90, 105, 135, 255));
+      fillCircle(g, vp, x - 8, gy + 1, 0.9, colRgba(90, 105, 135, 1));
+      fillCircle(g, vp, x + 8, gy + 1, 0.9, colRgba(90, 105, 135, 1));
       // 柱脚锁紧法兰
-      fillRect(g, vp, x - 4, gy - 5, 8, 3, new Color(50, 60, 88, 255));
+      fillRect(g, vp, x - 4, gy - 5, 8, 3, colRgba(50, 60, 88, 1));
     }
 
     // --------------------------------------------------------
@@ -2329,23 +2367,23 @@ export class CourtRenderer {
     let meshMainCol = colRgba(195, 210, 245, 0.50);
     let meshAltCol = colRgba(160, 180, 230, 0.38);
     let sideTapeCol = colRgba(230, 235, 250, 0.65);
-    let bottomCordCol = new Color(55, 65, 95, 255);
+    let bottomCordCol = colRgba(55, 65, 95, 1);
 
     if (this.currentTheme === "beach") {
       meshMainCol = colRgba(255, 250, 235, 0.52);
       meshAltCol = colRgba(245, 230, 205, 0.40);
       sideTapeCol = colRgba(255, 255, 255, 0.65);
-      bottomCordCol = new Color(120, 60, 20, 255);
+      bottomCordCol = colRgba(120, 60, 20, 1);
     } else if (this.currentTheme === "cyber") {
       meshMainCol = colRgba(0, 240, 255, 0.48);
       meshAltCol = colRgba(255, 0, 127, 0.35);
       sideTapeCol = colRgba(0, 240, 255, 0.75);
-      bottomCordCol = new Color(0, 240, 255, 255);
+      bottomCordCol = colRgba(0, 240, 255, 1);
     } else if (this.currentTheme === "dojo") {
       meshMainCol = colRgba(220, 210, 190, 0.50);
       meshAltCol = colRgba(190, 175, 150, 0.38);
       sideTapeCol = colRgba(235, 225, 205, 0.65);
-      bottomCordCol = new Color(60, 35, 22, 255);
+      bottomCordCol = colRgba(60, 35, 22, 1);
     }
 
     // 网底张紧下索 (Bottom Tension Cord)
@@ -2405,7 +2443,7 @@ export class CourtRenderer {
 
       // 击球撞网等离子电弧与火花散落
       if (amp > 0.15) {
-        g.strokeColor = new Color(0, 240, 255, 255);
+        g.strokeColor = colRgba(0, 240, 255, 1);
         g.lineWidth = 1.3;
         const hitWave = getWave(this.netHitY);
         const hitX = x + poleDX * ((gy - this.netHitY) / netH) + hitWave;
@@ -2427,22 +2465,22 @@ export class CourtRenderer {
     // --------------------------------------------------------
     // 3. 立柱本体系统 (Upright Post with Cylindrical Shading)
     // --------------------------------------------------------
-    let postDark = new Color(20, 25, 42, 255);
-    let postLight = new Color(75, 88, 135, 255);
-    let postHighlight = new Color(135, 150, 195, 255);
+    let postDark = colRgba(20, 25, 42, 1);
+    let postLight = colRgba(75, 88, 135, 1);
+    let postHighlight = colRgba(135, 150, 195, 1);
 
     if (this.currentTheme === "beach") {
-      postDark = new Color(75, 38, 12, 255);
-      postLight = new Color(130, 68, 22, 255);
-      postHighlight = new Color(175, 105, 45, 255);
+      postDark = colRgba(75, 38, 12, 1);
+      postLight = colRgba(130, 68, 22, 1);
+      postHighlight = colRgba(175, 105, 45, 1);
     } else if (this.currentTheme === "cyber") {
-      postDark = new Color(8, 4, 18, 255);
-      postLight = new Color(28, 16, 52, 255);
-      postHighlight = new Color(0, 240, 255, 255);
+      postDark = colRgba(8, 4, 18, 1);
+      postLight = colRgba(28, 16, 52, 1);
+      postHighlight = colRgba(0, 240, 255, 1);
     } else if (this.currentTheme === "dojo") {
-      postDark = new Color(28, 16, 10, 255);
-      postLight = new Color(55, 33, 20, 255);
-      postHighlight = new Color(90, 58, 36, 255);
+      postDark = colRgba(28, 16, 10, 1);
+      postLight = colRgba(55, 33, 20, 1);
+      postHighlight = colRgba(90, 58, 36, 1);
     }
 
     // 立体管身：暗底主干 + 受光高光面 + 边缘阴影线
@@ -2456,31 +2494,31 @@ export class CourtRenderer {
       const winchY = top + 38;
       const winchDX = poleDX * ((gy - winchY) / netH);
       // 铸铜齿轮外盒
-      fillRect(g, vp, x + winchDX + 2, winchY - 3, 4, 7, new Color(180, 120, 25, 255));
-      fillRect(g, vp, x + winchDX + 2.5, winchY - 2.5, 3, 6, new Color(225, 160, 45, 255));
+      fillRect(g, vp, x + winchDX + 2, winchY - 3, 4, 7, colRgba(180, 120, 25, 1));
+      fillRect(g, vp, x + winchDX + 2.5, winchY - 2.5, 3, 6, colRgba(225, 160, 45, 1));
       // 摇臂曲柄 (Crank Arm)
-      drawLine(g, vp, x + winchDX + 6, winchY, x + winchDX + 9, winchY - 4, new Color(200, 210, 230, 255), 1.5);
+      drawLine(g, vp, x + winchDX + 6, winchY, x + winchDX + 9, winchY - 4, colRgba(200, 210, 230, 1), 1.5);
       // 黑色手柄头
-      fillCircle(g, vp, x + winchDX + 9, winchY - 4, 1.3, new Color(18, 22, 32, 255));
+      fillCircle(g, vp, x + winchDX + 9, winchY - 4, 1.3, colRgba(18, 22, 32, 1));
 
       // 柱身两道系网金属固定扣 (Tie Cleats)
       for (const cy of [top + 16, top + 62]) {
         const cdx = poleDX * ((gy - cy) / netH);
-        fillRect(g, vp, x + cdx - 2.5, cy - 1, 5, 2, new Color(90, 105, 140, 255));
+        fillRect(g, vp, x + cdx - 2.5, cy - 1, 5, 2, colRgba(90, 105, 140, 1));
       }
     } else if (this.currentTheme === "beach") {
       // 天然老竹节瘤 (Bamboo Joints)
       for (const jy of [top + 18, top + 38, top + 58]) {
         const jdx = poleDX * ((gy - jy) / netH);
-        fillRect(g, vp, x + jdx - 2.8, jy - 1.2, 5.6, 2.4, new Color(90, 48, 16, 255));
-        fillRect(g, vp, x + jdx - 2.8, jy - 1.2, 5.6, 1, new Color(175, 105, 45, 255));
+        fillRect(g, vp, x + jdx - 2.8, jy - 1.2, 5.6, 2.4, colRgba(90, 48, 16, 1));
+        fillRect(g, vp, x + jdx - 2.8, jy - 1.2, 5.6, 1, colRgba(175, 105, 45, 1));
       }
       // 柱身粗黄麻绳交叉捆扎 (Coir Rope Wrapping)
       const ropeY = top + 26;
       const rdx = poleDX * ((gy - ropeY) / netH);
-      fillRect(g, vp, x + rdx - 2.5, ropeY - 3, 5, 6, new Color(185, 135, 75, 255));
+      fillRect(g, vp, x + rdx - 2.5, ropeY - 3, 5, 6, colRgba(185, 135, 75, 1));
       for (let ry = ropeY - 2.5; ry <= ropeY + 2.5; ry += 1.8) {
-        drawLine(g, vp, x + rdx - 2.5, ry, x + rdx + 2.5, ry, new Color(125, 80, 35, 255), 1);
+        drawLine(g, vp, x + rdx - 2.5, ry, x + rdx + 2.5, ry, colRgba(125, 80, 35, 1), 1);
       }
     } else if (this.currentTheme === "cyber") {
       // 垂直发光能量导光管 (Neon Conduit)
@@ -2488,54 +2526,54 @@ export class CourtRenderer {
       const flowY = gy - flowT;
       const flowDX = poleDX * ((gy - flowY) / netH);
       drawLine(g, vp, tx - 0.2, top - 4, x - 0.2, gy - 2, colRgba(0, 240, 255, 0.4), 1.2);
-      fillCircle(g, vp, x + flowDX - 0.2, flowY, 1.8, new Color(255, 0, 127, 255));
+      fillCircle(g, vp, x + flowDX - 0.2, flowY, 1.8, colRgba(255, 0, 127, 1));
     } else if (this.currentTheme === "dojo") {
       // 传统日式黑铁抱箍与铆钉
       for (const hy of [top + 16, top + 42, top + 64]) {
         const hdx = poleDX * ((gy - hy) / netH);
-        fillRect(g, vp, x + hdx - 2.8, hy - 1.5, 5.6, 3, new Color(20, 12, 8, 255));
-        fillCircle(g, vp, x + hdx, hy, 1.0, new Color(217, 119, 6, 255));
+        fillRect(g, vp, x + hdx - 2.8, hy - 1.5, 5.6, 3, colRgba(20, 12, 8, 1));
+        fillCircle(g, vp, x + hdx, hy, 1.0, colRgba(217, 119, 6, 1));
       }
       // 日式传统水引红白绳结 (Mizuhiki Ribbon Knot)
       const knotY = top + 24;
       const kdx = poleDX * ((gy - knotY) / netH);
-      fillCircle(g, vp, x + kdx - 2, knotY, 1.8, new Color(220, 38, 38, 255));
-      fillCircle(g, vp, x + kdx + 2, knotY, 1.8, new Color(250, 245, 235, 255));
+      fillCircle(g, vp, x + kdx - 2, knotY, 1.8, colRgba(220, 38, 38, 1));
+      fillCircle(g, vp, x + kdx + 2, knotY, 1.8, colRgba(250, 245, 235, 1));
       // 垂落的红白流苏须
-      drawLine(g, vp, x + kdx - 1.5, knotY + 1.5, x + kdx - 3, knotY + 7, new Color(220, 38, 38, 255), 1.2);
-      drawLine(g, vp, x + kdx + 1.5, knotY + 1.5, x + kdx + 3, knotY + 7, new Color(250, 245, 235, 255), 1.2);
+      drawLine(g, vp, x + kdx - 1.5, knotY + 1.5, x + kdx - 3, knotY + 7, colRgba(220, 38, 38, 1), 1.2);
+      drawLine(g, vp, x + kdx + 1.5, knotY + 1.5, x + kdx + 3, knotY + 7, colRgba(250, 245, 235, 1), 1.2);
     }
 
     // --------------------------------------------------------
     // 4. 网顶白边加厚帆布带系统 (Top White Headband)
     // --------------------------------------------------------
-    let tapeBaseCol = new Color(248, 246, 240, 255);
-    let tapeLightCol = new Color(255, 255, 255, 255);
-    let tapeDarkCol = new Color(205, 200, 185, 255);
+    let tapeBaseCol = colRgba(248, 246, 240, 1);
+    let tapeLightCol = colRgba(255, 255, 255, 1);
+    let tapeDarkCol = colRgba(205, 200, 185, 1);
     let stitchCol = colRgba(135, 130, 115, 0.7);
 
     if (this.currentTheme === "beach") {
-      tapeBaseCol = new Color(239, 68, 68, 255);
-      tapeLightCol = new Color(252, 110, 110, 255);
-      tapeDarkCol = new Color(185, 40, 40, 255);
+      tapeBaseCol = colRgba(239, 68, 68, 1);
+      tapeLightCol = colRgba(252, 110, 110, 1);
+      tapeDarkCol = colRgba(185, 40, 40, 1);
       stitchCol = colRgba(255, 255, 255, 0.85);
     } else if (this.currentTheme === "cyber") {
-      tapeBaseCol = new Color(0, 240, 255, 255);
-      tapeLightCol = new Color(255, 255, 255, 255);
-      tapeDarkCol = new Color(255, 0, 127, 255);
+      tapeBaseCol = colRgba(0, 240, 255, 1);
+      tapeLightCol = colRgba(255, 255, 255, 1);
+      tapeDarkCol = colRgba(255, 0, 127, 1);
       stitchCol = colRgba(0, 240, 255, 0.95);
     } else if (this.currentTheme === "dojo") {
-      tapeBaseCol = new Color(210, 42, 42, 255);
-      tapeLightCol = new Color(235, 75, 75, 255);
-      tapeDarkCol = new Color(145, 24, 24, 255);
+      tapeBaseCol = colRgba(210, 42, 42, 1);
+      tapeLightCol = colRgba(235, 75, 75, 1);
+      tapeDarkCol = colRgba(145, 24, 24, 1);
       stitchCol = colRgba(255, 235, 175, 0.75);
     }
 
     // 外露钢缆 (Tension Cable) 与金属固定套管 (Ferrule)
     drawLine(g, vp, tx - 11, top, tx - 8, top, colRgba(210, 220, 235, 0.85), 1);
     drawLine(g, vp, tx + 8, top, tx + 11, top, colRgba(210, 220, 235, 0.85), 1);
-    fillRect(g, vp, tx - 9.5, top - 1.5, 2, 3, new Color(120, 130, 150, 255));
-    fillRect(g, vp, tx + 7.5, top - 1.5, 2, 3, new Color(120, 130, 150, 255));
+    fillRect(g, vp, tx - 9.5, top - 1.5, 2, 3, colRgba(120, 130, 150, 1));
+    fillRect(g, vp, tx + 7.5, top - 1.5, 2, 3, colRgba(120, 130, 150, 1));
 
     // 帆布带本体 (宽 16px，高 6px)
     fillRect(g, vp, tx - 8, top - 3, 16, 6, tapeBaseCol);
@@ -2546,7 +2584,7 @@ export class CourtRenderer {
 
     // 沙滩专属: 热情洋溢的红白相间斜条纹
     if (this.currentTheme === "beach") {
-      g.fillColor = new Color(255, 255, 255, 255);
+      g.fillColor = colRgba(255, 255, 255, 1);
       for (let bx = tx - 7; bx <= tx + 7; bx += 4) {
         g.moveTo(vp.x(bx), vp.y(top - 3));
         g.lineTo(vp.x(bx + 2.5), vp.y(top - 3));
@@ -2573,13 +2611,13 @@ export class CourtRenderer {
     // --------------------------------------------------------
     if (this.currentTheme === "beach") {
       // 原木倒角端盖
-      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, new Color(110, 55, 18, 255));
-      fillCircle(g, vp, tx, top - 6, 2.0, new Color(253, 224, 71, 255));
+      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, colRgba(110, 55, 18, 1));
+      fillCircle(g, vp, tx, top - 6, 2.0, colRgba(253, 224, 71, 1));
 
       // 随海风飘扬的黄色防风彩带 (Wind Streamer)
       // 使用二次贝塞尔曲线随着时间与风力自然飘荡
       const gust = Math.sin(this.time * 0.08) * 3 + this.windX * 0.8;
-      g.strokeColor = new Color(253, 224, 71, 230);
+      g.strokeColor = colRgba(253, 224, 71, 230/255);
       g.lineWidth = 1.8;
       g.moveTo(vp.x(tx), vp.y(top - 6));
       g.quadraticCurveTo(
@@ -2593,29 +2631,29 @@ export class CourtRenderer {
       // 悬浮等离子偏转晶体环 (Plasma Emitter Ring)
       const ringAlpha = 0.75 + Math.sin(this.time * 0.1) * 0.25;
       fillConcentricGlow(g, vp, tx, top - 6, 9, 5, colRgba(0, 240, 255, 0.5 * ringAlpha), colRgba(0, 0, 0, 0), 2);
-      strokeRect(g, vp, tx - 3, top - 8, 6, 4, new Color(0, 240, 255, 255), 1.2);
-      fillCircle(g, vp, tx, top - 6, 1.6, new Color(255, 0, 127, 255));
+      strokeRect(g, vp, tx - 3, top - 8, 6, 4, colRgba(0, 240, 255, 1), 1.2);
+      fillCircle(g, vp, tx, top - 6, 1.6, colRgba(255, 0, 127, 1));
     } else if (this.currentTheme === "dojo") {
       // 传统和风铜质「拟宝珠」(Giboshi)
       // 仰莲座底托
-      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, new Color(185, 115, 25, 255));
+      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, colRgba(185, 115, 25, 1));
       // 宝珠尖饰
-      g.fillColor = new Color(245, 185, 55, 255);
+      g.fillColor = colRgba(245, 185, 55, 1);
       g.moveTo(vp.x(tx - 2.5), vp.y(top - 7));
       g.lineTo(vp.x(tx + 2.5), vp.y(top - 7));
       g.lineTo(vp.x(tx), vp.y(top - 11));
       g.close();
       g.fill();
-      fillCircle(g, vp, tx, top - 8, 1.8, new Color(251, 191, 36, 255));
+      fillCircle(g, vp, tx, top - 8, 1.8, colRgba(251, 191, 36, 1));
     } else {
       // 专业馆 (Arena): 柱头金属端盖与黄铜导向滑轮 (Cable Pulley)
-      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, new Color(38, 46, 72, 255));
+      fillRect(g, vp, tx - 3.5, top - 7, 7, 2, colRgba(38, 46, 72, 1));
       fillRect(g, vp, tx - 3.5, top - 7, 7, 1, colRgba(135, 150, 195, 0.6)); // 倒角微亮
       // 黄铜导线滑轮轮盘
-      fillCircle(g, vp, tx + 2, top - 6.5, 2.2, new Color(225, 160, 45, 255));
-      fillCircle(g, vp, tx + 2, top - 6.5, 0.8, new Color(20, 25, 40, 255)); // 轴心螺栓
+      fillCircle(g, vp, tx + 2, top - 6.5, 2.2, colRgba(225, 160, 45, 1));
+      fillCircle(g, vp, tx + 2, top - 6.5, 0.8, colRgba(20, 25, 40, 1)); // 轴心螺栓
       // 柱头金属球帽
-      fillCircle(g, vp, tx - 1.5, top - 6.5, 1.8, new Color(255, 225, 77, 255));
+      fillCircle(g, vp, tx - 1.5, top - 6.5, 1.8, colRgba(255, 225, 77, 1));
     }
   }
 }
