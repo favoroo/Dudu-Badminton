@@ -50,6 +50,11 @@ export class HudOverlay {
   // 赛点旗标(拍数由 HUD 的连击大字负责,训练进度由 HUD 的状态行负责)
   private mpLabel: Label;
   private mpShown = false;
+  // ---------- 力竭斩劈演出(AI 体力血条见底的那一瞬) ----------
+  // 触发只在 game-root(syncPressureCue 的上升沿),这里只管把演出播完 ——
+  // 渲染层不自己判压力,避免出现第二份「什么叫力竭」的真话。
+  private exhaustT = 0;
+  private exLabel: Label;
   // ---------- 轨迹预测虚线的预分配缓冲(每帧复用,零 GC)----------
   // predictPath 写世界坐标点 → px/py 存换算后的 Graphics 坐标 → dashBuf 存切好的虚线段
   // (每段 5 个 float:x0,y0,x1,y1,透明度档)。虚线段数上限 ≈ 弧长/(dash+gap),
@@ -84,6 +89,14 @@ export class HudOverlay {
     this.mpLabel.outlineColor = new Color().fromHEX("#07070d");
     this.mpLabel.outlineWidth = 2;
     this.mpLabel.node.active = false;
+    // 力竭大字:随斩劈带一起横扫,平时不占屏
+    this.exLabel = txt(n, "exhaust", 26);
+    this.exLabel.enableOutline = true;
+    this.exLabel.outlineColor = new Color().fromHEX("#07070d");
+    this.exLabel.outlineWidth = 3;
+    this.exLabel.string = "对手力竭!";
+    this.exLabel.color = new Color().fromHEX("#ffe14d");
+    this.exLabel.node.active = false;
   }
 
   draw(R: typeof Rules.R, t: number): void {
@@ -112,6 +125,9 @@ export class HudOverlay {
 
     // ---------- 赛点霓虹旗标 ----------
     this.matchPointFlag(R, t);
+
+    // ---------- 力竭斩劈(game-root 触发,这里只管播) ----------
+    this.exhaustDraw();
 
     // ---------- 时机环(球上收缩环 + 判定区甜区圈;game-root 喂了状态才画)----------
     // 与落点圈共用「落点预测圈」开关:都是操作引导,设置里关掉就一起收
@@ -521,6 +537,47 @@ export class HudOverlay {
     const u = swinging ? winU(p.swingT) : null;
     const a = swinging ? 1 : mine ? 0.34 : 0.8;
     meter(this.g, x0, y0, w, u, { h: 12, a });
+  }
+
+  /** game-root 在 AI 力竭上升沿调用;这里只管把演出播完(帧数走 config.fx) */
+  playExhaust(): void {
+    this.exhaustT = C.fx.exhaustCueFrames || 55;
+  }
+
+  /**
+   * 力竭斩劈:三道火色斜带 + 中央大字,左进右出横扫一遍。
+   * 视觉语言与赛点斩劈横幅(matchPointFlag)同族 —— 「大事发生」在这套 HUD 里
+   * 就长这个样子;带色用 fire 档(红橙),与连击 epic/里程碑的金红一脉相承。
+   */
+  private exhaustDraw(): void {
+    const g = this.g;
+    if (this.exhaustT <= 0) {
+      this.exLabel.node.active = false;
+      return;
+    }
+    this.exhaustT--;
+    const total = C.fx.exhaustCueFrames || 55;
+    const p = 1 - this.exhaustT / total;          // 0..1 演出进度
+    const a = Math.sin(Math.PI * p);              // 进场渐显 → 屏心最亮 → 出场渐隐
+    const cy = this.vp.y(96);
+    const w = C.world.w + 120;
+    const slide = (p - 0.5) * 110;                // 整组左进右出
+    const band = (bh: number, hex: string, al: number, skew: number): void => {
+      g.fillColor = withAlpha(pal(hex), al);
+      const s = skew / 2;
+      g.moveTo(-w / 2 + s + slide, -bh / 2 + cy);
+      g.lineTo(w / 2 + s + slide, -bh / 2 + cy);
+      g.lineTo(w / 2 - s + slide, bh / 2 + cy);
+      g.lineTo(-w / 2 - s + slide, bh / 2 + cy);
+      g.close();
+      g.fill();
+    };
+    band(44, "#07070d", 0.82 * a, 24);
+    band(30, "#ff6a1f", 0.5 * a, 18);
+    band(12, "#e60012", 0.85 * a, 18);
+    this.exLabel.node.active = true;
+    this.exLabel.node.setPosition(this.vp.x(C.world.w / 2) + slide * 0.4, cy, 0);
+    this.exLabel.node.angle = -4;
   }
 
   // ---------- 赛点斩劈横幅(原 hud.js 旗标的 P5 化:全宽斜切红带 + 锯齿撕边) ----------

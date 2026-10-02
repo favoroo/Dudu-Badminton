@@ -19,6 +19,9 @@ const CHECKS = [
   "campaign-check",
   "haptic-check",
   "env-check",
+  // 第 1 关的风:出图 + 断言「画在不在玩家看得见的地方」——
+  // 上一版风丝漏了 vp 换算,动画做了却整片飘出屏幕,这条钉子必须常驻
+  "wind-preview",
   "notes-check",
   "strip-check",
   "brief-check",

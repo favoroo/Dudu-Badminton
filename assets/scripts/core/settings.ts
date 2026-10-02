@@ -35,22 +35,23 @@ export type PadAction = "left" | "right" | "jump" | "swing" | "swingFar" | "swin
  * 一只手按不住跳跃又能精准点球路。现在摇杆模式下由**往上推摇杆**代跳(左手本该
  * 管的事),右簇只剩三键;这个 jump 条目退化成 buttons 模式(无摇杆可推)的实体回退键。
  *
- * 基准 (188,172) 在左簇摇杆右上:与摇杆中心 (78,78) 相距 144.7,扣掉本身半径 48 后
- * 最近边缘 96.7 —— 摇杆本体(68)不被遮挡。选这个位置是为了让两种模式里「跳跃」
- * 都住在左手上方同一块屏幕区域,肌肉记忆连续。
+ * buttons 模式的左簇摆成「三角」:左右键并排在底部,跳键居中在两者正上方
+ * (v3 前基准 (188,172) 偏在右键外侧,不居中),三键同半径 48。
+ * 右簇上下对调(v3):击球抬到上排、跨步落到贴底的左下 —— 击球离拇指落点更近,
+ * 跨步是低频救球键,挪到角落不碍事。
  */
 export interface PadBase { x: number; y: number; r: number; cluster: "left" | "right" }
 export const PAD_BASE: Record<PadAction, PadBase> = {
-  left: { x: 50, y: 50, r: 44, cluster: "left" },
-  right: { x: 155, y: 50, r: 44, cluster: "left" },
-  jump: { x: 188, y: 172, r: 48, cluster: "left" },
+  left: { x: 50, y: 50, r: 48, cluster: "left" },
+  right: { x: 162, y: 50, r: 48, cluster: "left" },
+  // 跳键 x = 左右键中点 (50+162)/2,与两键各留 ~19 的空隙
+  jump: { x: 106, y: 150, r: 48, cluster: "left" },
   // 合并后的单击球键:居中放大(r=46),方便手指在按下后横滑区分深浅
-  swing: { x: -97, y: 48, r: 46, cluster: "right" },
+  swing: { x: -135, y: 140, r: 46, cluster: "right" },
   // 以下两键保留给键盘专用路径(触屏不再为它们建按钮),旧存档兼容用
   swingFar: { x: -48, y: 48, r: 38, cluster: "right" },
   swingNear: { x: -146, y: 48, r: 38, cluster: "right" },
-  // 跨步键坐标没动:右簇腾出的右上那格直接留空,免得右手为剩下的键重新学位置。
-  lunge: { x: -152, y: 142, r: 40, cluster: "right" },
+  lunge: { x: -235, y: 50, r: 40, cluster: "right" },
 };
 /** 键名(设置面板与编辑器 chip 共用;文案只写触屏向,不出现键位名) */
 export const PAD_LABEL: Record<PadAction, string> = {
@@ -170,8 +171,9 @@ function fresh(): GameSettings {
   for (const a of PAD_ACTIONS) pad[a] = { dx: 0, dy: 0, r: PAD_BASE[a].r };
   return {
     // v=2:「跳」从右簇键改成摇杆上推代跳,键位退化为 buttons 模式回退并搬到左簇。
-    // sanitize 靠它识别老档、重置跳跃偏移(新装机走 fresh 的默认位,不触发)。
-    v: 2,
+    // v=3:默认布局整体重排(跳居中到左右键上方、右簇击球/跨步上下对调),
+    //     旧偏移由 sanitize 全量重置(新装机走 fresh 的默认位,不触发)。
+    v: 3,
     sfxOn: true, sfxVol: 0.8,
     bgmOn: true, bgmVol: 0.6,
     hintLanding: true, hintShake: true, hintFloat: true,
@@ -239,12 +241,14 @@ export function sanitize(raw: unknown): GameSettings {
       };
     }
   }
-  // 老档升级(v<2):跳跃偏移原本是相对**右下角**的位移,现在基准在**左下角**,
-  // 照原值套过去会飞到屏幕正中甚至屏外。半径与簇无关,保留用户调过的大小。
+  // 老档升级(v<2):跳跃偏移原本是相对**右下角**的位移,现在基准在**左下角**。
+  // 老档升级(v<3):默认布局整体重排(跳居中到左右键上方、右簇击球/跨步上下对调),
+  // 存档里的 dx/dy 是相对旧基准的位移,套到新基准上会把布局弄歪 —— 全部重置。
+  // 半径与基准无关,保留用户调过的大小。
   // 不用「算距离判断是否越界」那套 —— 位移上限只是坏档护栏(PLACE_GUARD,视口到不了),
-  // 老值全都合法,只有簇变了这件事是数学上检测不出来的,必须靠版本号。
-  if (typeof r.v !== "number" || r.v < 2) {
-    s.pad.jump = { dx: 0, dy: 0, r: s.pad.jump.r };
+  // 老值全都合法,只有「簇/基准变了」这件事是数学上检测不出来的,必须靠版本号。
+  if (typeof r.v !== "number" || r.v < 3) {
+    for (const a of PAD_ACTIONS) s.pad[a] = { dx: 0, dy: 0, r: s.pad[a].r };
   }
   // 老档升级:raw 里带 pad 却没有 moveMode → 判定为摇杆功能上线前装机的老玩家,
   // 保持他们的「左右按键」体验,不无预警换成摇杆。新装机走 fresh() 的 "joystick"。

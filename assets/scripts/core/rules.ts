@@ -13,7 +13,7 @@ import { Player as Pl } from "./player";
 import { AI } from "./ai";
 import { Skills } from "./skills";
 import { Ball, DiffKey, GameEvent, Player, PlayerInput, TeamSide } from "./types";
-import { CampaignManager, StageDef, StarFacts, evaluateStars } from "./campaign";
+import { CampaignManager, StageDef, StarFacts, aiReliefFor, evaluateStars, tuneAiTier } from "./campaign";
 
 const C = CFG;
 const CO = C.court;
@@ -57,6 +57,20 @@ export interface RulesState {
   activeStage?: StageDef | null;
   /** 最后一局(闯关)挣到的星数:结算页显示用,非闯关/败局为 undefined */
   lastStars?: number;
+  /**
+   * 最近一次「起风」通报:dir = 风吹向(+1 朝对方底线 = 玩家顺风),tick = 单调递增的序号。
+   * 为什么进状态而不只发事件:HUD 每帧已被喂 R,拿序号就能自己认上升沿,不必再在
+   * game-root 的事件总线上多接一根线;而事件照发 —— 音效/触觉这类消费者要的是"发生了"。
+   */
+  gustDir: number;
+  gustTick: number;
+  /**
+   * 最后一局(闯关)的判星事实快照:**输赢都填**。
+   * 从前判星整块包在 `winner === "left"` 里,于是挑战失败时结算页连
+   * 「过了哪两条、第三条差多少」都没有 —— 玩家只知道"输了",学不到下次该怎么打。
+   * 星数仍只给赢(lastStars 语义不变,存档也只在通关时写),但**事实**是两边都该看的。
+   */
+  lastFacts?: StarFacts;
   /** 以下字段在 newMatch / pause 时赋值 */
   humans?: number;
   serveWait: number;
@@ -82,6 +96,8 @@ const R: RulesState = {
   timeScale: 1,
   events: [],
   pointNo: 0,
+  gustDir: 0,
+  gustTick: 0,
   deuce: false,
   serveWait: 0,
 };
@@ -122,6 +138,13 @@ const freshAudit = (): MatchAudit => ({
   laserPrev: false, lastReason: "", lastScorer: null,
 });
 let audit = freshAudit();
+
+/**
+ * 阵风通报的监视状态。归属说明:环境相位只有本文件的 step() 在推进(tickEnv),
+ * 所以"风现在算不算起风了"的累计量也必须住在这里 —— 住在 physics 就成了隐式全局,
+ * 住在界面又会有人拿自己的时钟去数(那是第五份积分)。physics 出判据,这里出事实。
+ */
+const gustW = Physics.freshGustWatch();
 
 // 该不该由这名球员去接:双打按「离落点更近的人接」。
 // 不能用"球降到可击高度的点"分工 —— 羽毛球落地很陡,那个点永远偏靠前场网口,
@@ -182,14 +205,11 @@ function applyAiTier(): void {
     // 所以菜单上「入门 · 常打飞」一直是句空话)。
     p.aiAimErr = D.shotErr;
 
-    // AI 技能配置分配: 难度越高越能解锁高阶技能
-    if (R.diff === "easy") {
-      p.skill = Skills.initSkillState("lunge");
-    } else if (R.diff === "normal") {
-      p.skill = Skills.initSkillState("lunge");
-    } else {
-      p.skill = Skills.initSkillState("lunge");
-    }
+    // AI 每一档带哪一招(表在 CFG.aiSkillByDiff)。
+    // 从前这里是 `if easy / else if normal / else` 三个分支写同一个人 —— 看着像差异化
+    // 配置,其实是个恒等空转,读代码的人会以为入门档和大师档风格不同。关卡的 aiSkill
+    // 稍后在 startCampaign 里覆盖这一行(第 5/10/14/15/20 关各有指定)。
+    p.skill = Skills.initSkillState(C.aiSkillByDiff[R.diff] ?? "lunge");
   });
 }
 
@@ -202,7 +222,10 @@ function resetModifiers(): void {
 function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   resetModifiers();
   audit = freshAudit();
+  // 阵风状态随新一局复位:上一局最后报过哪个方向,不该让这一局"少报一次"
+  gustW.hold = 0; gustW.cool = 0; gustW.lastDir = 0;
   R.lastStars = undefined;
+  R.lastFacts = undefined;
 
   R.mode = mode;
   R.diff = diff || "normal";
@@ -253,7 +276,10 @@ function startCampaign(stage: StageDef): void {
   R.activeStage = stage;
   CampaignManager.recordAttempt(stage.id);
   audit = freshAudit();
+  // 阵风状态随新一局复位:上一局最后报过哪个方向,不该让这一局"少报一次"
+  gustW.hold = 0; gustW.cool = 0; gustW.lastDir = 0;
   R.lastStars = undefined;
+  R.lastFacts = undefined;
 
   Physics.setEnvModifier({
     // oscillate 却没有 windX 时兜 config 那个基准,别在逻辑里写字面量 ——
@@ -292,6 +318,15 @@ function startCampaign(stage: StageDef): void {
   }));
 
   applyAiTier();
+
+  // 逐关难度微调:把这一关该钝的量落到 AI 身上(表与算法见 campaign.ts aiReliefFor)。
+  // 为什么在这里而不只在 applyAiTier:减免吃的是**关卡开了哪些机制**,而 applyAiTier
+  // 也被对练/双打/sim-check 复用 —— 那里没有关卡,自然也不该有减免。
+  const relief = aiReliefFor(stage);
+  if (relief.read || relief.shotErr || relief.timingErr || relief.aggr) {
+    const tier = tuneAiTier(C.diffs[stage.aiDiff], relief);
+    for (const p of R.players) if (p.isAI && p.aiDiff) p.aiTier = tier;
+  }
 
   if (stage.aiSkill) {
     const aiPlayer = R.players.find((p) => p.side === "right");
@@ -387,6 +422,9 @@ function applyShot(ball: Ball, shot: ShotLike): void {
   ball.shot = shot;
   R.rally++;
   R.longestRally = Math.max(R.longestRally, R.rally);
+  // 接球质量记账(压力双向):AI 每次真实击中在此消费 think() 起手时记的快照,
+  // 给本拍压力权重(软球回气/狼狈加压)。只影响 aiPressure 曲线输入,不改判定。
+  if (shot.hitter.isAI) AI.noteHit(shot.hitter, shot);
   // 三星判据的击球侧计数:全部读 shot 上已定的真实字段,不在这里重算几何。
   // 球员随每局重建,这些计数天然按局归零。
   const st = shot.hitter.stats;
@@ -437,6 +475,18 @@ function step(inputs: PlayerInput[]): void {
   // 放进球update之前:发球蓄力与每分停顿期间风照吹(风向标因此有连续节奏可追);
   // hitstop/慢放期间主循环不调 Rules.step,指针与球一起定格,不会自己走。
   Physics.tickEnv();
+
+  // 阵风通报:环境时钟刚走一步 —— 这一帧风**翻向**了吗?翻了就发一条事件给界面。
+  // 判据三段(强度门槛 / 连续步数 / 换向 + 闭嘴)全在 physics.gustWatch,数值在 CFG.env.windGust*;
+  // 那三个旋钮从前写了却无人引用,等于"想了但没做",现在接上了。
+  const gust = Physics.gustWatch(gustW, Physics.envPhase());
+  if (gust !== 0) {
+    // 界面按 gustTick 的上升沿播横幅(它是每帧收 R 的,不该自己数风);
+    // 事件照发 —— 音效/震动这类"要在那一刻响一下"的消费者走事件,不走轮询。
+    R.gustDir = gust;
+    R.gustTick++;
+    emit("wind-gust", { dir: gust, wind: Physics.windAt(Physics.envPhase()) });
+  }
 
   const ball = R.ball as Ball;
   for (const p of R.players) {
@@ -702,11 +752,17 @@ function score(scorerSide: TeamSide, reason: string): void {
       R.state = "OVER";
       R.reason = winner === "left" ? "通关成功" : "挑战失败";
       R.msg = winner === "left" ? `挑战成功！${stage.title}` : `挑战失败，请再接再厉！`;
+
+      // 判星:按本关 starsCheck 逐条求值(缺判据时回落旧的通用三条,行为与历史版本一致)。
+      // 这段从前整块写在 `if (winner === "left")` 里 —— 于是败局一个数都不留,
+      // 结算页摆不出「★1 ✓ ★2 ✓ ★3 ✗ 失分 3 / 门槛 ≤2」。求值本身对输赢都成立,
+      // 只有**记星与发奖励**才是通关专属,那就把它们留在通关分支里。
+      const won = winner === "left";
+      const facts = starFacts(won);
+      R.lastFacts = facts;
+      const ev = evaluateStars(stage.starsCheck, facts);
       let stars = 0;
-      if (winner === "left") {
-        // 判星:按本关 starsCheck 逐条求值(与战前简报展示的文案一一对应);
-        // 关卡缺判据时回落旧的通用三条,行为与历史版本一致
-        const ev = evaluateStars(stage.starsCheck, starFacts(true));
+      if (won) {
         stars = ev >= 0 ? ev
           : 1
             + (myScore - opScore >= 2 ? 1 : 0)
@@ -721,6 +777,16 @@ function score(scorerSide: TeamSide, reason: string): void {
           newStars: res.newStars,
           rewards: stage.rewards,
           score: R.scores.slice(),
+        });
+      } else {
+        // 败局也要有事件:结算页据此排三行目标(过了几条、差多少),
+        // 大厅的 attempts 已经记过,奖励照旧一分不发
+        emit("campaign-fail", {
+          stageId: stage.id,
+          stageNo: stage.stageNo,
+          passed: ev >= 0 ? ev : 0,
+          score: R.scores.slice(),
+          longestRally: R.longestRally,
         });
       }
       emit("match-over", {

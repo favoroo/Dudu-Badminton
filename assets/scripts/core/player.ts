@@ -127,14 +127,20 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // ---------- 动态技能与跨步救球状态机 ----------
   // 触发判断放在持续推进之前:按下当帧立即爆发
   const skillHit = inp.skillPressed || inp.lungePressed;
-  const dir = inp.skillDir ?? inp.lungeDir;
+  // 滑轨模式下方向解析:若 targetX 存在且与当前位置有明显位移,以目标几何方位为最高优先级(身后往后,身前往前);
+  // 否则取明确传入的 skillDir/lungeDir(来自滑轨最后滑动手势或摇杆/按键);全无则兜底 undefined 由各技能决定
+  let dir = inp.skillDir ?? inp.lungeDir;
+  if (inp.targetX !== undefined && Math.abs(inp.targetX - p.x) > 4) {
+    dir = inp.targetX > p.x ? 1 : -1;
+  }
   if (skillHit && ball && Skills.canActivate(p, ball)) {
     const success = Skills.activate(p, ball, dir);
     if (success && p.skill) {
       p.stats.skillCasts++;             // 三星判据「释放技能 N 次」:lunge 也是五技能之一,计入
       inp.onSkill && inp.onSkill(p, p.skill.id);
-      if (p.skill.id === "lunge" && inp.onLunge) {
-        inp.onLunge(p);
+      if (p.skill.id === "lunge") {
+        if (inp.onLunge) inp.onLunge(p);
+        inp.targetX = undefined; // 跨步冲量接管,清空当帧定点避免与跨步初速度竞争
       }
     }
   }
@@ -174,7 +180,11 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   const focusSpeedMul = inFocus ? (C.skills.focus.playerSpeedMul ?? 4.2) : 1;
   const focusAccelMul = inFocus ? (C.skills.focus.playerAccelMul ?? 4.5) : 1;
 
-  if (isSliderActive) {
+  if (p.lungeT >= 0) {
+    // 跨步中:速度由 lunge 物理冲量完全控制,不被滑轨定点刹停截断
+    mv = 0;
+    axisCap = 0;
+  } else if (isSliderActive) {
     const dx = targetX - p.x;
     if (Math.abs(dx) <= (SC?.arriveEps ?? 1.5)) {
       p.x = targetX;
@@ -259,7 +269,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // 跑动那一项按同一层 sm 放大(移速档「极快」时真人 vmax 13.8 + 跨步 15 + 3 才够,
   // 不放大就会把跨步冲量凭空削掉一截);时空减速高速也确保容纳。
   const xvCap = Math.max(12, Math.max(PL.vmax * p.speedMul * (p.isAI ? 1 : Gait.s) + LG.speed + 3, maxV + 3));
-  if (isSliderActive && targetX !== undefined) {
+  if (isSliderActive && targetX !== undefined && p.lungeT < 0) {
     const stepVx = clamp(p.vx, -xvCap, xvCap);
     if ((p.x - targetX) * (p.x + stepVx - targetX) <= 0) {
       p.x = targetX;

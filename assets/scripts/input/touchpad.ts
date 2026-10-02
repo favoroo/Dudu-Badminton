@@ -217,6 +217,8 @@ interface SliderRec {
   lastTouchTime: number;   // 双击跳跃判定时钟(ms)
   lastTouchX: number;
   lastTouchY: number;
+  /** 上次记录的滑块局部 x(用于提取手势位移方向 -1/1) */
+  lastThumbX: number;
 }
 
 /**
@@ -1133,7 +1135,7 @@ function makeSlider(cluster: Node, opts: TouchPadOpts, scale: number): SliderRec
     cluster, root, baseUt, baseG, thumb, thumbG,
     span: G.span, minX: G.minX, maxX: G.maxX, w, h, r,
     selected: false, activeTouch: null, jumpOn: false, paintedJump: false,
-    lastTouchTime: 0, lastTouchX: 0, lastTouchY: 0,
+    lastTouchTime: 0, lastTouchX: 0, lastTouchY: 0, lastThumbX: 0,
   };
   paintSliderTrack(st, false, !!opts.edit);
   paintSliderThumb(st, false);
@@ -1200,10 +1202,10 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   leftCluster.layer = Layers.Enum.UI_2D;
   const leftTrans = leftCluster.addComponent(UITransform);
   leftTrans.setAnchorPoint(0, 0); // 以左下角为锚点
-  // 220×100 只够 buttons 模式的左右两键;跳跃键基准位 (188,172) 带 48 半径会伸到
-  // 236×220,按它取整。注意这只影响节点包围盒 —— 拖动夹取走的是全屏世界坐标
-  // (slotCorner 用 -hw+safe.l),不依赖这个尺寸。
-  leftTrans.setContentSize(240, 230);
+  // 尺寸按 buttons 模式三键的默认包围盒取整:右键 (162,50)+r48 伸到 x=210,
+  // 跳键 (106,150)+r48 伸到 y=198,取 220×210。注意这只影响节点包围盒 ——
+  // 拖动夹取走的是全屏世界坐标(slotCorner 用 -hw+safe.l),不依赖这个尺寸。
+  leftTrans.setContentSize(220, 210);
   leftCluster.setParent(layer);
 
   const leftWidget = leftCluster.addComponent(Widget);
@@ -1255,7 +1257,8 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   rightCluster.layer = Layers.Enum.UI_2D;
   const rightTrans = rightCluster.addComponent(UITransform);
   rightTrans.setAnchorPoint(1, 0); // 以右下角为锚点
-  rightTrans.setContentSize(200, 190);
+  // 跨步 (-235,50)+r40 伸到 x=-275、击球 (-135,140)+r46 伸到 y=186,取 280×200(同上,只算包围盒)
+  rightTrans.setContentSize(280, 200);
   rightCluster.setParent(layer);
 
   const rightWidget = rightCluster.addComponent(Widget);
@@ -1521,26 +1524,32 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       const { targetX, thumbX, dy } = readSlider(e);
       // 抓取瞬间掐掉 thumb 上可能残留的 tween(旧版在 move 里每个采样停一次)
       Tween.stopAllByTarget(st.thumb);
+      const dThumb = thumbX - st.lastThumbX;
+      const slideDir = Math.abs(dThumb) > 1 ? (dThumb > 0 ? 1 : -1) : undefined;
       st.thumb.setPosition(thumbX, 0);
+      st.lastThumbX = thumbX;
       evalSliderJump(st, dy);
       st.paintedJump = st.jumpOn;
       paintSliderTrack(st, true, false);
       paintSliderThumb(st, true);
-      setTargetX(pad, targetX);
+      setTargetX(pad, targetX, slideDir);
     };
 
     const sliderMove = (e: EventTouch): void => {
       const st = slider!;
       const { targetX, thumbX, dy } = readSlider(e);
+      const dThumb = thumbX - st.lastThumbX;
+      const slideDir = Math.abs(dThumb) > 1 ? (dThumb > 0 ? 1 : -1) : undefined;
       // thumb 是独立节点,挪位置不重画;底座只在起跳分界状态沿变化时重画
       st.thumb.setPosition(thumbX, 0);
+      st.lastThumbX = thumbX;
 
       evalSliderJump(st, dy);
       if (st.paintedJump !== st.jumpOn) {
         st.paintedJump = st.jumpOn;
         paintSliderTrack(st, true, false);
       }
-      setTargetX(pad, targetX);
+      setTargetX(pad, targetX, slideDir);
     };
 
     const sliderUp = (): void => {

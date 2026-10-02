@@ -47,6 +47,7 @@ import { CareerPanel } from "./career-panel";
 import { DrillPanel } from "./drill-panel";
 import { CampaignPanel } from "./campaign-panel";
 import { CampaignManager, type StageDef } from "../core/campaign";
+import { objectiveResults } from "../core/campaign-hud";
 import { SettingsPanel } from "./settings-panel";
 import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
@@ -634,11 +635,10 @@ export class UIManager extends Component {
           next: won && after && CampaignManager.isStageUnlocked(after.stageNo) ? after : null,
         };
         if (won) {
-          // 星标进徽章:本局挣到的星(rules 判定,与战前简报承诺的判据一一对应),
-          // 结算页当场可看,不用回大厅才知道 —— 从前 match-over 的 stars 是死数据
-          const ns = typeof R.lastStars === "number" ? R.lastStars : 0;
+          // 徽章只说"突破了哪一关";星标数额外排一行逐条结果(见下面的 conds)——
+          // 同一屏把"几颗星"讲两遍,不如讲清"差的是哪一条"
           badge = {
-            title: `★ 关卡突破 · ${stage.title} (${stage.badge}) · ${"★".repeat(ns)}${"☆".repeat(3 - ns)}`,
+            title: `★ 关卡突破 · ${stage.title} (${stage.badge})`,
             color: PAL.accent,
           };
         } else {
@@ -649,6 +649,8 @@ export class UIManager extends Component {
         // 无限练习收局正好创下个人最高分时,用纪录徽章替掉通用称号
         badge = { title: `∞ 练习新纪录 · 单局 ${R.scores[0]} 分`, color: "#7fd0ff" };
       }
+      // 三条目标的逐条结果:判星事实由 rules 在终局填好,**输赢都有**(从前只有赢才算)
+      const conds = isCamp && stage && R.lastFacts ? objectiveResults(stage, R.lastFacts) : null;
       return {
         kind,
         res: cap ? cap.res : null,
@@ -659,6 +661,7 @@ export class UIManager extends Component {
         badge,
         stats: this.statRows("match", null),
         campaign,
+        conds,
       };
     }
     const drill = cap && cap.drill ? cap.drill : (Drill.cur() ? Drill.result() : null);

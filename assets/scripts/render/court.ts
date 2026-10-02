@@ -1688,6 +1688,14 @@ export class CourtRenderer {
     //     玩家只知道"我打飞了",不知道为什么。这些白条吃的是**同一个** windX
     //     (draw() 里那行合成把 EnvModifier 折成画面位移),所以丝往哪边飘、飘多狠,
     //     与球被推走多少是同一件事的两种画法。风停了它们就不动 —— 不是"照飘不误"的假动画。
+    //
+    //     ⚠ 0.0.21 修:这一整段从前**漏了视口换算** —— st.x/st.y 是世界坐标
+    //     (y 150~400 是"海面上空到沙滩上空"那条带),而这里直接 g.moveTo(sx, st.y) 裸写。
+    //     同文件其余每一笔都走 vp.x()/vp.y()(见 fillRect/strokeRect),唯独这里没走,
+    //     于是整片风丝朝右偏 480、朝上偏一两百像素 —— 一半直接画到屏幕外,剩下的糊在
+    //     天幕最上沿。这就是用户那句「吹风方向的提示不太明显」的物理事后:动画做了,
+    //     但玩家从来没看见过。改完必须真机回看:本仓库的 web 预览看不出这类偏移差异吗?
+    //     看得出,但沙地对比度与原生帧率要上机才算(见 panel-preview 那条经验)。
     const AW = C.env.ambience;
     const fullWind = Math.max(0.001, Math.abs(C.env.windDefaultBase) * AW.k);
     const wLean = this.windX / fullWind;
@@ -1701,10 +1709,44 @@ export class CourtRenderer {
         const a = AW.streakA * (0.35 + 0.65 * wAbs) * (0.55 + 0.45 * Math.sin(time * 0.05 + st.y));
         const len = st.len * (0.6 + 0.8 * wAbs);
         g.strokeColor = colRgba(255, 252, 235, Math.max(0, a));
-        g.moveTo(sx, st.y);
-        g.lineTo(sx + len * dirS, st.y + len * 0.06);   // 顺风侧略微下压,读起来是被吹着走
+        g.moveTo(vp.x(sx), vp.y(st.y));
+        g.lineTo(vp.x(sx + len * dirS), vp.y(st.y + len * 0.06));   // 顺风侧略微下压,读起来是被吹着走
         g.stroke();
       }
+    }
+
+    // 11. 贴地风带(第 1 关**主力**方向提示)
+    //     为什么光有上面的风丝不够:风丝在天上,而玩家的注意力在地面那条线 ——
+    //     他要判断的是"球会被推向哪一侧的底线",那就让**场地自己**往那一边流。
+    //     一排人字纹贴着地胶上方流过,尖端指向风吹向的那一侧,长度/亮度/流速都吃同一个 wLean。
+    //     形状出生定形(等距铺开)、逐帧只平移:与 p5kit/风丝同一条规矩,不许逐帧 rand。
+    const B = C.env.band;
+    if (wAbs > 0.02) {
+      const dirB = wLean >= 0 ? 1 : -1;
+      const y = CO.groundY - B.y;                       // 贴地之上一点(世界 y 越小越高)
+      const x0 = CO.left - 24, x1 = CO.right + 24;
+      const spanW = Math.max(1, x1 - x0);
+      const step = spanW / B.count;
+      // 流动量按风强缩放:风满偏时一格/约 11 帧,风平时几乎不动 → 不会读成"背景在滚"
+      const flow = time * B.speed * wAbs * dirB;
+      // 一笔成型、两遍描边:先粗一层暗琥珀当底衬,再细一层纸白压在上面 ——
+      // 金沙地上单条白线对比度不够(上一版真机反馈"看着像沙纹")。
+      // ⚠ 这里**不能用 beginPath**(cc.Graphics 没有这个方法),而 fill/stroke 不清路径
+      // (AGENTS 坑 8):所以每条纹只用 moveTo/lineTo 续在同一条路径上,末尾统一 stroke 两次,
+      // 全场地共 2 次 stroke,而不是每条 2 次。
+      g.lineWidth = B.lw + 1.8;
+      for (let i = 0; i < B.count; i++) {
+        const cx = x0 + ((((i + 0.5) * step + flow) % spanW) + spanW) % spanW;
+        const len = B.len * (0.5 + 0.5 * wAbs);
+        g.moveTo(vp.x(cx - len * 0.5 * dirB), vp.y(y + len * 0.3));
+        g.lineTo(vp.x(cx + len * 0.5 * dirB), vp.y(y));
+        g.lineTo(vp.x(cx - len * 0.5 * dirB), vp.y(y - len * 0.3));
+      }
+      g.strokeColor = colRgba(199, 62, 0, B.a * 0.8);
+      g.stroke();
+      g.lineWidth = B.lw;
+      g.strokeColor = colRgba(255, 246, 214, B.a * (0.35 + 0.65 * wAbs));
+      g.stroke();
     }
   }
 

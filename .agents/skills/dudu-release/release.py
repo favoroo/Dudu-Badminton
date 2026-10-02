@@ -266,7 +266,10 @@ def cmd_build(args) -> None:
         env = dict(os.environ, PROP_VERSION_NAME=target_ver, PROP_VERSION_CODE=str(ver_code))
         r = run(['bash', str(build_script), 'release'], env=env)
         if r.returncode != 0:
-            detail = (r.stderr or r.stdout or '')[-3000:]
+            # 合并 stderr+stdout(否则 Cocos 警告走 stderr 非空时会盖掉 Gradle 的 stdout 真因)。
+            # stdout 放末尾:build.sh 先跑 Cocos(stderr 警告)再跑 Gradle(stdout 真因),
+            # 失败原因多在 stdout 末尾,放末尾的 [-N:] 才切到它。
+            detail = ((r.stderr or '') + '\n--- stdout ---\n' + (r.stdout or ''))[-4000:]
             raise RuntimeError(f'构建脚本执行失败: {detail}')
 
         # 查找产物:只认 release 包。debug 包(debuggable=true、无 minify)性能与

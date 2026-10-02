@@ -19,7 +19,7 @@ const C = CFG;
 const CO = C.court;
 
 function fresh(): AiState {
-  return { tick: 0, targetX: 0, serveT: 0, wantSmash: false, ic: null, swingLead: null, chasing: true,
+  return { tick: 0, targetX: 0, serveT: 0, serveDelay: 0, serveAim: C.aimDepth.deep, wantSmash: false, ic: null, swingLead: null, chasing: true,
     readErr: 0,       // 本记来球认定的站位偏差(px):每记球掷一次,之后一路认账
     readRolled: false,
     emotion: 0,           // 情绪值:-1(沮丧)到 1(亢奋),0=平静
@@ -32,6 +32,10 @@ function fresh(): AiState {
     whiffsSeen: 0,        // 已计入的挥空数(检测中途扑空 → 沮丧)
     panicSwung: false,    // 本记来球是否已绝望挥拍过(每拍至多一次)
     hopeless: false,      // 本记来球是否已判定赶不上(供扑救表现读取)
+    qualDrift: 0,         // 接球质量漂移(拍当量,软球回气/狼狈加压;见 noteHit)
+    recvNoted: false,     // 本拍接球质量快照是否已记(起手时记,击中时消费)
+    recvKind: null,       // 快照:来球球种(lob/netshot/clear = 慢软球)
+    recvRun: 0,           // 快照:起手时离防区中心的距离(px)
   };
 }
 
@@ -39,8 +43,31 @@ function fresh(): AiState {
 // whiffsSeen 用当前挥空数打底:p.stats 跨分累计而 ai 状态每分重建,不预热会误报一次"扑空"
 function reset(p: Player): void { p.ai = fresh(); p.ai.whiffsSeen = p.stats.whiffs; }
 
-const D = (p: Player) => (p.aiDiff ? C.diffs[p.aiDiff] : C.diffs.normal);
+const D = (p: Player) => p.aiTier ?? (p.aiDiff ? C.diffs[p.aiDiff] : C.diffs.normal);
 const SM = (p: Player) => (p.aiDiff ? C.aiSmashDefense[p.aiDiff] : C.aiSmashDefense.normal);
+
+/**
+ * 这一档 AI 的**真实**极速(px/帧):自估跑位距离必须和 player.update 的 maxV 同一批因子。
+ *
+ * 从前这里只乘 `C.player.vmax * em.speed`,而 player.ts:241-245 实际是
+ * `PL.vmax · p.speedMul · (真人再乘 Gait.s) · staminaMul · vmaxMul` —— 于是任何带
+ * 移速惩罚的关卡(第 2 关 accel/vmax 0.62/0.7、第 17 关体力、第 18 关溜冰)里,
+ * AI 都按"满腿"去承诺它跑不到的球:站位算得准,人就是到不了,看上去像纯蠢。
+ * 注意这里**不乘 Gait.s**:移速滑杆是真人侧的档位(见 AGENTS.md 的 gait 条),
+ * AI 走 diffs.speed,两层刻意不叠。
+ */
+function selfVmax(p: Player, em: { speed: number }): number {
+  const mod = Pl.getPlayerModifier();
+  const inFocus = (p.focusT ?? 0) > 0;
+  // focus 的超速加成挂在 player.ts 的 vmaxMul 那一层(自己给自己开的领域也算),
+  // 不吃它的话 AI 会低估自己 → 明明赶得上却站着看。axisCap 是输入侧的缩尺,不预估。
+  const focusMul = inFocus ? (C.skills.focus.playerSpeedMul ?? 4.2) : 1;
+  const vmaxMul = (mod?.vmaxMul ?? 1) * focusMul;
+  const staminaMul = p.isExhausted ? 0.65 : 1;
+  // em.speed 已含情绪/连击压力的加减成;speedMul 是 applyAiTier 落的档位基础值。
+  // 两者同源于 diffs.speed,这里以 speedMul 为"事实",情绪只作它自己的那份估计。
+  return C.player.vmax * p.speedMul * (em.speed / (D(p).speed || 1)) * vmaxMul * staminaMul;
+}
 
 // 把球往前推 n 步(不改原对象)
 // 这里**不再自己抄一份循环**。从前它只算阻尼与 Pace.g,不认重力倍率、不认侧风、
@@ -143,11 +170,57 @@ function chooseDepth(p: Player, rivals: Player[], ballH: number, aggr: boolean):
   return goDeep ? rand(0.72, 0.98) : rand(0.06, 0.3);
 }
 
-// 各自防区的home位:双打时不追球的人待在这儿,避免两人叠一起
-function zoneHome(p: Player): number {
-  const mates = Rules.teamOf(p.side);
-  if (mates.length < 2) return p.homeX;
-  return p.homeX;
+// (原 zoneHome() 已删:双打"各自防区 home 位"的两臂都 return p.homeX —— 那是一层
+//  包装在骗读代码的人"这里区分了防区"。真要做双打分区,得先有分区逻辑,等它有那天。)
+
+/**
+ * 定这一拍发球:先按档位抽**类型**,再到该类型的蓄力带里抽帧数,顺带看对手站位定深浅。
+ *
+ * 为什么必须"先类型、后延迟":rules 那边是拿 serveWait 反查类型的(<22 = 偷后场、
+ * >65 = 高远)。从前默认带 [40,90] **正好跨在 65 上**,于是入门档约一半"标准发球"
+ * 执行成高飘高远球(球多飞一倍时间,等玩家摆好姿势来扣)—— 用户现场那句
+ * 「他发球我就得分了」就是这条;而 flick 概率 0.15×aggr≈1.8%、clear 分支还要求
+ * aggr>0.3 永远进不去,等于入门档只有一种球。现在三条带互不相交(见 serveMix.bands),
+ * **想发什么和实际发出什么构造上不可能错档**。
+ * 深浅只对"标准发球"生效:偷后场/高远在 rules 里走 forced 弹道,自带 depthBias。
+ */
+function planServe(p: Player): { delay: number; aim: number } {
+  const mix = C.serveMix[p.aiDiff ?? "normal"] ?? C.serveMix.normal;
+  const B = C.serveMix.bands;
+  const roll = Math.random();
+  const band = roll < mix.flick ? B.flick : roll < mix.flick + mix.clear ? B.clear : B.standard;
+  const delay = band[0] + Math.random() * Math.max(0, band[1] - band[0]);
+  // 看人下菜:对手贴着底线站,再压深球等于喂球 —— 改发短的比例抬到 vsBackCamper;
+  // 对手不蹲底线(站中场或压网)时,发深才是舒服球,短球比例 = 1 - vsNetRusher。
+  const rival = Rules.rivalsOf(p)[0];
+  const camper = !!rival
+    && Math.abs(rival.x - (rival.side === "left" ? CO.left : CO.right)) <= C.doubles.deepGuard;
+  const goShort = Math.random() < (camper ? mix.vsBackCamper : 1 - mix.vsNetRusher);
+  return { delay, aim: goShort ? C.aimDepth.near : C.aimDepth.deep };
+}
+
+/**
+ * 看风下手:把"想打的深浅"按当前风挪一格。
+ *
+ * 出球解算走的是 `intent="aim"`(**故意**不认侧风,见 physics 的 IntegrateIntent),
+ * 所以风会真把 AI 的球吹偏 —— 从前 ai.ts 全程没读过 windAt,风关里 AI 等于自杀式送分。
+ * 这一层补多少由档位 `windSense` 说了算:入门 0(玩家读通风向后仍要能赢)、
+ * 普通 0.55、大师 0.85。补的是**决策**,不是解算:solveShot 一律不许改口径,
+ * 否则"看风下手的余地"这个机制当场被 AI 顺手解没(env-check §3 就是钉这条的)。
+ *
+ * 符号:dir = 我方这一拍球前进的方向(左队 +1 / 右队 -1);风与 dir 同号 = 顺风,
+ * 球会被推得**更深** → 收力(减 depth);异号 = 逆风,球被按在网前 → 压深(加 depth)。
+ * 风取"起手之后 windup 帧"那一点的值 —— 起手到释放之间风还会变,读释放那一刻的才对症。
+ */
+function windAdjustedDepth(p: Player, depth: number): number {
+  const E = C.env;
+  const sense = D(p).windSense;
+  if (!sense || !E.aiWindDepth) return depth;
+  const w = Physics.windAt(Physics.envPhase() + C.swing.windup);
+  if (!w) return depth;
+  const dir = p.side === "left" ? 1 : -1;
+  const norm = clamp(w / E.windFullScale, -1, 1);
+  return clamp(depth - dir * norm * E.aiWindDepth * sense, 0, 1.06);
 }
 
 /**
@@ -155,10 +228,37 @@ function zoneHome(p: Player): number {
  * 这是「回合拖长 → AI 开始漏」的唯一来源,不碰物理/判定区几何:
  * 只放大 readErr、加时机误差、略降跑速,所以「慢球仍能对拉」的性质不变。
  * rally 与 HUD 的「x N 连击」大字同源(rules.R.rally),前 startAt 拍照常不吃压力。
+ *
+ * 批次升级(接球质量双向):基准输入从 rally 变为 rally + qualDrift ——
+ * 软球轻松接每拍只计 0.4 拍当量(对手回气)、跨步/跳跃/大跑位狼狈接每拍计 1.5 拍,
+ * 漂移有界(±maxDrift)且乘 qualityGate 闸门(easy=0 → 曲线与旧版逐帧一致)。
+ * 「血条只涨不跌」的表达保留:回气体感 = 涨得慢,不做负恢复(避免 boss 回血挫败感)。
  */
-function rallyPressure(d: ReturnType<typeof D>): number {
+function rallyPressure(d: ReturnType<typeof D>, S: AiState): number {
   const AP = C.aiPressure;
-  return clamp(clamp((Rules.R.rally - AP.startAt) / AP.span, 0, 1) * d.crush, 0, 1);
+  return clamp(clamp((Rules.R.rally + S.qualDrift - AP.startAt) / AP.span, 0, 1) * d.crush, 0, 1);
+}
+
+/**
+ * 接球质量记账:rules.applyShot 在 AI 每次真实击中时调用(rally++ 同一处)。
+ * 读 think() 在起手瞬间记下的快照(recvKind/recvRun)给这一拍定权重:
+ *   狼狈接 = 跨步救球(shot.lungeShot)或跳起击球(shot.airborne)或大跑位(recvRun≥hardRun)
+ *   轻松接 = 来球是慢软球(lob/netshot/clear)且没怎么跑(recvRun≤softRun),且不狼狈
+ * 权重对「偏离 1.0」的部分乘 qualityGate 后累进 qualDrift(有界 ±maxDrift)。
+ * 发球/挥空/无快照 = 权重 1,不漂移。注意:这里只改压力曲线输入,不碰判定与物理。
+ */
+function noteHit(p: Player, shot: NonNullable<Ball["shot"]>): void {
+  const S = p.ai;
+  if (!S || !S.recvNoted) return;
+  S.recvNoted = false;                     // 无论走不走权重,快照都要消费掉(每拍一次)
+  const d = D(p);
+  const gate = d.qualityGate;
+  if (gate <= 0) return;                   // easy 档:完全不吃质量,曲线 = 旧版
+  const Q = C.aiPressure.quality;
+  const hard = !!shot.lungeShot || !!shot.airborne || S.recvRun >= Q.hardRun;
+  const soft = !hard && (S.recvKind === "lob" || S.recvKind === "netshot" || S.recvKind === "clear") && S.recvRun <= Q.softRun;
+  const w = hard ? Q.scrambleBurst : soft ? Q.softLift : 1;
+  S.qualDrift = clamp(S.qualDrift + (w - 1) * gate, -Q.maxDrift, Q.maxDrift);
 }
 
 interface EmotionMods { aggr: number; timingErr: number; speed: number }
@@ -213,7 +313,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   const inp: PlayerInput = { left: false, right: false, jumpPressed: false, jumpHeld: false, swingAim: null, lungePressed: false };
   const d = D(p);
   const incoming = ball.live && !ball.held && ball.lastHitter !== p.side;
-  S.pressure = rallyPressure(d);         // 连击压力:本回合 rally 越长越大(先算,情绪修正要吃它)
+  S.pressure = rallyPressure(d, S);   // 连击压力:本回合 rally+质量漂移 越长越大(先算,情绪修正要吃它)
   const em = emotionModifiers(p, S, d);  // 情绪 + 压力修正后的参数
 
   // 连击压力极大(体力枯竭 <= 25%): 角色面部呈现流汗/疲倦表情
@@ -240,27 +340,20 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     const dx = p.homeX - p.x;
     if (Math.abs(dx) > 10) { inp.left = dx < 0; inp.right = dx > 0; S.serveT = 0; }
     else {
+      // 站定了才定案:serveT 从 0 变 1 的那一帧抽一次(类型 + 深浅),之后一路照这个数执行。
+      // 走回发球位会把 serveT 清 0,所以"移动—回来"会重抽一次,这是应该的:换人了。
+      if (S.serveT === 0) { const plan = planServe(p); S.serveDelay = plan.delay; S.serveAim = plan.aim; }
       S.serveT++;
-      // AI 发球博弈:难度越高越会用偷后场和高远球
-      const aggr = em.aggr;
-      const serveRoll = Math.random();
-      let serveDelay = 40 + Math.random() * 50;  // 默认:标准发球
-      if (serveRoll < 0.15 * aggr) {
-        serveDelay = 8 + Math.random() * 12;      // 偷后场(flick):快速出手
-      } else if (serveRoll > 0.85 && aggr > 0.3) {
-        serveDelay = 70 + Math.random() * 30;     // 高远发球(clear):故意拖延
-      }
-      if (S.serveT > serveDelay) {
+      if (S.serveT > S.serveDelay) {
         S.serveT = 0;
-        // 起拍即定落点:大部分发深球压底线,偶尔发短球
-        inp.swingAim = Math.random() < 0.72 ? C.aimDepth.deep : C.aimDepth.near;
+        inp.swingAim = S.serveAim;
       }
     }
     return inp;
   }
 
   if (state === "POINT" || state === "OVER") {
-    const dx = zoneHome(p) - p.x;
+    const dx = p.homeX - p.x;
     if (Math.abs(dx) > 24) { inp.left = dx < 0; inp.right = dx > 0; }
     return inp;
   }
@@ -280,7 +373,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   S.tick--;
   if (incoming && S.tick <= 0) {
     S.tick = d.tick;
-    const runTo = (x: number) => Math.abs(x - p.x) / (C.player.vmax * em.speed);
+    const runTo = (x: number) => Math.abs(x - p.x) / selfVmax(p, em);
     // 从最高可行拦截点往下逐级试:面对扣杀必须立足防守,不尝试高空迎击
     const aggr = Rules.teamOf(p.side).length > 1 ? Math.min(0.88, em.aggr + C.doubles.aggrBonus) : em.aggr;
     S.wantSmash = isSmash ? false : (Math.random() < aggr); // 本回合是否处于进攻心态
@@ -318,12 +411,12 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     // 双打:落点归队友就回防区待命,别两个人叠在一起
     const claimX = ball.shot && ball.shot.landX != null ? ball.shot.landX : ic.x;
     S.chasing = Rules.shouldChase(p, claimX);
-    S.targetX = S.chasing ? clamp(ic.x + err, lo, hi) : zoneHome(p);
+    S.targetX = S.chasing ? clamp(ic.x + err, lo, hi) : p.homeX;
     S.ic = S.chasing ? ic : null;
   } else if (!incoming) {
     p.zoneScale = baseZone;
     p.aiAimErr = d.shotErr;
-    S.targetX = zoneHome(p);
+    S.targetX = p.homeX;
     S.wantSmash = false;
     S.ic = null;
     S.chasing = false;
@@ -389,7 +482,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
       if (dist > p.swingRadius * 1.15 && h < C.aiReach.stand * 0.8) {
         inp.skillPressed = true;
       } else if (S.ic && S.chasing) {
-        const runToTime = Math.abs(S.ic.x - p.x) / (C.player.vmax * em.speed);
+        const runToTime = Math.abs(S.ic.x - p.x) / selfVmax(p, em);
         if (S.ic.t < runToTime - 2 || dist > 200) {
           inp.skillPressed = true;
         }
@@ -411,6 +504,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     // 认定误差与起手时机共用这一个复位点 —— 两者都是「每拍只掷一次」。
     S.readRolled = false;
     S.readErr = 0;
+    S.recvNoted = false;            // 质量快照同拍复位(noteHit 消费不掉的(挥空/发球)在这里清)
   }
   const radius = Physics.reachRadius(ball);
   const lead = (ball.live && !ball.held && S.chasing !== false) ? entryLead(p, ball, radius) : -1;
@@ -422,7 +516,17 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     S.swingLead = center + Math.round(rand(-totalTiming, totalTiming));
   }
   const depth = chooseDepth(p, Rules.rivalsOf(p), CO.groundY - ball.y, S.wantSmash);
-  if (lead >= 0 && p.swingT < 0 && S.swingLead !== null && lead <= S.swingLead) inp.swingAim = depth;
+  // 出球前最后一格:看风收力/压深(入门档 windSense=0 等于不补,机制仍归玩家)
+  if (lead >= 0 && p.swingT < 0 && S.swingLead !== null && lead <= S.swingLead) {
+    // 起手瞬间记接球质量快照(此时 ball.shot 仍是**来球**的信息,击中后就被换掉了):
+    // 来球球种(慢软?) + 自己跑了多远 —— noteHit 在真实击中时按它定压力权重。
+    if (!S.recvNoted) {
+      S.recvNoted = true;
+      S.recvKind = ball.shot ? ball.shot.kind : null;
+      S.recvRun = Math.abs(p.x - p.homeX);
+    }
+    inp.swingAim = windAdjustedDepth(p, depth);
+  }
 
   // ---------- 够不到也要扑一下:鱼跃俯冲(只做表现) ----------
   // 旧行为:赶不上的球 AI 就杵在 targetX 上看它落地 —— 用户反馈的「接不到时站在那不动」。
@@ -465,4 +569,4 @@ function onScore(p: Player, scored: boolean): void {
   }
 }
 
-export const AI = { think, reset, onScore };
+export const AI = { think, reset, onScore, noteHit };

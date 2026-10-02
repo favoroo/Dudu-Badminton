@@ -13,6 +13,55 @@ export type ShotKind = "smash" | "slash" | "lob" | "netshot" | "drive" | "clear"
 export type DiffKey = "easy" | "normal" | "hard";
 
 /** AI 面对扣杀时的防守削弱参数 */
+/**
+ * 难度档的**增量**(不是绝对值):关卡只想"让 AI 稍微再钝一点"时,
+ * 不该被迫重抄一遍该档的其余十个数(那等于把三档表抄成二十份)。
+ * 正数 = 更差(read 偏差更大 / shotErr 打得更飞 / timingErr 起手更毛 / aggr 更敢扣)。
+ */
+export type AiDelta = Partial<Record<"read" | "shotErr" | "timingErr" | "aggr", number>>;
+
+/**
+ * AI 难度档一行(config.diffs 的值)。
+ * windSense 是「看风下手」的程度(0..1):出球解算的 aim 口径**不认风**(见 physics 的
+ * IntegrateIntent),所以风真的会把 AI 的球吹偏;这一档补回几成由 windSense 说了算。
+ * 0 = 一味不补(风关里也会自爆,留给玩家读风的下手空间),1 = 补满 aiWindDepth。
+ */
+export interface AiTier {
+  label: string;
+  tick: number;
+  speed: number;
+  read: number;
+  readFloor: number;
+  zone: number;
+  shotErr: number;
+  timingErr: number;
+  aggr: number;
+  composure: number;
+  crush: number;
+  notice: number;
+  windSense: number;
+  /**
+   * 接球质量双向闸门(0=压力只随拍数涨,与旧曲线完全一致;1=软球回气/狼狈拍加压全开)。
+   * easy 档刻意为 0:新手回球质量天然偏软,若 AI 一直回气,新手永远体验不到
+   * 「拖长回合 → 对手力竭」的正反馈,且会顶穿 ai-check 的 easy 回合长度红线。
+   */
+  qualityGate: number;
+}
+
+/**
+ * AI 发球配比一行(config.serveMix):先抽**类型**(flick/clear,其余是标准发球),
+ * 再从 serveMix.bands 里对应那条带抽蓄力帧数。带与 flickThresh/clearThresh 不相交,
+ * 所以"想发什么"和"实际发出什么"构造上不可能错档 —— 从前是拿延迟反查类型,
+ * 默认带 [40,90] 正好跨在 65 上,入门档一半的发球悄悄变成高飘球(白送分)。
+ * vsBackCamper/vsNetRusher:对手蹲底线 / 站位靠前时改发短球的比例。
+ */
+export interface ServeMixTier {
+  flick: number;
+  clear: number;
+  vsBackCamper: number;
+  vsNetRusher: number;
+}
+
 export interface AiSmashDefenseDef {
   /** 面对扣杀的额外反应迟疑帧数(猝不及防愣神) */
   noticeAdd: number;
@@ -140,6 +189,14 @@ export interface AiState {
   tick: number;
   targetX: number;
   serveT: number;
+  /**
+   * 本记发球的定案(planServe 抽一次,serveT 归零时重抽):
+   * delay = 打算蓄力到第几帧才起手,aim = 深浅意图。
+   * **必须记住**:从前是每帧重抽延迟,而 rules 拿 serveWait 反查发球类型 ——
+   * 重抽等于每帧重新决定类型,一发球就变成"谁先够着谁赢"的赛跑。
+   */
+  serveDelay: number;
+  serveAim: number;
   wantSmash: boolean;
   ic: Intercept | null;
   swingLead: number | null;
@@ -171,6 +228,18 @@ export interface AiState {
   panicSwung: boolean;
   /** 本记来球是否已判定为「怎么都赶不上」(供扑救俯冲表现读取) */
   hopeless: boolean;
+  /**
+   * 接球质量对压力曲线的漂移(rally 拍当量,可为负,随每分 reset 重建):
+   * 软球轻松接 → 每拍少涨(对手回气),跨步/跳跃/大跑位狼狈接 → 每拍多涨。
+   * 见 ai.ts noteHit;基准曲线不变,只做有界修正 —— ai-check 红线只受此漂移影响。
+   */
+  qualDrift: number;
+  /** 起手瞬间记下的接球质量快照是否已记(每拍一次,击中时被 noteHit 消费) */
+  recvNoted: boolean;
+  /** 快照:来球球种(lob/netshot/clear = 慢软球,给「轻松接」判据用) */
+  recvKind: ShotKind | null;
+  /** 快照:起手时离防区中心 |p.x - homeX| 的距离(px) */
+  recvRun: number;
 }
 
 /** 球员。字段与 Rules/Player 的既有用法一一对应,渲染层也只读这里 */
@@ -226,6 +295,12 @@ export interface Player {
   speedMul: number;
   aiAimErr: number;
   zoneScale: number;
+  /**
+   * 这一局这个 CPU 实际吃的难度档。默认就是 C.diffs[p.aiDiff];
+   * 关卡带了 aiTune 时由 rules.startCampaign 存一份合并后的档进来。
+   * ai.ts 的 D(p) 只读这一个字段 —— 这样"档位表"与"逐关微调"不会有两份真话。
+   */
+  aiTier?: AiTier;
   score: number;
   smashGlow: number;
   sweetGlow: number;

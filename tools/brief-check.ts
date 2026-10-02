@@ -20,9 +20,10 @@ import { makeChecker } from "./harness";
 import { CAMPAIGN_STAGES } from "../assets/scripts/core/campaign";
 import { textW, wrapText } from "../assets/scripts/core/text-metrics";
 import {
-  BRIEF, BRIEF_BTN, BRIEF_HEADS, briefOverlaps, briefOverflow, layoutBrief,
+  BRIEF, BRIEF_BTN, BRIEF_HEADS, briefHasMech, briefInput, briefOverlaps, briefOverflow, layoutBrief,
   type BriefItem, type BriefLayout, type BriefStage,
 } from "../assets/scripts/ui/brief-layout";
+import { stageMechTags } from "../assets/scripts/core/campaign-hud";
 
 const h = makeChecker({});
 const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
@@ -38,11 +39,15 @@ ok(BRIEF.maxDialogH <= PANEL_H - 18, `高度红线 ${BRIEF.maxDialogH} <= 面板
 
 // ---------- ② 20 关全表逐关排版 ----------
 const KEY_ORDER = ["title", "badge", "descHead", "desc", "hintHead", "hint", "target", "reward", "starHead"];
+/** 有机制的关卡会在徽章之后多插一块「这一关改了」;没机制(第 20 关 modifiers 为空)就不占位 */
+const keyOrderFor = (hasMech: boolean): string[] =>
+  hasMech ? ["title", "badge", "mechHead", "mech", ...KEY_ORDER.slice(2)] : KEY_ORDER;
 const worst: { stage: string; h: number } = { stage: "", h: 0 };
 let longestDesc = 0, longestChip = 0;
 
 for (const st of CAMPAIGN_STAGES) {
-  const L = layoutBrief(st);
+  const B = briefInput(st);
+  const L = layoutBrief(B);
   const tag = `ST${st.stageNo < 10 ? "0" + st.stageNo : st.stageNo} ${st.title}`;
 
   const of = briefOverflow(L);
@@ -53,16 +58,31 @@ for (const st of CAMPAIGN_STAGES) {
   ok(L.dialogH >= BRIEF.minDialogH, `${tag}:框高 ${L.dialogH} >= 下限 ${BRIEF.minDialogH}`);
 
   // 结构:骨架块顺序不变,三星目标恒为三条胶囊
+  const hasMech = briefHasMech(B);
   const skeleton = L.items.filter((i) => !i.key.startsWith("chip")).map((i) => i.key).join(">");
-  ok(skeleton === KEY_ORDER.join(">"), `${tag}:块顺序 = 标题>徽章>三段小标题及其正文(实得 ${skeleton})`);
+  const want = keyOrderFor(hasMech).join(">");
+  ok(skeleton === want, `${tag}:块顺序 = ${hasMech ? "机制块 + " : ""}标题>徽章>三段小标题及其正文(实得 ${skeleton})`);
   const chips = L.items.filter((i) => i.role === "chip");
-  ok(chips.length === st.starsGoal.length && chips.length === 3, `${tag}:三星目标 ${chips.length} 条胶囊`);
+  ok(chips.length === B.starsGoal.length && chips.length === 3, `${tag}:三星目标 ${chips.length} 条胶囊`);
   ok(L.buttons.length === 2, `${tag}:底部两颗按钮`);
+
+  // 机制块:开了机制就必须**在开战前**说清改了哪些条(侧风变向/沙地陷脚…),不许只留在散文里
+  if (hasMech) {
+    const mech = L.items.find((i) => i.key === "mech")?.lines[0] ?? "";
+    for (const t of stageMechTags(st.modifiers)) ok(mech.includes(t), `${tag}:机制块含「${t}」`);
+  }
 
   // 小标题文案钉住:改的人只可能改 campaign.ts,不会顺手把标签也改了
   const head = (k: string): string => (L.items.find((i) => i.key === k)?.lines[0] ?? "");
   ok(head("descHead") === BRIEF_HEADS.desc && head("hintHead") === BRIEF_HEADS.hint && head("starHead") === BRIEF_HEADS.star,
     `${tag}:三块小标题用词不变`);
+
+  // 原生没有彩色 emoji 字体:⚠️💡🎯 在真机上是方框(0.0.19 已因同样的坑删过闯关卡的 🔒)。
+  // ★☆ 是 BMP 文本字形(MiSans 子集里有、真机实拍过),▲◆◇○ 属 U+25xx 几何块 —— 都不在此列。
+  const emojiRe = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{2B00}-\u{2BFF}]/u;
+  const textBad = (t: string): boolean => emojiRe.test(t.replace(/[★☆]/g, ""));
+  const anyEmoji = L.items.filter((i) => i.lines.some(textBad)).map((i) => i.key);
+  ok(anyEmoji.length === 0, `${tag}:简报全文无 emoji${anyEmoji.length ? ` → ${anyEmoji.join(",")}` : ""}`);
 
   // 正文真的被折开了(而不是整行硬塞):>可用宽就必须是多行
   const desc = L.items.find((i) => i.key === "desc")!;
@@ -96,11 +116,11 @@ console.log(`\n  参照:最长框高 ${worst.h}(${worst.stage})、情境说明�
 // ---------- ④ selftest:反例必须被报警 ----------
 if (process.argv.includes("--selftest")) {
   console.log("\nselftest:拿人造反例验判据有没有牙齿");
-  const base = layoutBrief(CAMPAIGN_STAGES[0]);
+  const base = layoutBrief(briefInput(CAMPAIGN_STAGES[0]));
 
   // (a) 文案长到顶穿红线
   const bloated: BriefStage = {
-    ...CAMPAIGN_STAGES[0],
+    ...briefInput(CAMPAIGN_STAGES[0]),
     desc: "侧风".repeat(120),
     hint: "落点".repeat(90),
   };
@@ -132,7 +152,7 @@ if (process.argv.includes("--selftest")) {
 if (process.argv.includes("--preview")) {
   for (const no of [1, 17, 20]) {
     const st = CAMPAIGN_STAGES.find((s) => s.stageNo === no)!;
-    const L = layoutBrief(st);
+    const L = layoutBrief(briefInput(st));
     console.log(`\n预览 ST${no} ${st.title}:弹窗 ${L.dialogW}×${L.dialogH},内边距 ${BRIEF.padX},可用宽 ${L.availW}`);
     const rows: { cy: number; tag: string; text: string }[] = [];
     for (const it of L.items) {

@@ -111,6 +111,7 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   // 跨步键是后来加的:老档只有 5 个键,消毒后必须给新键补默认(缺了 = Settings.padOf("lunge")
   // 读到 undefined,建键那一帧直接崩)。
   const old5 = sanitize({
+    v: 3,
     pad: {
       left: { dx: 10, dy: 0, r: 44 }, right: { dx: 0, dy: 0, r: 44 },
       jump: { dx: 0, dy: 0, r: 48 }, swingFar: { dx: 0, dy: 0, r: 38 }, swingNear: { dx: 0, dy: 0, r: 38 },
@@ -120,30 +121,31 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(old5.pad.lunge.dx === 0 && near(old5.pad.lunge.r, PAD_BASE.lunge.r), "老档没有跨步键 → 该键回默认布局");
   ok(old5.pad.swing.dx === 0 && near(old5.pad.swing.r, PAD_BASE.swing.r), "老档没有击球键(合并后新增) → 该键回默认布局");
 
-  const partial = sanitize({ v: 2, bgmOn: false, pad: { jump: { dx: 20, dy: -5, r: 60 } } });
+  const partial = sanitize({ v: 3, bgmOn: false, pad: { jump: { dx: 20, dy: -5, r: 60 } } });
   ok(partial.bgmOn === false, "认得出的标量保留");
   ok(partial.pad.jump.dx === 20 && partial.pad.jump.dy === -5 && near(partial.pad.jump.r, 60), "认得出的布局项保留");
 
-  // ---------- 跳跃键换簇的老档迁移(v<2) ----------
-  // 老档里 jump 的 dx/dy 是相对**右下角**的位移,新基准在**左下角**,照原值套过去
-  // 会飞到屏幕正中甚至屏外。位移上限只是坏档护栏(PLACE_GUARD,手指拖不到那么远),
-  // 老值全都合法 —— 只有"簇变了"这件事在数值上检测不出来,必须靠版本号。半径与簇无关,要保留用户调过的大小。
+  // ---------- 布局重排的老档迁移(v<3;v<2 跳跃换簇一并被它覆盖) ----------
+  // 存档里的 dx/dy 是相对**旧基准**的位移:跳键居中、右簇击球/跨步上下对调之后,
+  // 照原值套到新基准上会把布局弄歪(甚至压到别的键上)。位移上限只是坏档护栏
+  // (PLACE_GUARD,手指拖不到那么远),老值全都合法 —— 只有「基准变了」这件事
+  // 在数值上检测不出来,必须靠版本号。半径与基准无关,保留用户调过的大小。
   const legacyJump = sanitize({
     pad: { jump: { dx: -60, dy: 142, r: 55 }, left: { dx: 8, dy: 0, r: 44 } },
   });
-  ok(legacyJump.pad.jump.dx === 0 && legacyJump.pad.jump.dy === 0, "v<2 老档:跳跃偏移重置到新的左簇默认位");
-  ok(near(legacyJump.pad.jump.r, 55), "v<2 老档:跳跃半径仍保留(半径与簇无关)");
-  ok(legacyJump.pad.left.dx === 8, "v<2 老档:没换簇的键位不受迁移牵连");
-  // v=2 及以后的档不能再被重置,否则用户每次冷启动摆的位置都没了
-  const v2Jump = sanitize({ v: 2, pad: { jump: { dx: -30, dy: 40, r: 55 } } });
-  ok(v2Jump.pad.jump.dx === -30 && v2Jump.pad.jump.dy === 40, "v=2 档:跳跃偏移原样读回,迁移只认一次");
+  ok(legacyJump.pad.jump.dx === 0 && legacyJump.pad.jump.dy === 0, "v<3 老档:跳跃偏移重置到新的居中默认位");
+  ok(near(legacyJump.pad.jump.r, 55), "v<3 老档:跳跃半径仍保留(半径与基准无关)");
+  ok(legacyJump.pad.left.dx === 0, "v<3 老档:左右键偏移一并重置(基准整体变了)");
+  // v=3 及以后的档不能再被重置,否则用户每次冷启动摆的位置都没了
+  const v3Jump = sanitize({ v: 3, pad: { jump: { dx: -30, dy: 40, r: 55 } } });
+  ok(v3Jump.pad.jump.dx === -30 && v3Jump.pad.jump.dy === 40, "v=3 档:偏移原样读回,迁移只认一次");
   ok(partial.pad.left.dx === 0 && near(partial.pad.left.r, PAD_BASE.left.r), "档里缺的键补默认(以后加键不用写迁移)");
 
-  const over = sanitize({ pad: { swingFar: { dx: 1e9, dy: 1e9, r: 1e9 } } });
+  const over = sanitize({ v: 3, pad: { swingFar: { dx: 1e9, dy: 1e9, r: 1e9 } } });
   ok(over.pad.swingFar.dx === PAD_LIMIT.maxDx && near(over.pad.swingFar.r, PAD_LIMIT.rMax), "读档这一路也夹一次越界值");
-  const overSwing = sanitize({ pad: { swing: { dx: 1e9, dy: 1e9, r: 1e9 } } });
+  const overSwing = sanitize({ v: 3, pad: { swing: { dx: 1e9, dy: 1e9, r: 1e9 } } });
   ok(overSwing.pad.swing.dx === PAD_LIMIT.maxDx && near(overSwing.pad.swing.r, PAD_LIMIT.rMax), "击球键(合并版)越界也夹");
-  const nan = sanitize({ pad: { swingNear: { dx: NaN, r: Infinity } }, sfxVol: NaN });
+  const nan = sanitize({ v: 3, pad: { swingNear: { dx: NaN, r: Infinity } }, sfxVol: NaN });
   ok(nan.pad.swingNear.dx === 0 && near(nan.pad.swingNear.r, PAD_BASE.swingNear.r), "NaN/Infinity → 默认");
   ok(near(nan.sfxVol, 0.8), "sfxVol=NaN → 默认");
 

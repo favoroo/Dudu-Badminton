@@ -43,9 +43,9 @@ let waived = 0;
 // 常红不豁免 = 告警疲劳(没人再看这条工具的输出);悄悄删判据 = 自欺。
 // 豁免条目每次运行都以 ☰ 打印,想摘掉豁免就把对应视觉做出来。
 const EXPECTED_FAILS: { re: RegExp; why: string; todo: string }[] = [
-  { re: /environment\.sakuraFlurry|sakuraFlurry 只在关卡表/, why: "落樱狂风还没有飘落花瓣的视觉呈现", todo: "阶段 5 产品级:beach/dojo 樱花粒子系统" },
-  { re: /physics\.laserRail/, why: "激光加速轨在 cyber 球场上没有可见的轨体", todo: "阶段 5 产品级:cyber 网顶磁轨发光条" },
-  { re: /physics\.erratic/, why: "破损球只改弹道、没有「球不对劲」的视觉提示", todo: "阶段 5 产品级:破损羽毛球抖动/残羽指示" },
+  // 2026-10-02 摘空:原先三条豁免(sakuraFlurry 落樱 / physics.laserRail 磁轨 / physics.erratic 破损球)
+  // 的视觉都已在 render/world.ts 落地(花瓣粒子、网顶轨体带触发过冲、同相位残影 + 失速撕口),
+  // 豁免表留着就等于"允许机制隐形"的合法出口 —— 现在回到零豁免:再有人加机制不配画面,直接红。
 ];
 const fail = (sec: string, msg: string): void => {
   const hit = EXPECTED_FAILS.find((e) => e.re.test(msg));

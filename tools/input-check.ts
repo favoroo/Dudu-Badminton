@@ -323,5 +323,73 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
   ok(pad.targetX === undefined, "resetPadHolds 成功清除 targetX");
 }
 
+// ---------- ⑨ 滑轨模式与跨步技能兼容性回归 ----------
+
+{
+  const mkBall = () => ({
+    x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0,
+    live: false, held: true, owner: null, lastHitter: null,
+    crossed: false, netted: false, shot: null, sq: 1, sqPrev: 1,
+    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
+  });
+
+  // 1. setTargetX 支持手势方向传参: 向左滑动(-1)
+  const pad1 = newPad();
+  setTargetX(pad1, 150, -1);
+  ok(pad1.lastDir === -1, "setTargetX(-1) 成功记录向左滑动手势");
+  press(pad1, "lunge");
+  ok(pad1.lungeDir === -1, `滑轨向左滑动后按跨步 → lungeDir 为 -1 (实得 ${pad1.lungeDir})`);
+
+  // 2. 松手后(setTargetX 不传方向或松开)按跨步仍沿用向左
+  const pad2 = newPad();
+  setTargetX(pad2, 160, -1);
+  press(pad2, "lunge");
+  clearEdges(pad2);
+  // 跨步后清掉了前序 targetX,避免往回拉
+  ok(pad2.targetX === undefined, "clearEdges 消费了跨步的前序 targetX");
+  // 再次按跨步仍能读到 lastDir
+  press(pad2, "lunge");
+  ok(pad2.lungeDir === -1, "松开滑轨后再次跨步仍能朝向左(-1)");
+
+  // 3. 几何方位优先: 角色在 250, targetX 在 120 (身后), 即使 lungeDir=0 也向后跨
+  const pBehind = Player.create("left");
+  pBehind.x = 250;
+  pBehind.vx = 0;
+  const inpBehind: PlayerInput = {
+    left: false, right: false, jumpPressed: false, jumpHeld: false,
+    swingAim: null, lungePressed: true, lungeDir: 0,
+    targetX: 120,
+  };
+  Player.update(pBehind, inpBehind, mkBall());
+  ok(pBehind.lungeDir === -1, `targetX 在身后(120 < 250) → 实体几何解析向后跨步(实得 ${pBehind.lungeDir})`);
+  ok(pBehind.vx === -CFG.lunge.speed, `向后跨步获得向左冲量(实得 vx=${pBehind.vx})`);
+
+  // 4. 几何方位优先: 角色在 250, targetX 在 380 (身前) → 向前跨
+  const pAhead = Player.create("left");
+  pAhead.x = 250;
+  pAhead.vx = 0;
+  const inpAhead: PlayerInput = {
+    left: false, right: false, jumpPressed: false, jumpHeld: false,
+    swingAim: null, lungePressed: true, lungeDir: 0,
+    targetX: 380,
+  };
+  Player.update(pAhead, inpAhead, mkBall());
+  ok(pAhead.lungeDir === 1, `targetX 在身前(380 > 250) → 实体几何解析向前跨步(实得 ${pAhead.lungeDir})`);
+  ok(pAhead.vx === CFG.lunge.speed, `向前跨步获得向右冲量(实得 vx=${pAhead.vx})`);
+
+  // 5. 跨步物理冲量保护: 跨步期间哪怕刚好在 targetX 附近, 速度也不被 arriveEps 截停
+  const pImmune = Player.create("left");
+  pImmune.x = 200;
+  pImmune.vx = 0;
+  const inpHit: PlayerInput = {
+    left: false, right: false, jumpPressed: false, jumpHeld: false,
+    swingAim: null, lungePressed: true, lungeDir: -1,
+    targetX: 200, // 距离当前 x 恰好为 0
+  };
+  Player.update(pImmune, inpHit, mkBall());
+  ok(pImmune.lungeT === 1, "跨步成功起步");
+  ok(pImmune.vx === -CFG.lunge.speed, `距离 targetX 零距离但跨步速度不被刹停(实得 vx=${pImmune.vx})`);
+}
+
 console.log(h.bad === 0 ? "\n输入意图层自洽 ✓" : `\n${h.bad} 项未通过`);
 process.exit(h.bad === 0 ? 0 : 1);

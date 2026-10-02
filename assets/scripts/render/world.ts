@@ -11,11 +11,13 @@ import { CFG } from "../core/config";
 import { Settings } from "../core/settings";
 import { clamp, lerp, rand } from "../core/utils";
 import { Ball, GameEvent, Player, SkinDef } from "../core/types";
+import type { StageDef } from "../core/campaign";
 import { Rules } from "../core/rules";
 import { Physics } from "../core/physics";
 import { drawPlayer, drawShuttle, setSwingArcSink, drawSwingArcGhost, SwingArcFx, LungeGhost, drawLungeGhost, FlashGhost, drawFlashGhost } from "./sprites";
 import { pal, withAlpha } from "./palette";
 import { courtRenderer, CourtThemeItem } from "./court";
+import { mulberry32, drawStarburst, drawCrossMark } from "./p5kit";
 import { FXSystem } from "./fx";
 import { HudOverlay } from "./hud-overlay";
 import { Ribbon } from "./ribbon";
@@ -45,6 +47,58 @@ const TAG_MAIN_L = new Color().fromHEX("#ffe14d");
 const TAG_MAIN_R = new Color().fromHEX("#3ea8ff");
 /** 溜冰滑行冰雾:常量色提为模块级(球员循环每帧 new 曾是纯垃圾) */
 const ICE_FOG_COL = new Color(220, 240, 255, 60);
+
+/**
+ * 一条上下沿都带锯齿的水墨横带(第 6 关的网前雾)。
+ * 为什么要自己铺锯齿而不是 ellipse:P5 这套语言拒绝光滑圆圈(见 AGENTS「视觉语言」条),
+ * 而"撕开的纸"这种边缘才读得出"这是一层挡着你的东西",不是一个光斑。
+ * 牙的位置由齿数等分 + 一个随时间缓慢推移的相位给出 —— 逐帧只平移,不每帧 rand。
+ */
+function drawInkBand(
+  g: Graphics, cx: number, cy: number, w: number, h: number,
+  teeth: number, color: Color, alpha: number, t: number,
+): void {
+  if (alpha <= 0.01 || w < 2 || h < 2 || teeth < 2) return;
+  const half = w / 2;
+  const step = w / teeth;
+  const bite = h * 0.22;                    // 牙深
+  const shift = (t * 0.35) % step;          // 整层缓慢横移
+  g.fillColor = withAlpha(color, alpha);
+  g.moveTo(cx - half, cy);
+  for (let i = 0; i <= teeth; i++) {        // 上沿锯齿
+    const x = cx - half + i * step + shift * 0; // 相位只挪牙尖,不挪边界(否则带子会缩)
+    g.lineTo(x, cy + h / 2 - (i % 2 === 0 ? 0 : bite));
+  }
+  g.lineTo(cx + half, cy);
+  for (let i = teeth; i >= 0; i--) {        // 下沿锯齿(反向闭合)
+    const x = cx - half + i * step;
+    g.lineTo(x, cy - h / 2 + (i % 2 === 0 ? 0 : bite));
+  }
+  g.close();
+  g.fill();
+}
+/** 流沙关(第 2 关)的颗粒与沙窝色阶 —— 见下面 SAND_* 的说明 */
+const SAND_RND = mulberry32(0x5a4d);
+/**
+ * 沙窝/扬沙的 9 档不透明度阶梯:预先算好,帧循环里只按下标取。
+ * (不每帧 new Color,也不用 Color.set —— 后者在 cc-shim 的类型里没有,拿到引擎里
+ *  才存在;走阶梯表两边都成立,还省掉每球员每帧十几次分配。)
+ */
+const SAND_TROUGH_STEPS: Color[] = [];
+const SAND_GRAIN_STEPS: Color[] = [];
+for (let i = 0; i < 9; i++) {
+  SAND_TROUGH_STEPS.push(new Color(96, 58, 16, Math.round(CFG.env.sand.troughA * (i / 8) * 255)));
+  SAND_GRAIN_STEPS.push(new Color(246, 226, 176, Math.round(CFG.env.sand.grainA * (i / 8) * 255)));
+}
+const SAND_GRAINS: { dx: number; dy: number; sz: number; k: number }[] = [];
+for (let i = 0; i < CFG.env.sand.count; i++) {
+  SAND_GRAINS.push({
+    dx: (SAND_RND() * 2 - 1) * CFG.env.sand.spread,
+    dy: -SAND_RND() * CFG.env.sand.rise,
+    sz: 1.4 + SAND_RND() * 1.8,
+    k: 0.45 + SAND_RND() * 0.8,
+  });
+}
 const TAG_PARTNER = new Color().fromHEX("#6ee7b7");
 const TAG_P2 = new Color().fromHEX("#7fd0ff");
 const TAG_DEFAULT = new Color(255, 255, 255, 173);
@@ -159,6 +213,14 @@ export class WorldView {
 
   // 闯关模式关卡专属动态视觉缓存
   private sandstormParticles: { x: number; y: number; len: number; spd: number; alpha: number }[] = [];
+  /** 落樱(第 8 关):出生定形的花瓣表,逐帧只平移 + 摆动,横向吃**真风符号** */
+  private sakuraPetals: { x: number; y: number; ph: number; sz: number; spd: number }[] = [];
+  /** 磁轨过冲(第 13 关):球被电离加速那一拍的余辉倒计时 */
+  private railHot = 0;
+  /** 机制事件的上一条计数(居合/禁区/力竭/电浆…只在**上升沿**飘一次字) */
+  private mechSeen = { iai: -1, zone: -1, exhausted: -1, laser: -1, focus: -1, zen: -1 };
+  /** 上面那组底数属于哪一关的哪一分:换关或换分都重打底数,免得跨局误报 */
+  private mechStage = "";
   private decoyBall: { x: number; y: number; vx: number; vy: number; t: number } | null = null;
   private lastDecoyOwner: unknown = null;
 
@@ -230,6 +292,17 @@ export class WorldView {
         len: 16 + Math.random() * 26,
         spd: 6 + Math.random() * 7,
         alpha: 0.25 + Math.random() * 0.45,
+      });
+    }
+    // 落樱花瓣(第 8 关):构造期定形(与 court.ts 的风丝同一条规矩 —— 之后逐帧只走位,
+    // 每帧 rand 会抖成噪点),此后横向漂移吃**真风符号**,让"花瓣往哪飘 = 球往哪偏"同源。
+    for (let i = 0; i < C.env.sakura.count; i++) {
+      this.sakuraPetals.push({
+        x: Math.random() * C.world.w,
+        y: Math.random() * C.world.h,
+        ph: Math.random() * Math.PI * 2,
+        sz: C.env.sakura.size * (0.6 + Math.random() * 0.8),
+        spd: 0.55 + Math.random() * 0.9,
       });
     }
 
@@ -580,9 +653,18 @@ export class WorldView {
     courtRenderer.drawDynTo(this.courtDynGfx, this.vp, rallyCount);
 
     const stage = Rules.R.mode === "campaign" ? Rules.R.activeStage : null;
+    // 这一关是不是"软沙地":判据只看关卡表声明的移动惩罚,不在渲染里写字面量
+    const softSand = !!stage?.modifiers.player
+      && ((stage.modifiers.player.accelMul ?? 1) < 1 || (stage.modifiers.player.vmaxMul ?? 1) < 1);
     if (stage?.modifiers.player?.forbiddenNetZone) {
       this.drawForbiddenZone(g, stage.modifiers.player.forbiddenNetZone);
     }
+    // 关卡机制的"看得见"三件套(第 13/8 关的轨与落樱)与事件飘字。
+    // 画在球场层之后、人物之前:轨与花瓣是环境,不该糊在球员身上。
+    if (this.railHot > 0) this.railHot--;
+    this.drawLaserRail(g, stage);
+    this.drawSakura(g, stage);
+    if (ball) this.watchMechEvents(Rules.R.players, ball, stage);
 
     // 跨步高速突进与时空超速移动流风残影采样
     for (const p of players) {
@@ -653,6 +735,9 @@ export class WorldView {
       if (p.stamina !== undefined) {
         this.drawStaminaBar(g, p);
       }
+      // 流沙关(第 2 关):脚下沙窝 + 起步扬沙。这一关只改了 accelMul/vmaxMul/jumpMul/reachMul,
+      // 画面从前一帧都不变 —— 玩家读出的是"手感差",不是"这关是沙地"。
+      if (softSand && Math.abs(p.vx) > 0.6) this.drawSandSink(g, p, alpha);
       if (p.sliding && Math.abs(p.sliding) > 1.2) {
         // 溜冰滑行冰雾轨迹(常量色提为模块级:球员循环里每帧 new 曾是纯垃圾)
         g.fillColor = ICE_FOG_COL;
@@ -714,9 +799,25 @@ export class WorldView {
     if (ball && (ball.live || ball.held || ball.flying)) {
       const bx = ball.held ? ball.x : lerp(ball.px, ball.x, alpha);
       const by = ball.held ? ball.y : lerp(ball.py, ball.y, alpha);
-      // 烈日刺目关卡:进入高空盲区时球隐入强光中
-      const inSunGlare = !!(stage?.modifiers.environment?.blindingSun && bx > 400 && bx < 560 && by > 130 && by < 240);
-      if (!inSunGlare) {
+      // 烈日刺目关卡:进入高空盲区时球隐入强光中。
+      // 盒子的范围从前写死在这一行(400/560/130/240),界面读不到、回归钉不住 —— 现在吃
+      // CFG.env.sun(与耀斑画的是同一个盒,「看不见」与「亮在哪」必然对得上)。
+      // 另外不再让球**凭空消失**:留一枚淡十字,玩家仍知道球在强光里的位置。
+      // 「什么都不知道」不是难度,是 bug(记忆:看不见的控件就是 bug)。
+      const SU = CFG.env.sun;
+      const inSunGlare = !!(stage?.modifiers.environment?.blindingSun
+        && bx > SU.x0 && bx < SU.x1 && by > SU.y0 && by < SU.y1);
+      // 网前迷雾同理:关卡文案说"球穿过网前时完全隐形",从前只糊了一层白、球照旧看得见
+      // —— 机制其实没生效,还靠它给 AI 算了减免。现在按**画出来的那个盒**真藏球,并同样留十字。
+      const FG = CFG.env.fog;
+      const inFog = !!(stage?.modifiers.environment?.fog
+        && Math.abs(bx - CFG.court.netX) < FG.w / 2
+        && Math.abs(by - (CFG.court.netTopY + 25)) < FG.h / 2);
+      if (inSunGlare || inFog) {
+        drawCrossMark(g, this.vp.x(bx), this.vp.y(by), 13, 2.2, 0,
+          pal(inFog && !inSunGlare ? "#e8f0ff" : "#fff6d0"), inFog && !inSunGlare ? 0.42 : 0.5);
+      }
+      if (!inSunGlare && !inFog) {
         // sqR:形变的帧间插值(drawShuttle 无 alpha 参数,渲染前补进副本)
         const sqR = lerp(ball.sqPrev ?? ball.sq, ball.sq ?? 1, alpha);
         // 复用同一个视图对象(老写法每次 spread 一个新 Ball,每帧一个垃圾)
@@ -724,6 +825,10 @@ export class WorldView {
         Object.assign(bv, ball);
         bv.x = bx; bv.y = by; bv.sqR = sqR;
         drawShuttle(g, this.vp, bv, skin, this.swingCue, this.shuttleMot);
+        // 破损球(第 8/19 关):抖的是 physics 真实施加的那一下,失速段再补一道撕口
+        if (stage?.modifiers.physics?.erratic && ball.live && !ball.held) {
+          this.drawErraticCue(g, ball, bx, by);
+        }
       }
     }
 
@@ -834,6 +939,225 @@ export class WorldView {
     g.stroke();
   }
 
+  /**
+   * 贴网电浆磁轨(第 13 关「激光加速轨」)。
+   * 这一关的机制是"球掠过网顶那段带会被抽到 1.75 倍速",可场上一条轨都不画:
+   * 玩家只看见球忽然变向变快,像 bug。`env-check §7` 从前就是把它记在豁免表里的
+   * ("生效却没人画 —— 机制隐形")。现在画出来,并且带宽**直接吃 CFG.env.laser 的
+   * above/below** —— 画在能触发的那一段上,而不是"贴着网顶画一条好看的线"。
+   */
+  private drawLaserRail(g: Graphics, stage: StageDef | null | undefined): void {
+    if (!stage?.modifiers.physics?.laserRail) return;
+    const CO = CFG.court;
+    const L = CFG.env.laser;
+    const R = CFG.env.rail;
+    const x = this.vp.x(CO.netX);
+    const yTop = this.vp.y(CO.netTopY - L.below);
+    const yBot = this.vp.y(CO.netTopY + L.above);        // Graphics 里 y 向上:网顶往上的那段
+    const h = Math.max(6, yBot - yTop);
+    const cy = yTop + h / 2;
+    const pulse = 0.5 + 0.5 * Math.sin(this.frameT * R.pulseHz);
+    const hot = Math.max(0, this.railHot) / Math.max(1, R.hotFrames);
+    // 轨体:一条斜切亮条(不用圆头),越靠近网带越实
+    g.fillColor = withAlpha(pal("#00f0ff"), R.glowA * (0.5 + 0.5 * pulse) * (1 - hot * 0.3) + hot * 0.4);
+    g.rect(x - 5, yTop, 10, h);
+    g.fill();
+    // 过冲余辉:球被电离那一拍,轨整条炸亮并往下坠一格
+    if (hot > 0) {
+      g.fillColor = withAlpha(pal("#ffffff"), R.hotA * hot * 0.85);
+      g.rect(x - 3 - 8 * hot, yTop, 6 + 16 * hot, h);
+      g.fill();
+    }
+    // 刻度:读成"这是一条有窗口的轨",不是一根无意义的亮条
+    g.strokeColor = withAlpha(pal("#9ff6ff"), 0.5 + 0.4 * pulse);
+    g.lineWidth = 1.4;
+    for (let i = 0; i < R.tick; i++) {
+      const ty = yTop + h * ((i + 0.5) / R.tick);
+      const tw = i % 2 === 0 ? 9 : 5;
+      g.moveTo(x - tw, ty);
+      g.lineTo(x + tw, ty);
+    }
+    g.stroke();
+    g.lineWidth = 1;
+  }
+
+  /**
+   * 落樱狂风(第 8 关):花瓣往下飘 + 横向吃**真风**。
+   * 这一关从前是**死配置** —— `sakuraFlurry: true` 被关卡表启用,渲染里一个读者都没有,
+   * 于是玩家的"这关有风"完全靠简报文案。花瓣的横向漂移读 `Physics.windAt(envPhase())`,
+   * 与球被推走同源(这一关其实开的是 `erratic`,没有 windX 时退化成自身摆动)。
+   */
+  private drawSakura(g: Graphics, stage: StageDef | null | undefined): void {
+    if (!stage?.modifiers.environment?.sakuraFlurry) return;
+    const S = CFG.env.sakura;
+    const W = CFG.world.w, H = CFG.world.h;
+    const wind = Physics.windAt(Physics.envPhase()) * S.k;
+    const petal = pal("#ffc7dd");
+    for (const p of this.sakuraPetals) {
+      p.y += S.fall * p.spd;
+      p.x += wind + Math.sin(this.frameT * 0.03 + p.ph) * 0.6;
+      if (p.y > H + 20) { p.y = -20; }
+      if (p.x > W + 20) p.x = -20;
+      else if (p.x < -20) p.x = W + 20;
+      // 三瓣撕纸:两片错开的小三角读成"翻转的花瓣",逐帧只改偏移
+      const gx = this.vp.x(p.x) + Math.sin(this.frameT * 0.05 + p.ph) * S.sway * 0.15;
+      const gy = this.vp.y(p.y);
+      const w = p.sz * (0.55 + 0.45 * Math.abs(Math.sin(this.frameT * 0.04 + p.ph)));
+      g.fillColor = withAlpha(petal, S.a);
+      g.moveTo(gx - w, gy);
+      g.lineTo(gx, gy + p.sz * 0.7);
+      g.lineTo(gx + w, gy);
+      g.lineTo(gx, gy - p.sz * 0.4);
+      g.close();
+      g.fill();
+    }
+  }
+
+  /**
+   * 破损球的"不对劲"标记(第 8/19 关)。
+   * `erratic` 只在 physics 里给球加横向/纵向冲量,画面一帧都不提示 —— 玩家读成
+   * "我手滑了"或"游戏随机",而不是"这颗球是坏的"。这里画两样真实存在的东西:
+   *   · 残影:偏移量**直接取 physics 那两条 sin 的相位**(envPhase),所以它抖的
+   *     就是球真的在抖的那一下,不是另编一层动画;
+   *   · 失速撕裂:下降段(b.vy>0,即 physics 里的 descRamp 生效段)在球尾加一道
+   *     琥珀撕口 —— 那才是要给容错的时刻,文案里"后半程随机急坠"第一次被兑现。
+   */
+  private drawErraticCue(g: Graphics, ball: Ball, bx: number, by: number): void {
+    const E = CFG.env.erratic;
+    const M = CFG.env.erraticMark;
+    const sp = Math.hypot(ball.vx, ball.vy);
+    if (sp <= E.speedGate) return;
+    const ph = Physics.envPhase();
+    // 残影偏移:与 physics 施加的抖动力同相位(同一个 sin,不是第二次随机)
+    const ox = Math.cos(ph * E.freqX) * E.ampX * M.ghost * 6;
+    const oy = Math.sin(ph * E.freqY) * E.ampY * M.ghost * 6;
+    const x = this.vp.x(bx), y = this.vp.y(by);
+    g.strokeColor = withAlpha(pal("#ffffff"), M.ghostA);
+    g.lineWidth = 1.3;
+    g.rect(x + ox - 5, y + oy - 5, 10, 10);
+    g.stroke();
+    // 下降段:球尾一道斜口,读成"这球要打坠了"
+    if (ball.vy > 0) {
+      const back = ball.vx > 0 ? -1 : 1;
+      g.strokeColor = withAlpha(pal("#ff9f1c"), M.stallA);
+      g.lineWidth = 2;
+      g.moveTo(x + back * 9, y - 4);
+      g.lineTo(x + back * 16, y + 2);
+      g.lineTo(x + back * 21, y - 3);
+      g.stroke();
+    }
+    g.lineWidth = 1;
+  }
+
+  /**
+   * 机制事件的上升沿飘字:这一关**刚**发生了什么,当场说出来。
+   * 判星条件本来就靠这些计数(居合/禁区/力竭/电浆…),可场内的目标条只给数字 ——
+   * "第 2 次居合打出去了"这种时刻要有一下,否则玩家不知道数字为什么涨了。
+   * 只在计数**变化那一帧**飘一次(mechSeen 打底),不刷屏。
+   */
+  private watchMechEvents(players: Player[], ball: Ball, stage: StageDef | null | undefined): void {
+    if (!stage) return;
+    const me = players.find((p) => !p.isAI) ?? players[0];
+    if (!me) return;
+    const M = this.mechSeen;
+    // 换关(或重开本关)先把底数清空:否则上一关攒下的计数会在这一关第一帧被当成"刚刚发生"
+    const key = `${stage.id}:${Rules.R.pointNo}`;
+    if (key !== this.mechStage) {
+      this.mechStage = key;
+      M.iai = me.stats.iaiStrikes; M.zone = me.stats.zonePenalties;
+      M.exhausted = me.isExhausted ? 1 : 0; M.laser = ball.laserBoosted ? 1 : 0;
+      M.focus = (me.focusT ?? 0) > 0 ? 1 : 0; M.zen = Math.round((me.zenMeter ?? 0) * 100);
+    }
+    const mods = stage.modifiers;
+    // 居合一闪(第 7 关)
+    if (M.iai < 0) M.iai = me.stats.iaiStrikes;
+    else if (me.stats.iaiStrikes > M.iai) {
+      this.floatSys(me.x, me.y - 96, "居合!", "#ff6a1f", 22, 40);
+      M.iai = me.stats.iaiStrikes;
+    }
+    // 网前禁区触电(第 10 关)
+    if (mods.player?.forbiddenNetZone) {
+      if (M.zone < 0) M.zone = me.stats.zonePenalties;
+      else if (me.stats.zonePenalties > M.zone) {
+        this.floatSys(me.x, me.y - 96, "禁区! 硬直", "#e60012", 18, 44);
+        M.zone = me.stats.zonePenalties;
+      }
+    }
+    // 体力枯竭(第 17 关):力竭那一下必须看得见 —— 这一关的★就是"全程未力竭"
+    if (me.stamina !== undefined) {
+      const ex = me.isExhausted ? 1 : 0;
+      if (M.exhausted < 0) M.exhausted = ex;
+      else if (ex > M.exhausted) {
+        this.floatSys(me.x, me.y - 96, "力竭! 拉高远回气", "#9fb4d6", 18, 60);
+        M.exhausted = ex;
+      } else if (ex < M.exhausted) M.exhausted = ex;
+    }
+    // 心流进入 / 破功(第 9 关):focusT 上升沿 = 进了子弹时间;zenMeter 被清零 = 破功
+    if (mods.player?.zenFocus) {
+      const fz = (me.focusT ?? 0) > 0 ? 1 : 0;
+      if (M.focus < 0) M.focus = fz;
+      else if (fz > M.focus) {
+        this.floatSys(me.x, me.y - 110, "心流!", "#00f0ff", 24, 52);
+        M.focus = fz;
+      } else if (fz < M.focus) M.focus = fz;
+      const zen = Math.round((me.zenMeter ?? 0) * 100);
+      if (M.zen < 0) M.zen = zen;
+      else if (zen < M.zen && M.zen >= 60) {
+        this.floatSys(me.x, me.y - 96, "破功!", "#e60012", 18, 40);
+      }
+      M.zen = zen;
+    }
+    // 电浆球触发(第 13 关):上升沿一次 —— 轨炸亮 + 报一声,两件事对得上。
+    // 从前写成"等 boost 结束再报",那句话要晚一整段飞行才出现,玩家早打完下一拍了。
+    const boosted = !!ball.laserBoosted;
+    if (M.laser < 0) M.laser = boosted ? 1 : 0;
+    else if (boosted && M.laser === 0) {
+      this.railHot = CFG.env.rail.hotFrames;
+      this.floatSys(ball.x, ball.y - 30, "电浆加速!", "#00f0ff", 18, 34);
+      M.laser = 1;
+    } else if (!boosted && M.laser === 1) M.laser = 0;
+  }
+
+  /**
+   * 流沙关脚下的沙窝 + 起步扬沙(第 2 关「深陷流沙」)。
+   * 这一关从前**只有一组倍率、画面一帧都不变**,所以玩家把"跑不动"读成手感差/掉帧,
+   * 而不是"这关是沙地"。这里给的是最便宜但确实对得上身体的两笔:
+   *   · 沙窝 = 脚下一条扁锯齿槽,跑得越快陷得越深(alpha 吃 |vx|);
+   *   · 扬沙 = 往运动反方向喷几粒,颗粒出生定形、逐帧只平移(不许每帧 rand)。
+   * 数值都在 CFG.env.sand(渲染层不写字面量,与「数值只进 config」同一条铁律)。
+   */
+  private drawSandSink(g: Graphics, p: Player, alpha: number): void {
+    const S = CFG.env.sand;
+    const CO = CFG.court;
+    const x = this.vp.x(lerp(p.px, p.x, alpha));
+    const gy = this.vp.y(CO.groundY);
+    const sp = Math.min(1, Math.abs(p.vx) / (CFG.player.vmax || 1));
+    const dir = p.vx > 0 ? 1 : -1;
+    const w = S.troughW * (0.7 + 0.5 * sp);
+    const step = Math.max(0, Math.min(8, Math.round(sp * 8)));
+    // 沙窝:五尖锯齿的扁槽(不用光滑椭圆 —— P5 拒绝光滑圆圈)
+    g.fillColor = SAND_TROUGH_STEPS[step];
+    g.moveTo(x - w, gy - 1);
+    for (let i = 0; i < 5; i++) {
+      const t = (i + 0.5) / 5;
+      g.lineTo(x - w + 2 * w * t, gy - 1 - (i % 2 === 0 ? 0 : S.troughD * (0.5 + 0.5 * sp)));
+    }
+    g.lineTo(x + w, gy - 1);
+    g.lineTo(x + w, gy + 3);
+    g.lineTo(x - w, gy + 3);
+    g.close();
+    g.fill();
+    // 扬沙:身后一小片,颗粒出生定形、逐帧只按下标取色与平移
+    for (const gr of SAND_GRAINS) {
+      const gs = Math.max(0, Math.min(8, Math.round(sp * gr.k * 8)));
+      if (gs === 0) continue;
+      g.fillColor = SAND_GRAIN_STEPS[gs];
+      const gx = x - dir * (6 + Math.abs(gr.dx) * (0.6 + sp));
+      g.rect(gx + gr.dx * 0.35, gy + gr.dy * (0.5 + sp), gr.sz, gr.sz);
+      g.fill();
+    }
+  }
+
   private drawStaminaBar(g: Graphics, p: Player): void {
     if (p.stamina === undefined) return;
     const st = clamp(p.stamina, 0, 100);
@@ -903,8 +1227,10 @@ export class WorldView {
 
     const stage = Rules.R.activeStage;
     const env = stage && Rules.R.mode === "campaign" ? stage.modifiers.environment : null;
-    const empActive = !!(env?.empGlitch && this.atmo.rally >= 3);
-    const flashActive = !!(env?.spectatorFlash && this.atmo.rally >= 5);
+    // 阈值只这一处:从前 3 与 5 写死在这里,而 rules 判「EMP 期间成功回球」吃的是
+    // CFG.star.empRally —— 两份数一旦有人改一边,画面在闪、判据却没算,玩家就莫名其妙丢星。
+    const empActive = !!(env?.empGlitch && this.atmo.rally >= C.star.empRally);
+    const flashActive = !!(env?.spectatorFlash && this.atmo.rally >= C.star.flashRally);
     const any = !!(env && (env.sandstorm || env.fog || env.blindingSun || empActive || flashActive));
     if (!any) {
       // 非闯关局/无环境特效:旧版每帧无条件 clear 一次;现在只在「上一帧画过」时补一次清屏
@@ -920,44 +1246,60 @@ export class WorldView {
 
     {
       // 1. 沙尘暴滤镜与狂风飞沙
+      //    颗粒方向从前写死 +x(无条件往右跑),而这一关第 4 关还带阻力惩罚 —— 画面与球
+      //    受推的方向各说各话,玩家读出的是"动画在随机动"。现在吃同一个 windAt:
+      //    关卡没给 windX 时退化成原来的右行(不为不存在的机制凭空造方向)。
       if (env!.sandstorm) {
         g.fillColor = new Color(220, 160, 60, 38);
         g.rect(-1600, -1000, 3200, 2000);
         g.fill();
 
+        const sw = Physics.windAt(Physics.envPhase());
+        const sgn = sw === 0 ? 1 : Math.sign(sw);
         g.strokeColor = new Color(245, 205, 115, 140);
         g.lineWidth = 1.8;
         for (const sp of this.sandstormParticles) {
-          sp.x += sp.spd;
+          sp.x += sp.spd * sgn;
           sp.y += sp.spd * 0.22;
-          if (sp.x > W + 60) sp.x = -60;
+          if (sgn > 0 ? sp.x > W + 60 : sp.x < -60) sp.x = sgn > 0 ? -60 : W + 60;
           if (sp.y > H + 60) sp.y = -60;
           g.moveTo(this.vp.x(sp.x), this.vp.y(sp.y));
-          g.lineTo(this.vp.x(sp.x + sp.len), this.vp.y(sp.y + sp.len * 0.22));
+          g.lineTo(this.vp.x(sp.x + sp.len * sgn), this.vp.y(sp.y + sp.len * 0.22));
           g.stroke();
         }
       }
-      // 2. 网前迷雾
+      // 2. 网前水墨雾(第 6 关「晨雾隐踪」)
+      //    从前是两团 g.ellipse:光滑圆圈既不是这套视觉语言(AGENTS「拒绝光滑圆圈」),
+      //    盒尺寸又写死在渲染里 —— 玩家看不出雾的边界,回归也钉不住这个盒。
+      //    现在画成上下带锯齿的水墨条,并且**同一个盒**拿去把球藏起来(见 draw 里的 inFog):
+      //    关卡文案说"球穿过网前时完全隐形",从前它只是糊了一层白,机制其实没生效。
       if (env!.fog) {
+        const F = C.env.fog;
         const nx = this.vp.x(C.court.netX);
         const ny = this.vp.y(C.court.netTopY + 25);
-        g.fillColor = new Color(240, 245, 255, 68);
-        g.ellipse(nx, ny, 165, 95);
-        g.fill();
-        g.fillColor = new Color(255, 255, 255, 96);
-        g.ellipse(nx, ny + 15, 110, 65);
-        g.fill();
+        drawInkBand(g, nx, ny, F.w, F.h, F.teeth, pal("#f0f5ff"), F.a, t);
+        drawInkBand(g, nx, ny + 15, F.w * 0.66, F.h * 0.66, Math.max(6, F.teeth - 4), pal("#ffffff"), F.coreA, t * 0.7);
       }
-      // 3. 烈日致盲高空耀斑
+      // 3. 烈日致盲高空耀斑(第 3 关)
+      //    从前是两团 g.ellipse:光滑圆圈既不像"光"也不像"刺眼",而且盒坐标/中心/α
+      //    全写死在这一段里,界面读不到、回归也钉不住。现在换成 p5kit 的尖刺星芒
+      //    (打击感=尖刺这套性格),再加一道斜切光栅带把"哪一段会看不见"划出来。
       if (env!.blindingSun) {
-        const sx = this.vp.x(480);
-        const sy = this.vp.y(180);
-        const flareA = 0.36 + Math.sin(t * 0.08) * 0.08;
-        g.fillColor = new Color(255, 245, 180, Math.round(flareA * 255));
-        g.ellipse(sx, sy, 120, 120);
-        g.fill();
-        g.fillColor = new Color(255, 255, 230, Math.round((flareA + 0.22) * 255));
-        g.ellipse(sx, sy, 55, 55);
+        const SU = C.env.sun;
+        const sx = this.vp.x(SU.cx);
+        const sy = this.vp.y(SU.cy);
+        const flareA = SU.flareA + Math.sin(t * 0.08) * SU.flarePulse;
+        drawStarburst(g, sx, sy, SU.rOut, SU.rIn, SU.rays, pal("#fff3c4"), flareA * 0.9);
+        drawStarburst(g, sx, sy, SU.rIn * 1.5, SU.rIn * 0.55, SU.rays, pal("#ffffff"), flareA * 0.7);
+        // 致盲盒:斜切亮带标出"球进这一段会消失",玩家据此决定要不要打高球
+        const bx0 = this.vp.x(SU.x0), bx1 = this.vp.x(SU.x1);
+        const by0 = this.vp.y(SU.y0), by1 = this.vp.y(SU.y1);
+        g.fillColor = withAlpha(pal("#fff0b4"), SU.bandA * (0.7 + 0.3 * Math.sin(t * 0.05)));
+        g.moveTo(bx0, by0);
+        g.lineTo(bx1, by0 + 8);
+        g.lineTo(bx1, by1 + 8);
+        g.lineTo(bx0, by1);
+        g.close();
         g.fill();
       }
       // 4. EMP 故障闪烁条纹 (多拍时触发)

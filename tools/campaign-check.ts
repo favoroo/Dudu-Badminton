@@ -29,7 +29,8 @@
 //   node .tools-build/tools/campaign-check.js --selftest
 // ============================================================
 import { makeChecker } from "./harness";
-import { CAMPAIGN_STAGES, CampaignManager, checkStarCond, evaluateStars, type CourtTheme, type StageDef, type StarCond, type StarFacts } from "../assets/scripts/core/campaign";
+import { CAMPAIGN_STAGES, CampaignManager, aiReliefFor, checkStarCond, evaluateStars, isBetterBestScore, tuneAiTier, type CourtTheme, type StageDef, type StarCond, type StarFacts } from "../assets/scripts/core/campaign";
+import { STAR_COPY, goalOverrideMismatch, objectiveLine, starGoalLines } from "../assets/scripts/core/campaign-hud";
 import { CFG } from "../assets/scripts/core/config";
 import { Career } from "../assets/scripts/core/career";
 
@@ -41,10 +42,13 @@ const PER_COURT = 5;
 /** checkStarCond 目前实现的全部分支:关卡表里出现表外的 k = 判据没接上就展示给玩家 */
 const KNOWN_CONDS = new Set<string>([
   "win", "netLead", "opScoreAtMost", "shutout", "perfects", "sweets", "smashes", "noWhiff",
+  "whiffsAtMost",
   "rallyAtLeast", "noServeFault", "lungeSaves", "smashScores", "jumpSmashes", "deepShots",
   "iaiStrikes", "netIntercepts", "airShotRatio", "skillCasts", "noZonePenalty", "empReturns",
   "laserBoosts", "noExhausted", "slidingScores", "lastSmash",
 ]);
+/** STAR_COPY 必须覆盖全部判据 k(少一条 = 简报/HUD 会 undefined 崩或说不出话) */
+const COPY_CONDS = new Set<string>(Object.keys(STAR_COPY));
 const h = makeChecker({ verbose });
 const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
@@ -64,14 +68,26 @@ function auditTable(stages: StageDef[]): string[] {
     for (const [k, v] of Object.entries({ title: s.title, subtitle: s.subtitle, badge: s.badge, desc: s.desc, hint: s.hint })) {
       if (!v || !v.trim()) out.push(`${s.id}: ${k} 是空的(战前简报会开天窗)`);
     }
-    if (s.starsGoal.length !== 3) out.push(`${s.id}: starsGoal ${s.starsGoal.length} 条,弹窗按三颗星标排`);
-    if (s.starsGoal.some((g) => !g || !g.trim())) out.push(`${s.id}: starsGoal 里有空条目`);
+    // 目标文案由判据生成(starsGoal 只剩作者覆写);条数与空值照旧要核,
+    // 因为简报的三条胶囊是按颗数排的,少一条就缺一颗星
+    const goalLines = starGoalLines(s);
+    if (goalLines.length !== 3) out.push(`${s.id}: 目标文案 ${goalLines.length} 条,弹窗按三颗星标排`);
+    if (goalLines.some((g) => !g || !g.trim())) out.push(`${s.id}: 目标文案里有空条目`);
+    // 覆写允许换说法,但**不许换数字**:把失分门槛从 ≤1 放松到 ≤2 却仍印「不超过 1 分」,
+    // 玩家是按简报决定要不要挑战这一关的 —— 那是骗。
+    if (s.starsGoal) {
+      if (s.starsGoal.length !== 3) out.push(`${s.id}: starsGoal 覆写 ${s.starsGoal.length} 条,要么补齐三条要么整条删掉(由判据生成)`);
+      const drift = goalOverrideMismatch(s);
+      if (drift.length) out.push(`${s.id}: starsGoal 覆写第 ${drift.map((i) => i + 1).join(",")} 条的数字与 starsCheck 不符`);
+    }
     if (!s.starsCheck || s.starsCheck.length !== 3) {
       out.push(`${s.id}: starsCheck 缺失或不是 3 条(判星会回落通用三条,与简报文案脱节)`);
     } else {
       if (s.starsCheck[0].k !== "win") out.push(`${s.id}: starsCheck 首条必须是 win(第一颗星 = 赢)`);
       for (let i = 0; i < s.starsCheck.length; i++) {
         if (!KNOWN_CONDS.has(s.starsCheck[i].k)) out.push(`${s.id}: starsCheck[${i}] 的判据 ${s.starsCheck[i].k} 未注册`);
+        // 判据注册了但没配文案 = 简报/HUD 取到 undefined,一开局就崩在文案那一行
+        if (!COPY_CONDS.has(s.starsCheck[i].k)) out.push(`${s.id}: 判据 ${s.starsCheck[i].k} 在 STAR_COPY 里没有措辞`);
       }
     }
     if (!(s.targetScore >= 1)) out.push(`${s.id}: targetScore ${s.targetScore} 打不到`);
@@ -283,6 +299,159 @@ ok(CampaignManager.getTotalStars() <= CAMPAIGN_STAGES.length * 3, "总星数不�
   ok(!!lose && lose.baseCoin === R0.lose, `闯关败局走难度表败奖(${R0.lose}),实得 ${lose ? lose.baseCoin : "null"}`);
 }
 
+// ---------- §7 判据的「说法 / 进度」与判定同源(core/campaign-hud) ----------
+{
+  // 一条判据打到"刚好达标"与"差一档"两种事实:checkStarCond 与 objectiveLine 必须同时点头/摇头。
+  // 为什么两条一起验:HUD 印「飞扑 1/3」而判据其实要 2 次(或反过来)是不会崩的坏 ——
+  // 玩家照着读数打,打完发现星没亮,只会觉得这模式在骗人。
+  const F0 = (): StarFacts => ({
+    won: false, myScore: 0, opScore: 0, longestRally: 0,
+    hits: 0, smashes: 0, sweets: 0, perfects: 0, whiffs: 0,
+    lungeShots: 0, jumpSmashes: 0, iaiStrikes: 0, skillCasts: 0,
+    deepShots: 0, netIntercepts: 0, airHits: 0, empReturns: 0,
+    zonePenalties: 0, exhausted: 0,
+    serveFaults: 0, smashScores: 0, slidingScores: 0, laserBoosts: 0,
+    lastSmash: false,
+  });
+  /** 达标(on=true)与差一档(on=false)两副事实 */
+  const factFor = (c: StarCond, on: boolean): StarFacts => {
+    const f = F0();
+    switch (c.k) {
+      case "win": f.won = on; f.myScore = on ? 7 : 0; f.opScore = on ? 3 : 7; break;
+      case "netLead": f.myScore = 7; f.opScore = on ? 7 - c.n : 7 - c.n + 1; break;
+      case "opScoreAtMost": f.opScore = on ? c.n : c.n + 1; break;
+      case "shutout": f.opScore = on ? 0 : 1; break;
+      case "perfects": f.perfects = on ? c.n : c.n - 1; break;
+      case "sweets": f.sweets = on ? c.n : c.n - 1; break;
+      case "smashes": f.smashes = on ? c.n : c.n - 1; break;
+      case "noWhiff": f.whiffs = on ? 0 : 1; break;
+      case "whiffsAtMost": f.whiffs = on ? c.n : c.n + 1; break;
+      case "rallyAtLeast": f.longestRally = on ? c.n : c.n - 1; break;
+      case "noServeFault": f.serveFaults = on ? 0 : 1; break;
+      case "lungeSaves": f.lungeShots = on ? c.n : c.n - 1; break;
+      case "smashScores": f.smashScores = on ? c.n : c.n - 1; break;
+      case "jumpSmashes": f.jumpSmashes = on ? c.n : c.n - 1; break;
+      case "deepShots": f.deepShots = on ? c.n : c.n - 1; break;
+      case "iaiStrikes": f.iaiStrikes = on ? c.n : c.n - 1; break;
+      case "netIntercepts": f.netIntercepts = on ? c.n : c.n - 1; break;
+      case "airShotRatio": f.hits = Math.max(10, CFG.star.airMinHits); f.airHits = on ? Math.floor(c.pct / 10) + 1 : Math.floor(c.pct / 10); break;
+      case "skillCasts": f.skillCasts = on ? c.n : c.n - 1; break;
+      case "noZonePenalty": f.zonePenalties = on ? 0 : 1; break;
+      case "empReturns": f.empReturns = on ? c.n : c.n - 1; break;
+      case "laserBoosts": f.laserBoosts = on ? c.n : c.n - 1; break;
+      case "noExhausted": f.exhausted = on ? 0 : 1; break;
+      case "slidingScores": f.slidingScores = on ? c.n : c.n - 1; break;
+      case "lastSmash": f.lastSmash = on; break;
+    }
+    return f;
+  };
+  const bad7: string[] = [];
+  for (const s of CAMPAIGN_STAGES) {
+    for (let i = 0; i < s.starsCheck.length; i++) {
+      const c = s.starsCheck[i];
+      const copy = STAR_COPY[c.k];
+      if (!copy) { bad7.push(`${s.id}★${i + 1}: STAR_COPY 里没有 ${c.k} 的措辞`); continue; }
+      if (!copy.goal(c).trim() || !copy.label.trim()) bad7.push(`${s.id}★${i + 1}: ${c.k} 的文案/标签是空的`);
+      if (copy.label.length > 5) bad7.push(`${s.id}★${i + 1}: 紧凑标签「${copy.label}」${copy.label.length} 字,HUD 一行放不下三条`);
+      for (const on of [true, false]) {
+        const f = factFor(c, on);
+        const judged = checkStarCond(c, f);
+        const line = objectiveLine(c, i, f);
+        if (judged !== on || line.ok !== on) bad7.push(`${s.id}★${i + 1}(${c.k})${on ? "达标" : "差一档"}:判据=${judged} HUD=${line.ok}`);
+      }
+    }
+  }
+  ok(bad7.length === 0, bad7.length ? `判据文案/进度:\n    ${bad7.join("\n    ")}` : "判据文案/进度:20 关 60 条的达标与差一档两副事实,判定与读数完全一致");
+
+  // 覆写不许换措辞之外的东西:第 20 关 ★1 说「连拿 2 分绝杀夺冠」是对的,
+  // 但覆写一旦与判据数字不符就是骗人 —— §1 已经拦了,这里补一条"覆写必须是有意为之"
+  const overridden = CAMPAIGN_STAGES.filter((s) => !!s.starsGoal).map((s) => s.id);
+  ok(overridden.length <= 3, `只有 ${overridden.length} 关(${overridden.join(",")})用作者覆写:覆写是例外不是常态,否则文案又会分家`);
+
+  // 目标条在局中每帧都要算:除了两条"终局条"(赢没赢、最后一球怎么死的),
+  // 其余每条都必须给得出中途进度 —— 拿不到数就等于那颗星永远不亮
+  const noProg: string[] = [];
+  for (const s of CAMPAIGN_STAGES) {
+    for (const c of s.starsCheck) {
+      if (c.k === "win" || c.k === "lastSmash") continue;
+      if (objectiveLine(c, 0, factFor(c, true)).live !== true) noProg.push(`${s.id}:${c.k}`);
+    }
+  }
+  ok(noProg.length === 0, noProg.length ? `${noProg.join(",")} 在场内给不出进度` : "每条判据(除两条终局条)场内都有进度可读");
+}
+
+// ---------- §8 「最佳比分」要真的最佳(大厅卡片印的就是它) ----------
+{
+  ok(isBetterBestScore(7, 1, "7-5") === true, "净胜更大 → 该覆盖");
+  ok(isBetterBestScore(7, 5, "7-1") === false, "净胜更小 → 不该覆盖(旧写法无条件覆盖,纪录会倒退)");
+  ok(isBetterBestScore(7, 0, "7-1") === true, "净胜相同看失分:7-0 优于 7-1");
+  ok(isBetterBestScore(7, 1, "7-1") === false, "完全相同不必重写");
+  ok(isBetterBestScore(7, 2, "手改过的坏值") === true, "存档读不懂时重写,而不是永远卡在旧值");
+  // 跑真实存档:先 7-1 通关,再回来 7-5 险胜 —— 卡片上的「最佳」不许被更差的一局盖掉。
+  // 存档先复位:§2 已经把这关打到过 7-0,不清干净的话这里测的是上一节留下的残档。
+  const s1 = CAMPAIGN_STAGES[0];
+  CampaignManager.getProgress().records[s1.id] = { stars: 0, clears: 0, bestScore: "0-0", attempts: 0 };
+  CampaignManager.recordStageClear(s1, 7, 1, 3);
+  CampaignManager.recordStageClear(s1, 7, 5, 1);
+  const best = CampaignManager.getStageRec(s1.id).bestScore;
+  ok(best === "7-1", `重打打得更差不能把「最佳」改差(实得 ${best})`);
+  CampaignManager.recordStageClear(s1, 7, 0, 3);
+  ok(CampaignManager.getStageRec(s1.id).bestScore === "7-0", "打出更好的 → 该更新(实得 " + CampaignManager.getStageRec(s1.id).bestScore + ")");
+}
+
+// ---------- §9 机制减免:遮蔽关的 AI 必须被算钝,移动关不许算 ----------
+{
+  // 遮蔽类机制只糊人眼(AI 走重模拟,它"看得见"),所以这些关要按表给 AI 加误差;
+  // 而移动/重力/摩擦类是**双方一起**受 PlayerModifier 的管,对称,不许出现在减免里。
+  const EYES = ["blindingSun", "sandstorm", "fog", "empGlitch", "hologramDecoy", "spectatorFlash", "sakuraFlurry", "erratic"];
+  const touched = CAMPAIGN_STAGES.filter((s) => EYES.some((k) =>
+    (k in (s.modifiers.environment ?? {})) || (k in (s.modifiers.physics ?? {}))));
+  const noRelief = touched.filter((s) => {
+    const r = aiReliefFor(s);
+    return !(r.read || r.shotErr || r.timingErr);
+  });
+  ok(noRelief.length === 0,
+    noRelief.length ? `遮蔽关没给 AI 减免:${noRelief.map((s) => s.id).join(",")}` : `遮蔽类关卡 ${touched.length} 关都按表给 AI 加了误差`);
+
+  // 移动惩罚关不许有减免(那两层对称,补了就是偏袒)
+  const moved = CAMPAIGN_STAGES.filter((s) => (s.modifiers.player?.accelMul ?? 1) < 1 || (s.modifiers.player?.vmaxMul ?? 1) < 1);
+  const biased = moved.filter((s) => aiReliefFor(s).read !== undefined);
+  ok(biased.length === 0, `移动惩罚关(${moved.map((s) => s.id).join(",")})不该吃 AI 减免:那机制对双方都成立`) ;
+
+  // 减免不许把 AI 调成纯靶子:任何一档打折后都要落在 cap 里,且 read 仍 ≥ 表内基线的 60%
+  const cap = CFG.campaign.aiReliefCap;
+  const over = CAMPAIGN_STAGES.flatMap((s) => {
+    const t = tuneAiTier(CFG.diffs[s.aiDiff], aiReliefFor(s));
+    const bad: string[] = [];
+    if (t.read > cap.read[1] || t.shotErr > cap.shotErr[1] || t.timingErr > cap.timingErr[1]) bad.push(s.id);
+    return bad;
+  });
+  ok(over.length === 0, over.length ? `减免越界:${over.join(",")}` : "逐关折出来的档位全在 cap 范围内");
+
+  // 反向核对:第 6 关(迷雾)折完之后 read 必须比原档大 —— 小了就是接反了方向
+  const fog = CAMPAIGN_STAGES.find((s) => s.modifiers.environment?.fog)!;
+  const fogT = tuneAiTier(CFG.diffs[fog.aiDiff], aiReliefFor(fog));
+  ok(fogT.read > CFG.diffs[fog.aiDiff].read && fogT.shotErr > CFG.diffs[fog.aiDiff].shotErr,
+    `${fog.id}:减免方向正确(read ${CFG.diffs[fog.aiDiff].read}→${fogT.read},shotErr ${CFG.diffs[fog.aiDiff].shotErr}→${fogT.shotErr})`);
+}
+
+// ---------- §10 HUD 左列四块读数牌不许互相压字 ----------
+{
+  const col = CFG.hudColumn;
+  const order: ["tag", "obj", "mech", "wind"] = ["tag", "obj", "mech", "wind"];
+  const bad: string[] = [];
+  for (let i = 0; i + 1 < order.length; i++) {
+    const a = order[i], b = order[i + 1];
+    const bottom = col.top[a] + col.h[a];
+    if (bottom > col.top[b]) bad.push(`${a}(顶 ${col.top[a]} 高 ${col.h[a]})压到 ${b}(${col.top[b]})`);
+  }
+  // 最底一块不能低过 960×540 的上半区(下面还有 24px 状态行的余量与球场)
+  const last = order[order.length - 1];
+  const lowest = col.top[last] + col.h[last];
+  ok(bad.length === 0, bad.length ? `HUD 左列压字:${bad.join(" / ")}` : "HUD 左列四块牌(局别/目标/机制/风向)上下留缝,互不压字");
+  ok(lowest <= 150, `左列最底一块到 ${lowest},仍在顶部 150 之内(不侵占球场主体)`);
+}
+
 // ---------- --selftest:改坏的表必须被报警 ----------
 if (selftest) {
   const mutate = (fn: (s: StageDef[]) => StageDef[], want: RegExp, label: string): void => {
@@ -291,12 +460,22 @@ if (selftest) {
   };
   mutate((s) => { s[3] = { ...s[3], stageNo: s[2].stageNo }; return s; }, /stageNo 重复/, "stageNo 撞号");
   mutate((s) => s.slice(0, 19), /第 20|只有|关,大厅一屏|自洽|编号连续|场景 arena 有/, "少一关");
-  mutate((s) => { s[0] = { ...s[0], starsGoal: ["赢得对局", "净胜 2 分"] as unknown as [string, string, string] }; return s; }, /starsGoal 2 条/, "三星目标只剩两条");
+  mutate((s) => { s[0] = { ...s[0], starsGoal: ["赢得对局", "净胜 2 分"] as unknown as [string, string, string] }; return s; }, /starsGoal 覆写 2 条/, "三星目标覆写只剩两条");
+  // 判据放松了、覆写文案还按老数字说话 —— 简报就在骗人(这正是从前 starsGoal/starsCheck 分家的坏)
+  mutate((s) => {
+    s[1] = { ...s[1], starsCheck: [{ k: "win" }, { k: "lungeSaves", n: 3 }, { k: "opScoreAtMost", n: 2 }], starsGoal: ["赢得对局", "使用飞扑救球至少 3 次", "失分不超过 1 分"] };
+    return s;
+  }, /数字与 starsCheck 不符/, "门槛改成 ≤2 却仍印「不超过 1 分」");
   mutate((s) => { s[0] = { ...s[0], starsCheck: [{ k: "win" }, { k: "netLead", n: 2 }] as unknown as StageDef["starsCheck"] }; return s; }, /starsCheck 缺失或不是 3 条/, "三星判据只剩两条");
   mutate((s) => { s[0] = { ...s[0], starsCheck: [{ k: "netLead", n: 2 }, { k: "noWhiff" }, { k: "sweets", n: 3 }] }; return s; }, /首条必须是 win/, "首颗星不是「赢」");
   mutate((s) => { s[0] = { ...s[0], starsCheck: [{ k: "win" }, { k: "superSlash" as never, n: 2 }, { k: "noWhiff" }] }; return s; }, /未注册/, "判据 k 没接上");
   mutate((s) => { s[0] = { ...s[0], chapter: 3 }; return s; }, /章节 3 与场景 beach 不对应/, "章节与场景错位");
   mutate((s) => { s[0] = { ...s[0], desc: "  " }; return s; }, /desc 是空的/, "情境说明被清空");
+
+  // 「最佳比分」那条不是摆设:拿旧写法(无条件吃最近一局)演一遍,它必须过不了 §8 的比较
+  const oldWay = (prev: string, my: number, op: number): string => `${my}-${op}`;
+  ok(oldWay("7-1", 7, 5) === "7-5" && isBetterBestScore(7, 5, "7-1") === false,
+    "反例可检:旧写法会把「最佳」改成 7-5,而现判据认定 7-5 不该覆盖 7-1");
 }
 
 console.log(`${h.bad === 0 ? "✓" : "✗"} 闯关进度:${CAMPAIGN_STAGES.length} 关表自洽 + 下一关推进 + 聚焦判据 + 结算取关,${h.bad} 处问题`);

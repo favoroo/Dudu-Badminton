@@ -42,7 +42,7 @@ import {
 } from "./ui-arcade";
 import { faceOf, pressable, repaint, solidBlock, solidTab, uinode, type TabHandle } from "./ui-shell";
 import {
-  BRIEF, BRIEF_BTN, layoutBrief, type BriefButton, type BriefItem,
+  BRIEF, BRIEF_BTN, briefInput, layoutBrief, type BriefButton, type BriefItem,
 } from "./brief-layout";
 import {
   CMP, HEADER_TEXT, LOCK_TEXT, SKILL_GO_TEXT, SKILL_TAG_TEXT,
@@ -69,6 +69,8 @@ const CN_DIFF: Record<string, string> = { easy: "入门", normal: "普通", hard
 const BRIEF_STYLE: Record<string, { col: Color; center?: boolean; outline?: boolean }> = {
   title: { col: ac(C.paper), center: true, outline: true },
   badge: { col: ac(C.acid), center: true },
+  mechHead: { col: ac(C.cyan) },
+  mech: { col: ac(C.paper) },
   descHead: { col: ac(C.slash) },
   desc: { col: ac(C.paper) },
   hintHead: { col: ac(C.good) },
@@ -549,7 +551,9 @@ export class CampaignPanel {
   private openBriefing(stage: StageDef): void {
     this.briefStage = stage;
 
-    const L = layoutBrief(stage);
+    // 排版吃的是「投影」:目标文案由判据表生成,机制行由 modifiers 表生成
+    // —— 简报说的、判的、开局生效的必须是同一份数据,不能再靠人手抄对齐(映射见 briefInput)。
+    const L = layoutBrief(briefInput(stage));
     this.briefH = L.dialogH;
     this.briefBodyGfx.clear();
     this.paintBriefBody();

@@ -77,6 +77,50 @@ export function windAt(phase: number): number {
   return m.windOscillate ? Math.sin(phase * C.env.windOscRate) * m.windX : m.windX;
 }
 
+/** 阵风通报的监视状态(住在 rules,因为只有它推进环境时钟;physics 只负责算) */
+export interface GustWatch {
+  /** 门槛已连续满足的步数 */
+  hold: number;
+  /** 报完一次之后还要闭嘴多少步 */
+  cool: number;
+  /** 上一次报出去的风向(同一个方向不重复报) */
+  lastDir: number;
+}
+
+export function freshGustWatch(): GustWatch { return { hold: 0, cool: 0, lastDir: 0 }; }
+
+/**
+ * 每步喂一次:这一帧该不该报「起风了」。就地改写 w、只回一个数 —— 这条每步都跑,
+ * 分配对象就是每帧垃圾(与 world.ts 把颜色常量提到模块级同一条理由)。
+ *
+ * 为什么要有这件事:震荡风每 ~6.6s 换一次方向,而玩家的眼睛在对球和人物,不会盯着
+ * 角落那根 22px 高的针。方向翻掉的那一瞬间,由一次斩劈横幅替他把注意力拉回来 ——
+ * 用户原话「吹风方向的提示不太明显」,缺的不是读数,是**变化发生时的通知**。
+ *
+ * 判据三段,缺一都会出问题:
+ *   · 强度 ≥ windGustAt(满量程的比例)—— 刚过零点那种"往哪边都不倒"的时刻不报,报了是噪声;
+ *   · 连续 windGustFrames 步 —— 防单帧毛刺把横幅打成闪烁;
+ *   · 方向与上次不同 + cooldown 闭嘴 —— 一个半周期正好一句话,不会刷屏。
+ * @returns 0 = 不报;±1 = 报一次,符号 = 风吹向的方向(+1 朝对方底线 = 玩家这一拍顺风)
+ */
+export function gustWatch(w: GustWatch, phase: number): number {
+  const E = C.env;
+  const m = activeModifier;
+  if (!m || m.windX === 0) { w.hold = 0; if (w.cool > 0) w.cool--; return 0; }
+  const full = E.windFullScale || 1;
+  const v = windAt(phase);
+  const dir = v > 0 ? 1 : v < 0 ? -1 : 0;
+  if (w.cool > 0) w.cool--;
+  w.hold = Math.abs(v) / full >= E.windGustAt ? w.hold + 1 : 0;
+  if (w.hold >= E.windGustFrames && w.cool === 0 && dir !== 0 && dir !== w.lastDir) {
+    w.hold = 0;
+    w.cool = E.windGustCooldown;
+    w.lastDir = dir;
+    return dir;
+  }
+  return 0;
+}
+
 // 单步阻尼因子(纯函数:球壳与 AI 的球路预测共用,免得改一次手感要同步两处)
 function dragOf(sp: number): number {
   const dragMul = activeModifier ? activeModifier.dragMul : 1;
@@ -650,6 +694,8 @@ export const Physics = {
   tickEnv, envPhase,
   /** 某一时刻的风(px/步²,带符号)。传 envPhase()+k 就是 k 步之后的风 —— 风向标的预读针。 */
   windAt,
+  /** 阵风通报判据(纯函数;状态归 rules 持有,因为它才是环境时钟的主人) */
+  gustWatch, freshGustWatch,
   // drag 已从公开面上摘掉:唯一用户是 AI 自己抄的那份积分,现已统一进 future(truth)。
   // 留个口子就会有第五份循环,而四份循环口径不一致正是"落点圈骗人"的根因。
   get gravity() { return Pace.g; },

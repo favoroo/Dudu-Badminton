@@ -181,6 +181,7 @@ export class GameRoot extends Component {
     if (n === C.sim.maxSteps) this.acc = 0;
 
     this.drain();
+    this.syncPressureCue();
     // 触觉待发放:挂在真实帧循环(不是上面的模拟循环)—— 定格/慢动作期间模拟帧会积压,
     // 若跟着模拟帧放,恢复的那一瞬间会一口气震一串
     hapticTick();
@@ -398,6 +399,41 @@ export class GameRoot extends Component {
   }
 
   // ---------- 事件 → 反馈(老 game.js drain 的阶段 2 子集) ----------
+  /** AI 压力阶段缓存(上升沿检测):0 充沛 / 1 消耗(血条≤3格) / 2 力竭(0格) */
+  private pStage = 0;
+
+  /**
+   * AI 压力阶段上升沿 → 玩家反馈。血条只回答「现在还剩多少」,这里只回答
+   * 「刚跨过哪条线」—— 与阵风横幅同一套设计哲学:缺的不是读数,是变化发生时的通知。
+   * 阈值与血条格数对齐(同一套归一化口径):消耗线 0.6 = 掉到 3 格变橙,
+   * 力竭线 0.04 = 0 格红框呼吸。旧版「rally=7 飘一句体力下降」已删:那时血条
+   * 才刚开始动,信号和画面打架;现在信号跟着血条的真实阶段走。
+   */
+  private syncPressureCue(): void {
+    const R = Rules.R;
+    if (R.mode === "drill") { this.pStage = 0; return; }   // 喂球机没有体力这回事
+    const ai = R.players.find((p) => p.side === "right" && p.isAI);
+    if (!ai || !ai.ai) { this.pStage = 0; return; }
+    const tier = ai.aiTier ?? C.diffs[ai.aiDiff ?? "normal"];
+    const stamina = clamp(1 - (tier.crush > 0 ? ai.ai.pressure / tier.crush : 0), 0, 1);
+    const stage = stamina <= 0.04 ? 2 : stamina <= 0.6 ? 1 : 0;
+    if (stage > this.pStage) {
+      if (stage === 1) {
+        // 消耗:轻提示,只飘字不配音 —— 这是「该压着打了」的信号,不是高潮
+        this.world.float(C.world.w / 2, 96, "对手开始喘了", "#ff8a3d", 18, 44);
+      } else if (stage === 2) {
+        // 力竭:全套路演出 —— 中央大字 + 震屏 + 欢呼 + 沮丧脸 + 触觉 + 斩劈横扫
+        this.world.float(C.world.w / 2, 96, "对手力竭!", "#ff5a5a", 24, 60);
+        this.world.shake(5);
+        this.sfx.cheer(1);
+        this.faceSide("right", "sad", 90);
+        haptic("skillLight");
+        this.world.hudOverlay.playExhaust();
+      }
+    }
+    this.pStage = stage;
+  }
+
   /** hit 事件的出球方向:火花扇/划线/速度线都按它朝向,不再各算各的或硬编码 0 */
   private hitAngOf(e: GameEvent): number {
     const vx = e.vx as number, vy = e.vy as number;
@@ -594,12 +630,8 @@ export class GameRoot extends Component {
             this.world.float(C.world.w / 2, 72, "★ 15 拍神仙之战!!! ★", "#00f0ff", 24, 52);
             this.sfx.cheer(1); this.world.shake(5);
           }
-          // 连击压力:回合拖长 → 对手开始下滑。给玩家一个"拖长回合有回报"的可见信号
-          // (训练场右半边是喂球机不是对手,不报;分级飘字位置与上面 6 拍里程碑错开)
-          if (R.mode !== "drill" && e.rally === C.aiPressure.cueRally && R.players.some((q) => q.isAI)) {
-            this.world.float(C.world.w / 2, 96, "对手体力下降!", "#8ef2a3", 20, 44);
-            this.faceSide("right", "sad", 45);
-          }
+          // (连击压力的玩家反馈已整体迁往 syncPressureCue:血条阶段上升沿统一播,
+          //  「对手体力下降!」这句旧飘字与血条信号打架,已删 —— 同一件事不在两处念)
           if (e.timingHint) {
             this.world.float(e.x as number, (e.y as number) - 44, e.timingHint === "early" ? "早了!" : "晚了!", "#ff9664", 14, 36);
           }
@@ -684,6 +716,17 @@ export class GameRoot extends Component {
           // 扣杀得分那一记已由 land 分支的 landSmash 说过同一个时刻了,这里不再叠第二段
           // (rules 里 land 之后必发 score,两处都震会变成两串连打)。
           if (e.side === "left" && e.reason !== "扣杀得分") haptic("score");
+          // 体力归因:玩家得分且 AI 血条 ≤2 格(高压力)→ 把这一分记在消耗战术上。
+          // boss 战爽感的闭环就在这一句:玩家亲眼看到「这分是我拖出来的」。
+          // 扣杀得分有自己的中央大字(同区 y=96),不再叠一层;训练场没有对手体力。
+          if (e.side === "left" && e.reason !== "扣杀得分" && R.mode !== "drill") {
+            const ai = R.players.find((p) => p.side === "right" && p.isAI);
+            if (ai && ai.ai) {
+              const tier = ai.aiTier ?? C.diffs[ai.aiDiff ?? "normal"];
+              const stamina = clamp(1 - (tier.crush > 0 ? ai.ai.pressure / tier.crush : 0), 0, 1);
+              if (stamina <= 0.4) this.world.float(C.world.w / 2, 130, "体力透支!", "#ffb37a", 15, 40);
+            }
+          }
           // 扣杀得分专属:观众大欢呼 + 庆祝短慢放 + 中央大字,与普通得分拉开层次
           if (e.reason === "扣杀得分") {
             this.sfx.cheer(0.7);

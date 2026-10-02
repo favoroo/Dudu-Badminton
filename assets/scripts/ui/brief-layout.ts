@@ -14,6 +14,10 @@
 // 20 关全表在 node 下回归:tools/brief-check.ts。
 // ============================================================
 import { textW, wrapText, type Measure } from "../core/text-metrics";
+import type { StageDef } from "../core/campaign";
+import {
+  physicsModReadout, playerModReadout, skillLabel, stageMechTags, starGoalLines,
+} from "../core/campaign-hud";
 
 /**
  * 排版常量 —— 字号、行高、块间距、内边距都从这里出,
@@ -33,9 +37,11 @@ export const BRIEF = {
 
   titleSize: 24, titleH: 34,
   badgeSize: 13, badgeH: 19, badgeLead: 3,
-  headSize: 13, headH: 21, headLead: 15,
+  headSize: 13, headH: 21, headLead: 12,
+  /** 机制块是"事实",与情境说明之间不用那么大留白(从前各块一律 15,加一块就顶穿红线) */
+  mechLead: 8,
   bodySize: 13, bodyH: 19, bodyLead: 2,
-  metaSize: 13, metaH: 21, metaLead: 15, rewardLead: 1,
+  metaSize: 13, metaH: 21, metaLead: 12, rewardLead: 1,
   chipSize: 11, chipH: 18, chipGap: 16,
 
   btnSize: 15, btnH: 46, btnPadX: 22, btnGapX: 24, btnMinW: 110,
@@ -43,10 +49,15 @@ export const BRIEF = {
   btnGap: 20,
 } as const;
 
-/** 三块小标题:文案写死在这儿,免得弹窗里一份、回归里一份 */
+/**
+ * 小标题:文案写死在这儿,免得弹窗里一份、回归里一份。
+ * 标记一律用几何字符不用 emoji —— 原生没有彩色 emoji 字体,⚠️💡🎯💰 在手机上
+ * 渲染成方框(项目里已因同样的坑删过闯关卡的 🔒 与商店的 ⏸▶),读者只会看到一串豆腐块。
+ */
 export const BRIEF_HEADS = {
-  desc: "⚠️ 战场异变与挑战：",
-  hint: "💡 胜战秘籍：",
+  mech: "◆ 这一关改了：",
+  desc: "▲ 战场异变与挑战：",
+  hint: "◇ 胜战秘籍：",
   star: "★ 三星挑战：",
 } as const;
 
@@ -62,11 +73,45 @@ export interface BriefStage {
   targetScore: number;
   deathmatch?: boolean;
   rewards: { coins: number; exp: number };
+  /**
+   * 三条目标文案 —— 由调用方过 core/campaign-hud 的 starGoalLines(stage) 拿,
+   * 不在这里另写一份(判据改了文案会自己跟着改)。
+   */
   starsGoal: readonly string[];
+  /** 机制短标签(侧风变向/沙地陷脚…),来自关卡 modifiers 表 */
+  mechTags?: readonly string[];
+  /** 玩家自己被改出来的数值读数:「移速 70% · 判定 155%」;空 = 不写这行 */
+  modReadout?: string;
+  /** 对手这一关带的技能名;空 = 不写 */
+  aiSkillLabel?: string;
+}
+
+/**
+ * StageDef → 排版投影。**映射只这一处**:大厅(campaign-panel)与回归(brief-check /
+ * brief-preview)都调它,所以"面板里看到的"和"闸门断言的"必然同源 ——
+ * 从前排版直接吃 StageDef,映射散在调用点,加一个字段就要改两处(还会漏)。
+ */
+export function briefInput(stage: StageDef): BriefStage {
+  const mods = stage.modifiers;
+  const readout = [playerModReadout(mods), physicsModReadout(mods)]
+    .filter((s) => s.length > 0).join(" · ");
+  return {
+    title: stage.title,
+    badge: stage.badge,
+    subtitle: stage.subtitle,
+    desc: stage.desc,
+    hint: stage.hint,
+    targetScore: stage.targetScore,
+    deathmatch: stage.deathmatch,
+    rewards: stage.rewards,
+    starsGoal: starGoalLines(stage),
+    mechTags: stageMechTags(mods),
+    modReadout: readout,
+    aiSkillLabel: skillLabel(stage.aiSkill),
+  };
 }
 
 export type BriefRole = "title" | "badge" | "head" | "body" | "meta" | "chip";
-
 /** 一个文本块:lines 已折好,渲染层用 "\n" 拼接直接画 */
 export interface BriefItem {
   key: string;
@@ -111,12 +156,30 @@ export function briefBadgeText(s: BriefStage): string {
 
 export function briefTargetText(s: BriefStage): string {
   return s.deathmatch
-    ? "🎯 获胜目标：一球生死决胜（丢1分即败，需净胜2分夺冠）"
-    : `🎯 获胜目标：抢先赢得 ${s.targetScore} 分`;
+    ? "◎ 获胜目标：一球生死 · 丢 1 分即败,净胜 2 分夺冠"
+    : `◎ 获胜目标：抢先赢得 ${s.targetScore} 分`;
 }
 
 export function briefRewardText(s: BriefStage): string {
-  return `💰 胜利奖励：+${s.rewards.coins} 金币 · +${s.rewards.exp} 经验`;
+  return `○ 胜利奖励：+${s.rewards.coins} 金币 · +${s.rewards.exp} 经验`;
+}
+
+/** 机制行:标签 + (有数值就补数值) ——「侧风变向 · 沙地陷脚 —— 移速 70% · 判定 155%」 */
+export function briefMechText(s: BriefStage): string {
+  const tags = (s.mechTags ?? []).filter(Boolean);
+  if (!tags.length) return "";
+  const head = tags.join(" · ");
+  return s.modReadout ? `${head} —— ${s.modReadout}` : head;
+}
+
+/** 对手技能行(空字符串 = 这一关对手没带特殊技能,不占位) */
+export function briefEnemyText(s: BriefStage): string {
+  return s.aiSkillLabel ? `对手技能：${s.aiSkillLabel}` : "";
+}
+
+/** 机制块要不要占位:没有机制标签也没有对手技能 = 整块不出现(第 20 关 modifiers 为空但带技能) */
+export function briefHasMech(s: BriefStage): boolean {
+  return briefMechText(s).length > 0 || briefEnemyText(s).length > 0;
 }
 
 // ---------- 排版 ----------
@@ -162,6 +225,20 @@ export function layoutBrief(stage: BriefStage, measure: Measure = textW): BriefL
 
   block("title", "title", [stage.title], BRIEF.titleSize, BRIEF.titleH, 0);
   block("badge", "badge", [briefBadgeText(stage)], BRIEF.badgeSize, BRIEF.badgeH, BRIEF.badgeLead);
+
+  // 机制块:这一关**改了什么**(来自 modifiers 表,不是散文)+ 对手带的技能。
+  // 放在情境说明之前 —— 玩家先知道"腿会沉",再读"为什么会沉";顺序反了就成了
+  // 读完一段故事才发现自己这局的手感被改了。空关卡(无机制)整块不占位。
+  {
+    const mech = briefMechText(stage);
+    const enemy = briefEnemyText(stage);
+    const rows = [mech, enemy].filter((x) => x.length > 0);
+    if (briefHasMech(stage)) {
+      block("mechHead", "head", [BRIEF_HEADS.mech], BRIEF.headSize, BRIEF.headH, BRIEF.mechLead);
+      const lines = rows.reduce<string[]>((acc, r) => acc.concat(wrapText(r, BRIEF.bodySize, avail, measure)), []);
+      block("mech", "body", lines, BRIEF.bodySize, BRIEF.bodyH, BRIEF.bodyLead);
+    }
+  }
 
   block("descHead", "head", [BRIEF_HEADS.desc], BRIEF.headSize, BRIEF.headH, BRIEF.headLead);
   block("desc", "body", wrapText(stage.desc, BRIEF.bodySize, avail, measure), BRIEF.bodySize, BRIEF.bodyH, BRIEF.bodyLead);

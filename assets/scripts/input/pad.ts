@@ -71,6 +71,10 @@ export function newPad(): Pad {
 }
 
 export function clearEdges(pad: Pad): void {
+  // 若本步内发生了跨步触发,消费掉前序 targetX,避免跨步爆发后角色又被自动拉回旧目标
+  if (pad.lungePressed && pad.targetX !== undefined) {
+    pad.targetX = undefined;
+  }
   pad.jumpPressed = false;
   pad.lungePressed = false;
   pad.lungeDir = 0;
@@ -84,13 +88,10 @@ export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "s
     case "right": pad.right = true; pad.lastDir = 1; break;
     case "jump": pad.jump = true; pad.jumpPressed = true; pad.jumpSteps = 0; pad.jumpTail = 0; break;
     case "lunge": {
-      // 方向在按下这一刻现解,优先级:滑轨目标方向 → 摇杆推的方向 → 当前按着的左右键 → 最近一次方向。
-      // 都为零时留 0,由 player.ts 兜底成面向方向(= 朝网)。
+      // 方向在按下这一刻现解,优先级:摇杆推的方向 → 当前按着的左右键 → 最近一次方向(含滑轨滑动/目标方向)。
+      // 都为零时留 0,由 player.ts 兜底结合 targetX 几何位置或面向方向(= 朝网)。
       pad.lungePressed = true;
-      if (pad.targetX !== undefined) {
-        pad.lungeDir = pad.lastDir !== 0 ? pad.lastDir : 0;
-        pad.targetX = undefined; // 跨步爆发后清掉前序定点,避免跨完又自动跑回旧目标
-      } else if (Math.abs(pad.moveAxis) > JOYSTICK_DEADZONE) {
+      if (Math.abs(pad.moveAxis) > JOYSTICK_DEADZONE) {
         pad.lungeDir = pad.moveAxis < 0 ? -1 : 1;
       } else if (pad.left !== pad.right) {
         pad.lungeDir = pad.left ? -1 : 1;
@@ -161,13 +162,17 @@ export function tickHolds(pad: Pad): void {
 
 /**
  * 滑轨写入:只在触屏滑轨里调用。设置精准目标坐标 x(若 undefined 表示松手)。
- * lastDir 跟着目标方向更新,松手时保留。
+ * 若直接传入 dir(-1 | 1),或传入 currentX 计算位移,则更新 lastDir;松手时保留。
  */
-export function setTargetX(pad: Pad, targetX: number | undefined, currentX?: number): void {
+export function setTargetX(pad: Pad, targetX: number | undefined, dirOrCurrentX?: number): void {
   pad.targetX = targetX;
-  if (targetX !== undefined && currentX !== undefined) {
-    const dx = targetX - currentX;
-    if (Math.abs(dx) > 1) pad.lastDir = dx < 0 ? -1 : 1;
+  if (dirOrCurrentX !== undefined) {
+    if (dirOrCurrentX === -1 || dirOrCurrentX === 1) {
+      pad.lastDir = dirOrCurrentX;
+    } else if (targetX !== undefined) {
+      const dx = targetX - dirOrCurrentX;
+      if (Math.abs(dx) > 1) pad.lastDir = dx < 0 ? -1 : 1;
+    }
   }
 }
 

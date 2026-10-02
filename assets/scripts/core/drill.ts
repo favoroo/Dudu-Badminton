@@ -151,7 +151,7 @@ function diagnoseFail(d: DrillDef | null, e: DrillEndFact | null): string {
   // 1. 各关卡专项诊断
   switch (d.id) {
     case "smash":
-      if (s.contactH != null && s.contactH < 105) return "高度不足！需起跳在最高点扣杀";
+      if (s.contactH != null && s.contactH < CFG.jumpSmash.minHeight) return "高度不足！需起跳在最高点扣杀";
       if (kind === "clear") return "打成了高远球！在最高点右滑下压";
       if (kind === "drive" || kind === "slash") return "下压不足！起跳在最高点大力下压";
       if (kind === "lob") return "打成了挑球！需起跳在空中迎击";

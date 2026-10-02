@@ -353,8 +353,12 @@ export function modifyShot(p: Player, opt: HitOpt): {
     skillKind = "magnet";
   }
 
-  // 5. 时空领域反击
+  // 5. 时空领域反击:领域持续期内击球,初速与压弧各加一档。
+  //    全局时间膨胀对「相对局势」是恒等变换(球/AI/计时器同比例变慢),
+  //    只补跑位拿不到分;这里把「从容反击」兑现成实际更凶的回球。
   if (p.skill.id === "focus" && ((p.focusT ?? 0) > 0 || p.skill.buffT > 0)) {
+    speedBoost += C.skills.focus.speedBoost;
+    powerDeg += C.skills.focus.powerDeg;
     skillKind = "focus";
   }
 

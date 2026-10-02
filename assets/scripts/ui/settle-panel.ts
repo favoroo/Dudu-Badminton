@@ -11,6 +11,7 @@ import { Career } from "../core/career";
 import type { SettleResult } from "../core/career";
 import type { DrillResult } from "../core/drill";
 import type { StageDef } from "../core/campaign";
+import type { ObjectiveResult } from "../core/campaign-hud";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, ROLE, slantPath, skewOf, textW } from "./ui-arcade";
@@ -38,6 +39,13 @@ export interface SettlePayload {
    * next = 打完这关之后的下一关(全 20 关通完则为 null),由 UIManager 从关卡表算好喂进来。
    */
   campaign?: { stageNo: number; stageTitle: string; next: StageDef | null } | null;
+  /**
+   * 闯关:这一局三条目标的逐条结果(达成与否 + 差多少)。
+   * **输赢都要给** —— 从前判星整块只在获胜时算,于是挑战失败后玩家只看到"DEFEAT",
+   * 不知道"其实后两条都达成了,只差净胜分",下一局没有任何方向。
+   * 数据来自 rules.R.lastFacts,措辞与进度由 core/campaign-hud 出(与简报、HUD 同源)。
+   */
+  conds?: ObjectiveResult[] | null;
 }
 
 /** 经验条动画:分段 = 每级一段(可能跨级连升) */
@@ -76,6 +84,8 @@ export class SettlePanel {
   private barFill: Graphics;
   private barWrap: Node;
   private newsLine: Label;
+  /** 闯关目标逐条结果那一行(非闯关隐藏) */
+  private objRow!: Node;
   /** 底部行动钮容器(整排随场景重建,见 buildActions) */
   private actionRow!: Node;
   private anim: ExpAnim | null = null;
@@ -183,6 +193,16 @@ export class SettlePanel {
     this.newsLine.node.getComponent(UITransform)!.setContentSize(CW - 60, 44);
     this.newsLine.overflow = Label.Overflow.SHRINK;
     this.newsLine.lineHeight = 20;
+
+    // ---------- 关卡目标逐条结果(只在闯关亮;输赢都排) ----------
+    // 三条横排在奖励新闻行与行动钮之间那条 24px 的空带上:每条「★N 净胜 1/2」,
+    // 达成=荧光黄、未达=纸白压暗 —— 一眼看得出"差的是哪一条、差多少"。
+    this.objRow = new Node("obj-row");
+    this.objRow.layer = this.card.layer;
+    this.objRow.addComponent(UITransform).setContentSize(CW - 40, 16);
+    this.objRow.setPosition(0, -150, 0);
+    this.objRow.setParent(this.card);
+    this.objRow.active = false;
 
     // ---------- 行动钮:整排在 show() 里按场景新建 ----------
     // 为什么不建三颗再按状态开关:uiButton 的底块是「一次绘制」的 Graphics,
@@ -302,6 +322,44 @@ export class SettlePanel {
   }
 
   /** 荣誉胶囊:底块宽度跟着字数走(老 .match-badge 的 fit-content);测宽走全站唯一尺 */
+  /**
+   * 关卡目标逐条:三条横排「★1 净胜 1/2」,达成提荧光黄、未达压暗。
+   * **输赢都排** —— 打输了玩家最需要知道的就是"差哪一条、差多少",
+   * 而从前这里只有 "DEFEAT" 两个字母(判星整块只在获胜分支里跑)。
+   * 这行只有 Label 没有 Graphics 底块,所以整行 active 切换是安全的
+   * (原生侧 onDisable 清的是 Graphics 的渲染数据,文字标签重上时是完整的)。
+   */
+  private renderConds(p: SettlePayload): void {
+    const conds = p.conds ?? [];
+    this.objRow.active = conds.length > 0;
+    if (!conds.length) return;
+    const P = this.kit.pal;
+    const GAP = 14;
+    const laid = conds.map((c, i) => {
+      const text = `★${i + 1} ${c.detail}`;
+      return { text, ok: c.ok, w: textW(text, 12) + 2 };
+    });
+    const total = laid.reduce((s, x) => s + x.w, 0) + GAP * (laid.length - 1);
+    let x = -total / 2;
+    for (let i = 0; i < laid.length; i++) {
+      let n = this.objRow.children[i];
+      if (!n) {
+        n = new Node(`cond-${i}`);
+        n.layer = this.card.layer;
+        n.addComponent(UITransform);
+        this.kit.label(n, "", 12, P.text);
+        n.setParent(this.objRow);
+      }
+      n.active = true;
+      const l = n.children[0].getComponent(Label)!;
+      l.string = laid[i].text;
+      l.color = col(laid[i].ok ? P.accent : P.dim);
+      n.setPosition(x + laid[i].w / 2, 0, 0);
+      x += laid[i].w + GAP;
+    }
+    for (let i = laid.length; i < this.objRow.children.length; i++) this.objRow.children[i].active = false;
+  }
+
   private renderBadge(b: SettleBadge | null): void {
     this.badgeBg.node.active = !!b;
     if (!b) return;
@@ -341,6 +399,7 @@ export class SettlePanel {
     // 荣誉称号:比赛模式才显示(老 .matchBadge)
     this.renderBadge(match ? p.badge : null);
     this.renderStats(p.stats);
+    this.renderConds(p);
 
     this.fillRewards(p);
     this.anim = this.buildExpAnim(p);

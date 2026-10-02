@@ -18,11 +18,17 @@ import {
   ARCADE, bannerOnce, burstOnce, cancelFade, drawDiagStripes, drawSawtooth, drawSlantPanel,
   drawSlantShadow, fadeOutHide, popScore, retainedDraw, safePad, skewOf, slashIn, slantPath, textW,
 } from "./ui-arcade";
-import { rand } from "../core/utils";
+import { clamp, rand } from "../core/utils";
+import { objectiveLines, physicsModReadout, playerModReadout, progressText } from "../core/campaign-hud";
 
 // 风向标牌面尺寸(斜切底 + 两根针都要用同一把尺)
-const WG_W = 132;
-const WG_H = 22;
+// 132 → 176:上一版真机反馈"针太小、方向要读字才知道什么意思"。加宽之后两端直接标
+// 「浅 / 深」—— 针尖朝哪边,球就被推向哪边,不必再把"顺风/逆风"在脑子里换算一次。
+const WG_W = 176;
+const WG_H = CFG.hudColumn.h.wind;
+// 闯关读数牌(目标进度 / 机制读数)共用的牌宽;高度走 CFG.hudColumn(排布判据吃同一张表)
+const OBJ_W = 214;
+const OBJ_H = CFG.hudColumn.h.obj;
 
 export class Hud {
   readonly root: Node;
@@ -54,6 +60,37 @@ export class Hud {
   private windWasOn = false;
   private windPaintKey = NaN;
   private windLastTxt = "";
+  /**
+   * 闯关目标进度牌:三条三星判据的实时读数 + 已挣到的星。
+   * 为什么必须有(0.0.21):20 关 60 条目标在场内**一个字都不报**,HUD 只有
+   * 「STAGE N · 关卡名」和「TO 7」—— 玩家得自己记"净胜 2 分打到几分了""飞扑几次了"。
+   * 同门的训练场反倒有实时行(drill.ts goalText → 这块屏幕上的 drillInfo),
+   * 于是"这关要什么"只有开打前看一眼简报、打完看结果,中间全程摸黑。
+   * 文案与进度一律来自 core/campaign-hud(与简报、结算同一份真话),UI 不再抄一遍。
+   */
+  private objNode: Node;
+  private objInfo: Label;
+  private objBg: Graphics;
+  private objWasOn = false;
+  private objLastKey = "";
+  private objPassed = 0;
+  /** 机制读数牌(这一关改了什么、改成多少) */
+  private mechNode: Node;
+  private mechInfo: Label;
+  private mechBg: Graphics;
+  private mechLastKey = "";
+  /**
+   * 阵风横幅:风向翻掉的那一瞬间报一句「起风了 →」。
+   * 为什么不是把角落那根针做得更准就能解决:震荡风 6.6 秒翻一次方向,而玩家的对局
+   * 注意力全在球与人物身上 —— 上一版(0.0.20)加了双针牌,真机反馈仍是「方向不明显」。
+   * 缺的不是读数,是**变化发生时的通知**。判据与冷却都在 physics.gustWatch(rules 派发),
+   * 这里只按 gustTick 的上升沿播,自己绝不数风(那是第五份积分)。
+   */
+  private gustNode: Node;
+  private gustLabel: Label;
+  private gustBg: Graphics;
+  private lastGustTick = -1;
+  private gustUntil = -1;
   // 连击徽章(右上角小牌:大数字 + 「连击」小字 + 档位进度条)
   private combo: Node;
   private comboBgG: Graphics;
@@ -153,16 +190,18 @@ export class Hud {
       s.shadowOffset = new Vec2(0, -3);
     }
 
-    // AI 体力条(P5 斜切 5 段能量槽, 挂在 pillR 左下侧)
+    // AI 体力血条(boss 规格:P5 斜切 5 段大槽,挂在 top 层 AI 比分卡右侧。
+    // 旧版 50×7 缩在 pillR 角落,玩家注意力在场上根本扫不到 —— 这就是要横出来
+    // 的原因:变化要在余光里发生。归一化与动画见 sync()。)
     const stNode = new Node("ai-stamina");
     stNode.layer = this.root.layer;
     stNode.addComponent(UITransform).setContentSize(CFG.aiStaminaBar.w, CFG.aiStaminaBar.h);
     stNode.setPosition(CFG.aiStaminaBar.x, CFG.aiStaminaBar.y, 0);
-    stNode.setParent(pillR);
+    stNode.setParent(top);
     this.aiStaminaNode = stNode;
     this.aiStaminaG = stNode.addComponent(Graphics);
-    this.aiStaminaLabel = kit.label(stNode, "STM", 10, "#8a93a8");
-    this.aiStaminaLabel.node.setPosition(-CFG.aiStaminaBar.w / 2 - 15, 0, 0);
+    this.aiStaminaLabel = kit.label(stNode, "体力", 11, P.dim, { outline: P.ink, outlineW: 1.5 });
+    this.aiStaminaLabel.node.setPosition(-CFG.aiStaminaBar.w / 2 - 18, 0, 0);
     this.aiStaminaLabel.node.angle = 2;
     // 中缝小徽章:斜切黄片微仰,常驻显示赛制(赛点由顶部斩劈横幅提示,这里不抢戏)
     const bd = new Node("badge");
@@ -221,10 +260,75 @@ export class Hud {
     this.modeTag.node.setPosition(-95 + 13, 0, 0);
     const tagWd = tagNode.addComponent(Widget);
     tagWd.isAlignLeft = true; tagWd.left = safeLeft;
-    tagWd.isAlignTop = true; tagWd.top = 20 + safeTop;
+    tagWd.isAlignTop = true; tagWd.top = CFG.hudColumn.top.tag + safeTop;
     tagWd.updateAlignment();
     tagNode.setParent(this.root);
     this.modeTagNode = tagNode;
+
+    // ---------- 闯关目标进度(左列第二格,压在局别标签下面) ----------
+    // 左列而不是中央:中央那条带是比分牌/赛制徽章/状态行/发球旗的领地,对拉时
+    // 人物与球都在中缝附近活动,常驻读数压上去就是挡视线(用户已否过全屏特效糊脸)。
+    const objNode = new Node("obj-bar");
+    objNode.layer = this.root.layer;
+    objNode.addComponent(UITransform).setContentSize(OBJ_W, OBJ_H);
+    const objBg = new Node("obj-bg");
+    objBg.layer = this.root.layer;
+    objBg.addComponent(UITransform).setContentSize(OBJ_W, OBJ_H);
+    this.objBg = objBg.addComponent(Graphics);
+    objBg.setParent(objNode);
+    this.objInfo = kit.label(objNode, "", 11, ARCADE.paper, { align: 0 });
+    this.objInfo.node.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
+    this.objInfo.node.setPosition(-OBJ_W / 2 + 10, 0, 0);
+    const objW = objNode.addComponent(Widget);
+    objW.isAlignLeft = true; objW.left = safeLeft;
+    objW.isAlignTop = true; objW.top = CFG.hudColumn.top.obj + safeTop;     // 局别标签(20)占一条,这条压它下面
+    objW.updateAlignment();
+    objNode.setParent(this.root);
+    objNode.active = false;                              // 非闯关模式不占屏幕
+    this.objNode = objNode;
+    this.paintObjPlate("占位");                          // 底块先画一次,免得首次亮起时是空框
+
+    // ---------- 阵风横幅(底部中央那条空带:两只虚拟按键之间正好没人用) ----------
+    // 刻意不放大字居中横幅:那会盖住球与人物,而用户已经否过"经常触发的全屏特效"(0.0.17)。
+    const gustNode = new Node("gust-banner");
+    gustNode.layer = this.root.layer;
+    gustNode.addComponent(UITransform).setContentSize(232, 26);
+    const gustBg = new Node("gust-bg");
+    gustBg.layer = this.root.layer;
+    gustBg.addComponent(UITransform).setContentSize(232, 26);
+    this.gustBg = gustBg.addComponent(Graphics);
+    gustBg.setParent(gustNode);
+    this.gustLabel = kit.label(gustNode, "", 14, ARCADE.acid, { align: 1, outline: ARCADE.ink, outlineW: 2 });
+    const gustWd = gustNode.addComponent(Widget);
+    gustWd.isAlignHorizontalCenter = true; gustWd.horizontalCenter = 0;
+    gustWd.isAlignBottom = true; gustWd.bottom = 116 + sp.bottom;
+    gustWd.updateAlignment();
+    gustNode.setParent(this.root);
+    gustNode.active = false;
+    this.gustNode = gustNode;
+
+    // ---------- 机制读数(这一关把玩家的什么改成了多少) ----------
+    // 第 2 关「深陷流沙」的现场:腿被砍到 70%,画面却和第 1 关一模一样 —— 玩家读出的是
+    // "我今天手感好差/手机卡",不是"这关是流沙"。一句「移速 70% · 判定 155%」就把机制
+    // 从隐形变成事实。数值一律来自 core/campaign-hud(它只翻译关卡表,不另存一份系数)。
+    const mechNode = new Node("mech-info");
+    mechNode.layer = this.root.layer;
+    mechNode.addComponent(UITransform).setContentSize(OBJ_W, OBJ_H);
+    const mechBg = new Node("mech-bg");
+    mechBg.layer = this.root.layer;
+    mechBg.addComponent(UITransform).setContentSize(OBJ_W, OBJ_H);
+    this.mechBg = mechBg.addComponent(Graphics);
+    mechBg.setParent(mechNode);
+    this.mechInfo = kit.label(mechNode, "", 11, ARCADE.cyan, { align: 0 });
+    this.mechInfo.node.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
+    this.mechInfo.node.setPosition(-OBJ_W / 2 + 10, 0, 0);
+    const mechW = mechNode.addComponent(Widget);
+    mechW.isAlignLeft = true; mechW.left = safeLeft;
+    mechW.isAlignTop = true; mechW.top = CFG.hudColumn.top.mech + safeTop;
+    mechW.updateAlignment();
+    mechNode.setParent(this.root);
+    mechNode.active = false;
+    this.mechNode = mechNode;
 
     // ---------- 风向标(闯关侧风关:第 1 关「海风突变」的唯一读数入口) ----------
     // 为什么必须有这块:侧风会把球横推 ~150px(半场才 390px),但从前界面上一个像素都不提,
@@ -244,9 +348,17 @@ export class Hud {
     this.windLabel = kit.label(wgNode, "海风", 11, ARCADE.paper, { align: 0 });
     this.windLabel.node.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
     this.windLabel.node.setPosition(-WG_W / 2 + 6, -WG_H - 1, 0);
+    // 两端写死「浅 / 深」:针偏哪边,球就被推向哪边 —— 省掉"针往右到底是顺风还是逆风"
+    // 这一层心算。上一版只有针和一句「顺风 → 收力」,玩家要先把文字换算回球场方向。
+    const windEnd = (txt: string, x: number): void => {
+      const l = kit.label(wgNode, txt, 10, ARCADE.dim, { align: 1 });
+      l.node.setPosition(x, 0, 0);
+    };
+    windEnd("浅", -WG_W / 2 + 9);
+    windEnd("深", WG_W / 2 - 9);
     const wgW = wgNode.addComponent(Widget);
     wgW.isAlignLeft = true; wgW.left = safeLeft;
-    wgW.isAlignTop = true; wgW.top = 50 + safeTop;      // 压在局别标签下面,不与状态行/发球旗抢位
+    wgW.isAlignTop = true; wgW.top = CFG.hudColumn.top.wind + safeTop;     // 左列:局别 20 → 目标 48 → 机制 76 → 风向 104
     wgW.updateAlignment();
     wgNode.setParent(this.root);
     wgNode.active = false;                               // 非侧风关不占屏幕
@@ -360,13 +472,15 @@ export class Hud {
     cancelFade(this.root);
     this.root.active = true;
     if (!this.entranceDone) {
-      // 每局首显:P5 斩入 —— 两张比分卡相向侧入(中缝徽章保持 4° 仰角,不参与)
+      // 每局首显:P5 斩入 —— 两张比分卡相向侧入(中缝徽章保持 4° 仰角,不参与);
+      // AI 体力血条跟着右卡一起斩入,「这张卡背后挂着一条血」的归属感从第一帧就建立
       this.entranceDone = true;
       const kids = this.pills.children;
       if (kids.length >= 2) {
         slashIn(kids[0], 0.05, -46, 6);
         slashIn(kids[1], 0.12, 46, -6);
       }
+      if (this.aiStaminaNode) slashIn(this.aiStaminaNode, 0.2, 52, -4);
     }
   }
 
@@ -393,6 +507,117 @@ export class Hud {
    * 数值一律来自 Physics.windAt(envPhase()) —— 与球真正受到的那个力同一个来源,
    * 不在 UI 里再算一份正弦(那就是第五份积分,只是这次飘的是指针)。
    */
+  /**
+   * 闯关目标进度:三条判据的实时读数 + 已挣到的星。
+   * 数据一律走 core/campaign-hud(与战前简报、结算页同一份措辞与同一把尺),
+   * 求值仍是 campaign.ts 的 checkStarCond —— UI 这边只翻译,不另算一套。
+   */
+  private syncObjectives(R: RulesState): void {
+    const stage = R.mode === "campaign" ? R.activeStage : null;
+    const on = !!stage;
+    if (on !== this.objWasOn) {
+      this.objWasOn = on;
+      this.objNode.active = on;
+      if (!on) this.mechNode.active = false;
+      if (on) { this.objLastKey = ""; this.objPassed = -1; }   // 换一局:底数复位,别把上一局的达成当新成就
+    }
+    if (!on || !stage) return;
+
+    // 机制读数:这一关把玩家/球改成了多少(「移速 70% · 判定 155%」)。
+    // 空就不占位 —— 对练/无限/无倍率的关卡不需要这块屏。
+    const mech = [playerModReadout(stage.modifiers), physicsModReadout(stage.modifiers)]
+      .filter((s) => s.length > 0).join(" · ");
+    if (mech !== this.mechLastKey) {
+      this.mechLastKey = mech;
+      this.mechNode.active = mech.length > 0;
+      if (mech.length) {
+        this.mechInfo.string = mech;
+        this.paintPlate(this.mechBg, mech, OBJ_H, ARCADE.cyan, 0.5);
+      }
+    }
+
+    const lines = objectiveLines(stage, Rules.starFacts(R.scores[0] > R.scores[1]));
+    if (!lines.length) { this.objNode.active = false; this.objWasOn = false; return; }
+    const met = lines.reduce((n, l) => n + (l.ok ? 1 : 0), 0);
+    const txt = `${"★".repeat(met)}${"☆".repeat(Math.max(0, lines.length - met))} ${lines.map(progressText).join(" · ")}`;
+    if (txt !== this.objLastKey) {
+      this.objLastKey = txt;
+      this.objInfo.string = txt;
+      this.paintObjPlate(txt, met);
+    }
+    // 刚达成一条:小弹一下 + 一声。刻意不用中央横幅 —— 那是 DEUCE 的领地,
+    // 而且用户已经否过"经常触发的全屏特效"(0.0.17),这条要安静地报出来。
+    if (this.objPassed >= 0 && met > this.objPassed) {
+      popScore(this.objNode, this.objInfo, ARCADE.acid, ARCADE.paper);
+      this.kit.sfx.play("ui");
+    }
+    this.objPassed = met;
+  }
+
+  /** 通用斜切读数牌:宽度跟着文案走(局别标签 / 目标进度 / 机制读数共用) */
+  private paintPlate(g: Graphics, txt: string, h: number, edge: string, edgeA: number, size = 11): void {
+    const ut = g.node.getComponent(UITransform);
+    if (!ut) return;
+    const sk = skewOf(h, 8);
+    const w = Math.max(120, textW(txt, size) + 22) + Math.abs(sk);
+    ut.setContentSize(w, h);
+    g.node.setPosition(-OBJ_W / 2 + w / 2, 0, 0);
+    g.clear();
+    drawSlantShadow(g, w, h, sk, 3, 3, 0.45);
+    drawSlantPanel(g, w, h, sk, { alpha: 0.88, face: ARCADE.navy, edge, edgeA });
+  }
+
+  /** 进度牌底块:宽度跟着文案走,已达条数决定描边颜色 */
+  private paintObjPlate(txt: string, met = 0): void {
+    const edge = met >= 3 ? ARCADE.acid : met > 0 ? ARCADE.cyan : ARCADE.line;
+    this.paintPlate(this.objBg, txt, OBJ_H, edge, met > 0 ? 0.75 : 0.45);
+  }
+
+  /**
+   * 阵风横幅:按 R.gustTick 的上升沿播一句,持续 ~1.1s 后自己收。
+   * 文案只说**这一拍该怎么打**(顺风收力 / 逆风发力),不复述数值 —— 数值角落那根针给,
+   * 这一句要抢的是"风向刚刚变了"这件事本身的注意力。
+   */
+  private syncGust(R: RulesState): void {
+    if (R.gustTick !== this.lastGustTick) {
+      this.lastGustTick = R.gustTick;
+      if (R.gustTick > 0) {
+        const fwd = R.gustDir > 0;                      // +1 = 朝对方底线 = 玩家这一拍顺风
+        this.gustLabel.string = fwd ? "起风了 → 顺风 · 收力,别打越线" : "起风了 ← 逆风 · 发力,压深才过网";
+        this.paintGustPlate(fwd);
+        this.gustUntil = this.frameT + 66;
+        this.gustNode.active = true;
+        slashIn(this.gustNode, 0, -26, -4, 0.26);
+        this.kit.sfx.play("ui");
+      }
+    }
+    if (this.gustNode.active && this.frameT > this.gustUntil) this.gustNode.active = false;
+  }
+
+  /** 横幅底块:斜切墨条 + 风向那一侧的描边加亮(箭头朝哪边,哪边就亮) */
+  private paintGustPlate(fwd: boolean): void {
+    const g = this.gustBg;
+    if (!g) return;
+    const w = 232, h = 26;
+    const sk = skewOf(h, 10);
+    g.clear();
+    drawSlantShadow(g, w, h, sk, 4, 4, 0.5);
+    drawSlantPanel(g, w, h, sk, { alpha: 0.9, face: ARCADE.ink, edge: ARCADE.acid, edgeA: 0.7 });
+    // 受力侧画一组尖刺:读成"被吹向这一边",与 render 层的星芒同一套语言
+    const n = 5;
+    g.fillColor = col(ARCADE.acid, 0.85);
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      const x = (fwd ? 1 : -1) * (w / 2 - 6 - t * 16);
+      const yy = -h / 2 + 4 + t * (h - 8);
+      g.moveTo(x, yy - 3);
+      g.lineTo(x + (fwd ? 4 : -4), yy);
+      g.lineTo(x, yy + 3);
+      g.close();
+      g.fill();
+    }
+  }
+
   private syncWind(R: RulesState): void {
     const stage = R.mode === "campaign" ? R.activeStage : null;
     const base = stage?.modifiers.physics?.windX ?? 0;
@@ -463,7 +688,8 @@ export class Hud {
     g.strokeColor = col(ARCADE.line, 0.95);
     g.lineWidth = 1;
     g.moveTo(0, -H / 2 + 3); g.lineTo(0, H / 2 - 3); g.stroke();
-    const reach = W / 2 - 14;
+    // 满偏留 22px:两端各有一颗「浅/深」标签,针尖不许戳到字上
+    const reach = W / 2 - 22;
     g.strokeColor = col(ARCADE.paper, 0.28);
     g.moveTo(-reach, -H / 2 + 5); g.lineTo(-reach, H / 2 - 5); g.stroke();
     g.moveTo(reach, -H / 2 + 5); g.lineTo(reach, H / 2 - 5); g.stroke();
@@ -580,6 +806,23 @@ export class Hud {
     }
   }
 
+  /** 掉格:血条挨刀 —— 左右小抖(±2.5°,0.18s),玩家余光就能捕捉到"在掉血" */
+  private kickStamina(): void {
+    const n = this.aiStaminaNode;
+    Tween.stopAllByTarget(n);
+    n.angle = 0;
+    tween(n).to(0.05, { angle: -2.5 }).to(0.07, { angle: 2 }).to(0.06, { angle: 0 }).start();
+  }
+
+  /** 回格:对手回气/新回合充能 —— 纵向弹一下(backOut),涨回来的方向感要明确 */
+  private chargeStamina(): void {
+    const n = this.aiStaminaNode;
+    Tween.stopAllByTarget(n);
+    n.angle = 0;
+    n.setScale(1.12, 1.3, 1);
+    tween(n).to(0.2, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+  }
+
   /** 每帧由 UIManager 调用;只读 R,不推进任何游戏状态 */
   sync(R: RulesState): void {
     if (!this.root.active) return;
@@ -614,6 +857,12 @@ export class Hud {
     // ---------- 风向标(侧风关才亮) ----------
     this.syncWind(R);
 
+    // ---------- 闯关目标进度(闯关才亮) ----------
+    this.syncObjectives(R);
+
+    // ---------- 阵风横幅(风向刚翻的那一句) ----------
+    this.syncGust(R);
+
     // ---- 比分 / 训练进度 ----
     if (drill) {
       // 训练不计分:直接喂 goalText()(「后场重杀 1/3 · 起跳,在最高点按「深球」」)
@@ -642,19 +891,33 @@ export class Hud {
         : `TO ${CFG.scoring.winScore}`;
       if (center !== this.lastCenter) { this.centerBadge.string = center; this.lastCenter = center; }
 
-      // ---- AI 体力能量槽同步(P5 斜切 5 段能量槽) ----
+      // ---- AI 体力血条同步(boss 血条:归一化 + 掉格/回气动画) ----
       const aiPlayer = R.players.find((p) => p.side === "right" && p.isAI);
-      if (!aiPlayer) {
+      if (!aiPlayer || drill) {
+        // 训练场右半边是喂球机,没有"对手体力"这回事;pillR 挂靠关系已断,这里自己收
         this.aiStaminaNode.active = false;
       } else {
         this.aiStaminaNode.active = true;
         const pr = aiPlayer.ai?.pressure ?? 0;
-        const stamina = Math.min(1, Math.max(0, 1 - pr));
+        // 归一化:内部 P 已乘过档位 crush,直接 1-P 会让 hard(0.3)永远只掉 1 格、
+        // easy(0.5)永不力竭 —— 顶档玩家反而看不到任何反馈,这就是旧版"感受不到"
+        // 的头号根因。除回 crush → 血条表达「距离力竭还差多远」,与内部数值解耦。
+        const tier = aiPlayer.aiTier ?? CFG.diffs[aiPlayer.aiDiff ?? "normal"];
+        const stamina = clamp(1 - (tier.crush > 0 ? pr / tier.crush : 0), 0, 1);
         // 5 段斜切小方块: 满压或 stamina<=0.04 为 0 格(力竭)
         const lit = stamina <= 0.04 ? 0 : Math.max(1, Math.min(5, Math.ceil(stamina * 5)));
-        if (lit === 0 || lit !== this.lastStaminaLit) {
+        if (lit !== this.lastStaminaLit) {
+          const prev = this.lastStaminaLit;
           this.lastStaminaLit = lit;
           this.paintAiStamina(lit, stamina);
+          if (prev >= 0) {
+            // 掉格 = 血条挨了一刀(抖);回格 = 对手回气/新回合充能(弹一下)。
+            // 前者告诉玩家"压住别松",后者告诉玩家"对手缓过来了" —— 涨跌都有戏看。
+            if (lit < prev) this.kickStamina();
+            else if (lit > prev) this.chargeStamina();
+          }
+        } else if (lit === 0) {
+          this.paintAiStamina(0, stamina);   // 力竭:红框呼吸要每帧重绘
         }
       }
     }

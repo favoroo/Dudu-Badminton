@@ -4,8 +4,8 @@
 // 汇集四大场景（海滩、道场、赛博、黄昏馆）共 20 关特色创意挑战。
 // ============================================================
 import { CFG } from "./config";
-import { load, save } from "./utils";
-import { DiffKey, SkillId } from "./types";
+import { clamp, load, save } from "./utils";
+import { AiDelta, AiTier, DiffKey, SkillId } from "./types";
 
 export type CourtTheme = "beach" | "dojo" | "cyber" | "arena";
 
@@ -56,15 +56,33 @@ export interface StageDef {
   isMatchPointStart?: boolean; // 是否从赛点 10:10 开始
   deathmatch?: boolean;        // 丢 1 分立即失败
   aiDiff: DiffKey;
+  /**
+   * 这一关对难度档的**局部微调(增量,不是绝对值)**。
+   * 为什么要它:三档是给"对练模式"设计的,而关卡机制对玩家和对 AI 的惩罚并不对称 ——
+   * 迷雾/烈日/闪光灯这类遮蔽机制只难为人眼,AI 是按重模拟的球路跑位的(它"看得见"),
+   * 于是这些关的实际难度全压在玩家一个人身上。给 AI 钝一点,让"这关残酷"只付一次。
+   * 没有这一层就只能加第四档 —— 而三档 + 逐关微调比二十个自定义档好懂得多。
+   * **通常不用手写这一行**:缺省时由 aiReliefFor() 按 config.campaign.aiRelief 自动算,
+   * 这里只留给"机制表说不准"的特例。
+   */
+  aiTune?: AiDelta;
   aiSkill?: SkillId;
   modifiers: StageModifiers;
   rewards: {
     coins: number;
     exp: number;
   };
-  starsGoal: [string, string, string];
-  /** 三星判据(与 starsGoal 文案一一对应;缺省时 rules 回落通用三条) */
+  /**
+   * 三星判据:判星的唯一真话,也**是**简报/HUD/结算三处文案的唯一来源
+   * (措辞在 core/campaign-hud.ts 的 STAR_COPY,别再手抄一份)。
+   */
   starsCheck: [StarCond, StarCond, StarCond];
+  /**
+   * 作者覆写:仅当这一关想说的话与 STAR_COPY 的通用措辞不同才写
+   * (如第 20 关的 ★1 要说「连拿 2 分绝杀夺冠」而不是「赢得对局」)。
+   * 写了就必须与 starsCheck 三条一一对应 —— campaign-check 逐条比对,对不上就红。
+   */
+  starsGoal?: [string, string, string];
 }
 
 export interface StageRec {
@@ -74,12 +92,18 @@ export interface StageRec {
   attempts: number;
 }
 
-// ---------- 三星判据:结构化判据与 starsGoal 文案一一对应 ----------
+// ---------- 三星判据:结构化判据 + 判据即文案 ----------
 //
 // 从前判星写死三条通用规则(rules.ts:胜 / 净胜2 / 零封或长回合≥8),战前简报展示的
 // starsGoal 文案(「无发球失误」「飞扑救球 3 次」…)只是装饰,从未被真的判定过。
-// 现在每关配一份 starsCheck,判星 = 逐条求值。加新判据:这里加一个 k 分支 +
-// rules.ts 的 starFacts() 补对应计数 + campaign-check 里补正反例。
+// 现在每关配一份 starsCheck,判星 = 逐条求值。
+//
+// 文案也不再手抄:同一条判据要同时出现在战前简报、场内进度条、结算页三处,
+// 从前靠 20 份手写字符串撑着,改判据就得记得改文案(没人记得)。现在措辞只住在
+// core/campaign-hud.ts 的 STAR_COPY 模板里,由 starsCheck 生成 —— 判据动了文案自动跟着动,
+// campaign-check 还把「作者覆写」逐条对回去,防止某一关说的话与判的事脱节。
+// 加新判据:这里加一个 k 分支 + rules.ts 的 starFacts() 补对应计数 +
+// campaign-hud.ts 的 STAR_COPY/condProgress 补一条 + campaign-check 里补正反例。
 
 /** 一条可判定的三星条件(判别联合,k = 判据名) */
 export type StarCond =
@@ -91,6 +115,9 @@ export type StarCond =
   | { k: "sweets"; n: number }            // 甜区击球 ≥ n 次
   | { k: "smashes"; n: number }           // 扣杀(出手) ≥ n 次
   | { k: "noWhiff" }                      // 全程 0 次空挥(含「未被假球欺骗」)
+  /** 空挥**容许** n 次:第 12 关那种「真假球」要求一次都不挥空,把玩家自己手滑也算进
+   *  机制惩罚里 —— 判据想量的是"被骗",不是"手滑"。atMost 家族,进度可中途显示。 */
+  | { k: "whiffsAtMost"; n: number }
   | { k: "rallyAtLeast"; n: number }      // 完成一记 ≥ n 拍的回合
   | { k: "noServeFault" }                 // 无发球失误
   | { k: "lungeSaves"; n: number }        // 飞扑救球 ≥ n 次
@@ -134,6 +161,7 @@ export function checkStarCond(c: StarCond, f: StarFacts): boolean {
     case "sweets": return f.sweets >= c.n;
     case "smashes": return f.smashes >= c.n;
     case "noWhiff": return f.whiffs === 0;
+    case "whiffsAtMost": return f.whiffs <= c.n;
     case "rallyAtLeast": return f.longestRally >= c.n;
     case "noServeFault": return f.serveFaults === 0;
     case "lungeSaves": return f.lungeShots >= c.n;
@@ -163,6 +191,78 @@ export function evaluateStars(check: StarCond[] | undefined, f: StarFacts): numb
 
 const STORAGE_KEY = "dudu_campaign_progress";
 
+// ---------- 关卡机制 → AI 该钝多少(不对称减免) ----------
+//
+// 三条铁律里的"数值只进 config"在这里的含义:哪一关要减免、减免多少,是一张**表**
+// (CFG.campaign.aiRelief),不是散在 20 个关卡条目里的 20 份手调数字。
+// 为什么必须减免:AI 是用 futureInto 重模拟球路来跑位的(见 ai.ts),迷雾/烈日/闪光灯
+// 这些"糊画面"的机制对它**完全不成立** —— 它看得见球,玩家看不见。于是同一档 AI
+// 在遮蔽关里显得比对练模式更凶,关卡的"难"就成了"机制 + AI"两份叠在玩家一个人身上。
+// 移动/体力/重力类机制不加减免:那些走 Pl.setPlayerModifier,是**双方**一起受的影响
+// (0.0.21 起 AI 的自估腿速也吃这套系数,见 ai.ts 的 selfVmax),对称,不用补。
+
+/** 累加一份增量到另一份上(同一键多次命中就叠加,由 tuneAiTier 负责夹范围) */
+function addDelta(into: AiDelta, from: AiDelta | undefined): void {
+  if (!from) return;
+  for (const k of ["read", "shotErr", "timingErr", "aggr"] as const) {
+    const v = from[k];
+    if (v) into[k] = (into[k] ?? 0) + v;
+  }
+}
+
+/** 这一关的机制给 AI 的减免增量(关卡写了 aiTune 就以关卡为准,不叠加) */
+export function aiReliefFor(stage: StageDef): AiDelta {
+  if (stage.aiTune) return stage.aiTune;
+  const out: AiDelta = {};
+  const R = CFG.campaign.aiRelief;
+  const e = stage.modifiers.environment;
+  const ph = stage.modifiers.physics;
+  addDelta(out, e?.blindingSun ? R.blindingSun : undefined);
+  addDelta(out, e?.sandstorm ? R.sandstorm : undefined);
+  addDelta(out, e?.fog ? R.fog : undefined);
+  addDelta(out, e?.empGlitch ? R.empGlitch : undefined);
+  addDelta(out, e?.hologramDecoy ? R.hologramDecoy : undefined);
+  addDelta(out, e?.spectatorFlash ? R.spectatorFlash : undefined);
+  addDelta(out, e?.sakuraFlurry ? R.sakuraFlurry : undefined);
+  addDelta(out, ph?.erratic ? R.erratic : undefined);
+  return out;
+}
+
+/**
+ * 把增量落到档位上,夹在合理范围内(纯函数,campaign-check 直接喂数据回归)。
+ * 为什么要夹:减免是"调音"不是"改乐器" —— read 加到 200 会让 AI 变成纯靶子,
+ * 而某一关同时命中两条机制(第 8 关既落樱又颤抖)叠加时很容易越界。
+ */
+export function tuneAiTier(tier: AiTier, d: AiDelta): AiTier {
+  const c = CFG.campaign.aiReliefCap;
+  return {
+    ...tier,
+    read: clamp(tier.read + (d.read ?? 0), c.read[0], c.read[1]),
+    shotErr: clamp(tier.shotErr + (d.shotErr ?? 0), c.shotErr[0], c.shotErr[1]),
+    timingErr: clamp(tier.timingErr + (d.timingErr ?? 0), c.timingErr[0], c.timingErr[1]),
+    aggr: clamp(tier.aggr + (d.aggr ?? 0), c.aggr[0], c.aggr[1]),
+  };
+}
+
+/**
+ * 「最佳比分」到底最佳在哪 —— 从前这里是直接覆盖:
+ * `prev.bestScore = \`${myScore}-${opScore}\``,于是打第 3 关 7-1 通关、再回来重打 7-6 险胜,
+ * 大厅卡片(campaign-panel.ts:454 印「最佳 x-y」)显示的那条就**退步**成了 7-6。
+ * 卡片说的是"最佳",存档记的是"最近",两头对不上且没人报错 —— 典型的不会崩、只是不好用。
+ * 口径:先比净胜,净胜相同再比失分少(7-1 优于 7-0 之外的同分差场;7-0 恒最优)。
+ * 只在**通关**时参与比较(输的比分不进这条),所以两侧都是我方得分在前。
+ */
+export function isBetterBestScore(my: number, op: number, prev: string): boolean {
+  const parts = prev.split("-");
+  const pm = parseInt(parts[0] ?? "", 10);
+  const po = parseInt(parts[1] ?? "", 10);
+  // 读不懂(空/错型/手改存档)一律重写:宁可丢掉一条旧纪录,也不要卡片一直印 "0-0"
+  if (!Number.isFinite(pm) || !Number.isFinite(po)) return true;
+  const margin = my - op;
+  if (margin !== pm - po) return margin > pm - po;
+  return op < po;
+}
+
 /** 20 个绝不重样、创意满满的闯关模式关卡数据表 */
 export const CAMPAIGN_STAGES: StageDef[] = [
   // ==================== 第一章：阳光海滩 (Sunny Beach) ====================
@@ -173,17 +273,19 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     chapterName: "阳光海滩",
     court: "beach",
     title: "海风突变",
-    subtitle: "CROSSWIND SHIFT",
+    subtitle: "SHIFTING CROSSWIND",
     badge: "狂暴阵风",
-    desc: "强劲侧风把球往旁边推：海面的风丝与椰梢往哪边倒、风向标的黄针就往哪边指，球也被推向哪边。风每隔几秒换一次方向。",
-    hint: "黄针是当前风，青针是你出手那一拍的风。顺风收力、逆风发力压深；两针合拢时落点最可控。",
+    // 文案纠偏(0.0.21):从前写「强劲侧风把球往旁边推」—— 这是侧视球场,x 就是场地纵深,
+    // 风推的是**深浅**不是左右。玩家按"往旁边"去理解,会发现球既不左也不右、只是变深变浅,
+    // 于是把机制读成随机惩罚。现在一句话说清"往哪边、会怎样",并点名场上那两个信号。
+    desc: "海风沿着球场纵深来回吹,每几秒换一次方向:顺风把球推向对方底线(容易越线),逆风把球按回网前(容易下网)。场上的琥珀色人字纹往哪边流,球就被推向哪边。",
+    hint: "起手前看一眼风向标:黄针是当前风,青针是出手那一拍的风,两针合拢时落点最可控。顺风收力、逆风发力压深。",
     targetScore: 7,
     aiDiff: "easy",
     modifiers: {
       physics: { windX: 0.18, windOscillate: true },
     },
     rewards: { coins: 150, exp: 60 },
-    starsGoal: ["赢得对局", "净胜对手 2 分以上", "无发球失误"],
     starsCheck: [{ k: "win" }, { k: "netLead", n: 2 }, { k: "noServeFault" }],
   },
   {
@@ -203,8 +305,9 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { accelMul: 0.62, vmaxMul: 0.7, jumpMul: 0.78, reachMul: 1.55 },
     },
     rewards: { coins: 180, exp: 70 },
-    starsGoal: ["赢得对局", "使用飞扑救球至少 3 次", "失分不超过 1 分"],
-    starsCheck: [{ k: "win" }, { k: "lungeSaves", n: 3 }, { k: "opScoreAtMost", n: 1 }],
+    // ★3 从前是「失分不超过 1 分」:抢 7 分制里那是**近乎零封**,却排在第 2 关
+    // (这一关还把玩家腿速砍到 0.7),入门第二关就打不出来 = 这条白给也白写。放到 ≤2。
+    starsCheck: [{ k: "win" }, { k: "lungeSaves", n: 3 }, { k: "opScoreAtMost", n: 2 }],
   },
   {
     id: "beach_3",
@@ -223,8 +326,9 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       environment: { blindingSun: true },
     },
     rewards: { coins: 200, exp: 80 },
-    starsGoal: ["赢得对局", "打出至少 2 次完美击球", "净胜对手 2 分以上"],
-    starsCheck: [{ k: "win" }, { k: "perfects", n: 2 }, { k: "netLead", n: 2 }],
+    // 完美击球要"球进完美窗 + 挥拍落在极限时机",而这一关偏偏把球在高空调进隐形盒 ——
+    // 要 2 次等于要玩家在看不见球的情况下把时机掐准两回。降为 1 次(仍是这关的正题)。
+    starsCheck: [{ k: "win" }, { k: "perfects", n: 1 }, { k: "netLead", n: 2 }],
   },
   {
     id: "beach_4",
@@ -240,11 +344,12 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     targetScore: 7,
     aiDiff: "normal",
     modifiers: {
-      physics: { dragMul: 1.35 },
+      // 恒定顺风(不变向):这一关要教的是"高阻 + 顺风 = 球后程既坠又被推深",
+      // 而不是第 1 关那种"读方向"。风同时喂给画面 —— 飞沙与球受推同向(见 world 的沙暴分支)。
+      physics: { dragMul: 1.35, windX: 0.16 },
       environment: { sandstorm: true },
     },
     rewards: { coins: 240, exp: 95 },
-    starsGoal: ["赢得对局", "完成至少 2 次扣杀得分", "失分不超过 2 分"],
     starsCheck: [{ k: "win" }, { k: "smashScores", n: 2 }, { k: "opScoreAtMost", n: 2 }],
   },
   {
@@ -266,8 +371,8 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { jumpMul: 1.35 },
     },
     rewards: { coins: 300, exp: 120 },
-    starsGoal: ["赢得对局", "打出至少 3 次高空烈焰扣杀", "净胜对手 3 分以上"],
-    starsCheck: [{ k: "win" }, { k: "jumpSmashes", n: 3 }, { k: "netLead", n: 3 }],
+    // 抢 7 分制要求净胜 3 = 7-4 起步;这一关重力只剩 0.52,双方都在飘,净胜 2 已经够挑。
+    starsCheck: [{ k: "win" }, { k: "jumpSmashes", n: 3 }, { k: "netLead", n: 2 }],
   },
 
   // ==================== 第二章：竹林道场 (Bamboo Dojo) ====================
@@ -288,8 +393,9 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       environment: { fog: true },
     },
     rewards: { coins: 260, exp: 100 },
-    starsGoal: ["赢得对局", "打出至少 3 次底线深球", "零失误零丢分"],
-    starsCheck: [{ k: "win" }, { k: "deepShots", n: 3 }, { k: "shutout" }],
+    // ★3 从前是 shutout(对手**恰好** 0 分):抢 7 分制里那是"一分都不许碰到",
+    // 而这一关的机制恰恰只遮网前 —— 玩家被迫多拉高远球,后场空当全暴露。改「失分≤1」。
+    starsCheck: [{ k: "win" }, { k: "deepShots", n: 3 }, { k: "opScoreAtMost", n: 1 }],
   },
   {
     id: "dojo_2",
@@ -308,7 +414,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { iaiStrike: true },
     },
     rewards: { coins: 300, exp: 120 },
-    starsGoal: ["赢得对局", "触发居合一闪至少 2 次", "净胜对手 2 分以上"],
     starsCheck: [{ k: "win" }, { k: "iaiStrikes", n: 2 }, { k: "netLead", n: 2 }],
   },
   {
@@ -329,8 +434,9 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       environment: { sakuraFlurry: true },
     },
     rewards: { coins: 320, exp: 130 },
-    starsGoal: ["赢得对局", "失分不超过 1 分", "回合数达到 8 拍以上"],
-    starsCheck: [{ k: "win" }, { k: "opScoreAtMost", n: 1 }, { k: "rallyAtLeast", n: 8 }],
+    // 这条把「失分≤1」和「完成一记 8 拍长回合」押在同一局:长回合本身就意味着对手能得分,
+    // 两条互相拽 —— 而这一关还是 hard + 飘忽球。失分放到 ≤2。
+    starsCheck: [{ k: "win" }, { k: "opScoreAtMost", n: 2 }, { k: "rallyAtLeast", n: 8 }],
   },
   {
     id: "dojo_4",
@@ -349,7 +455,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { zenFocus: true },
     },
     rewards: { coins: 350, exp: 140 },
-    starsGoal: ["赢得对局", "全程 0 次空挥失误", "打出至少 3 次甜区击球"],
     starsCheck: [{ k: "win" }, { k: "noWhiff" }, { k: "sweets", n: 3 }],
   },
   {
@@ -370,7 +475,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { forbiddenNetZone: 110 },
     },
     rewards: { coins: 400, exp: 160 },
-    starsGoal: ["赢得对局", "未触发任何禁区惩罚", "净胜对手 2 分以上"],
     starsCheck: [{ k: "win" }, { k: "noZonePenalty" }, { k: "netLead", n: 2 }],
   },
 
@@ -392,7 +496,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       environment: { empGlitch: true },
     },
     rewards: { coins: 320, exp: 130 },
-    starsGoal: ["赢得对局", "在 EMP 故障期间成功回球 2 次", "净胜对手 2 分以上"],
     starsCheck: [{ k: "win" }, { k: "empReturns", n: 2 }, { k: "netLead", n: 2 }],
   },
   {
@@ -412,8 +515,9 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       environment: { hologramDecoy: true },
     },
     rewards: { coins: 350, exp: 140 },
-    starsGoal: ["赢得对局", "未被假球欺骗失误", "失分不超过 1 分"],
-    starsCheck: [{ k: "win" }, { k: "noWhiff" }, { k: "opScoreAtMost", n: 1 }],
+    // 这条想量的是"有没有被骗",用 noWhiff 却把玩家自己手滑也算成被骗(一次都不许空挥)。
+    // 换成 whiffsAtMost 1:被骗到挥空可以给一次机会,自己的小失误不没收这颗星。
+    starsCheck: [{ k: "win" }, { k: "whiffsAtMost", n: 1 }, { k: "opScoreAtMost", n: 1 }],
   },
   {
     id: "cyber_3",
@@ -432,7 +536,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       physics: { laserRail: true },
     },
     rewards: { coins: 380, exp: 150 },
-    starsGoal: ["赢得对局", "触发激光加速球至少 2 次", "扣杀得分至少 2 次"],
     starsCheck: [{ k: "win" }, { k: "laserBoosts", n: 2 }, { k: "smashScores", n: 2 }],
   },
   {
@@ -454,7 +557,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { jumpMul: 2.1 },
     },
     rewards: { coins: 420, exp: 170 },
-    starsGoal: ["赢得对局", "空中击球占比超过 70%", "净胜对手 2 分以上"],
     starsCheck: [{ k: "win" }, { k: "airShotRatio", pct: 70 }, { k: "netLead", n: 2 }],
   },
   {
@@ -475,7 +577,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { cooldownMul: 0.22 },
     },
     rewards: { coins: 500, exp: 200 },
-    starsGoal: ["赢得对局", "在一局内释放技能至少 6 次", "打出至少 3 次扣杀"],
     starsCheck: [{ k: "win" }, { k: "skillCasts", n: 6 }, { k: "smashes", n: 3 }],
   },
 
@@ -497,8 +598,9 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       environment: { spectatorFlash: true },
     },
     rewards: { coins: 360, exp: 150 },
-    starsGoal: ["赢得对局", "完成一记 10 拍以上长回合", "失分不超过 1 分"],
-    starsCheck: [{ k: "win" }, { k: "rallyAtLeast", n: 10 }, { k: "opScoreAtMost", n: 1 }],
+    // 与第 8 关同病:★2 要一记 10 拍长回合、★3 又要失分≤1 —— 长回合本身就在送分。
+    // 回合降到 8 拍(仍是这关的"顶住闪光灯"正题),失分放到 ≤2。
+    starsCheck: [{ k: "win" }, { k: "rallyAtLeast", n: 8 }, { k: "opScoreAtMost", n: 2 }],
   },
   {
     id: "arena_2",
@@ -517,7 +619,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { staminaSystem: true },
     },
     rewards: { coins: 400, exp: 160 },
-    starsGoal: ["赢得对局", "全程体力未进入枯竭耗尽状态", "净胜对手 2 分以上"],
     starsCheck: [{ k: "win" }, { k: "noExhausted" }, { k: "netLead", n: 2 }],
   },
   {
@@ -537,7 +638,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       player: { frictionMul: 0.25 },
     },
     rewards: { coins: 420, exp: 170 },
-    starsGoal: ["赢得对局", "在滑行状态下击球得分至少 2 次", "失分不超过 1 分"],
     starsCheck: [{ k: "win" }, { k: "slidingScores", n: 2 }, { k: "opScoreAtMost", n: 1 }],
   },
   {
@@ -557,7 +657,6 @@ export const CAMPAIGN_STAGES: StageDef[] = [
       physics: { erratic: true },
     },
     rewards: { coins: 450, exp: 180 },
-    starsGoal: ["赢得对局", "失分不超过 1 分", "完成至少 2 次网前精准截击"],
     starsCheck: [{ k: "win" }, { k: "opScoreAtMost", n: 1 }, { k: "netIntercepts", n: 2 }],
   },
   {
@@ -578,8 +677,11 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     aiSkill: "flash",
     modifiers: {},
     rewards: { coins: 888, exp: 400 },
-    starsGoal: ["连拿 2 分绝杀夺冠", "最后一球以扣杀得分", "打出至少 1 次完美击球"],
-    starsCheck: [{ k: "win" }, { k: "lastSmash" }, { k: "perfects", n: 1 }],
+    // 这一关 ★1 说的话与通用措辞不同(生死战不是"赢得对局"而是"连拿 2 分"),
+    // 是全表唯一保留作者覆写的地方;★2「最后一球以扣杀得分」照判据原样写清 ——
+    // 这条极其硬(生死局里最后一分要打成扣杀制胜),必须在开战前就看见,不能事后才发现。
+    starsGoal: ["连拿 2 分绝杀夺冠", "最后一球以扣杀得分", "打出至少 2 次完美击球"],
+    starsCheck: [{ k: "win" }, { k: "lastSmash" }, { k: "perfects", n: 2 }],
   },
 ];
 
@@ -690,7 +792,8 @@ export const CampaignManager = {
 
     prev.stars = newStars;
     prev.clears = (prev.clears || 0) + 1;
-    prev.bestScore = `${myScore}-${opScore}`;
+    // 「最佳」必须真的最佳 —— 旧写法无条件覆盖成最近一局,重打打得更差反而把纪录改差
+    if (isBetterBestScore(myScore, opScore, prev.bestScore)) prev.bestScore = `${myScore}-${opScore}`;
     prev.attempts = (prev.attempts || 0) + 1;
     prog.records[stage.id] = prev;
 

@@ -2,7 +2,7 @@
 // 全部平衡数值 / 键位 / 配色集中在这里 —— 想调手感只改这个文件
 // 单位约定:1 step = 1/60 s;长度 px;速度 px/step;加速度 px/step²
 // ============================================================
-import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, DrillDef, AiSmashDefenseDef } from "./types";
+import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, DrillDef, AiSmashDefenseDef, AiTier, ServeMixTier, SkillId } from "./types";
 
 // ===== 稀有度元数据:商店卡片框色/角标用;配色只进 config =====
 export const RARITY_META: Record<Rarity, { name: string; color: string }> = {
@@ -320,7 +320,7 @@ export const CFG = {
   // 所以标签不随球速档位漂移 —— 慢档里同一记重杀仍叫「重杀」,不会念成「劈吊」。
   shotClass: {
     smashDeg: 15,      // 压角小于此 + 击球点够高 + 球够快 = 重杀
-    smashH: 105,
+    smashH: 115,
     smashSpeed: 16,
     slashDeg: 22,      // 压角小于此 + 击球点次高 = 劈吊
     slashH: 92,
@@ -577,7 +577,7 @@ export const CFG = {
   // 起跳 + 高球(离地 ≥ minHeight)直接定性为扣杀并给力度加成 —— 「跳起来打高球 = 杀球」
   // 这条直觉规则对真人与 AI 同样生效。闪现扣杀(空中折跃)天然走同一通道。
   jumpSmash: {
-    minHeight: 105,    // 击球点离地至少此高(px,与 shotClass.smashH 同源)才触发
+    minHeight: 115,    // 击球点离地至少此高(px,与 shotClass.smashH 同源)才触发;再低的重扣太廉价(用户现场:很低也触发)
     speedBoost: 2.5,   // 初速加成(px/step,与 sweet/perfect boost 同预算,封顶在 maxSpeed 差额)
     powerDeg: 6,       // 额外压弧度(度)
     maxLoftDeg: 8,     // 强制压弧上限:跳杀不允许挑高,弧度先夹到这里再进求解器
@@ -665,6 +665,21 @@ export const CFG = {
     clear: { q: 0.88, depthBias: 0.95, loftDelta: 4, speedMul: 0.92 },   // 高弧、压底线
   },
 
+  // ===== AI 发球:先抽**类型**,再从该类型的蓄力带里抽帧数 =====
+  // 从前是反过来写的:`serveDelay = 40 + rand*50` 抽一个延迟,类型由 rules 拿延迟反查
+  // (flick<22、clear>65)。默认带 [40,90] **正好跨在 65 上** —— 于是入门档约一半的
+  // "标准发球"实际执行成高飘高远球(球在空中多待一倍时间,等玩家摆好姿势来扣),
+  // 而 flick 概率 0.15×aggr=1.8%、clear 分支要求 aggr>0.3 永远进不去。
+  // 玩家现场看到的「他发球我就得分了」就是这一条。现在意图与执行构造上不可能错档:
+  // 三条带互不相交、且都落在 flickThresh/clearThresh 划好的格子里。
+  serveMix: {
+    /** 蓄力带(帧):standard 带上界 58 < clearThresh 65、下界 30 > flickThresh 22 */
+    bands: { flick: [8, 20], standard: [30, 58], clear: [70, 100] },
+    easy:   { flick: 0.04, clear: 0.34, vsBackCamper: 0.24, vsNetRusher: 0.12 },
+    normal: { flick: 0.16, clear: 0.36, vsBackCamper: 0.50, vsNetRusher: 0.22 },
+    hard:   { flick: 0.26, clear: 0.30, vsBackCamper: 0.62, vsNetRusher: 0.34 },
+  },
+
   // ===== 训练场:喂球节奏 / 达标与星级阈值 =====
   // 这里只放六关共用的旋钮;每关特有的球种与落点/滞空约束写在自己的 def 里
   // (那些是「这一关练什么」的一部分,不是全局手感),经济参数则在 career.drill
@@ -678,6 +693,17 @@ export const CFG = {
     },
     // 引导动画小画布:Cocos 版仍保留这个定义,引导页相机与画布只认这一处尺寸
     canvas: { w: 470, h: 300 },
+  },
+
+  // ===== HUD 左列那一叠读数牌的排布 =====
+  // 局别标签 → 闯关目标进度 → 机制读数 → 风向标,四块从上往下摞在左上角。
+  // 为什么要搬进 config:这四块分布在 ui/hud.ts 的四个创建点里,从前各写各的 top
+  // (20 / 48 / 76 / 104)与高度,加一块就要人肉核对"会不会压上一块的字"——
+  // 而压字这种坏不会崩,只会在真机上难看得要命 yet 没人报警。
+  // 现在同一张表被 hud 消费、被 campaign-check 断言(top + h ≤ 下一块 top)。
+  hudColumn: {
+    top: { tag: 20, obj: 48, mech: 76, wind: 104 },
+    h: { tag: 24, obj: 20, mech: 20, wind: 22 },
   },
 
   // ===== 关卡环境机制(风 / 颤抖 / 磁轨 …) =====
@@ -695,9 +721,21 @@ export const CFG = {
     windLookahead: 60,       // 风向标"预读针"往前看的步数 ≈ 一记典型回球的滞空
     windFullScale: 0.20,     // 风向标满量程(px/步²),用来把实时风力折成指针偏角
     windMinDrift: 60,        // 反"把机制修没"的下限:解算口径里一拍至少被吹走这么多 px
-    windGustAt: 0.13,        // 算"起风"的风力门槛(基准幅度的比例感,超了才通报)
-    windGustFrames: 24,      // 门槛要连续满足这么多步才算一次阵风(防一句话刷屏)
-    windGustCooldown: 150,   // 两次阵风通报的最小间隔步数
+    /**
+     * AI 补满一档时把落点深浅挪多少(depth 单位,0..1 ≈ 对方半场全长)。
+     * 半场约 390px,满偏风实测把球吹走 60~100px ≈ 0.15~0.25 depth —— 取 0.2 就是
+     * "把这一档的偏差基本补回来"。windSense(见 diffs)再乘一层,决定各档补几成。
+     */
+    aiWindDepth: 0.2,
+    // 阵风通报的三个旋钮 —— 口径(2026-10-02 定):windGustAt 是**满量程的比例**
+    // (0.5 = 风已经吹到一半力气以上),连续 windGustFrames 步满足才算"起风"(防穿越零点
+    // 那一瞬的抖动报一次),报完压 windGustCooldown 步。震荡风每个半周期正好报一次,
+    // 也就是「球往对方底线倒」/「球被按回网前」各一次 —— 这就是玩家等的那个方向信号。
+    // 从前这三行写了却无人引用(死旋钮),现在由 physics.gustState 消费、rules 派发
+    // "wind-gust" 事件、HUD 落斩劈横幅,env-check 断言它必须真的触发且被 cooldown 节流。
+    windGustAt: 0.5,         // 起风门槛(÷ windFullScale)
+    windGustFrames: 18,      // 门槛要连续满足这么多步才算一次阵风(防一句话刷屏)
+    windGustCooldown: 200,   // 两次阵风通报的最小间隔步数
 
     // —— 风 → 画面的换算 ——
     // 装饰风(椰树/浪花/网头彩带)与真风必须**同一个符号说话**:叶簇往左摆而球往右偏,
@@ -708,6 +746,83 @@ export const CFG = {
       streakCount: 9,  // 沙滩风丝条数(出生定形,逐帧只平移)
       streakLen: 46,   // 风丝基准长度 px
       streakA: 0.30,   // 风丝不透明度
+    },
+
+    // —— 贴地风带(第 1 关的主力方向提示) ——
+    // 风丝在天幕、针牌在角落,而玩家的眼睛跟着**场地**走:所以让场地 itself 往球被推的
+    // 那一侧流。数值口径:一"格"= 场宽 ÷ count,满风时约每 span/(count·speed) 帧滚过一格。
+    band: {
+      count: 9,        // 人字纹条数(等距铺满全场,不随机 —— 随机会读成噪点)
+      y: 30,           // 离地多高(世界 px):贴地但不埋进地胶纹理
+      len: 34,         // 满风时的基准长(px)
+      lw: 2.6,         // 线宽:双描边(外琥珀内纸白)共用量,单条白线在金沙上看不清
+      speed: 2.4,      // 每单位风强折成多少 px/帧 的流速
+      a: 0.62,         // 满风不透明度(风丝是 0.30 的背景层,这层要压得住)
+    },
+
+    // —— 流沙(第 2 关「深陷流沙」的画面) ——
+    // 关卡只给倍率(accelMul 等),画面必须自己把"陷进去"画出来,否则玩家读成手感差。
+    sand: {
+      count: 9,        // 扬沙颗粒数(出生定形,逐帧只平移)
+      spread: 22,      // 颗粒横向散布 px
+      rise: 16,        // 颗粒上抛高度 px
+      grainA: 0.75,    // 满速时颗粒不透明度
+      troughW: 22,     // 沙窝半宽 px
+      troughD: 7,      // 沙窝最深 px(跑得越快陷得越深)
+      troughA: 0.55,   // 满速时沙窝不透明度
+    },
+
+    // —— 烈日致盲(第 3 关「烈日刺目」) ——
+    // 从前这两团光晕的盒坐标/中心/α 全写死在 world.ts 里,界面读不到、回归钉不住。
+    sun: {
+      x0: 400, x1: 560,      // 隐形盒横向范围(世界 px)
+      y0: 130, y1: 240,      // 纵向:高空那一段球会看不清
+      cx: 480, cy: 180,      // 耀斑中心
+      flareA: 0.36,          // 基础不透明度
+      flarePulse: 0.08,      // 呼吸幅度(逐帧 sin,不是每帧 rand)
+      rays: 12,              // 星芒尖数(p5kit drawStarburst)
+      rIn: 34, rOut: 132,    // 星芒内外半径
+      bandA: 0.2,            // 光栅带不透明度
+    },
+
+    // —— 网前水墨雾(第 6 关「晨雾隐踪」) ——
+    // 从前是一团 g.ellipse:光滑圆圈既不是这套视觉语言(见 AGENTS「拒绝光滑圆圈」),
+    // 盒尺寸也写死在渲染里。现在改锯齿水墨带,且**范围进 config** —— 玩家该看得见"哪一段会看不见"。
+    fog: {
+      w: 330, h: 190,        // 以网顶为中心的盒(px)
+      teeth: 12,             // 上下沿锯齿牙数
+      a: 0.5,                // 主雾不透明度
+      coreA: 0.62,           // 内层亮带不透明度
+    },
+
+    // —— 贴网电浆磁轨(第 13 关「激光加速轨」) ——
+    // 判带几何来自 physics(CFG.netRail 那一组),这里只管"看得见的那部分"。
+    // 从前球被磁轨提速到 1.75 倍、玩家挨了却看不见轨 —— 机制隐形的典型。
+    rail: {
+      glowA: 0.55,           // 常态辉光不透明度
+      hotA: 1,               // 触发电浆那一拍的过冲不透明度
+      hotFrames: 26,         // 过冲亮起后衰减的帧数
+      pulseHz: 0.07,         // 呼吸频率(rad/帧),逐帧 sin,不每帧 rand
+      tick: 3,               // 轨上刻度段数(读"这是一条轨",不是一根亮条)
+    },
+
+    // —— 落樱狂风(第 8 关「飞叶落樱」) ——
+    sakura: {
+      count: 26,             // 花瓣数(出生定形)
+      fall: 0.55,            // 每帧下落 px(基准)
+      sway: 18,              // 横向摆动幅度 px
+      k: 90,                 // 真风(px/步²)折成花瓣横向漂移 px/帧的系数
+      size: 5,               // 单瓣尺寸 px
+      a: 0.72,               // 不透明度
+    },
+
+    // —— 破损球的颤抖标记(第 8/19 关) ——
+    // 颤抖只在 physics 里改弹道,画面从前一帧都不提示:玩家读成"我手滑/游戏随机"。
+    // 这组画出**残影 + 尾羽撕裂**,并把"下降段失速"那一坠标出来(那才是要留容错的时刻)。
+    erraticMark: {
+      ghost: 9,              // 残影偏移 px(吃真实的 sin 相位,不是随机)
+      ghostA: 0.3,           // 残影不透明度
+      stallA: 0.6,           // 失速段撕裂标记不透明度
     },
 
     // —— 破损球的颤抖 ——
@@ -948,6 +1063,10 @@ export const CFG = {
     slashCutinStagger: 0.22,   // 三带错相位
     slashCutinColors: ["#e60012", "#07070d", "#ffffff"],        // sweetSmash 带色(P5 红黑)
     slashCutinColorsFire: ["#e60012", "#ff6a1f", "#ffe14d"],    // fire 带色(红橙金)
+
+    // AI 力竭斩劈(hud-overlay.exhaustDraw):AI 体力血条见底那一瞬的演出时长(模拟帧)。
+    // 55 帧 ≈ 0.9s:左进右出扫一遍,太短看不清"阶段切换",太长盖住下一拍发球。
+    exhaustCueFrames: 55,
 
     // 四、镜头与飘字(白闪径向化、震屏阻尼正弦、飘字弹入)
     flashRadial: 0.6,          // 白闪径向化的峰值强度(边缘亮/中心透,不糊住球)
@@ -1242,7 +1361,7 @@ export const CFG = {
         name: "时空减速",
         shortName: "时空",
         tag: "领域掌控",
-        desc: "开启 1.5 秒子弹时间，球速与对手大幅减慢，自身高速敏捷穿梭，从容反击",
+        desc: "开启 1.5 秒子弹时间，对手大幅减慢，自身高速穿梭，领域内回球更凶",
         unlockLevel: 5,
         cooldownFrames: 270, // 4.5s
         accent: "#06b6d4",
@@ -1305,6 +1424,11 @@ export const CFG = {
       rivalSlow: 0.40,      // 对手移速减速至 40%
       playerSpeedMul: 4.2,  // 施法者时空领域内移速倍率(对抗 slowmo 0.35 并赋予超速跑位,现实体感达平时 1.47 倍)
       playerAccelMul: 4.5,  // 施法者起步加速度倍率(起步瞬时响应,高速变向不拖泥带水)
+      // 领域内击球强化。全局时间膨胀对「相对局势」是恒等变换(球/AI/所有计时器同比例变慢),
+      // 光靠移速那条只有跑位收益、拿不了分 —— 领域内打出的球必须更凶,把「从容反击」
+      // 兑现成得分手段。数值对齐 lunge/magnet 那一档(略高,因无 forceSmash 保底)。
+      speedBoost: 3.6,      // 领域内击球初速加成
+      powerDeg: 10,         // 领域内额外压弧(更平的直线)
       castPunch: 1.035,     // 时空张开镜头推近
       castShake: 4,         // 时空波纹震颤
       castFlash: 0.40,      // 青碧色时空闪光
@@ -1351,20 +1475,30 @@ export const CFG = {
     readMul: 0.95,     // 满压时 readErr 额外放大的比例(1.0 = 翻倍)
     timingAdd: 4,      // 满压时额外时机误差(帧,正 = 更易漏)
     speedMul: 0.10,    // 满压时跑位降速比例(腿沉了:不是接不到,是慢半拍)
-    cueRally: 7,       // 玩家可见反馈触发拍数(game-root 飘「对手体力下降!」)
+    // ---- 接球质量双向(涨速加权):软球轻松接 = 少涨(对手回气),狼狈拍 = 多涨 ----
+    // 实现是「有效拍数 = rally + qualDrift」的**有界修正**,基准曲线一字不动:
+    // gate=0 的档位(easy)drift 恒 0,行为与旧曲线完全一致 → ai-check 只需保 normal/hard 过线。
+    quality: {
+      softLift: 0.4,     // 轻松拍有效拍数系数:慢软球(lob/放网/高远)+ 没怎么跑 → 该拍只计 0.4 拍
+      scrambleBurst: 1.5,// 狼狈拍系数:跨步救球/跳起击球/大跑位 → 该拍计 1.5 拍
+      softRun: 90,       // 起手时离防区中心 ≤ 此值(px)=「没怎么跑」(轻松判据之一)
+      hardRun: 170,      // 起手时离防区中心 ≥ 此值(px)=「大跑位救球」(狼狈判据之一)
+      maxDrift: 4,       // 漂移封顶(±4 拍当量):软球连回最多倒扣 4 拍,狼狈连炸最多加 4 拍
+    },
   },
 
-  // ===== AI 体力能量槽 (HUD 比分牌 pillR 内部展示) =====
-  // 5 段斜切平行四边形, 随连击压力 S.pressure 逐格扣减
-  // 充沛(5格/青黄) → 消耗(3~4格/橙) → 危险(1~2格/红) → 力竭(0格/暗槽慢闪)
+  // ===== AI 体力能量槽 (boss 血条规格:HUD 顶部右翼,AI 比分卡右侧) =====
+  // 5 段斜切平行四边形, 随连击压力 S.pressure 逐格扣减(展示层按本档 crush 归一化,
+  // 三档都能看到 0~5 格全程变化 —— 否则 hard(0.3)永远 4~5 格、easy(0.5)永不力竭)
+  // 充沛(5格/青黄) → 消耗(3~4格/橙) → 危险(1~2格/红) → 力竭(0格/暗槽慢闪红框)
   aiStaminaBar: {
-    w: 50,             // 总槽宽
-    h: 7,              // 槽高
+    w: 180,            // 总槽宽(boss 血条:一眼可读,不再缩在 pill 角落)
+    h: 13,             // 槽高
     segments: 5,       // 5 段斜切小方块
-    gap: 2.5,          // 格间距
-    skew: -3,          // 斜切角偏移(px)
-    x: -16,            // 相对 pillR 中心 X
-    y: -14,            // 相对 pillR 中心 Y
+    gap: 3,            // 格间距
+    skew: -6,          // 斜切角偏移(px)
+    x: 335,            // 槽中心 X(top 坐标系):AI 比分卡右侧,让开中央状态行/连击徽章/发球旗
+    y: 196,            // 槽中心 Y:pill 底缘(~201)之下,与状态行(y=190,±100 内)无 X 交叠
   },
 
   // AI 难度:全部走同一套挥拍机制,只是**看走眼更狠、判定区更窄、出手更不准**
@@ -1372,17 +1506,36 @@ export const CFG = {
   // shotErr=出球落点误差(px,进 player.buildShot 的误差预算,会下网/出界)
   // composure=情绪修正闸门(0=落后不会变强;见 ai.ts emotionModifiers)
   // crush=连击压力闸门(0=完全不吃压力;见 ai.ts rallyPressure) · notice=接球反应延迟帧(拟人)
+  // qualityGate=接球质量双向闸门(0=压力只随拍数单调涨;见 ai.ts noteHit)
   // 数值口径:ai-check 的真人替身(走位 ±35px、反应 10 帧、时机早 5/晚 10 帧)打出
   // easy 60% / normal 46% / hard 32% 的得分率、回合 10.8~19.3 拍(2026-10-01 随新触发系统
   // 重校准;工具与 serve-check 均已种子化,同代码同结果)。改任何 diffs.* 都要重跑
   // ai-check 连同替身口径一起看,贴线断言的余量校准用 AI_CHECK_MATCHES=25。
   // 回滚成旧行为(逐项精确复现):read 填回 92/66/20 并把 aiRead 的 readFloor 设 1、
   // zone 全 1、shotErr 全 0、composure 全 1、crush 全 0、notice 全 0 —— 但 read 不抵消这条一改就回不去。
+  // windSense=这一档**看风下手**的程度(0=一味不补,1=补满 aiWindDepth):
+  // 出球解算的 "aim" 口径故意不认风(见 physics.ts 的 IntegrateIntent),所以风会真把
+  // AI 的球吹偏 —— 从前它一味不补,风关(第 1 关)等于自杀式送分:用户现场
+  // 「他发球我就得分了、他根本不会根据风向来进行适配」。
+  // 入门档刻意**留一点**(0.25 而不是 0):第 1 关正是玩家学风的地方,对面要是一点都不
+  // 适配,风就变成"AI 自己会输"而不是"玩家要读的方向";补太满又把机制从玩家手里拿走
+  // (大师 0.85 也刻意不补满)。入门档剩下的破绽靠 read 45 / shotErr 70,真人肉眼看得出来。
   diffs: {
-    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.93, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5 },
-    normal: { label: "普通", tick: 14, speed: 0.94, read: 35, readFloor: 0.40, zone: 0.94, shotErr: 14, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 1.0, notice: 3 },
-    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 32, readFloor: 0.62, zone: 0.96, shotErr: 12, timingErr: 3, aggr: 0.52, composure: 1, crush: 0.3, notice: 2 },
-  },
+    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.93, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5, windSense: 0.25, qualityGate: 0 },
+    normal: { label: "普通", tick: 14, speed: 0.94, read: 35, readFloor: 0.40, zone: 0.94, shotErr: 14, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 1.0, notice: 3, windSense: 0.55, qualityGate: 1 },
+    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 32, readFloor: 0.62, zone: 0.96, shotErr: 12, timingErr: 3, aggr: 0.52, composure: 1, crush: 0.3, notice: 2, windSense: 0.85, qualityGate: 1 },
+  } as Record<DiffKey, AiTier>,
+
+  // ===== AI 每一档带哪一招 =====
+  // 从前 rules.applyAiTier() 里是 `if easy / else if normal / else` 三个分支写同一个人
+  // —— 看着像差异化配置,其实是恒等空转,读代码的人会以为入门档和大师档打法不同。
+  // 现在它是一张**看得出来的表**:三档都是 lunge,与改动前逐位一致(0.0.21 试过
+  // normal=magnet / hard=focus,ai-check 立刻从「普通 46%」掉到 33%、普通档 0/12 局能赢
+  // —— 吸球与领域减速是补位的量,不是"性格",要动它就得连带重校准三档,那是另一件事)。
+  // 关卡表里的 aiSkill 仍然覆盖这一行(第 5/10/14/15/20 关各有指定),战前简报会写出来。
+  aiSkillByDiff: {
+    easy: "lunge", normal: "lunge", hard: "lunge",
+  } as Record<DiffKey, SkillId>,
 
   // ===== AI 扣杀防守难度 (扣杀突破 AI 防线的核心机制) =====
   // 面对扣杀(shot.kind === 'smash', 包括跳杀、技能重扣、闪现暴扣等):
@@ -1448,9 +1601,36 @@ export const CFG = {
   star: {
     deepDepth: 0.8,     // 「底线深球」:真实落点深度 ≥ 此值(aimDepth.deep = 0.92 为瞄准档)
     netZone: 96,        // 「网前截击」:接触点离网带 ≤ 此 px 且甜区/完美
-    empRally: 3,        // 「EMP 故障期间」:与渲染层 empActive 同款阈值(world.ts rally>=3)
+    empRally: 3,        // 「EMP 故障期间」:与渲染层 empActive **同一把尺**(从前 world.ts 里另写死一个 3)
+    flashRally: 5,      // 「看台闪光灯」(第 16 关)从第几拍开始闪:同样只这一处,渲染与判据共用
     slideSpeed: 2.2,    // 「滑行击球」:极滑关 |vx| ≥ 此值即算滑行中(含按住方向的高速)
     airMinHits: 6,      // 「空中击球占比」:总击球数低于此不判(防一两拍就 100% 通过)
+  },
+
+  // ===== 闯关模式共用的平衡表(关卡"用不用"某机制在 campaign.ts,那才是创意) =====
+  campaign: {
+    // AI 的不对称减免:遮蔽类机制只难为人眼(AI 走重模拟跑位,它"看得见"球),
+    // 于是同一档 AI 在这些关里比"对练模式"更凶,关卡的难变成"机制 + AI"两份叠在玩家身上。
+    // 这里的数字是**加在 AI 身上的误差**(read 偏差 px / shotErr 出球误差 px / timingErr 帧
+    // / aggr 进攻性),由 campaign.ts 的 aiReliefFor + tuneAiTier 落到那一关的档位上。
+    // 移动/体力/重力类不在表里:那些走 PlayerModifier,双方一起受,对称,不用补。
+    aiRelief: {
+      blindingSun:   { read: 6, shotErr: 8 },      // 第 3 关 烈日刺目
+      sandstorm:     { read: 6, timingErr: 1 },    // 第 4 关 热带沙尘暴
+      fog:           { read: 8, shotErr: 8 },      // 第 6 关 晨雾隐踪
+      empGlitch:     { read: 6 },                  // 第 11 关 电磁脉冲
+      hologramDecoy: { read: 8, shotErr: 8 },      // 第 12 关 全息双生(假球骗眼不骗模拟器)
+      spectatorFlash:{ read: 6, shotErr: 6 },      // 第 16 关 全场镁光灯
+      sakuraFlurry:  { read: 5 },                  // 第 8 关 落樱(与 erratic 同关,会叠加后被夹住)
+      erratic:       { read: 6, shotErr: 8 },      // 第 8/19 关 破损球飘忽
+    },
+    /** 减免的量纲范围:两条机制同时命中时不许把 AI 调成纯靶子 */
+    aiReliefCap: {
+      read: [8, 80] as [number, number],
+      shotErr: [0, 90] as [number, number],
+      timingErr: [0, 18] as [number, number],
+      aggr: [0, 0.9] as [number, number],
+    },
   },
 
   // 皮肤表(见文件顶部的 SKINS):挂在 CFG 树上,沿用「手感与经济之外的一切数据都在 CFG」的心智

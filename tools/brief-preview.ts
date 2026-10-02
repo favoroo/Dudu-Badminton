@@ -20,7 +20,7 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { CAMPAIGN_STAGES } from "../assets/scripts/core/campaign";
 import { textW } from "../assets/scripts/core/text-metrics";
-import { BRIEF, BRIEF_BTN, briefOverlaps, briefOverflow, layoutBrief, type BriefItem, type BriefLayout } from "../assets/scripts/ui/brief-layout";
+import { BRIEF, BRIEF_BTN, briefInput, briefOverlaps, briefOverflow, layoutBrief, type BriefItem, type BriefLayout } from "../assets/scripts/ui/brief-layout";
 
 /** 与 campaign-panel 同款的块配色 */
 const STYLE: Record<string, { col: string; center?: boolean }> = {
@@ -93,7 +93,7 @@ const sheetW = CELL_W * COLS, sheetH = CELL_H * ROWS;
 const groups: string[] = [];
 PICKS.forEach((no, i) => {
   const st = CAMPAIGN_STAGES.find((s) => s.stageNo === no)!;
-  const L = layoutBrief(st);
+  const L = layoutBrief(briefInput(st));
   const of = briefOverflow(L), ov = briefOverlaps(L);
   const cx = (i % COLS) * CELL_W + CELL_W / 2;
   const cy = Math.floor(i / COLS) * CELL_H + CELL_H / 2 + 20;

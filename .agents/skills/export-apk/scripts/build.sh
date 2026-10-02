@@ -58,7 +58,9 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "cocos-only" ] || [ "$MODE" = "release" ];
     # Cocos CLI 的退出码不可靠 —— 登录服务超时/启动期 layout.json 解析报错等都会让
     # 进程退出码非零,即使 build task 本身已 success。靠下面的新鲜度闸判断 Cocos 是否
     # 真产出了数据,不靠退出码(否则会误拦一次成功的构建)。
-    /Applications/CocosCreator.app/Contents/MacOS/CocosCreator \
+    # Cocos Creator 路径:COCOS_CREATOR 环境变量优先,默认 /Applications/CocosCreator.app/...
+    COCOS_BIN="${COCOS_CREATOR:-/Applications/CocosCreator.app/Contents/MacOS/CocosCreator}"
+    "$COCOS_BIN" \
         --project "$PROJECT_ROOT" \
         --build "configPath=$PROJECT_ROOT/build-android.json" || echo "warn: Cocos CLI 退出码非零,交由新鲜度闸判定"
 
