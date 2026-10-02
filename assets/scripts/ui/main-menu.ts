@@ -31,9 +31,10 @@ export class MainMenu {
   private lvLabel: Label;
   private coinLabel: Label;
   private soundLabel: Label;
-  private campaignSub!: Label;
-  private drillSub!: Label;
-  private careerSub!: Label;
+  // 大色块改版后闯关/训练/生涯不再带副行,sub 为空串时 entry() 不建 Label —— 三字段可为 null
+  private campaignSub: Label | null = null;
+  private drillSub: Label | null = null;
+  private careerSub: Label | null = null;
   private checkedStartup = false;
   /** rise 入场的节点队列(节点,延迟):show 时逐级展开 */
   private riseNodes: Array<{ node: Node; delay: number }> = [];
@@ -243,12 +244,12 @@ export class MainMenu {
     };
 
     const campaign = entry("entry:campaign", ARCADE.acid, "CHALLENGE", "闯关模式", "", 12, 40, () => kit.openCampaign());
-    this.campaignSub = campaign.subLabel!;
+    this.campaignSub = campaign.subLabel;
     const endless = entry("entry:endless", ARCADE.good, "ENDLESS", "无限练习", "无视比分 · 持续对拉", 318, 40, () => kit.openEndless());
     const drill = entry("entry:drill", ARCADE.cyan, "TRAIN", "专项训练", "", 12, -138, () => kit.openDrills());
-    this.drillSub = drill.subLabel!;
+    this.drillSub = drill.subLabel;
     const career = entry("entry:career", ARCADE.paper, "CAREER", "生涯与商店", "", 318, -138, () => kit.openCareer());
-    this.careerSub = career.subLabel!;
+    this.careerSub = career.subLabel;
     this.riseNodes.push(
       { node: hero, delay: 0.26 },
       { node: campaign.node, delay: 0.3 },
@@ -366,10 +367,10 @@ export class MainMenu {
     this.paintSound();
     const campCleared = CampaignManager.getClearedCount();
     const campStars = CampaignManager.getTotalStars();
-    this.campaignSub.string = `${campCleared}/20关 · ★${campStars}星`;
+    if (this.campaignSub) this.campaignSub.string = `${campCleared}/20关 · ★${campStars}星`;
     const cleared = Object.values(p.drills).filter((d) => d.stars > 0).length;
-    this.drillSub.string = `${cleared}/${DRILLS.length} 已练成 · 首通有奖`;
+    if (this.drillSub) this.drillSub.string = `${cleared}/${DRILLS.length} 已练成 · 首通有奖`;
     const rate = p.stats.matches > 0 ? Math.round((p.stats.wins / p.stats.matches) * 100) : 0;
-    this.careerSub.string = `${p.stats.wins} 胜 · 胜率 ${rate}% · 金币 ${p.coins}`;
+    if (this.careerSub) this.careerSub.string = `${p.stats.wins} 胜 · 胜率 ${rate}% · 金币 ${p.coins}`;
   }
 }

@@ -52,7 +52,9 @@ export abstract class ModeScreen {
     kit.atmosphere(this.root);
     this.buildHeader();
     this.buildBars();
-    this.buildExtra();
+    // 注意:buildExtra 必须由各子类在 super() 之后自行调用,
+    // 不能在父类 constructor 里调 —— ES/TS 规范下子类字段初始化器(如 courtTabs = [])
+    // 晚于 super() 执行,在此处调用会因子类属性未就绪抛 Cannot read properties of undefined (reading 'push')。
   }
 
   show(): void {
@@ -230,6 +232,7 @@ export class MatchSetupScreen extends ModeScreen {
 
   constructor(parent: Node, kit: UiKit, goBack: () => void) {
     super(parent, kit, "match-setup", "对练", "MATCH PLAY", goBack);
+    this.buildExtra();
   }
 
   protected buildExtra(): void {
@@ -355,6 +358,7 @@ export class MatchSetupScreen extends ModeScreen {
 export class EndlessScreen extends ModeScreen {
   constructor(parent: Node, kit: UiKit, goBack: () => void) {
     super(parent, kit, "endless-screen", "无限练习", "ENDLESS", goBack);
+    this.buildExtra();
   }
 
   protected buildExtra(): void {

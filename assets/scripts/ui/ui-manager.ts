@@ -497,44 +497,44 @@ export class UIManager extends Component {
     this.skillDialog?.hide();
     switch (st) {
       case "MENU": {
-        this.pausePanel.hide();
-        this.settlePanel.hide();
-        this.menu.show();
-        this.hud.setPlaying(false);
+        this.pausePanel?.hide();
+        this.settlePanel?.hide();
+        this.menu?.show();
+        this.hud?.setPlaying(false);
         break;
       }
       case "PAUSED":
-        this.menu.hide();
+        this.menu?.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
         this.campaignPanel?.hide();
-        this.hud.setPlaying(true);       // 暗遮罩后仍能看见终局前的比分牌
-        this.pausePanel.show();
+        this.hud?.setPlaying(true);       // 暗遮罩后仍能看见终局前的比分牌
+        this.pausePanel?.show();
         break;
       case "OVER":
-        this.menu.hide();
+        this.menu?.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
         this.campaignPanel?.hide();
-        this.hud.setPlaying(true);
-        this.settlePanel.show(this.takeSettle("match"));
+        this.hud?.setPlaying(true);
+        this.settlePanel?.show(this.takeSettle("match"));
         break;
       case "DRILLDONE":
-        this.menu.hide();
+        this.menu?.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
         this.campaignPanel?.hide();
-        this.hud.setPlaying(true);
-        this.settlePanel.show(this.takeSettle("drill"));
+        this.hud?.setPlaying(true);
+        this.settlePanel?.show(this.takeSettle("drill"));
         break;
       default:                           // SERVE / RALLY / POINT:比赛进行态
-        this.menu.hide();
+        this.menu?.hide();
         this.careerPanel?.hide();
         this.drillPanel?.hide();
         this.campaignPanel?.hide();
-        this.pausePanel.hide();
-        this.settlePanel.hide();
-        this.hud.setPlaying(true);
+        this.pausePanel?.hide();
+        this.settlePanel?.hide();
+        this.hud?.setPlaying(true);
         break;
     }
   }
