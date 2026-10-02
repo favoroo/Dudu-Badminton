@@ -373,9 +373,9 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
     `移速每档系数都落在夹取区间 [${G.min}, ${G.max}] 内`);
   ok(new Set(G.tiers.map((t) => t.id)).size === G.tiers.length, "移速档位 id 不重复");
   ok(G.tiers.every((t, i) => i === 0 || t.s > G.tiers[i - 1].s), "移速档位按表序从慢到快单调");
-  // 标准档必须是恒等:这一档存在的意义就是"什么都不改"的参照,漂了整张表就读不出动了什么
-  const std = G.tiers.find((t) => t.id === G.default);
-  ok(!!std && std.s === 1, `移速默认档系数 = 1(实得 ${std ? std.s : "无此档"}):它是参照,不是隐性加码`);
+  // 出货默认**不再是恒等档**(default = slow,慢 15%),所以这里不再断言 default.s === 1。
+  // 换来的纪律是:默认档必须在表里(上面已断言)、且它的系数落在夹取区间内(也已断言) ——
+  // 坏值(打错 id / 越界)一律退不回去,是 sanitize 那三条在守着。
   ok(sanitize(null).gaitTier === G.default, "空档 → 移速默认档(与 paceTier 同一套缺字段语义)");
   ok(sanitize({ gaitTier: "nonsense" }).gaitTier === G.default, "gaitTier 垃圾值 → 退回默认档");
   ok(sanitize({ paceTier: "xslow", gaitTier: "vfast" }).gaitTier === "vfast", "显式存的 gaitTier 照读");

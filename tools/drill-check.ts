@@ -5,10 +5,11 @@
 // loftByHeight 滞空表、classify 判据、strikeZone 半径四套参数共同决定,
 // 动任何一个都可能让某一关突然练不出来或跟隔壁关串味。
 //
-// 所以这里:① 忠实复现 rules 的持球释放(含起跳那几帧的接触高度递推)
-//          ② 沿喂球弧线枚举左半场所有「够得着」的接触点
-//          ③ 对每个接触点扫遍命中窗质量 q,把这一拍还原成 rules 会抛出的事件
-//          ④ 直接调游戏里的同一条判据 Drill.matches 打分
+// ⚠ 复现逻辑已经不在这里了:喂球机 / 可达接触点 / 接触点还原成一拍这三段,现在住
+//   **assets/scripts/core/drill-demo.ts** —— 引导演示要用同一份真值(它演的那一拍必须
+//   就是这里判的那一拍),留两份复现早晚跑偏:这份以前写 `k === 1 + jumpLead`、
+//   实机 drill.ts 写 `k >= 1 + jumpLead`,两者差一帧而无人报警。
+//   于是本文件只剩「网格搜索 + 打分 + 三种输出」。
 //
 // 边界要说清:它**不模拟玩家的跑位与起跳时机** —— 接触点只要高度够就算「可达」,
 // 所以对需要跳起打的高球(重杀/点杀)偏乐观。它是「别让一次物理调参把某关
@@ -19,147 +20,27 @@
 //   node .tools-build/tools/drill-check.js --pick   为每关在网格里搜最佳喂球参数
 //   node .tools-build/tools/drill-check.js --sweep  打印整张网格,人工看趋势
 import { CFG, DRILLS } from "../assets/scripts/core/config";
-import { Physics } from "../assets/scripts/core/physics";
-import { Player as Pl } from "../assets/scripts/core/player";
-import { Drill, DrillEndFact } from "../assets/scripts/core/drill";
-import { Ball, DrillDef, Player } from "../assets/scripts/core/types";
+import { DrillDemo } from "../assets/scripts/core/drill-demo";
+import type { ContactPoint } from "../assets/scripts/core/drill-demo";
+import { Drill } from "../assets/scripts/core/drill";
+import type { DrillDef } from "../assets/scripts/core/types";
 
 const C = CFG;
 const CO = C.court;
-
-// ============================================================
-// ① 喂球机:复现 rules.step 里 ball.held 那一段
-// ============================================================
-// 持球点贴手(handX = p.x + facing*24,handY = p.y - h*0.46),挥拍进窗那一帧释放。
-// 「第几帧出球」因此直接决定喂球的高度 —— 这就是每个关卡 feed.jumpLead 的含义。
-function handX(p: { x: number; facing: number }): number { return p.x + p.facing * 24; }
-function handY(p: { x: number; y: number; facing: number }): number { return p.y - C.player.h * 0.46; }
-
-interface Released { x: number; y: number; h: number; frame: number }
-
-function makeLoneBall(owner: Player): Ball {
-  return {
-    x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0,
-    live: false, held: true, owner,
-    lastHitter: "right", crossed: false, netted: false, shot: null,
-    sq: 1, sqPrev: 1,
-    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
-  };
-}
-
-function simulateFeed(depth: number, jumpLead: number): { released: Released; shot: ReturnType<typeof Physics.solveShot> } | null {
-  const feeder = Pl.create("right", { isAI: true });
-  const ball = makeLoneBall(feeder);
-  let t = 0, released: Released | null = null, guard = 0;
-  const aim = depth;
-
-  while (guard++ < 600 && !released) {
-    t++;
-    const inp = { left: false, right: false, jumpPressed: false, jumpHeld: false, swingAim: null as string | number | null, lungePressed: false };
-    const dx = feeder.homeX - feeder.x;
-    if (Math.abs(dx) > 8) {
-      inp.left = dx < 0; inp.right = dx > 0;
-    } else if (t > C.drill.settle) {
-      const k = t - C.drill.settle;
-      if (jumpLead > 0) {
-        if (k === 1) { inp.jumpPressed = true; inp.jumpHeld = true; }
-        else if (k < 1 + C.player.jumpApex) inp.jumpHeld = true;
-        if (k === 1 + jumpLead) inp.swingAim = aim;
-      } else if (k === 2) inp.swingAim = aim;
-    }
-    Pl.update(feeder, inp, ball);
-    ball.x = handX(feeder); ball.y = handY(feeder);
-    // rules.step 的释放窗口
-    if (feeder.swingT >= C.swing.windup && feeder.swingT <= C.swing.windup + 2) {
-      released = { x: ball.x, y: ball.y, h: CO.groundY - ball.y, frame: t };
-    }
-  }
-  if (!released) return null;
-
-  // 与 Player.buildShot 同一套公式(rules 发球固定 q=0.8、无甜蜜/完美),
-  // 但不掺落点误差:误差只把落点推 ±8% 深度,不改变「够得着的接触点是什么形状」
-  const loft = Math.max(C.shot.loftMinDeg, Math.min(C.shot.loftMaxDeg, Physics.loftFor(depth, released.h, 0.8)));
-  const shot = Physics.solveShot(released.x, released.y, -1, depth, loft, 0);
-  if (shot.trace.hitNet) return null;
-  return { released, shot };
-}
-
-// ============================================================
-// ② 沿弧线找左半场内「够得着」的接触点
-// ============================================================
-// 够得着的判据与 Player.strikeZone 同源:区心在肩(p.y+pivotY)略偏前,
-// 半径 = swingRadius*0.92 + headR,来球越快收到 zoneFastMul。
-// 站立时脚在地面,跳起时脚抬高 —— 所以同一个接触点可能「只能跳着打」或「站着就能打」。
-const APEX = (() => {
-  const f = simulateFeed(0.5, C.player.jumpApex);
-  return f ? f.released.h - C.player.h * 0.46 : 87;
-})();
-
-function zoneTopHeight(speed: number): number {
-  const rad = Math.min(C.swing.radiusMax, C.swing.radiusBase + speed * C.swing.radiusSpeedGain);
-  const fast = Math.min(1, Math.max(0, (speed - C.swing.zoneFullSpeed) / C.swing.zoneTightenSpan));
-  const r = (rad * 0.92 + C.swing.headR) * (1 - fast * (1 - C.swing.zoneFastMul));
-  return -C.swing.pivotY + rad * 0.06 + r;
-}
-
-interface ContactPoint { x: number; y: number; h: number; speed: number; needJump: boolean }
-
-function contactPoints(feed: NonNullable<ReturnType<typeof simulateFeed>>): ContactPoint[] {
-  const b: Ball = {
-    x: feed.released.x, y: feed.released.y, px: feed.released.x, py: feed.released.y,
-    vx: feed.shot.vx, vy: feed.shot.vy, held: false, live: true,
-    owner: null, lastHitter: "right", crossed: false, netted: false, shot: null,
-    sq: 1, sqPrev: 1,
-    flying: false, flyT: 0, flyFromX: 0, flyFromY: 0,
-  };
-  const pts: ContactPoint[] = [];
-  for (let i = 0; i < 320; i++) {
-    Physics.step(b);
-    if (b.x < CO.wallL || b.y >= CO.groundY - 2) break;
-    if (b.x >= CO.netX) continue;
-    const h = CO.groundY - b.y;
-    if (h < 8) continue;
-    const speed = Math.hypot(b.vx, b.vy);
-    const top = zoneTopHeight(speed);
-    if (h <= top + APEX) pts.push({ x: b.x, y: b.y, h, speed, needJump: h > top });
-  }
-  return pts;
-}
-
-// ============================================================
-// ③④ 每个接触点 × 命中窗质量 → 真实判据打分
-// ============================================================
-const QS = [0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 1.0];
-
-function shotAt(pt: ContactPoint, aim: number, q: number) {
-  const sweet = q >= 1 - C.sweet.coreRatio;
-  const perfect = q >= 1 - C.perfect.coreRatio;
-  const powerDeg = perfect ? C.perfect.powerDeg : sweet ? C.sweet.powerDeg : 0;
-  const loft = Math.max(C.shot.loftMinDeg, Math.min(C.shot.loftMaxDeg, Physics.loftFor(aim, pt.h, q) - powerDeg));
-  const boost = perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0;
-  const s = Physics.solveShot(pt.x, pt.y, 1, aim, loft, boost);
-  s.sweet = sweet; s.perfect = perfect;
-  return s;
-}
-
-// 把「这一拍」还原成 rules 训练分支会抛给 Drill 的那份事实
-function eventAt(pt: ContactPoint, s: ReturnType<typeof shotAt>, q: number): DrillEndFact {
-  return {
-    lastHitter: "left", crossed: true, netted: false, scorer: "left",
-    kind: s.kind, q, sweet: !!s.sweet, perfect: !!s.perfect,
-    shot: { depth: s.depth, landX: s.trace.landX, steps: s.trace.steps, deg: s.deg, contactH: pt.h },
-  };
-}
+const { simulateFeed, standingTop, apexReach, shotAt, eventAt, QS } = DrillDemo;
 
 interface ScoreResult {
   rate: number; hit: number; n: number; kinds: Record<string, number>; pts: number; jumpy: number;
   feedDeg: number; feedSpeed: number; feedH: number; hang: number; landX: number;
 }
 
+/**
+ * ②③④ 沿这条喂球弧线的每个可达接触点扫遍命中窗质量,直接调游戏里那条判据打分
+ */
 function score(def: DrillDef, depth: number, jumpLead: number, aim: string): ScoreResult | null {
   const feed = simulateFeed(depth, jumpLead);
   if (!feed) return null;
-  const pts = contactPoints(feed);
+  const pts = feed.contacts;
   if (!pts.length) return null;
   const A = aim === "near" ? C.aimDepth.near : C.aimDepth.deep;
   let n = 0, hit = 0;
@@ -172,7 +53,7 @@ function score(def: DrillDef, depth: number, jumpLead: number, aim: string): Sco
       if (Drill.matches(def, eventAt(pt, s, q))) hit++;
     }
   }
-  const jumpy = pts.filter((p) => p.needJump).length / pts.length;
+  const jumpy = pts.filter((p: ContactPoint) => p.needJump).length / pts.length;
   return {
     rate: 100 * hit / n, hit, n, kinds, pts: pts.length, jumpy,
     feedDeg: feed.shot.deg, feedSpeed: feed.shot.speed,
@@ -199,13 +80,13 @@ const AIMS = ["far", "near"];
 // 三种输出
 // ============================================================
 if (process.argv.includes("--sweep")) {
-  console.log(`跳起额外够到 ${APEX.toFixed(0)}px · 慢球站立上限 ${zoneTopHeight(4).toFixed(0)}px · 快球 ${zoneTopHeight(24).toFixed(0)}px\n`);
+  console.log(`跳起额外够到 ${apexReach().toFixed(0)}px · 慢球站立上限 ${standingTop(4).toFixed(0)}px · 快球 ${standingTop(24).toFixed(0)}px\n`);
   for (const lead of LEADS) {
     console.log(`=== jumpLead=${lead} ===`);
     for (const d of DEPTHS) {
       const feed = simulateFeed(d, lead);
       if (!feed) { console.log(`  d=${d.toFixed(2)}  下网`); continue; }
-      const pts = contactPoints(feed);
+      const pts = feed.contacts;
       const row = AIMS.map((aim) => {
         const A = aim === "near" ? C.aimDepth.near : C.aimDepth.deep;
         const kinds: Record<string, number> = {}; let n = 0;

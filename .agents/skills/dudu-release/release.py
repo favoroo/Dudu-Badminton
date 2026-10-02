@@ -521,6 +521,12 @@ def verify_releases(tag: str, apk_name: str, tokens: dict) -> None:
     log(f'✓ Gitee Release 校验通过: {d_gt.get("html_url")}')
 
 
+def _ver_key(tag: str):
+    """v0.0.21 -> (0, 0, 21) 用于版本降序排序。"""
+    nums = re.findall(r'\d+', tag or '')
+    return tuple(int(n) for n in nums) or (0,)
+
+
 def prune_old_apks(keep: int, tokens: dict, dry_run: bool = False) -> None:
     """双端只保留最近 keep 个版本的 APK 附件，防止 Gitee 1GB 仓库附件配额超限。"""
     log(f'检查并清理老版本 APK 附件（保留最近 {keep} 个版本）...')
@@ -533,6 +539,9 @@ def prune_old_apks(keep: int, tokens: dict, dry_run: bool = False) -> None:
             apk_assets = [a for a in assets if str(a.get('name', '')).endswith('.apk')]
             if apk_assets:
                 releases_with_apk.append(r)
+        # Gitee /releases 默认按 id 升序(旧→新)返回,直接 [keep:] 会把刚发布的最新版
+        # 切进待删区(v0.0.21 首次踩中)。先按 tag 降序排,确保 [keep:] 取到的是老版本。
+        releases_with_apk.sort(key=lambda r: _ver_key(str(r.get('tag_name', ''))), reverse=True)
         
         if len(releases_with_apk) > keep:
             for old in releases_with_apk[keep:]:

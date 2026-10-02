@@ -41,11 +41,12 @@ export interface AiTier {
   notice: number;
   windSense: number;
   /**
-   * 接球质量双向闸门(0=压力只随拍数涨,与旧曲线完全一致;1=软球回气/狼狈拍加压全开)。
-   * easy 档刻意为 0:新手回球质量天然偏软,若 AI 一直回气,新手永远体验不到
-   * 「拖长回合 → 对手力竭」的正反馈,且会顶穿 ai-check 的 easy 回合长度红线。
+   * 轻松拍回气的闸门(0=这一档接软球也不回气;1=回)。
+   * easy 档刻意为 0:新手回球 80% 是高远/放网这类慢软球,若 AI 一路回气,
+   * 新手永远体验不到「把他打累 → 他漏球」的正反馈,且会顶穿 ai-check 的 easy 回合长度红线。
+   * 只管回气这一半 —— 扣体力本身三档都走,由 crush 决定扣多少。
    */
-  qualityGate: number;
+  softGate: number;
 }
 
 /**
@@ -214,10 +215,18 @@ export interface AiState {
   celebrateT: number;
   frustrateT: number;
   /**
-   * 本回合连击压力 0..1:rally 越长越大(乘档位 crush 闸门)。
-   * 放大 readErr / 加时机误差 / 降跑速,让长回合后半段开始漏 —— 见 ai.ts rallyPressure。
+   * 本回合连击压力 0..1(乘档位 crush 闸门):放大 readErr / 加时机误差 / 降跑速。
+   * 它不是独立账本,而是 `fatigue` 的读数 —— 见 ai.ts 的 pressureOf()。
    */
   pressure: number;
+  /**
+   * 本回合已花的体力(单位见 CFG.aiStamina.capacity,每分随 reset 归零):
+   * AI 每一次**真实击中**按「这一拍有多费力」记一笔账 —— 跑动距离是主力项,
+   * 跨步/腾空/跳杀/技能/接重杀各加一笔,慢软球且没跑则回一点。
+   * 从前这里是 rally 拍数的纯函数,而发球本身也 rally++,于是玩家一发球
+   * 血条就动一格(用户现场:「我发球他掉一下,他接球又掉一下」)。见 ai.ts staminaCost。
+   */
+  fatigue: number;
   /** 接球反应延迟剩余帧:新来球刚起时先愣几帧再启动(拟人,帧数 = diffs.notice) */
   noticeT: number;
   /** 扑救俯冲剩余帧(>0 = 正做「够不到也要扑一下」的表现;只给渲染读,不改判定) */
@@ -228,18 +237,39 @@ export interface AiState {
   panicSwung: boolean;
   /** 本记来球是否已判定为「怎么都赶不上」(供扑救俯冲表现读取) */
   hopeless: boolean;
-  /**
-   * 接球质量对压力曲线的漂移(rally 拍当量,可为负,随每分 reset 重建):
-   * 软球轻松接 → 每拍少涨(对手回气),跨步/跳跃/大跑位狼狈接 → 每拍多涨。
-   * 见 ai.ts noteHit;基准曲线不变,只做有界修正 —— ai-check 红线只受此漂移影响。
-   */
-  qualDrift: number;
-  /** 起手瞬间记下的接球质量快照是否已记(每拍一次,击中时被 noteHit 消费) */
+  /** 起手瞬间记下的接球快照是否已记(每拍一次,击中时被 noteHit 消费) */
   recvNoted: boolean;
   /** 快照:来球球种(lob/netshot/clear = 慢软球,给「轻松接」判据用) */
   recvKind: ShotKind | null;
-  /** 快照:起手时离防区中心 |p.x - homeX| 的距离(px) */
+  /** 快照:起手时离防区中心 |p.x - homeX| 的距离(px) —— 体力账本的主力项 */
   recvRun: number;
+  /** 快照:起手时来球的力度(Physics.classify 的 power;0 = 没球可读) */
+  recvPower: number;
+}
+
+/**
+ * 一拍的体力成本输入(ai.ts staminaCost 的入参,给 tools/stamina-check 当靶子)。
+ * 全部取自 AiState 的起手快照 + 击中那一刻的 ShotResult,不另立判据。
+ */
+export interface HitCostInput {
+  /** 起手时离防区中心多远(px) */
+  run: number;
+  /** 起手时来球有多重(0 = 读不到) */
+  power: number;
+  /** 起手时认定的来球球种 */
+  recvKind: ShotKind | null;
+  /** 这一拍是跨步救球 */
+  lunge: boolean;
+  /** 这一拍腾空击球 */
+  air: boolean;
+  /** 这一拍是跳杀(叠在 air 上) */
+  jumpSmash: boolean;
+  /** 这一拍用了技能 */
+  skill: boolean;
+  /** 这一拍自己打出扣杀 */
+  ownSmash: boolean;
+  /** 这一拍是接发(rally==2):发球-接发是开局仪式,不算消耗,整拍免费 */
+  isServeReturn?: boolean;
 }
 
 /** 球员。字段与 Rules/Player 的既有用法一一对应,渲染层也只读这里 */
@@ -531,6 +561,21 @@ export interface MenuEntry {
   humans?: number;
 }
 
+/**
+ * 引导演示的一步(分步定格讲解)。**固定四条**,与 render/drill-anim 的 `STEP_FRAME`
+ * 一一对应:迎球 → 就位/起跳 → 击球定格 → 出球落点。
+ * 写法纪律:每条都要落到「手指动作 + 这一关自己的门槛」,不许写六关通用的空话 ——
+ * 「看完不知道怎么做」就是那套通用话造成的(旧 stageOfFrame 六关字面完全一样)。
+ */
+export interface DrillStep {
+  /** 阶段名(卡上第一排,四字以内) */
+  name: string;
+  /** 这一步做什么(卡内正文,两行以内) */
+  desc: string;
+  /** 可选提醒:为什么这步容易做错(读不到就不显示) */
+  note?: string;
+}
+
 /** 训练场关卡定义。判据字段全部可选,由 Drill.matches 统一执行 */
 export interface DrillDef {
   id: string;
@@ -544,10 +589,12 @@ export interface DrillDef {
   feed: { depth: number; jumpLead: number };
   /** 要求玩家按的击球键:far=「深球」/ near=「短球」,只驱动引导文案与时机条 */
   wantKey: "far" | "near";
-  contactX: number;
-  demoH: number;
   cue: string;
   points: string[];
+  /** 引导演示的分步讲解(缺省 = 用 drill-anim 的通用四步,只为自测表兼容旧数据) */
+  demoSteps?: DrillStep[];
+  /** 目标落点区叫什么,画在场上那条带子上(缺省「目标得分区」) */
+  zoneName?: string;
   pose: { style: SwingStyle; jump: boolean; cut?: number; lunge?: number; tight?: boolean; crouch?: boolean };
   // 这一关特有的客观量约束(球种窄带不够用时补)
   minDepth?: number; maxDepth?: number;

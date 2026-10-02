@@ -204,14 +204,15 @@ export class CampaignPanel {
   }
 
   private build(): void {
-    // 全屏暗底 + BlockInputEvents:与设置页同一个工厂。
-    // bands:false —— 这一屏的主角是衬纸本身,暗底再叠两道红带就把球场糊没了。
-    this.kit.dim(this.root, 0.25, 0.55, { bands: false });
+    // 全屏墨黑底 + BlockInputEvents:与设置页同一个工厂。
+    // bands:false —— 这一屏的主角是衬纸本身,不再叠两道红带。
+    // 压成不透明:二级界面背后的一级界面(主菜单/球场)一律不露(用户指令)。
+    this.kit.dim(this.root, 1, 1, { bands: false });
 
-    // L1 衬纸:一张撕下来的黑纸垫在斩劈红纸上(旧写法是 navy 圆角矩形 + 三层 roundRect 描边)。
+    // L1 衬纸:一张黑纸垫在斩劈红纸上,平直收边(旧写法是 navy 圆角矩形 + 三层 roundRect 描边)。
     // 这一层不需要 retainedDraw:hide 走 fadeOutHide、整树从不 deactivate。
     const plate = this.kit.panel(this.root, PW, PH, {
-      bandHex: ROLE.primary.face, tear: 20, halftone: true,
+      bandHex: ROLE.primary.face, halftone: true,
     });
     this.panelNode = plate.node;
 
@@ -259,7 +260,7 @@ export class CampaignPanel {
       const b = boxes[i];
       const t = solidTab({
         name: `tab:${th.court}`, parent: this.panelNode, label: th.name,
-        w: b.right - b.left, h: b.h, role: "primary", size: CMP.tab.size, tear: true,
+        w: b.right - b.left, h: b.h, role: "primary", size: CMP.tab.size,
       });
       t.node.setPosition(b.left + (b.right - b.left) / 2, b.cy, 0);
       this.tabKeys.push(th.court);
@@ -494,10 +495,10 @@ export class CampaignPanel {
     retainedDraw(bg, () => this.paintBriefBody());
   }
 
-  /** L1 衬纸(与大厅面板同一配方,只是窄一截、撕齿少几枚):旧写法是圆角矩形 + 2.5 斩劈红描边 */
+  /** L1 衬纸(与大厅面板同一配方,只是窄一截):旧写法是圆角矩形 + 2.5 斩劈红描边 */
   private paintBriefBody(): void {
     drawPosterPlate(this.briefBodyGfx, BRIEF.dialogW, this.briefH, {
-      bandHex: ROLE.primary.face, teeth: 14,
+      bandHex: ROLE.primary.face,
     });
   }
 

@@ -4,7 +4,7 @@
 // ============================================================
 
 import { native, sys } from "cc";
-import { APP_VERSION, formatBytes, isVersionNewer, REPO_CONFIG } from "../core/version";
+import { APP_VERSION, formatBytes, isVersionNewer, releasePageUrl, REPO_CONFIG } from "../core/version";
 
 /** 原生流式下载器的 Java 侧入口(native/engine/android/app/src/com/cocos/game/ApkDownloader.java) */
 const DOWNLOADER_CLASS = "com/cocos/game/ApkDownloader";
@@ -72,6 +72,17 @@ export class DownloadCancelledError extends Error {
   }
 }
 
+/**
+ * 该把浏览器开去哪儿下这一版。
+ *
+ * 优先用 API 回的实际发布页。注意 Gitee 的 releases API **不返回 html_url**
+ * (GitHub 才有),所以 checkForUpdate 那边已按仓库配置补过一份;这里再兜一层,
+ * 空串绝不喂给 openURL —— 传空会静默什么都不发生,用户只会看到「点了没反应」。
+ */
+export function browserDownloadUrl(info: UpdateInfo): string {
+  return info.releaseUrl || info.originalDownloadUrl || releasePageUrl(info.tagName);
+}
+
 const GH_PROXIES = [
   "https://ghfast.top/",
   "https://ghproxy.net/",
@@ -94,6 +105,17 @@ export class UpdateService {
   private _cancelled = false;
   /** null = 还没探过;探一次失败就永久回退到 XHR,不再反复反射 */
   private _nativeBridge: boolean | null = null;
+  /**
+   * 最近一次检查确认「有新版可下」的那条 Release(只在内存,不跨启动)。
+   * 谁查的都写这一份:冷启动静默检查查出来的版本,设置「关于」页也得知道 ——
+   * 不然「浏览器下载」那颗按钮只在手动查的那一次能出现,换个入口就装看不见。
+   */
+  private _pendingUpdate: UpdateInfo | null = null;
+
+  /** 有待下载的新版本时返回它,否则 null(已是最新 / 没查过 / 查失败) */
+  get pendingUpdate(): UpdateInfo | null {
+    return this._pendingUpdate;
+  }
 
   /**
    * 判断冷启动是否需要自动检查更新(节流 24 小时)
@@ -118,6 +140,19 @@ export class UpdateService {
       sys.localStorage.setItem(LAST_CHECK_KEY, Date.now().toString());
     } catch {
       // 忽略存储异常
+    }
+  }
+
+  /**
+   * 上次**成功**检查到版本信息的时间戳(0 = 从没查通过)。
+   * 设置「关于」页的状态行要用它:只有"查过、什么时候查的"看得见,用户才知道这颗按钮生效了。
+   */
+  lastCheckAt(): number {
+    try {
+      const n = parseInt(sys.localStorage.getItem(LAST_CHECK_KEY) || "", 10);
+      return isNaN(n) ? 0 : n;
+    } catch {
+      return 0;
     }
   }
 
@@ -202,6 +237,7 @@ export class UpdateService {
     this.recordCheckTime();
 
     if (releaseData.draft === true || releaseData.prerelease === true) {
+      this._pendingUpdate = null;
       return { status: "up_to_date" };
     }
 
@@ -212,6 +248,7 @@ export class UpdateService {
 
     // 语义化对比版本号
     if (!isVersionNewer(tagName, APP_VERSION)) {
+      this._pendingUpdate = null;      // 查通了且确实没有更新,别把上一次的结果留着当真的
       return { status: "up_to_date" };
     }
 
@@ -224,7 +261,7 @@ export class UpdateService {
       apkSize = primaryApk.size;
     }
 
-    const releaseUrl = String(releaseData.html_url || "");
+    const releaseUrl = String(releaseData.html_url || "") || releasePageUrl(tagName);
 
     // 若首选源无 APK 附件，向另一端根据 tagName 补查
     if (!rawApkUrl) {
@@ -287,6 +324,7 @@ export class UpdateService {
       hasApk,
     };
 
+    this._pendingUpdate = info;
     return { status: "available", info };
   }
 

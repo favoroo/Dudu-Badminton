@@ -29,6 +29,13 @@ const WG_H = CFG.hudColumn.h.wind;
 // 闯关读数牌(目标进度 / 机制读数)共用的牌宽;高度走 CFG.hudColumn(排布判据吃同一张表)
 const OBJ_W = 214;
 const OBJ_H = CFG.hudColumn.h.obj;
+// 顶部两张比分卡的外形:mkPill 画它,体力血条按它对齐(下挂多少 = 半个卡高)
+const PILL_W = 196;
+const PILL_H = 62;
+// 状态行(发球 / 平分提示)那一行的高度带:血条下挂之后要让开的第二条带
+const STATUS_Y = 152;
+// 阵风横幅在左列的 top(排在风向标标签之下;只在侧风关出现,左列必有风向标)
+const GUST_TOP = 152;
 
 export class Hud {
   readonly root: Node;
@@ -108,11 +115,18 @@ export class Hud {
   private bannerLabel: Label;
   // 暂停按钮
   private pauseBtn: Node;
-  // AI 体力条(P5 斜切 5 段能量槽)
+  // AI 体力条(P5 斜切 5 段能量槽,下挂在 AI 比分卡底缘)
   private aiStaminaNode: Node;
   private aiStaminaG: Graphics;
   private aiStaminaLabel: Label;
   private lastStaminaLit = -1;
+  /**
+   * 血条的三个值:target 是 AI 压力的真话,shown 是画出来的连续填充(缓动跟真值),
+   * ghost 是刚掉下去那一截的残影(追得更慢)。底板与格子是一笔绘制,节点复活重放时
+   * 要有一组可照画的现值 —— 所以它们存在这里,不当 paint 的参数传来传去。
+   */
+  private staminaShown = 1;
+  private staminaGhost = 1;
   // 同步用缓存
   private lastScore = "";
   private lastStatus = "";
@@ -159,10 +173,10 @@ export class Hud {
       n.layer = this.root.layer;
       n.setPosition(x, 232, 0);
       const g = n.addComponent(Graphics);
-      const sk = skewOf(62, 8) * dir;              // dir=1 顶边向右倾(左卡),dir=-1 向左 —— 相向对抗
+      const sk = skewOf(PILL_H, 8) * dir;            // dir=1 顶边向右倾(左卡),dir=-1 向左 —— 相向对抗
       retainedDraw(g, () => {
-        drawSlantShadow(g, 196, 62, sk, -7 * dir, 6, 0.55);   // 阴影向外踢,对抗感
-        drawSlantPanel(g, 196, 62, sk, { face: ARCADE.navy, alpha: 0.95, edge: ARCADE.line, edgeA: 0.9 });
+        drawSlantShadow(g, PILL_W, PILL_H, sk, -7 * dir, 6, 0.55);   // 阴影向外踢,对抗感
+        drawSlantPanel(g, PILL_W, PILL_H, sk, { face: ARCADE.navy, alpha: 0.95, edge: ARCADE.line, edgeA: 0.9 });
         // 队色斜切色带:贴外缘,代替老版的圆角竖条
         g.fillColor = col(teamHex, 0.95);
         slantPath(g, 7, 46, skewOf(46, 8) * dir, dir * -91, 0);
@@ -190,19 +204,22 @@ export class Hud {
       s.shadowOffset = new Vec2(0, -3);
     }
 
-    // AI 体力血条(boss 规格:P5 斜切 5 段大槽,挂在 top 层 AI 比分卡右侧。
-    // 旧版 50×7 缩在 pillR 角落,玩家注意力在场上根本扫不到 —— 这就是要横出来
-    // 的原因:变化要在余光里发生。归一化与动画见 sync()。)
+    // AI 体力血条(boss 规格:P5 斜切 5 段槽 + 一块和比分卡同族的底板,**下挂在右卡底缘**)。
+    // 从前它是 top 层上一个 x=335 的独立行:与卡没有任何对齐关系,五段黄格子直接飘在
+    // 右上角,读出来就是「愣愣伸出来一条」。挂进 pillR 之后卡往哪儿让(安全区、斩入
+    // 入场)血条就往哪儿走,对齐由父子关系兜着,不用再手调绝对坐标。归一化与动画见 sync()。
+    const stCfg = CFG.aiStaminaBar;
     const stNode = new Node("ai-stamina");
     stNode.layer = this.root.layer;
-    stNode.addComponent(UITransform).setContentSize(CFG.aiStaminaBar.w, CFG.aiStaminaBar.h);
-    stNode.setPosition(CFG.aiStaminaBar.x, CFG.aiStaminaBar.y, 0);
-    stNode.setParent(top);
+    stNode.addComponent(UITransform).setContentSize(stCfg.plateW, stCfg.plateH);
+    stNode.setPosition(0, -(PILL_H / 2 + stCfg.drop + stCfg.plateH / 2), 0);
+    stNode.setParent(pillR);
     this.aiStaminaNode = stNode;
     this.aiStaminaG = stNode.addComponent(Graphics);
-    this.aiStaminaLabel = kit.label(stNode, "体力", 11, P.dim, { outline: P.ink, outlineW: 1.5 });
-    this.aiStaminaLabel.node.setPosition(-CFG.aiStaminaBar.w / 2 - 18, 0, 0);
-    this.aiStaminaLabel.node.angle = 2;
+    // 底板和格子是同一笔绘制(掉一格就整块重画),所以复活也要整块重放
+    retainedDraw(this.aiStaminaG, () => this.paintAiStamina());
+    this.aiStaminaLabel = kit.label(stNode, "体力", 10, P.dim);
+    this.aiStaminaLabel.node.setPosition(-stCfg.plateW / 2 + stCfg.padX + stCfg.labelW / 2, 0, 0);
     // 中缝小徽章:斜切黄片微仰,常驻显示赛制(赛点由顶部斩劈横幅提示,这里不抢戏)
     const bd = new Node("badge");
     bd.layer = this.root.layer;
@@ -227,16 +244,18 @@ export class Hud {
 
     // ---------- 状态行(发球 / 平分提示) ----------
     // 底块必须先建、文字后建:兄弟序即绘制序,文字要压在底块上。
+    // y 从 190 抬到 STATUS_Y:比分卡底缘现在归体力血条,这行字最宽能长到 ±148,
+    // 再留在原位就被血条底板压掉半句(它比血条晚建,压上去的是它 —— 两边都难看)。
     this.statusBg = new Node("status-bg");
     this.statusBg.layer = this.root.layer;
     this.statusBg.addComponent(UITransform).setContentSize(240, 28);
     this.statusBgG = this.statusBg.addComponent(Graphics);
-    this.statusBg.setPosition(0, 190, 0);
+    this.statusBg.setPosition(0, STATUS_Y, 0);
     this.statusBg.setParent(top);
     this.statusBg.active = false;
 
     this.statusLine = kit.label(top, "", 15, P.text, { outline: P.ink, outlineW: 2 });
-    this.statusLine.node.setPosition(0, 190, 0);
+    this.statusLine.node.setPosition(0, STATUS_Y, 0);
     this.statusOp = this.statusLine.node.addComponent(UIOpacity);
 
     // ---------- 训练模式:比分区替换为关卡进度 ----------
@@ -288,8 +307,11 @@ export class Hud {
     this.objNode = objNode;
     this.paintObjPlate("占位");                          // 底块先画一次,免得首次亮起时是空框
 
-    // ---------- 阵风横幅(底部中央那条空带:两只虚拟按键之间正好没人用) ----------
-    // 刻意不放大字居中横幅:那会盖住球与人物,而用户已经否过"经常触发的全屏特效"(0.0.17)。
+    // ---------- 阵风横幅(左列风向标的下面,同属「风」信息簇) ----------
+    // 用户现场(0.0.21):横幅浮在屏幕正中把球挡了。中央那条带是球的飞行走廊,
+    // 底部两簇按键之间又压着平抽过网的高度 —— 都不是好位。阵风只在侧风关触发,
+    // 而侧风关左列必有风向标,就让它排进同一列(局别/目标/机制/风向之下),
+    // 横幅亮起时视线本来就该往那边核对风向。top=152:风向标标签(约到 140)之下。
     const gustNode = new Node("gust-banner");
     gustNode.layer = this.root.layer;
     gustNode.addComponent(UITransform).setContentSize(232, 26);
@@ -300,10 +322,13 @@ export class Hud {
     gustBg.setParent(gustNode);
     this.gustLabel = kit.label(gustNode, "", 14, ARCADE.acid, { align: 1, outline: ARCADE.ink, outlineW: 2 });
     const gustWd = gustNode.addComponent(Widget);
-    gustWd.isAlignHorizontalCenter = true; gustWd.horizontalCenter = 0;
-    gustWd.isAlignBottom = true; gustWd.bottom = 116 + sp.bottom;
+    gustWd.isAlignLeft = true; gustWd.left = sp.left;
+    gustWd.isAlignTop = true; gustWd.top = GUST_TOP + sp.top;
     gustWd.updateAlignment();
     gustNode.setParent(this.root);
+    // 落位直接算死(Widget 只做宽屏校位):本组件的 Widget 在真机上出现过
+    // 不生效、节点留在原点正中挡球的情况,不能赌 —— 失效时也必须在左列。
+    gustNode.setPosition(sp.left + 116 - 480, 270 - sp.top - GUST_TOP - 13, 0);
     gustNode.active = false;
     this.gustNode = gustNode;
 
@@ -461,6 +486,8 @@ export class Hud {
       this.lastModeTag = "";
       this.lastDeuce = false;
       this.lastStaminaLit = -1;
+      this.staminaShown = 1;
+      this.staminaGhost = 1;
       this.lastTeamL = "";
       this.lastTeamR = "";
       this.lastCenter = "";
@@ -473,14 +500,14 @@ export class Hud {
     this.root.active = true;
     if (!this.entranceDone) {
       // 每局首显:P5 斩入 —— 两张比分卡相向侧入(中缝徽章保持 4° 仰角,不参与);
-      // AI 体力血条跟着右卡一起斩入,「这张卡背后挂着一条血」的归属感从第一帧就建立
+      // AI 体力血条是右卡的子节点,跟着卡一起进来,「这张卡背后挂着一条血」的归属感
+      // 从第一帧就建立,不用再单独给它排一次入场。
       this.entranceDone = true;
       const kids = this.pills.children;
       if (kids.length >= 2) {
         slashIn(kids[0], 0.05, -46, 6);
         slashIn(kids[1], 0.12, 46, -6);
       }
-      if (this.aiStaminaNode) slashIn(this.aiStaminaNode, 0.2, 52, -4);
     }
   }
 
@@ -757,50 +784,79 @@ export class Hud {
   }
 
   /**
-   * 绘制 AI 体力能量槽(P5 风格 5 段斜切平行四边形)
-   * segmentsLit ∈ [0, 5], 0 = 彻底力竭斩劈红慢呼吸警告
+   * 绘制 AI 体力血条:底板 + 5 段斜切槽 + **连续填充** + 掉血残影
+   * (读 this.staminaShown / this.staminaGhost,可整块重放)
+   * 填充 ≤4% = 彻底力竭,暗槽慢闪斩劈红框
    */
-  private paintAiStamina(segmentsLit: number, stamina: number): void {
+  private paintAiStamina(): void {
     const g = this.aiStaminaG;
     if (!g) return;
     const cfg = CFG.aiStaminaBar;
     const totalSegs = cfg.segments;
-    const segW = (cfg.w - (totalSegs - 1) * cfg.gap) / totalSegs;
+    const barW = cfg.plateW - cfg.padX * 2 - cfg.labelW;
+    const segW = (barW - (totalSegs - 1) * cfg.gap) / totalSegs;
     const h = cfg.h;
-    const sk = cfg.skew;
+    // 斜切一律按各块自己的高换算 8°:底板与比分卡同倾、格子与底板同倾,
+    // 从前格子写死 skew=-6(对 13 高 ≈ 25°),和卡摆在一起就是两件东西
+    const skPlate = skewOf(cfg.plateH, cfg.skewDeg) * -1;
+    const skSeg = skewOf(h, cfg.skewDeg) * -1;
+    const shown = clamp(this.staminaShown, 0, 1);
+    const ghost = Math.max(shown, clamp(this.staminaGhost, 0, 1));
+    const dead = shown <= 0.04;
     g.clear();
 
-    // 1. 暗底槽(黑色硬投影 + 墨黑衬底)
+    // 0. 底板:与比分卡同一套面色/描边/硬阴影,再加一条同列的队色色标
+    drawSlantShadow(g, cfg.plateW, cfg.plateH, skPlate, 7, 5, 0.5);
+    drawSlantPanel(g, cfg.plateW, cfg.plateH, skPlate, { face: ARCADE.navy, alpha: 0.95, edge: ARCADE.line, edgeA: 0.9 });
+    g.fillColor = col(ARCADE.blue, 0.95);
+    const tabH = cfg.plateH - 8;
+    slantPath(g, 6, tabH, skewOf(tabH, cfg.skewDeg) * -1, cfg.plateW / 2 - 9, 0);
+    g.fill();
+
+    // 1. 逐格:暗槽打底 → 残影(刚掉的那一截)→ 实填 → 实填下缘高光
+    //    格数只当刻度用,血量是连续滑过去的 —— 五格一跳把「在消耗」这件事吃掉了
+    const barCx = cfg.labelW / 2;                  // 段槽中心:标签列占掉左边,整条右移半列
+    const s = skSeg / 2;
+    // 分档色与 game-root 的阶段线同源:0.6 消耗、0.2 危险、0.04 力竭
+    const hex = shown > 0.6 ? "#ffe14d" : shown > 0.2 ? "#ff8a3d" : ARCADE.red;
     for (let i = 0; i < totalSegs; i++) {
-      const cx = -cfg.w / 2 + i * (segW + cfg.gap) + segW / 2;
+      const cx = barCx - barW / 2 + i * (segW + cfg.gap) + segW / 2;
+      const left = cx - segW / 2;
       g.fillColor = col("#000000", 0.55);
-      slantPath(g, segW, h, sk, cx + 1, -1);
+      slantPath(g, segW, h, skSeg, cx + 1, -1);
       g.fill();
       g.fillColor = col("#181c2b", 0.85);
-      slantPath(g, segW, h, sk, cx, 0);
+      slantPath(g, segW, h, skSeg, cx, 0);
       g.fill();
-    }
 
-    // 2. 亮格根据体能充沛度分级着色
-    if (segmentsLit > 0) {
-      let hex = "#ffe14d"; // 充沛(4-5格): 荧光黄
-      if (segmentsLit <= 1) hex = ARCADE.red;       // 危险(1格): 斩劈红
-      else if (segmentsLit <= 3) hex = "#ff8a3d";   // 消耗(2-3格): 活力橙
-
-      for (let i = 0; i < segmentsLit; i++) {
-        const cx = -cfg.w / 2 + i * (segW + cfg.gap) + segW / 2;
-        g.fillColor = col(hex, 0.95);
-        slantPath(g, segW, h, sk, cx, 0);
+      const a = clamp(shown * totalSegs - i, 0, 1);   // 本格被实填到的位置
+      const b = clamp(ghost * totalSegs - i, 0, 1);   // 残影追到的位置
+      if (b > a + 0.001) {
+        g.fillColor = col(ARCADE.paper, 0.3);
+        slantPath(g, segW * (b - a), h, skSeg, left + segW * (a + b) / 2, 0);
         g.fill();
       }
-    } else {
-      // 0格彻底力竭: 边框带斩劈红慢呼吸警告
+      if (a > 0.001) {
+        g.fillColor = col(hex, 0.95);
+        slantPath(g, segW * a, h, skSeg, left + segW * a / 2, 0);
+        g.fill();
+        // 下缘一条白高光:与 drawSlantPanel 同一手法,填到哪亮到哪
+        g.strokeColor = col("#ffffff", 0.3);
+        g.lineWidth = 1;
+        g.moveTo(left + s + 1.5, -h / 2);
+        g.lineTo(left + segW * a + s - 1.5, -h / 2);
+        g.stroke();
+      }
+    }
+
+    // 2. 力竭:整条暗槽带斩劈红慢呼吸警告
+    if (dead) {
       const blinkA = 0.5 + Math.sin(this.frameT * 0.25) * 0.4;
       g.strokeColor = col(ARCADE.red, blinkA);
       g.lineWidth = 1;
       for (let i = 0; i < totalSegs; i++) {
-        const cx = -cfg.w / 2 + i * (segW + cfg.gap) + segW / 2;
-        slantPath(g, segW, h, sk, cx, 0);
+        const cx = barCx - barW / 2 + i * (segW + cfg.gap) + segW / 2;
+        slantPath(g, segW, h, skSeg, cx, 0);
         g.stroke();
       }
     }
@@ -892,9 +948,12 @@ export class Hud {
       if (center !== this.lastCenter) { this.centerBadge.string = center; this.lastCenter = center; }
 
       // ---- AI 体力血条同步(boss 血条:归一化 + 掉格/回气动画) ----
+      // 已知不精确:双打时这里取的是右队**第一个** AI,两条账共享一条血 ——
+      // 当前没有双打入口(mobileOnly),真开了再改成"取右队最大疲劳"。
       const aiPlayer = R.players.find((p) => p.side === "right" && p.isAI);
       if (!aiPlayer || drill) {
-        // 训练场右半边是喂球机,没有"对手体力"这回事;pillR 挂靠关系已断,这里自己收
+        // 训练场右半边是喂球机,没有"对手体力"这回事。整条血条现在挂在右卡下,
+        // pills 隐藏时它已经跟着没了,这里收的是"有卡没 AI"的那几种局面
         this.aiStaminaNode.active = false;
       } else {
         this.aiStaminaNode.active = true;
@@ -904,20 +963,31 @@ export class Hud {
         // 的头号根因。除回 crush → 血条表达「距离力竭还差多远」,与内部数值解耦。
         const tier = aiPlayer.aiTier ?? CFG.diffs[aiPlayer.aiDiff ?? "normal"];
         const stamina = clamp(1 - (tier.crush > 0 ? pr / tier.crush : 0), 0, 1);
-        // 5 段斜切小方块: 满压或 stamina<=0.04 为 0 格(力竭)
+        // 真值一拍跳一档(≈5%),直接画就是"啪"地一下 —— 缓动把它拉成一次可看见的滑动,
+        // 残影再把刚掉的那一截留在板上慢慢缩回去。用户现场:「只能一格一格掉,
+        // 打很久才知道掉了一格」。格数从此只当刻度与动画节点(跨格才 kick/charge)。
+        const prevShown = this.staminaShown;
+        this.staminaShown += (stamina - this.staminaShown) * 0.22;
+        if (Math.abs(stamina - this.staminaShown) < 0.002) this.staminaShown = stamina;
+        if (this.staminaGhost < this.staminaShown) this.staminaGhost = this.staminaShown;   // 回气:不留残影
+        else this.staminaGhost += (this.staminaShown - this.staminaGhost) * 0.07;
+        // 残影追到 0.4% 以内就并过去:不然它会停在半格处,淡白边永远留在那儿
+        if (this.staminaGhost - this.staminaShown < 0.004) this.staminaGhost = this.staminaShown;
+        // 5 段刻度只用来标"跨了一格"这个更大的节点;≤0.04 = 力竭
         const lit = stamina <= 0.04 ? 0 : Math.max(1, Math.min(5, Math.ceil(stamina * 5)));
         if (lit !== this.lastStaminaLit) {
           const prev = this.lastStaminaLit;
           this.lastStaminaLit = lit;
-          this.paintAiStamina(lit, stamina);
+          this.paintAiStamina();
           if (prev >= 0) {
-            // 掉格 = 血条挨了一刀(抖);回格 = 对手回气/新回合充能(弹一下)。
-            // 前者告诉玩家"压住别松",后者告诉玩家"对手缓过来了" —— 涨跌都有戏看。
+            // 掉格 = 血条挨了一刀(抖);回格 = 回气(弹一下)。回气现在有两个来源:
+            // 新一分开始(整条充满)/ 他轻松接下一拍软球(涨回一小截)——
+            // 「我轻吊他喘口气,我重杀他掉一截」这对反馈是账本设计的一半,涨跌都要有戏看。
             if (lit < prev) this.kickStamina();
             else if (lit > prev) this.chargeStamina();
           }
-        } else if (lit === 0) {
-          this.paintAiStamina(0, stamina);   // 力竭:红框呼吸要每帧重绘
+        } else if (this.staminaShown <= 0.04 || Math.abs(this.staminaShown - prevShown) > 0.001 || Math.abs(this.staminaGhost - this.staminaShown) > 0.001) {
+          this.paintAiStamina();   // 滑动中 / 力竭红框呼吸:逐帧重绘(停下来就不再画,不是每帧的固定开销)
         }
       }
     }

@@ -1,6 +1,10 @@
 // ============================================================
 // 应用内更新提示弹窗:版本号、更新说明、大小、进度条、下载与安装
 //
+// 三条出口,不是一条:「立即更新」= 应用内下完直接调系统安装器;
+// 「浏览器下载」= 把安装包交给系统浏览器(代理源全挂、下载被墙时的第二条路);
+// 「稍后再说」= 收窗,下次启动或再去设置「关于」页手动查。
+//
 // 进度显示为什么要分两态:
 // Cocos 3.8 原生端的 XMLHttpRequest 是 jsb.XMLHttpRequest,底层一次性收完
 // 整个响应才回调 JS,从不派发 progress 事件 —— 所以 Android 上的字节进度
@@ -21,7 +25,7 @@ import type { UiKit } from "./ui-manager";
 import { cancelFade, drawArcadePanel, drawChevron, drawHardShadow, fadeOutHide, retainedDraw, ROLE, slamIn, textW } from "./ui-arcade";
 import { buildNotes, fitNotesBox, NOTE, NOTE_BOX } from "./release-notes";
 import type { NoteLine } from "./release-notes";
-import { DownloadProgress, UpdateInfo, UpdateService } from "../game/update-service";
+import { browserDownloadUrl, DownloadProgress, UpdateInfo, UpdateService } from "../game/update-service";
 
 /** 进度条轨道几何(与 ui-arcade 面板宽度配套) */
 const TRACK_X = -190;
@@ -36,6 +40,16 @@ const HEAD_H = 99;
 const SIZE_ROW_H = 20;
 /** 日志框底缘 → 卡底:进度条区 + 按钮区 */
 const FOOT_H = 149;
+/**
+ * 按钮排布:三颗同宽 140、间距 10,中心排在 ±150 / 0(卡宽 480,左右各留 20)。
+ * 为什么不给「藏一颗、两颗居中」的第二种排法:子节点 active=false 在原生侧会清掉
+ * Graphics 的渲染数据(见 GraphicsKeepAlive),下次点亮就是块透明空壳 ——
+ * 而 uiButton 的底是一次画死的,改宽就得重画。三颗常驻最省事也最不会骗人。
+ */
+const BTN_W = 140;
+const BTN_H = 50;
+const BTN_Y_OFF = 48;
+const BTN_X = [-150, 0, 150];
 /** 日志框可视高区间(与折行同一把尺,见 release-notes.NOTE_BOX) */
 const BOX_MIN_H = NOTE_BOX.minH;
 const BOX_W = NOTE.boxW;
@@ -87,6 +101,8 @@ export class UpdateDialog {
   private progressSub: Label;
   private updateBtn: Node;
   private updateBtnLabel: Label;
+  /** 「交给浏览器下」:应用内下载走不通(GitHub 直连被墙、代理源全挂)时的第二条路 */
+  private browserBtn: Node;
   private cancelBtn: Node;
   private cancelBtnLabel: Label;
   private currentInfo: UpdateInfo | null = null;
@@ -114,7 +130,7 @@ export class UpdateDialog {
 
     // 居中卡片(高度随更新说明伸缩,show 时重绘)
     this.card = kit.panel(this.root, CARD_W, BOX_MIN_H + HEAD_H + FOOT_H, {
-      r: 16, bandHex: ROLE.primary.face, tear: 12,
+      r: 16, bandHex: ROLE.primary.face,
     });
     this.card.node.setPosition(0, 0, 0);
 
@@ -192,20 +208,26 @@ export class UpdateDialog {
     this.progressSub = kit.label(this.progressNode, "", 11, P.dim);
     this.progressSub.node.setPosition(0, -38, 0);
 
-    // 按钮组(50 高:弹窗主行动键也过触控线)
-    this.updateBtn = kit.button(this.card.node, "立即更新", 190, 50, {
+    // 按钮组(50 高:弹窗主行动键也过触控下限)。三颗同宽一排摆满卡底,理由见 BTN_* 那段。
+    this.updateBtn = kit.button(this.card.node, "立即更新", BTN_W, BTN_H, {
       bg: P.accent,
       fg: P.ink,
       size: 16,
     });
     this.updateBtnLabel = this.updateBtn.children[0].getComponent(Label)!;
 
-    this.cancelBtn = kit.button(this.card.node, "稍后再说", 190, 50, { size: 16 });
+    this.browserBtn = kit.button(this.card.node, "浏览器下载", BTN_W, BTN_H, { size: 15 });
+    this.cancelBtn = kit.button(this.card.node, "稍后再说", BTN_W, BTN_H, { size: 16 });
     this.cancelBtnLabel = this.cancelBtn.children[0].getComponent(Label)!;
 
     this.updateBtn.on(Button.EventType.CLICK, () => {
       kit.sfx.play("ui");
       this.onUpdateClicked();
+    });
+
+    this.browserBtn.on(Button.EventType.CLICK, () => {
+      kit.sfx.play("ui");
+      this.onBrowserClicked();
     });
 
     this.cancelBtn.on(Button.EventType.CLICK, () => {
@@ -316,8 +338,9 @@ export class UpdateDialog {
     this.paintNotesBox(boxH);
     this.notesBoxNode.setPosition(0, boxCY, 0);
     this.progressNode.setPosition(0, bottom + 124, 0);
-    this.updateBtn.setPosition(-106, bottom + 48, 0);
-    this.cancelBtn.setPosition(106, bottom + 48, 0);
+    this.updateBtn.setPosition(BTN_X[0], bottom + BTN_Y_OFF, 0);
+    this.browserBtn.setPosition(BTN_X[1], bottom + BTN_Y_OFF, 0);
+    this.cancelBtn.setPosition(BTN_X[2], bottom + BTN_Y_OFF, 0);
 
     // 可视窗与裁切
     const viewH = boxH - VIEW_INSET * 2;
@@ -455,6 +478,11 @@ export class UpdateDialog {
 
   show(info: UpdateInfo): void {
     cancelFade(this.root);
+    // 抬到 Canvas 的最上层:设置 / 商店 / 训练场是随开随建的晚到兄弟,各自带一块
+    // 盖满屏的暗底(BlockInputEvents)。不抬,从设置「关于」页查出来的弹窗就压在
+    // 那块暗底底下 —— 看不见也点不着,症状和"检查更新没反应"一模一样。
+    const p = this.root.parent;
+    if (p) this.root.setSiblingIndex(p.children.length - 1);
     this.setDragLive(true);
     this.session++;
     this.currentInfo = info;
@@ -586,5 +614,17 @@ export class UpdateDialog {
       return;
     }
     this.hide();
+  }
+
+  /**
+   * 把安装包交给浏览器下:系统浏览器自己处理重定向、断点续传和「下载完点安装」的通知,
+   * 应用内那条路(原生流式下载器 / XHR)被墙或被代理源拖死时,这是能走通的第二条路。
+   * 落点算法与设置「关于」页共用 `browserDownloadUrl()`,两边不许各拼一份。
+   */
+  private onBrowserClicked(): void {
+    const info = this.currentInfo;
+    if (!info) return;
+    sys.openURL(browserDownloadUrl(info));
+    this.kit.toast("已交给浏览器打开发布页");
   }
 }

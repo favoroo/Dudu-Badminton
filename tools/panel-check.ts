@@ -22,9 +22,10 @@ import { join } from "path";
 import {
   C, CONTRAST_FLOOR, HALFTONE, ROLE, TOUCH, contrast, inkFor,
 } from "../assets/scripts/ui/p5-tokens";
-import { RARITY_META } from "../assets/scripts/core/config";
+import { DRILLS, RARITY_META } from "../assets/scripts/core/config";
+import type { DrillDef } from "../assets/scripts/core/types";
 import { halftoneCount } from "../assets/scripts/ui/p5-shapes";
-import { SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
+import { aboutLayout, box, boxesOverlap, doneBox, SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
 import { campaignOverflow, campaignOverlaps, CMP } from "../assets/scripts/ui/campaign-layout";
 import { DRILL, drillOverflow, drillOverlaps, drillTouch } from "../assets/scripts/ui/drill-layout";
 import { SHOP, shopOverflow, shopOverlaps, shopTouch } from "../assets/scripts/ui/shop-shelf";
@@ -130,14 +131,48 @@ function halftoneSpecs(): Array<[string, number, number, number?]> {
 }
 
 function touchItems(): Array<[string, number]> {
-  const K = controlLayout(), M = mediaLayout();
+  const K = controlLayout(), M = mediaLayout(), A = aboutLayout();
   return [
     ["tab", SET.tab.h],
     ...K.modes.map((b, i) => [`移动方式第 ${i} 档`, b.h] as [string, number]),
+    ...K.actions.map((b, i) => [`操控动作键#${i}`, b.h] as [string, number]),
     ...K.tiers.map((t, i) => [`手感滑杆第 ${i} 行`, t.slider.h] as [string, number]),
     ...M.toggles.map((r, i) => [`开关第 ${i} 行(${r.label})`, r.toggle.h] as [string, number]),
     ...M.hints.map((b, i) => [`右列开关#${i}`, b.h] as [string, number]),
+    ["关于·检查更新按钮", A.checkBtn.h],
+    ["关于·浏览器下载按钮", A.siteBtn.h],
   ];
+}
+
+/**
+ * ④b 数据驱动的文案闸:训练场关卡表里的**每一句人话**。
+ *
+ * 为什么单独一条:`copyTargets()` 扫的是 `assets/scripts/ui/` 下的**源码字面量**,
+ * 而训练场的文案住在 core/config.ts 的 DRILLS 表里(口诀 / 要领 / 分步四句 / 落点区名)——
+ * 引导页改版把「分步讲解」也写进了那张表,于是这一屏最要紧的一批文字**一个字都不过闸**。
+ * emoji 与桌面键名在真机上是方框和无效指令,这条不该取决于文案写在哪个文件里。
+ */
+export function checkDrillCopy(drills: readonly DrillDef[]): string[] {
+  const out: string[] = [];
+  const scan = (where: string, text: string | undefined): void => {
+    if (!text) return;
+    if (EMOJI.test(text)) out.push(`${where}:文案含 emoji,原生无彩色 emoji 字体 → 换 Graphics 形状 + 纯文本 ${text}`);
+    else if (DESKTOP_KEYS.test(text)) out.push(`${where}:文案含桌面键名/输入设备指令(界面文案只写触屏向) ${text}`);
+  };
+  for (const d of drills) {
+    scan(`${d.id}.label`, d.label);
+    scan(`${d.id}.desc`, d.desc);
+    scan(`${d.id}.cue`, d.cue);
+    scan(`${d.id}.zoneName`, d.zoneName);
+    d.points.forEach((t, i) => scan(`${d.id}.points[${i}]`, t));
+    d.demoSteps?.forEach((st, i) => {
+      scan(`${d.id}.demoSteps[${i}].name`, st.name);
+      scan(`${d.id}.demoSteps[${i}].desc`, st.desc);
+      scan(`${d.id}.demoSteps[${i}].note`, st.note);
+    });
+    if (!d.demoSteps || d.demoSteps.some((st) => !st.desc)) out.push(`${d.id}:分步讲解缺句子,定格到那一步会是一片空白`);
+  }
+  return out;
 }
 
 /** 参与文案闸的文件:四个面板 + 它们的版式模块(存在才扫,分阶段落地时不至于红) */
@@ -173,6 +208,19 @@ if (selftest) {
     ["旧闯关卡文案(🔒 待解锁 / ★★★)", checkCopy('const a = "🔒 待解锁"; const b = "★★★";', "campaign")],
     // 训练场那行桌面键名
     ["旧训练场键提示([K / 左键] 与 ⏸)", checkCopy('const c = "[K / 左键]"; const d = "⏸";', "drill")],
+    // 同一句桌面键名**写在关卡表里**:文件扫描够不着(copyTargets 只扫 ui/),这条必须仍被拦下
+    ["旧训练场键提示写进 DRILLS.cue", checkDrillCopy([{ ...DRILLS[0], cue: "起跳后按 [K / 左键]" }])],
+    // 分步讲解缺句:定格到那一步就是一片空白(旧版根本没有逐关文案)
+    ["DRILLS 缺 demoSteps", checkDrillCopy([{ ...DRILLS[1], demoSteps: undefined }])],
+    // 设置页旧 tab 栏:整组居中 + 写死 176 宽。两页时最右格右缘 182 刚好擦过「完成」左缘 207,
+    // 加第三页(关于)就排到 276 —— 用户截图里「完成」缺了个角。判据必须认得这一撞。
+    ["旧设置 tab 栏(居中 176 宽 × 3 格 撞右上角「完成」)", (() => {
+      const d = doneBox(), w = 176, total = 3 * w + 2 * 12;
+      return [0, 1, 2]
+        .map((i) => box(-total / 2 + i * (w + 12), w, SET.tab.y, SET.tab.h))
+        .filter((c) => boxesOverlap(c, d))
+        .map((c) => `tab 右缘 ${c.right} 压进完成左缘 ${d.left}`);
+    })()],
   ];
   for (const [nm, msgs] of cases) {
     ok(msgs.length > 0, `反例 ${nm}:应被拦下,实得 ${msgs.length} 条${msgs.length ? ` —— ${msgs[0]}` : ""}`);
@@ -241,8 +289,10 @@ for (const [nm, pw, ph] of [["闯关", CMP.pw, CMP.ph], ["训练场", DRILL.pw, 
 
 const c4: string[] = [];
 for (const f of copyTargets()) c4.push(...checkCopy(readFileSync(join(UI, f), "utf8"), f));
-for (const m of c4) ok(false, `文案 ${m}`);
+const c5 = checkDrillCopy(DRILLS);
+for (const m of [...c4, ...c5]) ok(false, `文案 ${m}`);
 ok(c4.length === 0, `文案闸:${copyTargets().length} 个文件的字符串字面量里没有 emoji、★/☆ 与桌面键名`);
+ok(c5.length === 0, `文案闸:训练场关卡表 ${DRILLS.length} 关的分步/口诀/要领/区名同样过闸(这批字住在 config,源码扫描看不见)`);
 
 console.log(bad
   ? `\n${bad} 处问题:P5 面板语法断言未通过。`

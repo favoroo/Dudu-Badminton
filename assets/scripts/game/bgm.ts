@@ -1,7 +1,8 @@
 // ============================================================
 // 自适应背景音乐编排层(对照 嘟嘟02/src/bgm.js)
 // 原版是 WebAudio 现场分层合成 + 事件音乐化,Cocos 三端无可靠实时
-// 合成,改为离线烘焙的循环 stem(bgm_groove/drums/arp/lead/tamb/menu)
+// 合成,改为离线烘焙的循环 stem(bgm_groove/drums/arp/lead/tamb/pad/menu,
+// 唯一烘焙源 tools/bake-bgm.ts)
 // + 事件 one-shot(pluck/stab/deuce_sting/win_jingle/...)由多 AudioSource
 // 编排:分层强度随 rally 生长(层 gain 平滑淡入,回合内音乐永不重启),
 // 击球在五声音阶爬一颗拨弦(量化到 16 分网格),得分落和弦重音,平分/
@@ -14,12 +15,12 @@ import { Settings } from "../core/settings";
 const BPM = CFG.bgm.bpm;
 const STEP = 15 / BPM;                 // 16 分音符时长(秒)
 const STEP_MS = STEP * 1000;
-const SCALE_LEN = 11;                  // A 小调五声两八度(与 bake-audio.ts SCALE 同长)
+const SCALE_LEN = 11;                  // A 小调五声两八度(与 bake-bgm.ts SCALE 同长)
 const pad2 = (i: number): string => String(i).padStart(2, "0");
 
-type StemKey = "menu" | "groove" | "drums" | "arp" | "lead" | "tamb";
-const STEMS: StemKey[] = ["menu", "groove", "drums", "arp", "lead", "tamb"];
-const GAME_STEMS: StemKey[] = ["groove", "drums", "arp", "lead", "tamb"];
+type StemKey = "menu" | "groove" | "drums" | "arp" | "lead" | "tamb" | "pad";
+const STEMS: StemKey[] = ["menu", "groove", "drums", "arp", "lead", "tamb", "pad"];
+const GAME_STEMS: StemKey[] = ["groove", "drums", "arp", "lead", "tamb", "pad"];
 
 /** 击球事件载荷(对照 bgm.js onHit 的 e) */
 export interface HitInfo {
@@ -35,11 +36,11 @@ export class BgmManager {
   private src: Record<StemKey, AudioSource> = {} as Record<StemKey, AudioSource>;
   private sfxBus: AudioSource | null = null;
   private clips = new Map<string, AudioClip>();
-  private on: Record<StemKey, boolean> = { menu: false, groove: false, drums: false, arp: false, lead: false, tamb: false };
-  private cur: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
-  private target: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
+  private on: Record<StemKey, boolean> = { menu: false, groove: false, drums: false, arp: false, lead: false, tamb: false, pad: false };
+  private cur: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0, pad: 0 };
+  private target: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0, pad: 0 };
   /** applyTargets 的强度暂存表(帧循环里复用,不再逐帧 new Record) */
-  private w: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0 };
+  private w: Record<StemKey, number> = { menu: 0, groove: 0, drums: 0, arp: 0, lead: 0, tamb: 0, pad: 0 };
 
   // 音乐总线开关/音量读 Settings(见 applyTargets 与 shot),本类不再有私有状态
   private ducked = false;
@@ -131,6 +132,8 @@ export class BgmManager {
     const w = this.w;
     w.menu = this.scene === "menu" ? 1 : 0;
     w.groove = g ? 1 : 0;
+    // 和弦垫:lvl≥2 跟 drums 一起进,音量压低只做"填底"(0.55 是烘焙端 pad 峰值的补偿系数)
+    w.pad = g && this.lvl >= 2 ? 0.55 : 0;
     w.drums = g && this.lvl >= 2 ? 1 : 0;
     w.arp = g && this.lvl >= 3 ? 0.9 : 0;
     w.lead = g && this.lvl >= 4 ? 1 : 0;

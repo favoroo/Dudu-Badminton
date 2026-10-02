@@ -422,8 +422,9 @@ function applyShot(ball: Ball, shot: ShotLike): void {
   ball.shot = shot;
   R.rally++;
   R.longestRally = Math.max(R.longestRally, R.rally);
-  // 接球质量记账(压力双向):AI 每次真实击中在此消费 think() 起手时记的快照,
-  // 给本拍压力权重(软球回气/狼狈加压)。只影响 aiPressure 曲线输入,不改判定。
+  // 体力记账:AI 每次真实击中在此消费 think() 起手时记的快照,
+  // 按这一拍有多费力扣/回一笔(跑动为主力项,重杀/跨步额外加,软球回气)。
+  // 只影响 aiStamina 账本,不改判定与物理。发球拿不到快照 → 天然不掉体力。
   if (shot.hitter.isAI) AI.noteHit(shot.hitter, shot);
   // 三星判据的击球侧计数:全部读 shot 上已定的真实字段,不在这里重算几何。
   // 球员随每局重建,这些计数天然按局归零。

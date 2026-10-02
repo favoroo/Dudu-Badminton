@@ -15,7 +15,7 @@
 //  * canvas globalAlpha → withAlpha 叠进颜色;shadowBlur 无对应 API,
 //    以「同路径加宽一道的低透明度描边」近似(仅弧光/拍框辉光/命中闪光四处);
 //  * canvas fillText/measureText 无法用 Graphics 表达:球衣号码与头顶名牌文字
-//    留【移植限制】注释,坐标已标好,由表现层挂 Label 补上。
+//    已取消(号码不画、名牌不画,表现层也不再挂 Label),只剩主控操控指示标。
 //
 // 第 4 个参数 alpha 是渲染插值系数(0..1,帧间补偿),不是透明度 —— 与老 game.js 同名同义。
 // ============================================================
@@ -23,7 +23,6 @@ import { Color, Graphics } from "cc";
 import { CFG } from "../core/config";
 import { Player, Ball, FaceKind, SkinDef, SwingStyle, Theme } from "../core/types";
 import { Physics } from "../core/physics";
-import { textW } from "../core/text-metrics";
 import { lerp, clamp, TAU, D2R } from "../core/utils";
 import { pal, withAlpha } from "./palette";
 import { armIK, legIK, poseLerp, farFK, lut, Pose, Pt2 } from "./rig";
@@ -1288,86 +1287,36 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   circleAA(g, A, 0, 0, 4.5);
   g.fill();
 
-  // 角色头顶名牌与操控指示标
+  // 角色头顶操控指示标(名牌已取消:名字标签不再显示)
   if (!p.hideTag) {
-    drawPlayerTag(g, vp, p, x, y, t);
+    drawPlayerCursor(g, vp, p, x, y, t);
   }
 }
 
-// ---------- 角色头顶名牌: 区分 YOU / P1 / P2 / 搭档 / CPU ----------
-// 【移植限制】canvas 的 measureText/fillText 无 Graphics 对应:胶囊与光标照画,
-// 文字宽度按字数估算(半角≈6.4px / 全角≈9.5px @ 800 9.5px),文字本身交表现层 Label。
-function drawPlayerTag(g: Graphics, vp: Viewport, p: Player, x: number, y: number, t: number): void {
+// ---------- 角色头顶操控指示标: 主控玩家专属悬浮倒三角 ▼ ----------
+// 名字名牌(YOU / P1 / P2 / 搭档 / CPU 胶囊 + 表现层 Label)已取消,这里只剩光标。
+function drawPlayerCursor(g: Graphics, vp: Viewport, p: Player, x: number, y: number, t: number): void {
   const label = p.label || (p.isAI ? "AI" : "YOU");
   const isMainUser = (!p.isAI && (label === "你" || label === "P1" || label === "YOU"));
-  const isPartner = label === "搭档";
-  const isP2 = label === "P2";
+  if (!isMainUser) return;
 
+  // 光标仍钉在旧名牌中心线上方 14 的位置(名牌取消后位置不变,不下移)
   const tagY = y - C.player.h - 18;
+  const bob = Math.sin((t || 0) * 0.14) * 2.2;
+  const arrowY = tagY - 14 + bob;
+  // 顶点坐标取整，且保持倒三角完全对称
+  const tipX = Math.round(vp.x(x));
+  const tipY = Math.round(vp.y(arrowY + 5));
+  const topY = Math.round(vp.y(arrowY));
+  const halfW = Math.round(4.5 * Math.abs(vp.x(1) - vp.x(0)));
 
-  // 1. 操控玩家专属悬浮倒三角光标 ▼ (上下轻微律动)
-  if (isMainUser) {
-    const bob = Math.sin((t || 0) * 0.14) * 2.2;
-    const arrowY = tagY - 14 + bob;
-    // 顶点坐标取整，且保持倒三角完全对称
-    const tipX = Math.round(vp.x(x));
-    const tipY = Math.round(vp.y(arrowY + 5));
-    const topY = Math.round(vp.y(arrowY));
-    const halfW = Math.round(4.5 * Math.abs(vp.x(1) - vp.x(0)));
-
-    g.fillColor = pal(p.side === "left" ? "#ffe14d" : "#3ea8ff");
-    polyPath(g, [
-      { x: tipX, y: tipY },
-      { x: tipX - halfW, y: topY },
-      { x: tipX + halfW, y: topY },
-    ], true);
-    g.fill();
-  }
-
-  // 2. 身份胶囊名牌
-  const tagText = label === "你" ? "YOU" : label;
-  const tw = estTextWidth(tagText);
-  const pw = Math.max(28, tw + 10);
-  const ph = 14;
-  const lx = x - pw / 2;
-  const ly = tagY - ph / 2;
-  const r = ph / 2;
-
-  const rectX = Math.round(vp.x(lx));
-  const rectY = Math.round(vp.y(ly + ph));
-
-  // 深色胶囊底衬 (任何球场背景下均清晰醒目)
-  g.fillColor = pal(isMainUser
-    ? "rgba(10, 14, 28, 0.78)"
-    : isPartner
-    ? "rgba(10, 26, 34, 0.75)"
-    : "rgba(12, 14, 22, 0.58)");
-  // canvas 用四段 arcTo 圆角;胶囊半径恰为半高,roundRect 等价(y 翻转后取数学最小角)
-  g.roundRect(rectX, rectY, pw, ph, r);
+  g.fillColor = pal(p.side === "left" ? "#ffe14d" : "#3ea8ff");
+  polyPath(g, [
+    { x: tipX, y: tipY },
+    { x: tipX - halfW, y: topY },
+    { x: tipX + halfW, y: topY },
+  ], true);
   g.fill();
-
-  // 胶囊描边
-  g.lineWidth = 1;
-  g.strokeColor = pal(isMainUser
-    ? (p.side === "left" ? "rgba(255, 225, 77, 0.85)" : "rgba(62, 168, 255, 0.85)")
-    : isPartner
-    ? "rgba(0, 240, 255, 0.65)"
-    : isP2
-    ? "rgba(62, 168, 255, 0.75)"
-    : "rgba(255, 255, 255, 0.25)");
-  g.roundRect(rectX, rectY, pw, ph, r);
-  g.stroke();
-
-  // 文字:【移植限制】原为 fillText(tagText, x, tagY+0.5),800 9.5px 居中/垂直居中,
-  // 颜色按身份:主控 黄(左)/#7fd0ff(右)、搭档 #6ee7b7、P2 #7fd0ff、其余 rgba(255,255,255,0.68)。
-  // 建议表现层在 (vp.x(x), vp.y(tagY+0.5)) 挂 Label 补上,与胶囊同一节点方便回收。
-}
-
-// canvas measureText 的替代:名牌胶囊 @9.5px 的估宽,委托 core/text-metrics 的
-// 全站唯一尺(全角 1.05、半角 0.62 × 字号)。从前这里是独立的一份(9.5/6.4 固定值、
-// 全角判定用 0x2e80),₽ 这类字符与全站口径不一致;统一后胶囊宽差在 1~2px 内,无感。
-function estTextWidth(s: string): number {
-  return textW(s, 9.5);
 }
 
 // ---------- 头:脸面注册表 + 队色发带(商店「面部皮肤」) ----------

@@ -73,7 +73,7 @@ export class SkillDialog {
       r: 16,
       bgAlpha: 0.95,
       scan: true,
-      bandHex: ROLE.info.face, tear: 12,
+      bandHex: ROLE.info.face,
     });
     this.card.node.setPosition(0, 0, 0);
 

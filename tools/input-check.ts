@@ -18,6 +18,7 @@ import { makeChecker } from "./harness";
 import { newPad, press, release, cancelJump, clearEdges, buildIntent, resetPadHolds, tickHolds, setTargetX } from "../assets/scripts/input/pad";
 import { Player } from "../assets/scripts/core/player";
 import { CFG } from "../assets/scripts/core/config";
+import { Gait } from "../assets/scripts/core/gait";
 import type { PlayerInput } from "../assets/scripts/core/types";
 
 const h = makeChecker({});
@@ -132,11 +133,14 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
 
   // 爆发结束只进冷却,不吃慢速惩罚:冷却期里按方向键要能立刻全速跑走
   // (旧恢复期把速度硬钳到 35%,移动中跨步比干跑还慢,像急刹)
+  // 「全速」= player.vmax × 移速档(真人侧那一层,core/gait.ts)。写死 vmax 的话,
+  // 出货默认不是标准档时这条会假红(实测默认 slow 档 → 7.82 ≠ 9.2)。
+  const fullSpeed = CFG.player.vmax * Gait.s;
   const c = Player.create("left");
   for (let i = 0; i < 7; i++) Player.update(c, i === 0 ? lungeInp(1) : { ...lungeInp(1), lungePressed: false }, mkBall());
   ok(c.lungeT === -1 && c.lungeCd > 0, `爆发结束进入冷却(lungeT=${c.lungeT}, cd=${c.lungeCd})`);
   Player.update(c, { ...lungeInp(0), lungePressed: false, right: true }, null);
-  ok(c.vx === CFG.player.vmax, `冷却期移动不受限,一帧回到全速(vx=${c.vx})`);
+  ok(c.vx === fullSpeed, `冷却期移动不受限,一帧回到全速(vx=${c.vx}, 全速=${fullSpeed.toFixed(2)})`);
 
   // 跑动中跨步 = 跑速 + 爆发(冲量叠加,不是替换):旧逻辑 vx=dir×speed 把跑速抹掉,
   // 跑动时只比干跑快一点点,「跨了像没跨」;叠加后 vx 应明显超过纯爆发速。
@@ -146,7 +150,7 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
     swingAim: null, lungePressed: lunge, lungeDir: right ? 1 : -1,
   });
   for (let i = 0; i < 12; i++) Player.update(m, runInp(true), null);  // 跑到全速
-  ok(Math.abs(m.vx - CFG.player.vmax) < 0.01, `先跑到全速(vx=${m.vx.toFixed(2)})`);
+  ok(Math.abs(m.vx - fullSpeed) < 0.01, `先跑到全速(vx=${m.vx.toFixed(2)}, 全速=${fullSpeed.toFixed(2)})`);
   Player.update(m, runInp(true, true), mkBall());  // 全速中按跨步
   ok(m.vx > CFG.lunge.speed + 1,
     `跑动中跨步叠加冲量:vx 应超过纯爆发速 ${CFG.lunge.speed}(实得 ${m.vx.toFixed(2)})`);

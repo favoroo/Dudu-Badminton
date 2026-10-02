@@ -13,7 +13,7 @@ import { Physics, FuturePt } from "./physics";
 import { Player as Pl } from "./player";
 import { Rules, RulesState } from "./rules";
 import { Skills } from "./skills";
-import { AiState, Ball, Intercept, Player, PlayerInput } from "./types";
+import { AiState, Ball, HitCostInput, Intercept, Player, PlayerInput } from "./types";
 
 const C = CFG;
 const CO = C.court;
@@ -26,16 +26,17 @@ function fresh(): AiState {
     tauntCd: 0,           // 挑衅动作冷却
     celebrateT: 0,        // 庆祝动作剩余帧
     frustrateT: 0,        // 沮丧动作剩余帧
-    pressure: 0,          // 连击压力 0..1(rally 越长越大,见 rallyPressure)
+    pressure: 0,          // 连击压力 0..1 = fatigue 的读数(见 pressureOf)
+    fatigue: 0,           // 本回合已花的体力(每拍按动作记,见 noteHit;每分随 reset 归零)
     noticeT: 0,           // 接球反应延迟剩余帧(新来球先愣几帧再启动)
     scrambleT: 0,         // 扑救俯冲剩余帧(够不到时的表现,只给渲染读)
     whiffsSeen: 0,        // 已计入的挥空数(检测中途扑空 → 沮丧)
     panicSwung: false,    // 本记来球是否已绝望挥拍过(每拍至多一次)
     hopeless: false,      // 本记来球是否已判定赶不上(供扑救表现读取)
-    qualDrift: 0,         // 接球质量漂移(拍当量,软球回气/狼狈加压;见 noteHit)
-    recvNoted: false,     // 本拍接球质量快照是否已记(起手时记,击中时消费)
+    recvNoted: false,     // 起手快照是否已记(起手时记,击中时消费)
     recvKind: null,       // 快照:来球球种(lob/netshot/clear = 慢软球)
-    recvRun: 0,           // 快照:起手时离防区中心的距离(px)
+    recvRun: 0,           // 快照:起手时离防区中心的距离(px)—— 体力账本的主力项
+    recvPower: 0,         // 快照:起手时来球有多重(0 = 读不到)
   };
 }
 
@@ -224,41 +225,71 @@ function windAdjustedDepth(p: Player, depth: number): number {
 }
 
 /**
- * 连击压力 P∈[0,1]:本回合 rally 越长越大,再乘本档 crush 闸门。
- * 这是「回合拖长 → AI 开始漏」的唯一来源,不碰物理/判定区几何:
- * 只放大 readErr、加时机误差、略降跑速,所以「慢球仍能对拉」的性质不变。
- * rally 与 HUD 的「x N 连击」大字同源(rules.R.rally),前 startAt 拍照常不吃压力。
+ * 一拍的体力成本(纯函数,判据全在这里 —— tools/stamina-check 直接打它当靶子)。
+ * 单位与 CFG.aiStamina.capacity 同一把尺,负数 = 这一拍反而回了一点气。
  *
- * 批次升级(接球质量双向):基准输入从 rally 变为 rally + qualDrift ——
- * 软球轻松接每拍只计 0.4 拍当量(对手回气)、跨步/跳跃/大跑位狼狈接每拍计 1.5 拍,
- * 漂移有界(±maxDrift)且乘 qualityGate 闸门(easy=0 → 曲线与旧版逐帧一致)。
- * 「血条只涨不跌」的表达保留:回气体感 = 涨得慢,不做负恢复(避免 boss 回血挫败感)。
+ * 为什么不再是「rally 第几拍」:发球本身也走 applyShot → rally++,数拍子的曲线等于
+ * 玩家一发球对面就掉血(用户现场)。费不费力只看这一拍实际发生了什么:
+ * 被拉开多远(run,主力连续项)+ 来球有多重(power,第二连续项),
+ * 再按动作标签(跨步/腾空/跳杀/技能)与球种(接重杀/劈吊/平抽、自己扣杀)各加一笔。
+ * 站那把一记慢软球回过去 = 负成本,这就是「轻松接球喘口气」。
  */
-function rallyPressure(d: ReturnType<typeof D>, S: AiState): number {
-  const AP = C.aiPressure;
-  return clamp(clamp((Rules.R.rally + S.qualDrift - AP.startAt) / AP.span, 0, 1) * d.crush, 0, 1);
+function staminaCost(x: HitCostInput): number {
+  const A = C.aiStamina;
+  // 接发(rally==2):来球力量费(powK)免 —— 站定接发 0,大跑位接发仍扣 run(合理:跑大跑位该掉血)。
+  // 用户现场:「第一次发球他接球为什么会掉体力啊,太蠢了」—— 发球 power 普遍 > powFree,
+  // 站定接也被 powK 扣一笔;接发这一拍的"来球重"不该算消耗(开局仪式),但"跑了多远"照算。
+  // soft 分支在前面:软球接发(lob/clear)走回气,不进这里。
+  const desperate = x.lunge || x.air || x.jumpSmash || x.skill;
+  const soft = !desperate && x.run <= A.softRun && x.recvKind !== null && A.softKinds.includes(x.recvKind);
+  if (soft) return A.give;
+  let c = A.base
+    + (A.runK * Math.max(0, x.run - A.runFree)) / 100
+    + (x.isServeReturn ? 0 : (A.powK * Math.max(0, x.power - A.powFree)) / 10);
+  if (x.lunge) c += A.lunge;
+  if (x.air) c += A.air;
+  if (x.jumpSmash) c += A.jumpSmash;
+  if (x.skill) c += A.skill;
+  if (x.ownSmash) c += A.ownSmash;
+  if (x.recvKind === "smash") c += A.recvSmash;
+  else if (x.recvKind === "slash") c += A.recvSlash;
+  return clamp(c, A.minBeat, A.maxBeat);
 }
 
 /**
- * 接球质量记账:rules.applyShot 在 AI 每次真实击中时调用(rally++ 同一处)。
- * 读 think() 在起手瞬间记下的快照(recvKind/recvRun)给这一拍定权重:
- *   狼狈接 = 跨步救球(shot.lungeShot)或跳起击球(shot.airborne)或大跑位(recvRun≥hardRun)
- *   轻松接 = 来球是慢软球(lob/netshot/clear)且没怎么跑(recvRun≤softRun),且不狼狈
- * 权重对「偏离 1.0」的部分乘 qualityGate 后累进 qualDrift(有界 ±maxDrift)。
- * 发球/挥空/无快照 = 权重 1,不漂移。注意:这里只改压力曲线输入,不碰判定与物理。
+ * 连击压力 P∈[0,1] = 本回合已花的体力 × 本档 crush 闸门。
+ * 展示端(hud / game-root)一律用 `1 - P/crush` 反归一化,所以三档都能看到全程 0~100%。
+ * 只放大 readErr、加时机误差、略降跑速,不碰物理与判定区几何。
+ */
+function pressureOf(d: ReturnType<typeof D>, S: AiState): number {
+  return clamp(S.fatigue / C.aiStamina.capacity, 0, 1) * d.crush;
+}
+
+/**
+ * 体力记账:rules.applyShot 在 AI 每次真实击中时调用(rally++ 同一处)。
+ * 读 think() 起手瞬间记下的快照(来球球种 / 跑了多远 / 来球多重)+ 这一拍的出球标签定成本。
+ * 发球与挥空拿不到快照(recvNoted 为假)→ 直接 return,所以**发球天然不掉体力**。
+ * drill 模式的喂球机也照记(它的血条被 hud 显式收起),别以为疲劳读数坏了。
  */
 function noteHit(p: Player, shot: NonNullable<Ball["shot"]>): void {
   const S = p.ai;
   if (!S || !S.recvNoted) return;
-  S.recvNoted = false;                     // 无论走不走权重,快照都要消费掉(每拍一次)
+  S.recvNoted = false;                     // 无论扣不扣,快照都要消费掉(每拍一次)
   const d = D(p);
-  const gate = d.qualityGate;
-  if (gate <= 0) return;                   // easy 档:完全不吃质量,曲线 = 旧版
-  const Q = C.aiPressure.quality;
-  const hard = !!shot.lungeShot || !!shot.airborne || S.recvRun >= Q.hardRun;
-  const soft = !hard && (S.recvKind === "lob" || S.recvKind === "netshot" || S.recvKind === "clear") && S.recvRun <= Q.softRun;
-  const w = hard ? Q.scrambleBurst : soft ? Q.softLift : 1;
-  S.qualDrift = clamp(S.qualDrift + (w - 1) * gate, -Q.maxDrift, Q.maxDrift);
+  const c = staminaCost({
+    run: S.recvRun,
+    power: S.recvPower,
+    recvKind: S.recvKind,
+    lunge: !!shot.lungeShot,
+    air: !!shot.airborne,
+    jumpSmash: !!shot.jumpSmash,
+    skill: !!shot.skillKind,
+    ownSmash: shot.kind === "smash",
+    isServeReturn: Rules.R.rally === 2,    // 接发是 rally 第 2 拍(发球 rally++ 到 1,接发到 2):整拍免费
+  });
+  // 只有回气吃 softGate(easy=0):新手回球 80% 是慢软球,一路回血会把
+  // 「把他打累 → 他漏球」这条正反馈整个抹掉。扣账三档都走,由 crush 定多少。
+  S.fatigue = clamp(S.fatigue + (c < 0 ? c * d.softGate : c), 0, C.aiStamina.capacity);
 }
 
 interface EmotionMods { aggr: number; timingErr: number; speed: number }
@@ -267,7 +298,7 @@ interface EmotionMods { aggr: number; timingErr: number; speed: number }
 // composure 是档位闸门(0=情绪只改表情,不改强度):旧结构让 AI **落后时跑得更快、
 // 时机更准**,于是玩家越落后面对的是越强的对手 —— 与「入门档要能得分」正面冲突。
 // aggr 不闸:输了才认真猛扣是看得见的性格,而且不加难度。
-// 连击压力(pr)另走一条:把情绪往「急躁/沮丧」压 + 额外时机误差 + 降跑速 —— 见 rallyPressure。
+// 连击压力(pr)另走一条:把情绪往「急躁/沮丧」压 + 额外时机误差 + 降跑速 —— 见 pressureOf。
 function emotionModifiers(p: Player, S: AiState, d: ReturnType<typeof D>): EmotionMods {
   const R = Rules.R;
   const myIdx = p.side === "left" ? 0 : 1;
@@ -313,7 +344,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   const inp: PlayerInput = { left: false, right: false, jumpPressed: false, jumpHeld: false, swingAim: null, lungePressed: false };
   const d = D(p);
   const incoming = ball.live && !ball.held && ball.lastHitter !== p.side;
-  S.pressure = rallyPressure(d, S);   // 连击压力:本回合 rally+质量漂移 越长越大(先算,情绪修正要吃它)
+  S.pressure = pressureOf(d, S);   // 本回合已花的体力(先算,情绪修正要吃它)
   const em = emotionModifiers(p, S, d);  // 情绪 + 压力修正后的参数
 
   // 连击压力极大(体力枯竭 <= 25%): 角色面部呈现流汗/疲倦表情
@@ -395,7 +426,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     // 旧写法在这里重掷 ±d.aimErr,均值归零 → 几次重规划下来收敛到真实落点,
     // 92px 等于没写(用户反馈「入门 AI 怎么都能接住」的头号根因)。认定之后它就
     // 一路全速跑向自己那个错的点,最后差一点够不到 —— 这才是「看走眼」。
-    // 连击压力在这里加码:回合越往后,这一掷的误差越大(rallyPressure 见上)。
+    // 连击压力在这里加码:这一回合他花掉多少体力,决定这一掷的误差有多大(pressureOf 见上)。
     // 扣杀突袭:重杀难以准确判断深浅,额外放大站位误差并增加反应延迟。
     if (!S.readRolled) {
       S.readRolled = true;
@@ -518,12 +549,13 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   const depth = chooseDepth(p, Rules.rivalsOf(p), CO.groundY - ball.y, S.wantSmash);
   // 出球前最后一格:看风收力/压深(入门档 windSense=0 等于不补,机制仍归玩家)
   if (lead >= 0 && p.swingT < 0 && S.swingLead !== null && lead <= S.swingLead) {
-    // 起手瞬间记接球质量快照(此时 ball.shot 仍是**来球**的信息,击中后就被换掉了):
-    // 来球球种(慢软?) + 自己跑了多远 —— noteHit 在真实击中时按它定压力权重。
+    // 起手瞬间记体力账本的输入(此时 ball.shot 仍是**来球**的信息,击中后就被换掉了):
+    // 来球球种 + 跑了多远 + 来球有多重 —— noteHit 在真实击中时按它们定成本。
     if (!S.recvNoted) {
       S.recvNoted = true;
       S.recvKind = ball.shot ? ball.shot.kind : null;
       S.recvRun = Math.abs(p.x - p.homeX);
+      S.recvPower = ball.shot ? ball.shot.power : 0;
     }
     inp.swingAim = windAdjustedDepth(p, depth);
   }
@@ -569,4 +601,6 @@ function onScore(p: Player, scored: boolean): void {
   }
 }
 
-export const AI = { think, reset, onScore, noteHit };
+// staminaCost / pressureOf 导出是给 tools/stamina-check 当靶子的:
+// 成本判据与归一化契约都是纯函数,不必真拖一局才能验
+export const AI = { think, reset, onScore, noteHit, staminaCost, pressureOf };

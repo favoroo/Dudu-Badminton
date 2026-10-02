@@ -11,9 +11,19 @@ import { spawnSync } from "node:child_process";
 const CHECKS = [
   "probe",
   "drill-check",
+  // 引导演示的真值闸门:钉住「演的那一拍就是判的那一拍」(旧版画的是手编抛物线)
+  "drill-diagram-check",
+  // 六关 × 四步定格出图 + 锚帧自洽(不登记就等于没人跑,而这一屏的赌注是观感)
+  "drill-diagram-preview",
+  // 四面板语法闸门。从前**根本没登记进这张表** —— 对比度/网点/触控/溢出/文案五类判据
+  // 只在人肉跑 panel-check 时才生效,「哪些工具存在且必须绿」这份唯一事实源漏了它。
+  "panel-check",
   "serve-check",
   "reach-check",
   "ai-check",
+  // AI 体力账本的闸门:成本表是纯函数打表(替身从不杀球,「重杀才掉/软球回气」
+  // 只有这里验得到);发球零成本、直觉钉子、归一化契约都钉在这份工具里
+  "stamina-check",
   "sim-check",
   "flash-check",
   "campaign-check",
@@ -33,6 +43,9 @@ const CHECKS = [
   "settings-check",
   "input-check",
   "spec-shot-check",
+  // BGM 结构闸门:内存重渲断言 stem 同长同相/峰值/RMS 基线/循环接缝/声道数
+  // (烘焙脚本 tools/bake-bgm.ts 是 BGM 唯一事实源,改动音色/乐谱必须过这道)
+  "bgm-check",
 ];
 
 /** 带反例的 check:--selftest 必须也绿(规则脚本最怕悄悄全绿) */
@@ -48,6 +61,9 @@ const SELFTESTS = [
   "ui-hide-check",
   "shelf-check",
   "spec-shot-check",
+  "drill-diagram-check",
+  "panel-check",
+  "stamina-check",
 ];
 
 let failed = 0;

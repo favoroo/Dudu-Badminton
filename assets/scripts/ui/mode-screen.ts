@@ -50,7 +50,7 @@ export abstract class ModeScreen {
     this.goBack = goBack;
     this.root = kit.root(parent, name);
     this.root.active = false;
-    kit.dim(this.root, 0.3, 0.55, { bands: false });   // 比主菜单略深:模式屏是「进了一层」
+    kit.dim(this.root, 1, 1, { bands: false });        // 二级界面底即墨黑:身后的一级界面一律不露(用户指令)
     kit.atmosphere(this.root);
     this.buildHeader();
     this.buildBars();

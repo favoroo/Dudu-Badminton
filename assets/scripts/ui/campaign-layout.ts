@@ -58,7 +58,7 @@ export const CMP = {
   /** 场景 tab 行:高 = 触控下限,行心 150(下缘 128,与卡行上缘 98.5 之间留 29.5) */
   tab: { w: TAB_W, h: TOUCH.min, gap: TAB_GAP, cy: 150, size: 15 },
   /** 关卡卡行:色带是卡片唯一的大面亮色,所以 bandH 与卡内各行的行心一起在这里定 */
-  card: { w: CARD_W, h: 265, gap: CARD_GAP, cy: -34, bandH: 52, teeth: 6, padX: 10 },
+  card: { w: CARD_W, h: 265, gap: CARD_GAP, cy: -34, bandH: 52, teeth: 0, padX: 10 },
   /** 底部直达条:底块宽随文案走(见 resumeRow),命中区必须由调用点跟着改 */
   resume: {
     x0: -CONTENT_W / 2, cy: -206, h: 48,

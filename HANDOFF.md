@@ -56,8 +56,8 @@
 4. python http.server 可能只绑 IPv6;用 `--bind 127.0.0.1` 起本地服务。
 5. **键盘输入待验证**:keyboard.ts 假设 Cocos 的 `EventKeyboard.keyCode` 值就是浏览器
    e.code 字符串('KeyA')。若真机按键无反应,先查这个(可能要换成 KeyCode 枚举对照)。
-6. 头顶名牌文字已由表现层 Label 实现(world.ts syncTags,sprites.ts 预留的【移植限制】已闭环);
-   **球衣号已按设计决策去掉**(人物身上不再有数字)。辉光/径向渐变用描边环近似(同文件注释)。
+6. **头顶名牌已按设计决策去掉**(胶囊与 Label 文字层都不再画),只保留主控玩家的悬浮倒三角光标
+   (sprites.ts drawPlayerCursor);**球衣号也已去掉**(人物身上不再有数字)。辉光/径向渐变用描边环近似(同文件注释)。
 7. 老仓库有意为之的行为差异(不是 bug):
    - rules 画球拖尾改为 `setTrailHook()` 注入(原版表现层依赖泄漏)
    - config 的 `serve` 段在原版定义了两次(前段是死值),已合并保留全部字段

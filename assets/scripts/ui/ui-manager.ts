@@ -213,8 +213,8 @@ export interface PanelOpts {
 }
 
 /**
- * 面板衬纸(L1):斜切硬阴影 → 错位 accent 副衬 → 墨面 → 下缘撕纸齿 → 顶缘高光。
- * 一张「撕下来垫在红纸上的黑纸」,与首页标题衬底同一配方。
+ * 面板衬纸(L1):斜切硬阴影 → 错位 accent 副衬 → 墨面 → 平直下缘 → 顶缘高光。
+ * 一张「垫在红纸上的黑纸」,与首页标题衬底同一配方。
  * plate:false 保留旧的渐变底画法(嵌套在小卡里的双层衬纸会糊成一团,那种地方要关)。
  */
 export function uiPanel(parent: Node, w: number, h: number, opts: PanelOpts = {}): Graphics {
@@ -228,7 +228,7 @@ export function uiPanel(parent: Node, w: number, h: number, opts: PanelOpts = {}
     drawPosterPlate(g, w, h, {
       slant: slantDeg,
       bandHex: opts.bandHex ?? C.slash,
-      teeth: opts.tear ?? 18,
+      teeth: opts.tear ?? 0,
       halftone: opts.halftone,
       edge: !opts.noShadow,
     });
@@ -447,7 +447,11 @@ export class UIManager extends Component {
       () => screenSwap(this.node, this.endlessScreen.root, () => this.menu.show()));
     this.pausePanel = new PausePanel(root, this.kit);
     this.settlePanel = new SettlePanel(root, this.kit);
-    this.updateDialog = new UpdateDialog(root, this.kit);
+    // 更新弹窗不挂 ui-root 而挂 Canvas:设置 / 商店 / 训练场是懒挂 Component、根节点
+    // 直接落在 Canvas 上,创建时机晚于 ui-root 整棵树 —— 弹窗留在 ui-root 里就会被
+    // 设置页那块带 BlockInputEvents 的暗底整个压住(看不见也点不着)。配合 show() 里的
+    // 抬层,从设置「关于」页查出来的弹窗才能盖在设置页上。
+    this.updateDialog = new UpdateDialog(this.node, this.kit);
     this.skillDialog = new SkillDialog(root, this.kit);
     this.campaignPanel = new CampaignPanel(root, this.kit);
     this.bridgeCareerSettle();
@@ -795,6 +799,9 @@ export class UIManager extends Component {
     drawMenuCard(g, w, 42, 9, { accent: ARCADE.acid, tint: 0.05, bar: 5, edge: 4, alpha: 0.95 });
     this.toastLabel!.string = msg;
     this.toastNode.active = true;
+    // 每次报之前抬到最上层:toast 只建一次,而设置 / 商店这些面板是随开随建的晚到兄弟 ——
+    // 不抬的话面板的暗底会把提示糊在下面,用户按了按钮却"什么都没发生"。
+    this.toastNode.setSiblingIndex(this.node.children.length - 1);
     const op = this.toastOp!;
     Tween.stopAllByTarget(op);
     op.opacity = 0;

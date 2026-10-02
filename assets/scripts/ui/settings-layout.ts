@@ -21,13 +21,18 @@ export const SET = {
   ph: 424,
   /** 卡片中心下移:顶边 201 仍低于 HUD 记分牌底边 203(从暂停页打开时不挡比分) */
   cardY: -11,
-  /** 内容左缘:两页的小节标题与行标签统一贴这里 */
+  /** 内容左缘:三页的小节标题与行标签统一贴这里 */
   colX: -338,
   /** 内容右缘 */
   right: 340,
   titleY: 186,
   doneBtn: { w: 150, h: TOUCH.min, x: 0, y: 176 },   // x 由 pw 倒推,见下方 donePos()
-  tab: { w: 176, h: TOUCH.min, gap: 12, y: 144 },
+  /**
+   * tab 栏:整行**左对齐贴内容列**(与闯关大厅 / 商店同一规矩),右端让开「完成」。
+   * 单格宽由页数算,不再写死 176 —— 居中那版两页刚好擦过右上角,加第三页就压在
+   * 「完成」的下角上(用户截图:tab 右缘 276 vs 完成左缘 207,竖向还叠 12px)。
+   */
+  tab: { maxW: 176, h: TOUCH.min, gap: 12, y: 144, doneGap: 16 },
   /** 小节色带高 */
   sectionH: 24,
   /** 行高 = 触控下限;行距 = 行高 + 12 */
@@ -42,10 +47,45 @@ export function donePos(): { x: number; y: number } {
   return { x: SET.pw / 2 - 98, y: SET.doneBtn.y };
 }
 
-/** tab 栏:每项的**中心 x**(整组居中) */
-export function tabRow(n: number, y: number = SET.tab.y): number[] {
-  const total = n * SET.tab.w + (n - 1) * SET.tab.gap;
-  return Array.from({ length: n }, (_, i) => -total / 2 + SET.tab.w / 2 + i * (SET.tab.w + SET.tab.gap));
+export type SettingsTab = "control" | "media" | "about";
+
+/**
+ * 三页 tab 的唯一真话:key 给面板切页用,label 给排版和闸门量宽用。
+ * 原来这张表写在 settings-panel 里(要 import cc 的文件),panel-check 就量不到
+ * 「再加一页会不会挤出内容区」—— 挪到零 cc 这边,加一页漏一处宽度就会当场红。
+ */
+export const SETTINGS_TABS: Array<{ key: SettingsTab; label: string }> = [
+  { key: "control", label: "操控" },
+  { key: "media", label: "声音画面" },
+  { key: "about", label: "关于" },
+];
+
+/** 「完成」按钮的包围盒(tab 栏要给它让位,判据也要跟它撞一遍) */
+export function doneBox(): Box {
+  const d = donePos();
+  return box(d.x - SET.doneBtn.w / 2, SET.doneBtn.w, d.y, SET.doneBtn.h);
+}
+
+/** 单格 tab 宽:内容左缘到「完成」左缘之间平分,上限 maxW(页数少的时候不许摊成大饼) */
+export function tabW(n: number = SETTINGS_TABS.length): number {
+  const avail = doneBox().left - SET.colX - SET.tab.doneGap;
+  return Math.min(SET.tab.maxW, Math.floor((avail - (n - 1) * SET.tab.gap) / n));
+}
+
+/** tab 栏每项的包围盒(整行左对齐贴内容列,右端让开「完成」) */
+export function tabBoxes(n: number = SETTINGS_TABS.length): Box[] {
+  const w = tabW(n);
+  return Array.from({ length: n }, (_, i) => box(SET.colX + i * (w + SET.tab.gap), w, SET.tab.y, SET.tab.h));
+}
+
+/** tab 栏整组宽(n 默认按页表算,加一页不用改任何数字) */
+export function tabRowWidth(n: number = SETTINGS_TABS.length): number {
+  return n * tabW(n) + (n - 1) * SET.tab.gap;
+}
+
+/** tab 栏:每项的**中心 x** */
+export function tabRow(n: number = SETTINGS_TABS.length): number[] {
+  return tabBoxes(n).map((b) => b.left + (b.right - b.left) / 2);
 }
 
 /** 第 i 行的行心 */
@@ -189,6 +229,42 @@ export function controlLayout(): ControlLayout {
   };
 }
 
+// ---------- 关于页 ----------
+
+export interface AboutLayout {
+  section: Box;
+  /** 「当前版本」标签 */
+  verName: Box;
+  /** v0.0.x 读数 */
+  verValue: Box;
+  checkBtn: Box;
+  /** 「浏览器下载」:应用内那条路走不通时的第二条路,整条链交给系统浏览器 */
+  siteBtn: Box;
+  /** 检查结果读数(未检查 / 检查中 / 已是最新 / 发现新版本 / 失败原因) */
+  status: Box;
+  hint: Box;
+}
+
+/**
+ * 关于页:版本读数 + 两颗按钮 + 一行状态。
+ * 整页只占左半区宽度的一半不到,状态行与说明行拉通到内容右缘 ——
+ * 「检查失败:请求超时」这种句子短不了,截在中间就变成读不到的信息。
+ */
+export function aboutLayout(): AboutLayout {
+  const btnW = 150;
+  const btnGap = 14;
+  const wide = SET.right - SET.colX;
+  return {
+    section: box(SET.colX, 130, SET.rowTop + SET.rowPitch, SET.sectionH),
+    verName: box(SET.colX, 70, rowY(0), 18),
+    verValue: box(SET.colX + 78, 120, rowY(0), 18),
+    checkBtn: box(SET.colX, btnW, rowY(1), SET.rowH),
+    siteBtn: box(SET.colX + btnW + btnGap, btnW, rowY(1), SET.rowH),
+    status: box(SET.colX, wide, rowY(2), 18),
+    hint: box(SET.colX, wide, rowY(3), 16),
+  };
+}
+
 // ---------- 判据 ----------
 
 const overlapX = (a: Box, b: Box): boolean => a.left < b.right - 0.5 && b.left < a.right - 0.5;
@@ -212,7 +288,7 @@ export function boxOverflow(b: Box): string | null {
 /** 一行里所有块的两两重叠 + 跨子列碰撞(面板与 check 共用同一判据) */
 export function settingsOverlaps(): string[] {
   const out: string[] = [];
-  const M = mediaLayout(), K = controlLayout();
+  const M = mediaLayout(), K = controlLayout(), A = aboutLayout();
   const rows: Array<[string, Box[]]> = [
     // 左列整列一起查:开关、音量、强度三件、试震与状态 —— 它们同在一列的不同行上,
     // 分行查会漏掉「强度滑杆伸进上一行开关的盒子」这类跨行咬合。
@@ -225,6 +301,7 @@ export function settingsOverlaps(): string[] {
     ["操控·移动方式", K.modes],
     ["操控·动作键", K.actions],
     ["操控·手感行", K.tiers.flatMap((t) => [t.name, t.slider, t.caption])],
+    ["关于", [A.section, A.verName, A.verValue, A.checkBtn, A.siteBtn, A.status, A.hint]],
   ];
   for (const [nm, bs] of rows) {
     for (let i = 0; i < bs.length; i++) {
@@ -248,13 +325,19 @@ export function settingsOverlaps(): string[] {
   if (boxesOverlap(M.sectionLeft, M.toggles[0].toggle)) out.push("左小节标题压住首行开关");
   if (boxesOverlap(K.sectionMove, K.modes[0])) out.push("「移动方式」标题压住三选一");
   if (boxesOverlap(K.sectionFeel, K.tiers[0].slider)) out.push("「手感」标题压住球速滑杆");
+  // tab 栏压在「完成」上:这一条就是那次事故 —— 两页时整组居中刚好擦过右上角,
+  // 加第三页 tab 右缘 276 顶进完成的 207,竖向上再叠 12px,屏幕上看着就是「完成」缺了个角。
+  const done = doneBox();
+  tabBoxes().forEach((t, i) => {
+    if (boxesOverlap(t, done)) out.push(`tab 第 ${i} 格压住「完成」按钮`);
+  });
   return out;
 }
 
 /** 溢出 + 文案宽度:开关标签必须容得下「震动反馈」,每块控件必须在内容区内 */
 export function settingsOverflow(labels: string[] = ["音效", "音乐", "震动反馈"]): string[] {
   const out: string[] = [];
-  const M = mediaLayout(), K = controlLayout();
+  const M = mediaLayout(), K = controlLayout(), A = aboutLayout();
   const all: Array<[string, Box]> = [
     ...M.toggles.flatMap((r, i): Array<[string, Box]> => r.vol
       ? [[`左列开关#${i}`, r.toggle], [`音量滑杆#${i}`, r.vol]]
@@ -267,6 +350,11 @@ export function settingsOverflow(labels: string[] = ["音效", "音乐", "震动
     ...K.tiers.flatMap((t, i): Array<[string, Box]> => [
       [`手感标签#${i}`, t.name], [`手感滑杆#${i}`, t.slider], [`手感档名#${i}`, t.caption],
     ]),
+    ["关于·版本读数", A.verValue],
+    ["关于·检查按钮", A.checkBtn],
+    ["关于·发布页按钮", A.siteBtn],
+    ["关于·状态行", A.status],
+    ["关于·说明行", A.hint],
   ];
   for (const [nm, b] of all) {
     const o = boxOverflow(b);
@@ -277,6 +365,14 @@ export function settingsOverflow(labels: string[] = ["音效", "音乐", "震动
   for (const s of labels) {
     const w = textW(s, 15);
     if (w > avail) out.push(`开关标签「${s}」${w.toFixed(0)}px > 可用 ${avail}px`);
+  }
+  // tab 栏:整组要落在内容区里,每格的字要放得下(斜切会吃掉两端,各留 12)
+  const groupW = tabRowWidth();
+  if (groupW > SET.right - SET.colX) out.push(`tab 栏整组宽 ${groupW} > 内容宽 ${SET.right - SET.colX}`);
+  const cellW = tabW();
+  for (const t of SETTINGS_TABS) {
+    const w = textW(t.label, 15);
+    if (w > cellW - 24) out.push(`tab 标签「${t.label}」${w.toFixed(0)}px > 可用 ${cellW - 24}px`);
   }
   return out;
 }

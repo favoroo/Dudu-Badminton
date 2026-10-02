@@ -126,11 +126,11 @@ function flight(opts: {
   return { R, hero, ball, shot };
 }
 
-console.log("① 跳杀:空中 + 高球 = 必然扣杀(飞行场景,两侧 × 三种悬空状态)");
+console.log("① 跳杀:空中 + 高球 = 必然扣杀(飞行场景,两侧 × 四种悬空状态)");
 for (const side of ["left", "right"] as TeamSide[]) {
-  for (const lift of [60, 20, 0]) {
+  for (const lift of [70, 60, 20, 0]) {
     const { hero, shot } = flight({ side, lift });
-    const expect = lift >= 60;   // 球高 = lift + 70 + rad·0.06:lift=60 → ≈135(≥105),20 → ≈95(<105)
+    const expect = lift >= 70;   // 球高 = lift + 70 + rad·0.06:lift=70 → ≈144(≥140),60 → ≈134(压线反例,<140),20 → ≈94,0 → ≈74
     assert(!!shot, `${side} lift=${lift}:按准一拍应当命中`);
     assert(shot!.jumpSmash === expect, `${side} lift=${lift}:jumpSmash 标记应=${expect}`);
     assert(shot!.perfect === true, `${side} lift=${lift}:按准必出完美(特殊球触发就是本修复的验收线)`);
@@ -143,7 +143,7 @@ assert(C.jumpSmash.minHeight > -C.swing.pivotY,
 
 console.log("② 球种预告:previewKind 与实打同一代码路径");
 {
-  const { hero } = setup({ lift: 60 });
+  const { hero } = setup({ lift: 70 });   // 击球点 ≈144 ≥ jumpSmash.minHeight(140)才预告扣杀
   assert(Pl.previewKind(hero, Rules.R.ball as Ball) === "smash", "空中高球应预告扣杀");
 }
 {

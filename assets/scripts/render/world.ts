@@ -42,9 +42,6 @@ function makeViewport(): Viewport {
 }
 
 // ---------- 模块级常量色(帧循环里不再 new Color;引擎赋值时内部 .set() 拷贝,共享实例安全) ----------
-/** 名牌身份色(与 sprites.ts drawPlayerTag 的用色约定同源) */
-const TAG_MAIN_L = new Color().fromHEX("#ffe14d");
-const TAG_MAIN_R = new Color().fromHEX("#3ea8ff");
 /** 溜冰滑行冰雾:常量色提为模块级(球员循环每帧 new 曾是纯垃圾) */
 const ICE_FOG_COL = new Color(220, 240, 255, 60);
 
@@ -99,9 +96,6 @@ for (let i = 0; i < CFG.env.sand.count; i++) {
     k: 0.45 + SAND_RND() * 0.8,
   });
 }
-const TAG_PARTNER = new Color().fromHEX("#6ee7b7");
-const TAG_P2 = new Color().fromHEX("#7fd0ff");
-const TAG_DEFAULT = new Color(255, 255, 255, 173);
 /** 体力条(绿/黄/红闪两相/底槽) */
 const STAMINA_GREEN = new Color(50, 220, 120, 230);
 const STAMINA_YELLOW = new Color(255, 200, 40, 230);
@@ -162,11 +156,8 @@ export class WorldView {
   private g: Graphics;
   private vp: Viewport;
   private floatLayer: Node;
-  private tagLayer: Node;
   private floats: FloatText[] = [];
   private floatPool: FloatText[] = [];
-  /** 头顶名牌池(YOU/CPU/搭档…);胸前球衣号已去掉,人物身上不再有数字 */
-  private tags: Label[] = [];
   /** 飞行轨迹:按距离采样的锥形丝带(取代老 fx.js 的"每点叠同心圆") */
   private ribbon = new Ribbon();
   /** 球体运动学外观(滞后角/翻滚/裙摆颤动)—— 只住渲染层,不回写 ball */
@@ -176,10 +167,8 @@ export class WorldView {
   private ballView = {} as Ball & { sqR?: number };
   /** drawPlayer 的入参副本:同 ballView 手法(旧版每帧每人 spread 一个完整 Player) */
   private playerView = {} as Player;
-  /** 帧内持久数组:绘制排序与插值坐标(旧版每帧 slice()+sort()+两个新数组) */
+  /** 帧内持久数组:绘制排序(旧版每帧 slice()+sort() 出新数组) */
   private readonly drawOrder: Player[] = [];
-  private readonly rxs: number[] = [];
-  private readonly rys: number[] = [];
   private swingArcs: SwingArcGhost[] = [];
   readonly fx = new FXSystem(); // 完整打击特效与粒子系统
   /** 画布内世界提示层(老 hud.js:落点圈/训练时机条/拍数徽标/赛点旗标) */
@@ -265,12 +254,6 @@ export class WorldView {
     // 画布内世界提示层(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
     this.hudOverlay = new HudOverlay(this.root, this.vp);
 
-    // 角色名牌/球衣号文字层(sprites 画不了字,Label 补)
-    this.tagLayer = new Node("tags");
-    this.tagLayer.layer = Layers.Enum.UI_2D;
-    this.tagLayer.addComponent(UITransform);
-    this.tagLayer.setParent(this.root);
-
     // 飘字层:位于最上,不参与 clear
     this.floatLayer = new Node("floats");
     this.floatLayer.layer = Layers.Enum.UI_2D;
@@ -313,49 +296,6 @@ export class WorldView {
       this.swingArcs.push(e);
       if (this.swingArcs.length > 30) this.swingArcs.shift();
     });
-  }
-
-  /** 名牌文字池:按需增长,标签样式对齐 sprites.ts 的 fillText 约定 */
-  private ensureTags(count: number): void {
-    while (this.tags.length < count) {
-      const n = new Node("tag");
-      n.layer = Layers.Enum.UI_2D;
-      n.addComponent(UITransform);
-      n.setParent(this.tagLayer);
-      const l = n.addComponent(Label);
-      l.fontSize = 10;
-      l.lineHeight = 12;
-      l.isBold = true;
-      l.horizontalAlign = Label.HorizontalAlign.CENTER;
-      applyFont(l, false);
-      this.tags.push(l);
-    }
-  }
-
-  /** 每帧同步名牌(颜色/文字规则 = sprites.ts drawPlayerTag 注释) */
-  private syncTags(players: Player[], rxs: number[], rys: number[]): void {
-    let i = 0;
-    for (let k = 0; k < players.length; k++) {
-      const p = players[k];
-      if (p.hideTag) continue;
-      this.ensureTags(i + 1);
-      const tag = this.tags[i++];
-      const label = p.label || (p.isAI ? "AI" : "YOU");
-      const name = label === "你" ? "YOU" : label;
-      const isMainUser = !p.isAI && (label === "你" || label === "P1" || label === "YOU");
-      const isPartner = label === "搭档";
-      const isP2 = label === "P2";
-      tag.node.active = true;
-      tag.node.setPosition(Math.round(this.vp.x(rxs[k])), Math.round(this.vp.y(rys[k] - C.player.h - 18 + 0.5)), 0);
-      tag.string = name;
-      // 身份色为模块级常量(Label.color 赋值时引擎内部拷贝,共享实例安全)
-      tag.color = isMainUser
-        ? (p.side === "left" ? TAG_MAIN_L : TAG_MAIN_R)
-        : isPartner ? TAG_PARTNER
-        : isP2 ? TAG_P2
-        : TAG_DEFAULT;
-    }
-    for (let k = i; k < this.tags.length; k++) this.tags[k].node.active = false;
   }
 
   // ---------- 球场主题与触网物理 ----------
@@ -717,18 +657,15 @@ export class WorldView {
     }
 
     // 插值:120Hz 屏也不见阶梯;离网远的先画,近网压前(与老 render 同序)
-    // order/rxs/rys/playerView 全部持久复用,不再每帧 slice/sort/spread 出垃圾
+    // order/playerView 全部持久复用,不再每帧 slice/sort/spread 出垃圾
     const order = this.drawOrder;
     order.length = 0;
     for (const p of players) order.push(p);
     order.sort(byNetDist);
-    const rxs = this.rxs, rys = this.rys;
-    rxs.length = 0; rys.length = 0;
     const pv = this.playerView;
     for (const p of order) {
       const rx = lerp(p.px, p.x, alpha);
       const ry = lerp(p.py, p.y, alpha);
-      rxs.push(rx); rys.push(ry);
       Object.assign(pv, p);
       pv.x = rx; pv.y = ry;
       drawPlayer(g, this.vp, pv, animT, alpha, ball);
@@ -745,8 +682,6 @@ export class WorldView {
         g.fill();
       }
     }
-    // 名牌文字与球衣号(与角色同层叠加)
-    this.syncTags(order, rxs, rys);
 
     // 引力吸球:球与球拍之间高频跃动的电离子引力光索
     if (ball && ball.magnetPull) {

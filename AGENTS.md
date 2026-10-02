@@ -24,16 +24,18 @@
 | 改人物移速 | 档位表在 `config.ts` 的 `gait` 段,生效逻辑在 [gait.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/gait.ts);**只乘真人的 accel+vmax**(AI 走 `diffs.speed`,两层不叠),跨步冲量/跳跃/摩擦不参与;**即时生效**(不等下一球);设置页「移速」滑杆(存 `Settings.gaitTier`),组合矩阵见 `tools/reach-check.ts` §5 |
 | 改角色姿势/外观 | [sprites.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/sprites.ts) |
 | 改击打/轨迹/球体特效 | 数值全在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `fx` 段;丝带 [ribbon.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/ribbon.ts) + 球体运动学 [shuttle-motion.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/shuttle-motion.ts) + 粒子 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts) + 缓动 [easing.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/easing.ts);出图验收 `node .tools-build/tools/fx-preview.js` |
-| 改手机震动(触觉) | 强度表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `haptic` 段(键名与 `fx` 六档同源,强度=时长×振幅两维);判据与排队在 [haptic.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/haptic.ts)(零 cc:`shotKey`/`plan`/`HapticGate`),平台出口在 [haptics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/haptics.ts)(Android 反射 `AppActivity.vibrate(ms,amp)` / 微信 `wx.vibrateShort` / Web `navigator.vibrate`,失败不静默 —— `hapticStatus()` 给设置页读数);Java 桥与能力探测在 `native/engine/android/app/src/com/cocos/game/AppActivity.java`;档位「轻/标准/强」在设置页声音画面 tab(存 `Settings.hapticLevel`),验收 `node .tools-build/tools/haptic-check.js`(+`--selftest`)。**改 Java 侧必须重打 APK 才生效** |
+| 改手机震动(触觉) | 强度表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `haptic` 段(键名与 `fx` 六档同源,强度=时长×振幅两维);判据与排队在 [haptic.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/haptic.ts)(零 cc:`shotKey`/`plan`/`HapticGate`),平台出口在 [haptics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/haptics.ts)(Android 反射 `AppActivity.vibrate(ms,amp)` / 微信 `wx.vibrateShort` / Web `navigator.vibrate`,失败不静默 —— `hapticStatus()` 给设置页读数);Java 桥与能力探测在 `native/engine/android/app/src/com/cocos/game/AppActivity.java`;档位「轻/标准/强」在设置页声音画面 tab(存 `Settings.hapticLevel`),验收 `node .tools-build/tools/haptic-check.js`(+`--selftest`)。**改 Java 侧必须重打 APK 才生效**。**Android 12+ 不带 `VibrationAttributes` 的 `vibrate()` 会被系统归到 `TOUCH` 档,而这一档跟着「设置 → 声音与振动 → 触摸振动」总闸走 —— 总闸关了系统就把整段震动静默丢掉(不抛异常、Java 仍返回 true,JS 侧怎么探都是健康的),所以 API 31+ 一律显式声明 `USAGE_PHYSICAL_EMULATION`;真机取证看 `adb shell dumpsys vibrator_manager` 的 `Recent vibrations`(按 usage 分组,`finished` / `ignored_*` 一眼分明)**。**波形形状(包络/厂商预置)这一层做过又被撤了**(2026-10-02:真机 A/B 用户表示分辨不出、不要改手感,只保留恒幅 one-shot;线性马达的"嗡嗡"是已知取舍)—— 别再往 `HapticSeg` 里加 steps/preset,那套东西的坑与实证记在 CHANGELOG 与记忆里 |
 | 改 P5 视觉构件(尖刺环/星芒/斜切/飘字底板/斩劈 cut-in) | render 层 [p5kit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/p5kit.ts),UI 层 [ui-arcade.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-arcade.ts);规范见下方「开发规范」P5 条 |
 | 改面板层配色/斜切档/色即功能 | 令牌唯一真话 [p5-tokens.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-tokens.ts)(零 cc:`C` 色板、`SLANT` 只许 3/5/6/10 四档、`ROLE` 六角色、`RARITY` 用 config 的 `RARITY_META`、`inkFor`/`contrast`、网点预算)。`ARCADE`/`PAL` 是它的再导出/派生,**别再抄一份色表** |
 | 改面板形状(衬纸/大色块/卡片/凹陷槽/开关/滑杆/网点/印章) | 形状出点列 [p5-shapes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-shapes.ts)(零 cc),画笔 [p5-paint.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-paint.ts)(只 import cc 的 Color/Graphics ⇒ **node 跑得动**),ui-arcade 再导出。**卡片用 `drawP5Card`(墨面 + 一条色带)不要整面实底** —— 一屏十几张会排成彩虹,大色块留给少数大面。出图 `node .tools-build/tools/panel-preview.js --out .tools-build/panel-preview` |
 | 改面板的可点件工厂 | [ui-shell.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-shell.ts) 的 `solidTab`/`solidBlock`/`sectionTitle`/`bevelSlot`/`pressable`(**一律自带 `addComponent(Button)`** —— 漏了就是「点了没反应」,闸门 `tools/ui-click-check.js`)。四面板经 `UiKit` 的 `plate/block/tab/title/slot/press` 取用 |
 | 改四面板排版(设置/闯关大厅/训练场/商店) | 版式是零 cc 纯函数:`ui/settings-layout.ts`、`ui/campaign-layout.ts`、`ui/drill-layout.ts`、`ui/shop-shelf.ts`(`SHOP`/`shopTopBar`/`shopTabs`/`shopContent`/`shopStats`)。各导出 `XOverlaps()`/`XOverflow()` 判据,统一由 `node .tools-build/tools/panel-check.js`(+`--selftest`)断言:对比度 ≥4.0、网点 ≤900 点、可点件 ≥44、不撞不溢出、文案无 emoji 与桌面键名。**改任何一块坐标都要去判据里核** |
+| 改训练场引导演示(六关 × 四步定格) | 演示真值在 [drill-demo.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/drill-demo.ts)(零 cc:`bake(def)` 沿**真实喂球弧线**搜出接触点、回球必须过 `Drill.matches`、落点带由本关 `minLandX`/`maxLandX` 反推、「按错会怎样」直接吃 `Drill.diagnoseFail`),动画只消费它 —— [drill-anim.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/drill-anim.ts) 的 `gotoStep`/`drawFrame`/`callouts`(标字是数据,引擎 Graphics 画不了字,由 [drill-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/drill-panel.ts) 摆 Label);分步文案与落点区名写在 `config.ts` 的 `DRILLS[].demoSteps`/`zoneName`,搜法参数在 `CFG.drill.demo`;回归 `node .tools-build/tools/drill-diagram-check.js`(+`--selftest`)、出图 `node .tools-build/tools/drill-diagram-preview.js --out .tools-build/drill-diagram` |
 | 主循环/事件分发 | [game-root.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/game-root.ts) |
 | UI 面板/菜单 | [ui-manager.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-manager.ts) |
 | 作者通道(测试拉满档) | 对练屏连点**同一个**球馆 tab 6 下 → 等级满 + 金币 99999,**只在内存生效、本局不落盘**(重开退回原档,每次进应用要重新连点)。参数 `CFG.author`(发版想关掉置 `enabled: false`)、手势判定 `mode-screen.ts` 的 `MatchSetupScreen.authorTap()`(0.0.18 随球馆 tab 从主菜单迁来)、执行与沙箱 `career.maxOut()` / `career.sandboxed()` |
-| 更新弹窗/更新说明排版 | [update-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/update-dialog.ts) + 折行算法 [release-notes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/release-notes.ts) |
+| 改更新链路(检查/下载/浏览器出路) | 入口在设置「关于」页(`settings-panel.ts` 的 `buildAboutPage`,那颗「浏览器下载」**只在 `UpdateService.pendingUpdate` 非空时才建** —— 没更新时点它是把人丢进空发布页)+ 冷启动 24h 静默检查(`main-menu.ts` 的 `show()`,首页不再挂按钮);弹窗 [update-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/update-dialog.ts) 三条出口:立即更新(应用内下载+调安装)/ 浏览器下载(`browserDownloadUrl()` → `sys.openURL` 发布页)/ 稍后再说;候选源与原生下载器在 [update-service.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/update-service.ts),发布页直链 `releasePageUrl()` 在 [version.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/version.ts)(Gitee 的 releases API **不返回 html_url**,空串喂给 openURL 就是"点了没反应")。弹窗挂 Canvas 而不是 ui-root,并在 `show()` 里抬到最上层 —— 设置/商店是晚到的兄弟节点,不抬就被它们的暗底压死 |
+| 改更新说明排版 | 折行算法 [release-notes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/release-notes.ts),回归 `node .tools-build/tools/notes-check.js` |
 | 改「调整位置」顶栏排版 | [editor-strip.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/editor-strip.ts)(纯函数,回归见 `tools/strip-check.ts`)+ [settings-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settings-panel.ts) 消费它 |
 | 改闯关大厅/进度/「下一关」 | 关卡表与 `getNextStage()`·`getStageByNo()` 在 [campaign.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/campaign.ts);大厅(直达条、卡片「▶ 下一关」印章、tab 自动聚焦)在 [campaign-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/campaign-panel.ts);结算页那颗「下一关 ▶ 第 N 关」在 [settle-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settle-panel.ts) 的 `buildActions()`(按钮整排按场景重建);验收 `node .tools-build/tools/campaign-check.js` |
 | 改闯关「战前简报」弹窗排版 | [brief-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/brief-layout.ts)(纯函数:折行 + 堆块 + 弹窗按内容长高,回归见 `tools/brief-check.ts`、出图 `tools/brief-preview.ts`)+ [campaign-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/campaign-panel.ts) 只照坐标摆 |
@@ -63,11 +65,12 @@
 
 - TypeScript strict 模式,禁止 `any`(类型检查必须零错误)。
 - **严禁自动 `git commit` / `git push`** — 日常改动一律留在工作区,只有用户明确指示才执行(提交格式、双端推送、版本递增等细则见 dudu-release skill)。
+- **Agent 自己拉起的长驻辅助进程,用完必须关掉** — 调 UI 时手工启动的 headless Chrome(`--headless=new --remote-debugging-port=93xx --user-data-dir=/tmp/...`)、本地静态服务(`python -m http.server`)等不会随会话结束自动退出:父 shell 一退就被 launchd 收养成孤儿,继续吃 CPU、还可能放声音(现场:Qoder Agent 留下的 `dudu-cdp-profile-*` Chrome 跑了两天、各烧 4000+ 分钟 CPU,用户关掉浏览器声音还在)。启动时记下 PID、会话收尾前 `kill`;接手别人的环境先 `ps aux | grep -E "headless.*user-data-dir=/tmp|http\.server"` 清一轮。仓库 tools/ 的一次性出图脚本(`--headless --screenshot`)跑完自退,不在此列。
 - 模块间用 ES Module import/export,不使用全局命名空间。
 - 每个模块文件顶部有 `// ============` 注释块说明设计动机 — **改代码前先读注释**。
 - canvas → cc.Graphics 的移植约定见 [sprites.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/sprites.ts) 顶部注释。
 - `core/utils.ts` 不许 import cc,存储后端通过 [host.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/host.ts) 的 `installStorageBackend()` 注入,必须在任何 `load()` 之前调用。
-- 音效/BGM 均为离线烘焙 WAV,改规格见 `tools/bake-audio.ts` / `tools/bake-bgm.ts`;音效/音乐开关统一读 [settings.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/settings.ts),模块不应有自己的静音状态。
+- 音效/BGM 均为离线烘焙,音效(sfx/*.wav)由 `tools/bake-audio.ts` 烘焙;**BGM 的唯一烘焙源是 `tools/bake-bgm.ts`**(bake-bgm → bgm-check → oggify,分发格式 ogg),8 小节 A/B 段编曲 + 6 stem 自适应分层(pad 和弦垫 lvl≥2 进),结构闸门 `tools/bgm-check.ts`。音效/音乐开关统一读 [settings.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/settings.ts),模块不应有自己的静音状态。
 - **视觉语言 = P5(女神异闻录)风**:尖刺/锯齿/星芒/斜切/撕纸边,拒绝光滑圆圈与裸排飘字。UI 层构件在 [ui-arcade.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-arcade.ts)(ARCADE 色板:斩劈红 `#e60012`/荧光黄/墨黑/纸白),render 层构件在 [p5kit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/p5kit.ts);两者「同形不同源」是有意复制 —— render 不反向 import ui,颜色一律由调用方传入。随机形状(锯齿环等)**出生时用 `mulberry32(seed)` 定形,逐帧只做缩放与 alpha 衰减,禁止逐帧 rand**(会抖成噪点)。性格区分:打击=尖刺,引力/时空=平滑圆,别混。新增特效数值照旧只进 `config.ts` 的 `fx` 段。
 - 角色改姿势后必须跑 pose-preview 检查:
   ```bash
@@ -85,6 +88,15 @@ node .tools-build/tools/probe.js
 
 # 3. 训练场六关自洽(exit 0)
 node .tools-build/tools/drill-check.js
+
+# 3.4 引导演示真值 + 六关四步出图(exit 0;用户现场:「演示太简陋,看完不知道怎么做」。
+#     根因不是画得丑 —— 旧动画自己编了条假抛物线,回球也从不过 Drill.matches,
+#     教的和判的是两套东西。断言:来球弧线与实机喂球模拟逐点吻合、理想回球必须过本关判据、
+#     接触点在判定圈内且跳得到、落点落在画给玩家的那条带里、鬼影必须真是错拍。
+#     --selftest 喂旧那套假弹道,六关必须全被拦下)
+node .tools-build/tools/drill-diagram-check.js
+node .tools-build/tools/drill-diagram-check.js --selftest
+node .tools-build/tools/drill-diagram-preview.js --out .tools-build/drill-diagram   # 6 关 × 4 步,Chrome 出 PNG 肉眼判
 
 # 4. AI 接发成功率回归(改 AI/物理/数值必跑;阈值防回退)
 node .tools-build/tools/serve-check.js
@@ -130,6 +142,15 @@ node .tools-build/tools/campaign-check.js --selftest   # 五份改坏的关卡�
 #     改 config.ts haptic 段任一值、改 core/haptic.ts、或动 game/haptics.ts 都要跑)
 node .tools-build/tools/haptic-check.js
 node .tools-build/tools/haptic-check.js --selftest   # 反例(旧 MS={light:12} / 旧同帧直接 return)必须被报警
+
+# 4.9 BGM 结构闸门(exit 0;内存重渲断言,不依赖磁盘音频文件,oggify 之后照常可跑)
+#     断言:6 条 game stem + menu 名单齐、全 game stem 同帧数(运行时同帧起播,
+#     差 1 样本循环相位就漂)、peak<0.99、RMS 基线 ±3dB(改音色实测值要写回
+#     bgm-check.ts 的 RMS_BASELINE)、循环接缝 |x[0]-x[末]| ≤ peak/4(wrapFold 生效症状)、
+#     声道数(groove/drums/tamb mono,arp/lead/pad/menu stereo)。
+#     改 tools/bake-bgm.ts(乐谱/音色)、动 game/bgm.ts 分层权重都要跑;
+#     烘焙链路见该文件头注释:bake-bgm → bgm-check → oggify
+node .tools-build/tools/bgm-check.js
 
 # 5. AI 对 AI 整机冒烟(exit 0)
 node .tools-build/tools/sim-check.js

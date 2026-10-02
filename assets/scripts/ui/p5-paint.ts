@@ -80,7 +80,7 @@ export function paintP5(g: Graphics, paints: readonly Paint[]): void {
 
 // ---------- 面板层语法:一层一个入口 ----------
 
-/** L1 衬纸:面板本体(斜切硬阴影 + 错位 accent 副衬 + 墨面 + 下缘撕纸 + 顶缘高光) */
+/** L1 衬纸:面板本体(斜切硬阴影 + 错位 accent 副衬 + 墨面 + 平直下缘 + 顶缘高光) */
 export function drawPosterPlate(g: Graphics, w: number, h: number, o: PlateOpts = {}): void {
   paintP5(g, plateDL(w, h, o));
 }

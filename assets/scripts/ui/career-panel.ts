@@ -20,7 +20,7 @@ import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
 import {
   ac, applyFont, drawBevelSlot, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
-  drawSlantPanel, drawSlantShadow, drawSawtooth, drawStarGlyph, drawVeil, fadeOutHide,
+  drawSlantPanel, drawSlantShadow, drawSawtooth, drawStarGlyph, fadeOutHide,
   gridCenters, hbox, inkFor, makeChip, makeCoinIcon, mkLabel as uiMkLabel, pressFx,
   retainedDraw, ROLE, skewOf, slamIn, SLANT, slantPath, textW, TOUCH_MIN, uiIconButton,
 } from "./ui-arcade";
@@ -79,7 +79,7 @@ const RUBBER = 0.35;
 // 旧注释里那句「白 5% 压在 panelBg 上只有 1.1:1」的临时补丁(tabBg/tabEdge)已随
 // tab 换成 solidTab 一起删掉 —— 未选中态现在是凹陷槽,靠明暗凹凸读,不靠描边。
 const COL = {
-  overlay: ac(C.ink, 0.43),
+  overlay: ac(C.ink, 1),
   panelBg: ac(C.navy, 0.89),
   cardBg: ac(C.navy2, 0.82),
   cardSel: ac(C.acid),
@@ -417,25 +417,24 @@ export class CareerPanel extends Component {
     wg.top = wg.bottom = wg.left = wg.right = 0;
     this.root.setParent(parent);
 
-    // 遮罩:中心只压 0.4,四周收到 0.72(老 .screen 的 radial 渐变)——
-    // 商店是「浮在球场上的玻璃柜」,不是一块贴满屏幕的黑纸。
+    // 遮罩:二级界面底即墨黑(用户指令),身后的一级界面/球场一律不露;
+    // rect 与 uiDim 同款超宽:宽屏两侧那一条也不露背景。
     const overlay = mkNode("overlay", this.root, 960, 540);
     const og = overlay.addComponent(Graphics);
     og.fillColor = COL.overlay;
-    og.rect(-480, -270, 960, 540);
+    og.rect(-2000, -1000, 4000, 2000);
     og.fill();
-    drawVeil(og, 960, 540, 0, 0.51);   // 增量按剩余不透明度折算:四周最终收到 ~0.72
     // 商店打开时不要让点击漏到下面的虚拟按键上(菜单的遮罩此时已隐藏)
     overlay.addComponent(BlockInputEvents);
 
-    // 面板衬纸(L1):一张撕下来的黑纸垫在荧光黄副衬上,标题带叠网点。
+    // 面板衬纸(L1):一张黑纸垫在荧光黄副衬上,标题带叠网点,下缘平直收边。
     // 副衬用黄不用首页的红 —— 商店的角色色是「星星/货币」,与首页那块「闯关」同档。
     const panel = mkNode("panel", this.root, PW, PH);
     panel.setPosition(0, -10, 0);
     this._panelNode = panel;
     const pg = panel.addComponent(Graphics);
     retainedDraw(pg, () => drawPosterPlate(pg, PW, PH, {
-      bandHex: ROLE.star.face, teeth: 20, halftone: true,
+      bandHex: ROLE.star.face, halftone: true,
     }));
 
     this._buildTopBar(panel);
@@ -558,8 +557,8 @@ export class CareerPanel extends Component {
     const prevBg = right.addComponent(Graphics);
     // 切到「履历」页时这块整列会 active=false,再切回来得重画(原生侧 onDisable 会清渲染数据)
     retainedDraw(prevBg, () => {
-      // 试衣间是一块小衬纸:副衬用青(专项/展示),撕口留 10 齿
-      drawPosterPlate(prevBg, PREVIEW_W, CONTENT_H, { bandHex: ROLE.info.face, teeth: 10, edge: false });
+      // 试衣间是一块小衬纸:副衬用青(专项/展示),下缘平直收边
+      drawPosterPlate(prevBg, PREVIEW_W, CONTENT_H, { bandHex: ROLE.info.face, edge: false });
     });
 
     // 预览 Graphics

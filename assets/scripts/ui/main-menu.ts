@@ -1,6 +1,8 @@
 // ============================================================
 // 主菜单:球场在身后,菜单是浮在场上的一层玻璃。
-// 版式(P5 海报改版):等级/金币/音效条 → 标题 → 五块实底大色块 → 版本。
+// 版式(P5 海报改版):等级/金币/音效条 → 标题 → 五块实底大色块。
+// 底部不再挂版本号与「检查更新」(用户指令):更新整条链路收进设置「关于」页,
+// 这里只留冷启动的 24h 静默检查 —— 有更新会自己弹窗,没更新不必给个按钮让人点。
 // 信息架构(用户指令):「入门/普通/大师」不再铺在首页 —— 合并成左上那块
 // 「对练」大色块,和闯关/无限练习/专项训练/生涯同级;点进去是模式屏
 // (mode-screen.ts),球馆选择与技能胶囊也搬进了对练屏,首页只留模式入口。
@@ -19,7 +21,6 @@ import {
   riseIn, safePad, skewOf, slashIn, slantPath,
 } from "./ui-arcade";
 import { textW } from "../core/text-metrics";
-import { APP_VERSION_NAME } from "../core/version";
 import { UpdateService } from "../game/update-service";
 
 /** 大色块字色:亮面配墨黑,斩劈红面配纸白(由亮度算,不逐块手拍) */
@@ -258,26 +259,8 @@ export class MainMenu {
       { node: career.node, delay: 0.42 },
     );
 
-    // ---------- 底部版本号与更新检查入口(高度由 uiButton 钳到触控下限) ----------
-    const verBtn = kit.button(this.root, `${APP_VERSION_NAME} 检查更新`, 200, 44, { size: 13, fg: P.dim });
-    verBtn.setPosition(0, -246, 0);
-    verBtn.on(Button.EventType.CLICK, async () => {
-      kit.sfx.play("ui");
-      kit.toast("正在检查更新...");
-      try {
-        const res = await UpdateService.instance.checkForUpdate();
-        if (res.status === "available" && res.info) {
-          kit.showUpdateDialog(res.info);
-        } else if (res.status === "up_to_date") {
-          kit.toast(`当前已是最新版本 ${APP_VERSION_NAME}`);
-        } else {
-          kit.toast(res.error || "检查更新失败，请稍后重试");
-        }
-      } catch {
-        kit.toast("网络连接失败，请稍后重试");
-      }
-    });
-    this.riseNodes.push({ node: verBtn, delay: 0.5 });
+    // 版本号与「检查更新」不再占首页底部(用户指令:入口收进设置「关于」页)。
+    // 冷启动的 24h 静默检查照旧,见 show()。
 
     this.paintSound();
   }

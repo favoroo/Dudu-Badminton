@@ -1,5 +1,9 @@
 // ============================================================
-// 设置页:tab 双页(操控 / 声音画面)+ 「调整位置」的所见即所得编辑器。
+// 设置页:tab 三页(操控 / 声音画面 / 关于)+ 「调整位置」的所见即所得编辑器。
+//
+// 「关于」这页是搬进来的:版本号 + 检查更新原本挂在首页底部当一颗按钮(用户指令:
+// 去掉),而"查更新"本来就是设置里的事 —— 顺带补一条浏览器下载出路,应用内那条
+// 路走不通时不至于只能干瞪眼。
 //
 // 装配方式跟 career-panel / drill-panel 一致:懒 addComponent + show()/hide()
 // 里整树销毁。老的面具类(主菜单/暂停/结算)是常驻一份,面板类是按需建 ——
@@ -29,13 +33,15 @@
 // 版面按设计分辨率 960×540 排;内容收在 ±380 内(可见宽最窄就是 16:9 的 960),
 // 卡片顶边 201 低于 HUD 记分牌底边 203,从暂停页打开时不会挡住身后的比分。
 // ============================================================
-import { _decorator, Button, Component, Graphics, Label, Layers, Node, UITransform } from "cc";
+import { _decorator, Button, Component, Graphics, Label, Layers, Node, sys, UITransform } from "cc";
 import { Settings, PAD_LIMIT, JOYSTICK_LIMIT, SLIDER_LIMIT, type MoveMode } from "../core/settings";
 import { CFG } from "../core/config";
+import { APP_VERSION_NAME } from "../core/version";
 import { Pace, paceIndexOf, paceTierById } from "../core/pace";
 import { Gait, gaitIndexOf, gaitTierById } from "../core/gait";
 import { hapticIndexOf, hapticLabel, hapticLevelId } from "../core/haptic";
 import { haptic, hapticCancel, hapticStatus } from "../game/haptics";
+import { browserDownloadUrl, UpdateService, type UpdateCheckResult } from "../game/update-service";
 import type { UiKit } from "./ui-manager";
 import { cancelFade, fadeOutHide, riseIn, safePad, slamIn, SLANT, type Role } from "./ui-arcade";
 import { ROLE } from "./p5-tokens";
@@ -43,7 +49,8 @@ import { sectionTitle, solidTab, type TabHandle } from "./ui-shell";
 import type { Slider, Toggle } from "./widgets";
 import { stripAt, stripLayout } from "./editor-strip";
 import {
-  controlLayout, donePos, hapticTestRow, mediaLayout, SET, strengthRow, tabRow,
+  aboutLayout, controlLayout, donePos, hapticTestRow, mediaLayout, SET, SETTINGS_TABS,
+  strengthRow, tabBoxes, type SettingsTab,
 } from "./settings-layout";
 import { newPad } from "../input/pad";
 import { buildTouchPad, type PadSlot, type TouchPadHandle } from "../input/touchpad";
@@ -65,21 +72,31 @@ const ROLE_TAB: Role = "primary";
 const ROLE_SOUND: Role = "info";
 const ROLE_SCREEN: Role = "star";
 const ROLE_FEEL: Role = "drill";
+/** 关于页的小节色带:纸白面 —— 这一页不推销任何东西,给个中性色,别跟红/黄/绿抢 */
+const ROLE_ABOUT: Role = "record";
 /** 衬纸后面那张错位副衬:整页用主红,与首页 hero 同色同源 */
 const BAND_HEX = ROLE.primary.face;
 
-type SettingsTab = "control" | "media";
-
-const TAB_DEFS: Array<{ key: SettingsTab; label: string }> = [
-  { key: "control", label: "操控" },
-  { key: "media", label: "声音画面" },
-];
+/** 页表在 settings-layout 里(零 cc):panel-check 要拿它量「再加一页 tab 栏挤不挤」 */
+const TAB_DEFS: Array<{ key: SettingsTab; label: string }> = SETTINGS_TABS;
 
 const MODES: Array<{ mode: MoveMode; label: string; tip: string }> = [
   { mode: "joystick", label: "摇杆", tip: "虚拟摇杆模拟走位 · 向上推摇杆即起跳" },
   { mode: "slider", label: "滑轨", tip: "手指在哪人就在哪 · 上滑或双击起跳" },
   { mode: "buttons", label: "按键", tip: "经典左右两键全速 · 左手独立按键跳跃" },
 ];
+
+/** tab → 页节点名:切页时按这个建,别再用三目串拼(加一页就漏一处) */
+const PAGE_NAME: Record<SettingsTab, string> = {
+  control: "page-control", media: "page-media", about: "page-about",
+};
+
+/** 时间戳 → 「10-02 14:35」:状态行要说清"什么时候查的",年份没必要 */
+function fmtStamp(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number): string => (n < 10 ? `0${n}` : `${n}`);
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 @ccclass("SettingsPanel")
 export class SettingsPanel extends Component {
@@ -110,6 +127,12 @@ export class SettingsPanel extends Component {
   private hapticSlider: Slider | null = null;
   private hapticValueLabel: Label | null = null;
   private hapticStatusLabel: Label | null = null;
+  /** 关于页:结果读数 + 「检查中」闸门(在途时再点不重复发请求) */
+  private aboutStatus: Label | null = null;
+  private aboutCheckLabel: Label | null = null;
+  private aboutChecking = false;
+  /** 上一次检查的人话结论。存在组件上而不是 Label 上:切页会整树销毁重建,读数不该跟着丢 */
+  private aboutResult = "";
   private selected: PadSlot | null = "left";
   private sizeLabel: Label | null = null;
   private modeTipLabel: Label | null = null;
@@ -169,14 +192,14 @@ export class SettingsPanel extends Component {
     // 裸节点没有它 → 暗底停在 960×540,宽屏两侧那一条触摸会漏到世界里(见文件头)。
     this.listView = this.kit.root(this.root, "list-view");
 
-    // 中心压得比主菜单暗:这一屏是读字调参数的,不是看球场的。
+    // 二级界面底即墨黑(用户指令):这一屏是读字调参数的,身后的一级界面/球场一律不露。
     // bands:false —— 这一屏的主角是衬纸本身,遮罩再叠两道红带就把注意力抢走了。
-    this.kit.dim(this.listView, 0.5, 0.78, { bands: false });
+    this.kit.dim(this.listView, 1, 1, { bands: false });
 
-    // 衬纸(L1):一张撕下来的黑纸垫在红纸上,标题带叠网点。
+    // 衬纸(L1):一张黑纸垫在红纸上,标题带叠网点,平直收边。
     // 旧写法是「navy 竖向渐变 + 14 圆角」—— 那是通用深色弹窗,不是 P5。
     const card = this.kit.panel(this.listView, PW, PH, {
-      bandHex: BAND_HEX, tear: 16, halftone: true, alpha: 0.96,
+      bandHex: BAND_HEX, halftone: true, alpha: 0.96,
     });
     this.card = card.node;
     this.card.setPosition(0, CARD_Y, 0);
@@ -185,7 +208,7 @@ export class SettingsPanel extends Component {
     title.node.setPosition(0, SET.titleY, 0);
 
     const dp = donePos();
-    const done = this.kit.button(this.card, "完成", 150, SET.doneBtn.h, { style: "primary", size: 17 });
+    const done = this.kit.button(this.card, "完成", SET.doneBtn.w, SET.doneBtn.h, { style: "primary", size: 17 });
     done.setPosition(dp.x, dp.y, 0);
     done.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.close(); });
 
@@ -197,15 +220,17 @@ export class SettingsPanel extends Component {
    * tab 栏:走 ui-shell.solidTab —— 与「移动方式」三选一同一个工厂。
    * 旧写法是这里画一遍、buildControlPage 里再画一遍(两份 drawHardShadow +
    * drawArcadeButton(r=8, slant=0)),圆角、零斜切,与全站大色块无关。
+   * 宽与 x 一律由 tabBoxes() 给(整行左对齐贴内容列、右端让开「完成」),别在这儿拍数字。
    */
   private buildTabBar(card: Node): void {
-    const xs = tabRow(TAB_DEFS.length);
+    const bs = tabBoxes(TAB_DEFS.length);
     this.tabs = TAB_DEFS.map((d, i) => {
+      const b = bs[i];
       const t = solidTab({
         name: `tab-${d.key}`, parent: card, label: d.label,
-        w: SET.tab.w, h: SET.tab.h, role: ROLE_TAB, size: 15, tear: true,
+        w: b.right - b.left, h: SET.tab.h, role: ROLE_TAB, size: 15,
       });
-      t.node.setPosition(xs[i], SET.tab.y, 0);
+      t.node.setPosition(b.left + (b.right - b.left) / 2, SET.tab.y, 0);
       this.tabKeys.push(d.key);
       t.node.on(Button.EventType.CLICK, () => {
         if (this.tab === d.key) return;
@@ -243,18 +268,21 @@ export class SettingsPanel extends Component {
     this.hapticSlider = null;
     this.hapticValueLabel = null;
     this.hapticStatusLabel = null;
+    this.aboutStatus = null;
+    this.aboutCheckLabel = null;
     if (this.page && this.page.isValid) this.page.destroy();
     this.page = null;
   }
 
   private buildPage(): void {
     this.discardPage();
-    const page = new Node(this.tab === "control" ? "page-control" : "page-media");
+    const page = new Node(PAGE_NAME[this.tab]);
     page.layer = Layers.Enum.UI_2D;
     page.setParent(this.card!);
     this.page = page;
     if (this.tab === "control") this.buildControlPage(page);
-    else this.buildMediaPage(page);
+    else if (this.tab === "media") this.buildMediaPage(page);
+    else this.buildAboutPage(page);
     this.repaint();
   }
 
@@ -446,6 +474,95 @@ export class SettingsPanel extends Component {
     });
   }
 
+  /** 关于页:当前版本 + 检查更新 + 交给浏览器下载安装包 */
+  private buildAboutPage(page: Node): void {
+    const P = this.kit.pal;
+    const A = aboutLayout();
+    const wOf = (b: { left: number; right: number }): number => b.right - b.left;
+    const cOf = (b: { left: number; right: number }): number => b.left + (b.right - b.left) / 2;
+
+    this.band(page, "版本与更新", ROLE_ABOUT, A.section);
+    this.txt(page, "当前版本", 14, P.text, A.verName.left, A.verName.cy, wOf(A.verName));
+    this.txt(page, APP_VERSION_NAME, 15, P.accent, A.verValue.left, A.verValue.cy, wOf(A.verValue));
+
+    const check = this.kit.button(page, "检查更新", wOf(A.checkBtn), A.checkBtn.h, { style: "primary", size: 16 });
+    check.setPosition(cOf(A.checkBtn), A.checkBtn.cy, 0);
+    check.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.checkNow(); });
+    this.aboutCheckLabel = check.children[0].getComponent(Label);
+
+    // 「浏览器下载」只在**确实挂着新版本**时才建这颗键(用户指令):没更新时点它,等于把人
+    // 丢进一个空发布页去替我做检查。页本来就是切页整树重建的,所以按当前状态决定建不建,
+    // 不去 toggle 已建节点的 active —— 原生侧一 disable 就把 Graphics 的渲染数据清了。
+    const pend = UpdateService.instance.pendingUpdate;
+    if (pend) {
+      const site = this.kit.button(page, "浏览器下载", wOf(A.siteBtn), A.siteBtn.h, { size: 15 });
+      site.setPosition(cOf(A.siteBtn), A.siteBtn.cy, 0);
+      site.on(Button.EventType.CLICK, () => {
+        this.kit.sfx.play("ui");
+        sys.openURL(browserDownloadUrl(pend));
+        this.kit.toast(`已交给浏览器打开 ${pend.tagName} 的发布页`);
+      });
+    }
+
+    this.aboutStatus = this.txt(page, this.aboutReadout(), 11, P.dim,
+      A.status.left, A.status.cy, wOf(A.status));
+    // 说明行跟着上面那颗键走:键不在的时候不许提它,否则就是「界面上说有个按钮,人找不到」
+    this.txt(page, pend ? "应用内下载不动就点「浏览器下载」,用浏览器存安装包再装"
+      : "有新版本时这里会出现「浏览器下载」;启动时也会自动检查一次",
+      11, P.dim, A.hint.left, A.hint.cy, wOf(A.hint));
+  }
+
+  /**
+   * 手动检查一次。三条结果都要落地成看得见的字:
+   * 以前只有首页那颗按钮能查,查失败了一行 toast 一闪而过,没人知道是没网还是已经是最新。
+   */
+  private async checkNow(): Promise<void> {
+    if (this.aboutChecking) return;      // 在途时再点不重复发请求(候选源一串,一次要等几秒)
+    this.aboutChecking = true;
+    this.paintAbout();
+    let res: UpdateCheckResult;
+    try {
+      res = await UpdateService.instance.checkForUpdate();
+    } catch (err: any) {
+      res = { status: "failed", error: err?.message || "网络连接失败" };
+    }
+    this.aboutChecking = false;
+    this.aboutResult = res.status === "available"
+      ? `发现新版本 ${res.info?.tagName ?? ""}`
+      : res.status === "up_to_date"
+        ? `已是最新版本 ${APP_VERSION_NAME}`
+        : `检查失败:${res.error || "未知原因"}`;
+    if (res.status === "available" && res.info) {
+      // 查出来有新版,这颗「浏览器下载」得当场上长出来 —— 这里已经在 await 的续体里,
+      // 不在按钮的派发栈上,重建整页是安全的(同步重建才要担心拆掉正在派发的那个节点)。
+      // tab 判据:等待期间人可能已经切去别的页了,那种情况只补读数,别把别人的页拆了重建。
+      if (this.tab === "about" && this.page && this.page.isValid) this.buildPage();
+      else this.paintAbout();
+      this.kit.showUpdateDialog(res.info);
+      return;
+    }
+    this.paintAbout();
+  }
+
+  /** 状态行一句话说清「查没查过、结果是什么、什么时候查的」 */
+  private aboutReadout(): string {
+    if (this.aboutChecking) return "正在检查更新…";
+    const at = UpdateService.instance.lastCheckAt();
+    const pend = UpdateService.instance.pendingUpdate;
+    // 有挂着的新版本时优先报它:冷启动那次静默检查查出来的,这一页也得认
+    const head = pend ? `发现新版本 ${pend.tagName} · 可点上方「浏览器下载」`
+      : this.aboutResult || "还没查过 · 启动时会自动检查,也可以点「检查更新」";
+    return at ? `${head} · 上次检查 ${fmtStamp(at)}` : head;
+  }
+
+  /** 关于页两处读数:按钮字与状态行。Label 可能已随切页销毁,全部带空值守卫 */
+  private paintAbout(): void {
+    if (this.aboutCheckLabel && this.aboutCheckLabel.isValid) {
+      this.aboutCheckLabel.string = this.aboutChecking ? "检查中…" : "检查更新";
+    }
+    if (this.aboutStatus && this.aboutStatus.isValid) this.aboutStatus.string = this.aboutReadout();
+  }
+
   /** 小节色带:整面 accent 实底 + 由亮度算出的字色,左锚摆文字 */
   private band(parent: Node, text: string, role: Role, b: { left: number; right: number; cy: number; h: number }): void {
     const w = b.right - b.left;
@@ -524,6 +641,8 @@ export class SettingsPanel extends Component {
       // 「大小」标签跟着选中槽位变,提示玩家当前拖的是谁
       this.sizeLabel.string = this.selected === "joystick" ? "摇杆" : this.selected === "slider" ? "滑轨" : "大小";
     }
+    // 关于页:检查中/检查完的读数跟着走(冷启动那次静默检查改了时间戳,这里也认)
+    this.paintAbout();
   }
 
   // ---------- EDIT 视图 ----------

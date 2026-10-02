@@ -318,7 +318,7 @@ console.log("\n=== §5 移速档:脚速换一档,接同一拍还剩几帧 ===");
     const run = runTo150(t.id);
     const slack = landSlack(paceDef, t.id);
     console.log(`  ${t.id.padEnd(9)} ×${t.s.toFixed(2)}  跑 150px=${String(run).padStart(3)} 帧`
-      + ` · 走落点 slack=${slack.toFixed(1).padStart(5)} 帧(相对标准档 ${(slack - defSlack >= 0 ? "+" : "") + (slack - defSlack).toFixed(1)})  ${t.label}`);
+      + ` · 走落点 slack=${slack.toFixed(1).padStart(5)} 帧(相对默认档 ${C.gait.default} ${(slack - defSlack >= 0 ? "+" : "") + (slack - defSlack).toFixed(1)})  ${t.label}`);
     if (prevRun !== Infinity) {
       ok(run >= prevRun - 1e-9, `${t.id}:脚越慢,跑位帧单调不减(${run} ≥ 上一档 ${prevRun})`);
     }

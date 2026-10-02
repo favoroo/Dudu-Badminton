@@ -30,6 +30,7 @@ import android.content.Context;
 import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
+import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.util.Log;
@@ -131,7 +132,18 @@ public class AppActivity extends CocosActivity {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 // createOneShot 对 amplitude 只接受 1..255 或 DEFAULT_AMPLITUDE(-1),越界直接抛异常
                 int a = (amp >= 1 && amp <= 255) ? amp : VibrationEffect.DEFAULT_AMPLITUDE;
-                v.vibrate(VibrationEffect.createOneShot((long) ms, a));
+                VibrationEffect effect = VibrationEffect.createOneShot((long) ms, a);
+                if (Build.VERSION.SDK_INT >= 31) {
+                    // 不带属性的 vibrate 在 Android 12+ 被归到 TOUCH/USAGE_UNKNOWN 档,而这一档跟着
+                    // 系统「设置 → 声音与振动 → 触摸振动」总闸走:总闸一关系统就把整段震动静默丢掉
+                    // —— 不抛异常、返回值仍是 true,JS 侧怎么探都是健康的(这台小米 dumpsys 实测
+                    // UNKNOWN=OFF / TOUCH=OFF)。游戏打击是"模拟物理现象"不是系统触摸反馈,
+                    // 显式声明 USAGE_PHYSICAL_EMULATION 才脱离那个总闸管辖。
+                    v.vibrate(effect, VibrationAttributes.createForUsage(
+                        VibrationAttributes.USAGE_PHYSICAL_EMULATION));
+                } else {
+                    v.vibrate(effect);
+                }
             } else {
                 v.vibrate((long) ms);
             }

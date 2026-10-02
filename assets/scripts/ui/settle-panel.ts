@@ -103,7 +103,7 @@ export class SettlePanel {
     kit.atmosphere(this.root);
 
     const card = kit.panel(this.root, CW, CH, {
-      r: 18, alpha: 0.94, bandHex: ROLE.primary.face, tear: 16,
+      r: 18, alpha: 0.94, bandHex: ROLE.primary.face,
     });
     this.card = card.node;
     this.card.setPosition(0, 2, 0);

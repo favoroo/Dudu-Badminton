@@ -28,11 +28,12 @@ import type { CardOpts } from "../assets/scripts/ui/p5-shapes";
 import { Graphics as StubGraphics, opsToSvg } from "./cc-stub";
 import { C, ROLE, SLANT, inkFor } from "../assets/scripts/ui/p5-tokens";
 import { RARITY_META } from "../assets/scripts/core/config";
-import { SET, controlLayout, donePos, mediaLayout, tabRow } from "../assets/scripts/ui/settings-layout";
+import { APP_VERSION_NAME } from "../assets/scripts/core/version";
+import { SET, aboutLayout, controlLayout, donePos, mediaLayout, SETTINGS_TABS, tabBoxes } from "../assets/scripts/ui/settings-layout";
 import {
   cardRow, cardRows, CMP, resumeRow as cmpResume, tabRow as campTabRow,
 } from "../assets/scripts/ui/campaign-layout";
-import { cardBoxes as drillCardBoxes, ctrlRow as drillCtrlRow, DRILL } from "../assets/scripts/ui/drill-layout";
+import { cardBoxes as drillCardBoxes, DRILL } from "../assets/scripts/ui/drill-layout";
 import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopTabs, shopTopBar } from "../assets/scripts/ui/shop-shelf";
 import {
   drawBevelSlot, drawHalftone, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
@@ -77,8 +78,8 @@ function primitivesSheet(): string {
 
   // L1 衬纸
   const plateW = 420, plateH = 150;
-  out.push(shape(40 + plateW / 2, y + plateH / 2, (g) => drawPosterPlate(g, plateW, plateH, { bandHex: C.slash, teeth: 16, halftone: true })));
-  out.push(tag(40, y - 4, "L1 衬纸 drawPosterPlate:斜切硬阴影 → 错位红副衬 → 墨面 → 下缘撕纸 → 网点"));
+  out.push(shape(40 + plateW / 2, y + plateH / 2, (g) => drawPosterPlate(g, plateW, plateH, { bandHex: C.slash, halftone: true })));
+  out.push(tag(40, y - 4, "L1 衬纸 drawPosterPlate:斜切硬阴影 → 错位红副衬 → 墨面 → 平直下缘 → 网点"));
   y += plateH + 34;
 
   // L3 四种角色色块
@@ -96,9 +97,9 @@ function primitivesSheet(): string {
   // 卡片:墨面 + 一条 accent 色带(一屏十几张的表面用它,别整面实底)
   const cardW = 150, cardH = 132;
   const cards: Array<[string, CardOpts]> = [
-    ["已通关", { teeth: 5 }],
-    ["下一关", { glow: true, teeth: 5 }],
-    ["可挑战", { teeth: 5 }],
+    ["已通关", {}],
+    ["下一关", { glow: true }],
+    ["可挑战", {}],
     ["已锁定", { locked: true, teeth: 0 }],
   ];
   cards.forEach(([nm, o], i) => {
@@ -179,7 +180,7 @@ function primitivesSheet(): string {
  * 坐标全部来自各面板的 layout 纯函数(settings-layout / campaign-layout / drill-layout /
  * shop-shelf.SHOP)—— 这一格证明的是「那套算术摆得开」,不是我另摆一遍。
  */
-function cell(px: number, py: number, pw: number, ph: number, bandHex: string, title: string, teeth = 20): {
+function cell(px: number, py: number, pw: number, ph: number, bandHex: string, title: string, teeth = 0): {
   X: (v: number) => number; Y: (v: number) => number; cx: number; cy: number; head: string;
 } {
   const cx = px + pw / 2, cy = py + ph / 2 + 20;
@@ -208,9 +209,7 @@ function panelsSheet(): string {
     out.push(c.head);
     const dp = donePos();
     out.push(block(c, { left: dp.x - 75, right: dp.x + 75, cy: dp.y, h: SET.doneBtn.h }, ROLE.primary.face, "完成", 15, SLANT.button));
-    tabRow(2).forEach((x, i) => out.push(block(c,
-      { left: x - SET.tab.w / 2, right: x + SET.tab.w / 2, cy: SET.tab.y, h: SET.tab.h },
-      i === 0 ? ROLE.primary.face : null, i === 0 ? "操控" : "声音画面", 15)));
+    tabBoxes().forEach((b, i) => out.push(block(c, b, i === 0 ? ROLE.primary.face : null, SETTINGS_TABS[i].label, 15)));
     const K = controlLayout();
     out.push(block(c, K.sectionMove, ROLE.star.face, "移动方式", 13, SLANT.band));
     K.modes.forEach((b, i) => out.push(block(c, b, i === 1 ? ROLE.primary.face : null, ["摇杆", "滑轨", "按键"][i], 15)));
@@ -248,6 +247,19 @@ function panelsSheet(): string {
     out.push(txt(m.X(ST.caption.left), m.Y(ST.caption.cy), "标准", 13, C.paperDim, { anchor: "start" }));
     out.push(block(m, M.test.btn, null, "试震", 15, SLANT.button));
     out.push(txt(m.X(M.test.status.left), m.Y(M.test.status.cy), "原生 Android · 系统报告本机无振动马达", 11, C.dim, { anchor: "start" }));
+    // 关于页:更新整条链路的入口(首页那颗「检查更新」搬进来了)。
+    // 这张样张画的是**查到新版本**那一态 —— 没更新时「浏览器下载」那颗键压根不建(用户指令)。
+    const a = cell(40 + SET.pw + 80, 40 + CMP.ph + 90, SET.pw, SET.ph, ROLE.primary.face, "设置 · 关于(查到新版本时)");
+    out.push(a.head);
+    tabBoxes().forEach((b, i) => out.push(block(a, b, i === 2 ? ROLE.primary.face : null, SETTINGS_TABS[i].label, 15)));
+    const A = aboutLayout();
+    out.push(block(a, A.section, ROLE.record.face, "版本与更新", 13, SLANT.band));
+    out.push(txt(a.X(A.verName.left), a.Y(A.verName.cy), "当前版本", 14, C.paper, { anchor: "start" }));
+    out.push(txt(a.X(A.verValue.left), a.Y(A.verValue.cy), APP_VERSION_NAME, 15, C.acid, { anchor: "start" }));
+    out.push(block(a, A.checkBtn, ROLE.primary.face, "检查更新", 16, SLANT.button));
+    out.push(block(a, A.siteBtn, null, "浏览器下载", 15, SLANT.button));
+    out.push(txt(a.X(A.status.left), a.Y(A.status.cy), "发现新版本 v0.0.22 · 可点上方「浏览器下载」 · 上次检查 10-02 19:22", 11, C.dim, { anchor: "start" }));
+    out.push(txt(a.X(A.hint.left), a.Y(A.hint.cy), "应用内下载不动就点「浏览器下载」,用浏览器存安装包再装", 11, C.dim, { anchor: "start" }));
   }
 
   // ---------- ② 闯关大厅(880×480)----------
@@ -262,7 +274,7 @@ function panelsSheet(): string {
     cardRow().forEach((b, i) => {
       const locked = i === 4, next = i === 2;
       const w = b.right - b.left, cx = (b.left + b.right) / 2;
-      out.push(shape(c.X(cx), c.Y(b.cy), (g) => drawP5Card(g, w, b.h, faces[i], { locked, glow: next, teeth: 5 })));
+      out.push(shape(c.X(cx), c.Y(b.cy), (g) => drawP5Card(g, w, b.h, faces[i], { locked, glow: next })));
       out.push(txt(c.X(cx), c.Y(b.cy + inner.no.cy), `STAGE 0${i + 1}`, 10, locked ? C.dimDeep : inkFor(faces[i]), { bold: true }));
       out.push(txt(c.X(cx), c.Y(b.cy + inner.title.cy), names[i], 17, locked ? C.dimDeep : C.paper, { bold: true }));
       out.push(txt(c.X(cx), c.Y(b.cy + inner.goal.cy), "抢 7 分", 13, locked ? C.dimDeep : C.good));
@@ -298,8 +310,9 @@ function panelsSheet(): string {
         out.push(shape(c.X(b.right - 46 + k * 16), c.Y(b.cy + 45), (g) => drawStarGlyph(g, 0, 0, 7, k < stars[i], ROLE.star.face)));
       }
     });
-    // 引导页的三颗键(ctrlRow)与卡列表页互斥,同框画出来是**假重叠** —— 标出来别误导
-    out.push(txt(c.X(DRILL.left), c.Y(-DRILL.ph / 2 + 24), "(引导页的 开始/慢放/重播 与本页互斥,故不画在此框内)", 11, C.dimDeep, { anchor: "start" }));
+    // 引导页(大画布 + 四张分步卡 + 演示键)与卡列表页互斥,同框画出来是**假重叠** ——
+    // 那一页的肉眼验收交给 drill-diagram-preview:它把六关 × 四步全出成图。
+    out.push(txt(c.X(DRILL.left), c.Y(-DRILL.ph / 2 + 24), "(引导页见 drill-diagram-preview,不与本页同框)", 11, C.dimDeep, { anchor: "start" }));
   }
 
   // ---------- ④ 商店(880×470)----------
@@ -335,7 +348,7 @@ function panelsSheet(): string {
 
 const SYNTAX_H = 1040;
 // 拼装图 1:1:宽 = 40 + 880 + 80 + 880 + 40,高 = 四行面板摞起来
-// 行 1:设置(操控页) + 闯关大厅;行 2:设置(声音画面页);行 3:训练场 + 商店
+// 行 1:设置(操控页) + 闯关大厅;行 2:设置(声音画面) + 设置(关于);行 3:训练场 + 商店
 const PANELS_W = 40 + 880 + 80 + 880 + 40;
 const PANELS_H = 1068 + 470 + 60;
 

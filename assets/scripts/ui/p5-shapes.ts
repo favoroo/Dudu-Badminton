@@ -10,7 +10,7 @@
 //      不再是 brief-preview 那种「把配色版式在工具里重抄一份」的对照图。
 //
 // 语法(与 p5-tokens 的 L0..L5 一一对应):
-//   plate   面板衬纸:斜切硬阴影 → 错位 accent 副衬 → 墨面 → 下缘撕纸齿 → 顶缘高光
+//   plate   面板衬纸:斜切硬阴影 → 错位 accent 副衬 → 墨面 → 平直下缘 → 顶缘高光
 //   block   实底大色块:首页 drawSolidBlock 的等价物(tab / 卡片 / 主按钮)
 //   band    分区色带:block 的 10° 斜切档(小节标题、状态胶囊)
 //   slot    凹陷槽:经验槽、滑杆轨道、未选中/锁定态 —— 与 block 相反,是「挖进去」的
@@ -152,7 +152,7 @@ export interface PlateOpts {
   /** 副衬错位,默认 (+10, -8):露右下两条边 */
   bandDx?: number;
   bandDy?: number;
-  /** 下缘撕纸齿数;0 = 不撕 */
+  /** 下缘收边:平直(历史撕纸齿参数保留兼容,默认 0 = 不撕) */
   teeth?: number;
   /** 外描边(纸白 14%),默认开 */
   edge?: boolean;
@@ -191,7 +191,7 @@ export function plateDL(w: number, h: number, o: PlateOpts = {}): Paint[] {
       cx: 0, cy: h / 2 - hh / 2 - 6, hex: o.halftoneHex, rampW: w, rampH: h,
     }));
   }
-  // 下缘撕纸齿:与主面同色,把剪影撕开(不是画一条装饰带)
+  // 下缘平直收边:历史撕纸齿保留参数兼容,默认不撕
   const teeth = o.teeth ?? 0;
   if (teeth > 0) {
     for (const t of tearPolys(w - 24, -h / 2, teeth, 7, "down")) {
@@ -239,7 +239,7 @@ export interface CardOpts {
   locked?: boolean;
   /** 强调态(下一关 / 选中):色带描边加粗提亮 */
   glow?: boolean;
-  /** 色带下缘撕纸齿数;0 = 平边 */
+  /** 色带下缘收边:平直(历史撕纸齿参数保留兼容,默认 0 = 平边) */
   teeth?: number;
   /** 斜切角,默认 SLANT.block */
   slant?: number;
@@ -269,8 +269,8 @@ export function cardDL(w: number, h: number, accent: string, o: CardOpts = {}): 
     // 顶部色带:同斜率内接,压在墨面上
     { kind: "fill", hex: band, a: o.locked ? 0.7 : 0.96, pts: slantQuad(w, bandH, bandSkew, 0, bandCy) },
   ];
-  // 色带下缘撕纸:齿尖朝下、与色带同色,读作「这条色是撕上去的」
-  const teeth = o.teeth ?? 6;
+  // 色带下缘平直收边:历史撕纸写法保留参数兼容,默认不撕
+  const teeth = o.teeth ?? 0;
   if (teeth > 0 && !o.locked) {
     for (const t of tearPolys(w - 16, bandCy - bandH / 2, teeth, 5, "down")) {
       out.push({ kind: "fill", hex: band, a: 0.96, pts: t });

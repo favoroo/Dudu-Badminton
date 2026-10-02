@@ -29,7 +29,7 @@ export class PausePanel {
 
     // 卡片 470 高:六颗按钮每档间隙能保住 12+ 触控缝;非无尽模式收成五颗、间距放宽
     const card = kit.panel(this.root, 380, PausePanel.H, {
-      r: 16, alpha: 0.92, bandHex: ROLE.primary.face, tear: 9,
+      r: 16, alpha: 0.92, bandHex: ROLE.primary.face,
     });
     this.card = card.node;
     card.node.setPosition(0, 0, 0);

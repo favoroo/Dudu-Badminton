@@ -399,15 +399,20 @@ export class GameRoot extends Component {
   }
 
   // ---------- 事件 → 反馈(老 game.js drain 的阶段 2 子集) ----------
-  /** AI 压力阶段缓存(上升沿检测):0 充沛 / 1 消耗(血条≤3格) / 2 力竭(0格) */
+  /** AI 压力阶段缓存(**分内闩锁**,只升不降,point-start 归零):0 充沛 / 1 消耗 / 2 力竭 */
   private pStage = 0;
 
   /**
    * AI 压力阶段上升沿 → 玩家反馈。血条只回答「现在还剩多少」,这里只回答
    * 「刚跨过哪条线」—— 与阵风横幅同一套设计哲学:缺的不是读数,是变化发生时的通知。
-   * 阈值与血条格数对齐(同一套归一化口径):消耗线 0.6 = 掉到 3 格变橙,
-   * 力竭线 0.04 = 0 格红框呼吸。旧版「rally=7 飘一句体力下降」已删:那时血条
-   * 才刚开始动,信号和画面打架;现在信号跟着血条的真实阶段走。
+   * 阈值与血条分档色对齐(同一套归一化口径):消耗线 0.6,力竭线 0.04。
+   * 两个新模型带来的规矩(体力账本见 ai.ts noteHit):
+   * ①账本**可回落**(轻松接一拍软球会回气),血条能跌下去再涨回来再跌下去 ——
+   *   旧曲线是 rally 的单调函数,数学上不存在"同一分演两遍力竭";现在必须闩锁,
+   *   分内每个阶段只放一次,不然一回气一泄气就是连环大演出。
+   * ②大演出吃 cueFloor(行为侧 pressure):血条见底不等于这一档真的废了 ——
+   *   easy 的 crush 只有 0.5,血条掉空时行为侧才 0.5,不加闸就是满屏
+   *   「对手力竭!」还在稳稳接球。
    */
   private syncPressureCue(): void {
     const R = Rules.R;
@@ -415,8 +420,9 @@ export class GameRoot extends Component {
     const ai = R.players.find((p) => p.side === "right" && p.isAI);
     if (!ai || !ai.ai) { this.pStage = 0; return; }
     const tier = ai.aiTier ?? C.diffs[ai.aiDiff ?? "normal"];
-    const stamina = clamp(1 - (tier.crush > 0 ? ai.ai.pressure / tier.crush : 0), 0, 1);
-    const stage = stamina <= 0.04 ? 2 : stamina <= 0.6 ? 1 : 0;
+    const pressure = ai.ai.pressure;
+    const stamina = clamp(1 - (tier.crush > 0 ? pressure / tier.crush : 0), 0, 1);
+    const stage = stamina <= 0.04 && pressure >= C.aiPressure.cueFloor ? 2 : stamina <= 0.6 ? 1 : 0;
     if (stage > this.pStage) {
       if (stage === 1) {
         // 消耗:轻提示,只飘字不配音 —— 这是「该压着打了」的信号,不是高潮
@@ -431,7 +437,7 @@ export class GameRoot extends Component {
         this.world.hudOverlay.playExhaust();
       }
     }
-    this.pStage = stage;
+    this.pStage = Math.max(this.pStage, stage);   // 闩锁:血条回落也不撤销已放的演出
   }
 
   /** hit 事件的出球方向:火花扇/划线/速度线都按它朝向,不再各算各的或硬编码 0 */
@@ -719,12 +725,13 @@ export class GameRoot extends Component {
           // 体力归因:玩家得分且 AI 血条 ≤2 格(高压力)→ 把这一分记在消耗战术上。
           // boss 战爽感的闭环就在这一句:玩家亲眼看到「这分是我拖出来的」。
           // 扣杀得分有自己的中央大字(同区 y=96),不再叠一层;训练场没有对手体力。
+          // 同样吃 cueFloor:easy 血条掉空时行为侧才一半,别替它喊「体力透支」。
           if (e.side === "left" && e.reason !== "扣杀得分" && R.mode !== "drill") {
             const ai = R.players.find((p) => p.side === "right" && p.isAI);
             if (ai && ai.ai) {
               const tier = ai.aiTier ?? C.diffs[ai.aiDiff ?? "normal"];
               const stamina = clamp(1 - (tier.crush > 0 ? ai.ai.pressure / tier.crush : 0), 0, 1);
-              if (stamina <= 0.4) this.world.float(C.world.w / 2, 130, "体力透支!", "#ffb37a", 15, 40);
+              if (stamina <= 0.4 && ai.ai.pressure >= C.aiPressure.cueFloor) this.world.float(C.world.w / 2, 130, "体力透支!", "#ffb37a", 15, 40);
             }
           }
           // 扣杀得分专属:观众大欢呼 + 庆祝短慢放 + 中央大字,与普通得分拉开层次
@@ -790,6 +797,7 @@ export class GameRoot extends Component {
         case "point-start":
           this.world.clearFloats();
           this.world.clearTrail();
+          this.pStage = 0;   // 体力阶段的分内闩锁:新一分重新记账(AI 状态也在这一拍 reset)
           if (Rules.isMatchPoint()) this.sfx.play("whistle");
           break;
       }

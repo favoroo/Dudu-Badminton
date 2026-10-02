@@ -1685,9 +1685,11 @@ export class CourtRenderer {
 
     // 10. 海风风丝 —— 第 1 关「海风突变」的动画提示
     //     风从前只住在 physics 的每步积分里,画面一格都不动:球被横推一百多像素,
-    //     玩家只知道"我打飞了",不知道为什么。这些白条吃的是**同一个** windX
-    //     (draw() 里那行合成把 EnvModifier 折成画面位移),所以丝往哪边飘、飘多狠,
-    //     与球被推走多少是同一件事的两种画法。风停了它们就不动 —— 不是"照飘不误"的假动画。
+    //     玩家只知道"我打飞了",不知道为什么。点亮与方向只认 envWindPx(world.ts 每帧
+    //     从 Physics.windAt 喂进来的真环境风)—— 丝往哪边飘、飘多狠,与球被推走多少
+    //     是同一件事的两种画法;没有真风的局面(对练/无限/无风关卡)整段不画。
+    //     ⚠ 门控不能吃合成后的 windX:那里面掺着椰树摆动的装饰底噪(恒有 ±3.5px),
+    //     拿它过阈会让对练/无限的海滩场也常亮这两段机制提示(0.0.21 用户现场)。
     //
     //     ⚠ 0.0.21 修:这一整段从前**漏了视口换算** —— st.x/st.y 是世界坐标
     //     (y 150~400 是"海面上空到沙滩上空"那条带),而这里直接 g.moveTo(sx, st.y) 裸写。
@@ -1698,7 +1700,7 @@ export class CourtRenderer {
     //     看得出,但沙地对比度与原生帧率要上机才算(见 panel-preview 那条经验)。
     const AW = C.env.ambience;
     const fullWind = Math.max(0.001, Math.abs(C.env.windDefaultBase) * AW.k);
-    const wLean = this.windX / fullWind;
+    const wLean = this.envWindPx / fullWind;   // 只认真环境风:装饰底噪(椰树摆动)不点亮机制提示
     const wAbs = Math.min(1, Math.abs(wLean));
     if (wAbs > 0.02) {
       const dirS = wLean >= 0 ? 1 : -1;
@@ -1718,7 +1720,8 @@ export class CourtRenderer {
     // 11. 贴地风带(第 1 关**主力**方向提示)
     //     为什么光有上面的风丝不够:风丝在天上,而玩家的注意力在地面那条线 ——
     //     他要判断的是"球会被推向哪一侧的底线",那就让**场地自己**往那一边流。
-    //     一排人字纹贴着地胶上方流过,尖端指向风吹向的那一侧,长度/亮度/流速都吃同一个 wLean。
+    //     一排人字纹贴着地胶上方流过,尖端指向风吹向的那一侧,长度/亮度/流速都吃同一个
+    //     wLean(与风丝同源,只认真环境风 —— 对练/无限的海滩场不该有这条带)。
     //     形状出生定形(等距铺开)、逐帧只平移:与 p5kit/风丝同一条规矩,不许逐帧 rand。
     const B = C.env.band;
     if (wAbs > 0.02) {

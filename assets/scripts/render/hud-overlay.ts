@@ -17,6 +17,7 @@ import { Settings } from "../core/settings";
 import { Rules } from "../core/rules";
 import { Drill } from "../core/drill";
 import { meter, winU, targetZoneFor } from "./drill-anim";
+import { DrillDemo } from "../core/drill-demo";
 import type { Viewport } from "./world";
 import { pal, withAlpha } from "./palette";
 import { drawCrossMark, drawTaper } from "./p5kit";
@@ -498,8 +499,11 @@ export class HudOverlay {
 
     // 2. 玩家半场最佳迎击站位指示
     const isIncoming = b && b.live && (b.lastHitter === "right" || (b.held && b.owner?.side === "right"));
-    if (isIncoming) {
-      const cx = this.vp.x(def.contactX);
+    // 站位读数与引导演示同一个来源(core/drill-demo 沿真实喂球弧线反解),不再各摆一套:
+    // 旧写法读 config 里手拍的 def.contactX,而那个数只喂给过一条假抛物线。
+    const stand = DrillDemo.bake(def)?.stand.x;
+    if (isIncoming && stand != null) {
+      const cx = this.vp.x(stand);
       const inPulse = 0.5 + 0.5 * Math.sin(t * 0.2);
       this.g.strokeColor = withAlpha(pal("#00f0ff"), 0.5 + 0.3 * inPulse);
       this.g.lineWidth = 1.8;

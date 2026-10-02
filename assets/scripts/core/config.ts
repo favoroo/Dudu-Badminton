@@ -2,7 +2,7 @@
 // 全部平衡数值 / 键位 / 配色集中在这里 —— 想调手感只改这个文件
 // 单位约定:1 step = 1/60 s;长度 px;速度 px/step;加速度 px/step²
 // ============================================================
-import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, DrillDef, AiSmashDefenseDef, AiTier, ServeMixTier, SkillId } from "./types";
+import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, ShotKind, DrillDef, AiSmashDefenseDef, AiTier, ServeMixTier, SkillId } from "./types";
 
 // ===== 稀有度元数据:商店卡片框色/角标用;配色只进 config =====
 export const RARITY_META: Record<Rarity, { name: string; color: string }> = {
@@ -197,13 +197,16 @@ export const CFG = {
   // 跳跃 jumpV/gravity、摩擦 groundFriction 都不跟着动,更不作用于 AI(AI 有 diffs.speed)。
   // 与 pace 的区别:gait 即时生效(移动速度不影响已在飞的球),不等下一球。
   gait: {
-    default: "standard",       // 出货默认 = 现在的速度(上一轮已从 8.6 提到 9.2,不再默认加码)
+    default: "slow",          // 出货默认 = 偏慢一档(慢 15%):用户把滑杆停在这一档试过,顺手定成默认
     min: 0.6, max: 1.8,        // 运行时兜底夹取(手改存档 / 以后加档)
     // 表序必须从慢到快单调(settings-check 有断言):滑杆按下标定位,反了会拖反方向。
+    // 表里六档系数一个没动(玩家存档存的 id 照样是原来那个速度);只是 default 挪到了 slow。
+    // 代价要知道:面板那行百分比是**相对默认档**算的(gait.ts 的 labelOf),所以现在
+    // 标准档会显示成「标准 · 快 18%」、极快「快 76%」—— 刻度没坏,只是零点挪了一格。
     tiers: [
       { id: "vslow",    s: 0.70, label: "很慢", note: "慢 30%:飘着走,当对照用" },
-      { id: "slow",     s: 0.85, label: "偏慢", note: "慢 15%:手机-thumb 容易过头的那一档" },
-      { id: "standard", s: 1.00, label: "标准", note: "现在的速度,一点没改" },
+      { id: "slow",     s: 0.85, label: "偏慢", note: "慢 15%:出货默认档,手机-thumb 不容易过头" },
+      { id: "standard", s: 1.00, label: "标准", note: "比默认档快 18%:上一版的出厂速度" },
       { id: "fast",     s: 1.15, label: "偏快", note: "快 15%:够得着更深的球" },
       { id: "vfast",    s: 1.30, label: "很快", note: "快 30%:半场基本两步到底" },
       { id: "xfast",    s: 1.50, label: "极快", note: "快 50%:再快就飘,先看 reach-check §5" },
@@ -320,7 +323,7 @@ export const CFG = {
   // 所以标签不随球速档位漂移 —— 慢档里同一记重杀仍叫「重杀」,不会念成「劈吊」。
   shotClass: {
     smashDeg: 15,      // 压角小于此 + 击球点够高 + 球够快 = 重杀
-    smashH: 115,
+    smashH: 140,
     smashSpeed: 16,
     slashDeg: 22,      // 压角小于此 + 击球点次高 = 劈吊
     slashH: 92,
@@ -577,7 +580,7 @@ export const CFG = {
   // 起跳 + 高球(离地 ≥ minHeight)直接定性为扣杀并给力度加成 —— 「跳起来打高球 = 杀球」
   // 这条直觉规则对真人与 AI 同样生效。闪现扣杀(空中折跃)天然走同一通道。
   jumpSmash: {
-    minHeight: 115,    // 击球点离地至少此高(px,与 shotClass.smashH 同源)才触发;再低的重扣太廉价(用户现场:很低也触发)
+    minHeight: 140,    // 击球点离地至少此高(px,与 shotClass.smashH 同源)才触发;对齐 aiReach.stand(起跳带起点),且高于站立触球上限≈132 —— 站地拍永远不算跳杀(用户两次反馈:很矮的球也触发重扣)
     speedBoost: 2.5,   // 初速加成(px/step,与 sweet/perfect boost 同预算,封顶在 maxSpeed 差额)
     powerDeg: 6,       // 额外压弧度(度)
     maxLoftDeg: 8,     // 强制压弧上限:跳杀不允许挑高,弧度先夹到这里再进求解器
@@ -691,8 +694,33 @@ export const CFG = {
       sweetRatio: 0.66,  // ★2:有效拍里至少这个比例踩到甜蜜窗
       avgQ3: 0.78,       // ★3:达标且平均质量 ≥ 此值(还要有一记完美)
     },
-    // 引导动画小画布:Cocos 版仍保留这个定义,引导页相机与画布只认这一处尺寸
-    canvas: { w: 470, h: 300 },
+    // 引导动画小画布:引导页相机与画布只认这一处尺寸。
+    // 0.0.21 从 470×300 抬到 560×316 —— 引导页改版成「放大演示 + 分步卡」,
+    // 而分步讲解要往场上标字(落点区名/滑向/击球高度),图太小那些字就没地方摆。
+    canvas: { w: 560, h: 294 },
+    // ===== 引导演示的**真值烘焙**参数(core/drill-demo.ts 唯一读处) =====
+    // 演示里那颗球的来路/接点/回路与落点,全从这里定义的搜法在真实判据下搜出来 ——
+    // 以前是动画自己编一条假抛物线 + 手拍一个 q,教的动作和游戏判的那拍不是一回事。
+    demo: {
+      q: 0.9,            // 标定质量:≈甜蜜窗上沿,演示画的是「踩准了的那一拍」而不是勉强一档
+      // 挑接触点先看「合不合这一关的手」:上手球(over)从高接触点里挑,下手球(under)从低处挑。
+      // 少了这一条,高远关会选中弧线上最低的可达点 —— 判据过了,画的却是「弯腰捞球的高远球」。
+      preferredShare: 0.55, // 只在最合手的那批接触点里搜这个比例
+      standLead: 0.35,   // 球让到判定区圆心前方这么成的水平余量:迎前击球,而不是站球正下方
+      zonePad: 12,       // 落点带离边线/网带的留白,压着画会糊成一条线
+      zoneSpread: 46,    // 这一关没写显式落点门槛时,以真实落点为中心开 ±此宽
+      fallbackNear: 0.3, // 还没烘焙时(实机 HUD 首帧)短球带中心的相对位置
+      fallbackFar: 0.72, // 同上,深球
+      arcDash: { on: 6, off: 5 },  // 虚线弧疏密:引导页与场上预告同一条尺
+      // 演示节拍(帧 @60Hz):来球/出球两段用烘焙出来的**真实帧数**,这三段是演出用的。
+      beats: {
+        wind: 12,        // 引拍:从「球到眼前」到「触球」
+        freeze: 12,      // 触球定格(爆点与「就在这一点打」都在这段里读)
+        settle: 16,      // 落点波纹走完、假人收拍
+        runShare: 0.42,  // 来球段的后这么多比例用来跑位(全程站着不动看不出「要跑」)
+        minIn: 14, minOut: 14, maxPhase: 90,   // 两段真实帧数的兜底夹取(异常喂球不至于卡住)
+      },
+    },
   },
 
   // ===== HUD 左列那一叠读数牌的排布 =====
@@ -1461,52 +1489,77 @@ export const CFG = {
     hardMax: 1,         // 系数上限(误差封顶就是 diffs.read)
   },
 
-  // ===== AI 连击压力:回合越长,这档 AI 越容易看走眼(拟人化「体力/心态下滑」) =====
-  // 用户反馈「AI 怎么都能接住、回合越拖越稳」—— 误差只跟球速/跑位距离挂钩,没有回合长度这一维。
-  // 这里补上:rally 到 startAt 起累积,再走 span 拍满压(P=1),满压时:
-  //   readErr 放大 (1+readMul) 倍 · 时机误差 +timingAdd 帧 · 跑位降速 speedMul
-  // 不碰物理与判定区几何 —— 「慢球仍能对拉」的性质不变,只是长回合后半段开始漏。
-  // 每档吃多少由 diffs.crush 闸门决定:普通全吃,入门只吃一半(crush 大了 AI 会在长回合
-  // 里自己手抖漏球,把回合截断 —— easy 回合均值被压到 10 拍以下,ai-check 回合 ≥10 过不去),
-  // 顶档只沾一点(crush 大了会顶穿 ai-check 的「大师得分率 ≤45%」红线)。
-  aiPressure: {
-    startAt: 7,        // 回合拍数到这儿开始累积(前 7 拍照常对拉)
-    span: 13,          // 再 +13 拍达到满压
-    readMul: 0.95,     // 满压时 readErr 额外放大的比例(1.0 = 翻倍)
-    timingAdd: 4,      // 满压时额外时机误差(帧,正 = 更易漏)
-    speedMul: 0.10,    // 满压时跑位降速比例(腿沉了:不是接不到,是慢半拍)
-    // ---- 接球质量双向(涨速加权):软球轻松接 = 少涨(对手回气),狼狈拍 = 多涨 ----
-    // 实现是「有效拍数 = rally + qualDrift」的**有界修正**,基准曲线一字不动:
-    // gate=0 的档位(easy)drift 恒 0,行为与旧曲线完全一致 → ai-check 只需保 normal/hard 过线。
-    quality: {
-      softLift: 0.4,     // 轻松拍有效拍数系数:慢软球(lob/放网/高远)+ 没怎么跑 → 该拍只计 0.4 拍
-      scrambleBurst: 1.5,// 狼狈拍系数:跨步救球/跳起击球/大跑位 → 该拍计 1.5 拍
-      softRun: 90,       // 起手时离防区中心 ≤ 此值(px)=「没怎么跑」(轻松判据之一)
-      hardRun: 170,      // 起手时离防区中心 ≥ 此值(px)=「大跑位救球」(狼狈判据之一)
-      maxDrift: 4,       // 漂移封顶(±4 拍当量):软球连回最多倒扣 4 拍,狼狈连炸最多加 4 拍
-    },
+  // ===== AI 体力:按真实动作记账(不再数拍数) =====
+  // 一回合一本账:AI 每一次**真实击中**记一次(入口 ai.ts noteHit,rules.applyShot 在 rally++
+  // 同一处调它;持球发球与挥空都拿不到起手快照,天然不掉)。
+  // 为什么不再是 rally/span 那种数拍子曲线:发球本身也 rally++(rules.ts:556),于是玩家
+  // 一发球血条就动一格、他站把那球回过去又动一格 —— 掉得又快又说不清为什么(用户现场:
+  // 「我发球他掉一下,他接球又掉一下」)。体力该由「这一拍有多费力」决定,不是第几拍。
+  // ===== 2026-10-02 温和档重标(用户现场:「随便什么接球就掉一大管」)=====
+  // 常规拍一律免费(base 0 + runFree 抬高):站定接普通发球/普通对拉血条不动;
+  // 只有真被拉开(大跑位)、狼狈救球(跨步/腾空)、特殊球(接重杀/接劈吊)、自己发力才扣;
+  // 轻松拍(慢软球且没怎么跑)回气。极费力的回合(连续救球/全程被拉开)才见底。
+  // 账本口径:主力是 run(这一拍被拉开多远),第二项是 power(来球有多重),两者正交;
+  // 判「重不重」只吃 Physics.classify 的 kind/power,不另立第二套"快"的定义(同 aiRead 的纪律)。
+  // capacity 是**唯一标定旋钮**,顶穿 ai-check 红线时只挪这一个数,别逐项调权重。
+  aiStamina: {
+    capacity: 135,       // 一回合的体力总额;血条 = 1 − 已花/此值(唯一标定旋钮;一格 = capacity/5 = 27)
+    base: 0,             // 站定把普通球回过去 = 免费:接发/对拉不再掉血(用户现场「我发球他接球也掉」)
+    runK: 10,            // 每多跑 100px 加这么多(主力项,只对超出免费档的部分计费)
+    runFree: 70,         // 起手离防区中心 ≤ 此值视作站位微调,不收费:小碎步不花钱,被拉开才收费
+    powK: 20,            // 来球每重 10 点力度加这么多(第二连续项)
+    powFree: 18,         // 来球力度 ≤ 此值不收费(重杀/快球才吃得到)
+    lunge: 12,           // 跨步救球那一拍(shot.lungeShot)—— 最狼狈的动作,要明显
+    air: 8,              // 腾空击球(shot.airborne)
+    jumpSmash: 4,        // 跳杀额外(蹬地 + 发力,叠在 air 上)
+    skill: 5,            // 用了技能那一拍(shot.skillKind)
+    ownSmash: 3,         // 自己发力扣杀
+    recvSmash: 12,       // 接住一记重杀(来球 kind)—— 用户点名要的「特殊球才掉」
+    recvSlash: 3,        // 接劈吊(要急停)
+    give: -8,            // 轻松拍的回气量(整拍成本直接取这个数,≈6%,要看得见回升)
+    softKinds: ["lob", "netshot", "clear"] as ShotKind[],  // 「慢软球」= classify 的这三个球种
+    softRun: 80,         // 且起手离防区中心 ≤ 此值,才叫「没怎么跑」(门槛放宽,轻松拍更容易触发)
+    maxBeat: 20,         // 单拍扣减上限 < 一格(27):最狼狈的一拍也不掉满格,消灭「掉一大管」
+    minBeat: -8,         // 单拍回气上限
   },
 
-  // ===== AI 体力能量槽 (boss 血条规格:HUD 顶部右翼,AI 比分卡右侧) =====
-  // 5 段斜切平行四边形, 随连击压力 S.pressure 逐格扣减(展示层按本档 crush 归一化,
-  // 三档都能看到 0~5 格全程变化 —— 否则 hard(0.3)永远 4~5 格、easy(0.5)永不力竭)
-  // 充沛(5格/青黄) → 消耗(3~4格/橙) → 危险(1~2格/红) → 力竭(0格/暗槽慢闪红框)
+  // ===== 疲劳 → 行为的耦合(与上面那本账解耦:这边只管「累了会怎样」) =====
+  // 满疲劳(P=1)时:readErr 放大 (1+readMul) 倍 · 时机误差 +timingAdd 帧 · 跑位降速 speedMul。
+  // 不碰物理与判定区几何 —— 「慢球仍能对拉」的性质不变,只是累起来之后开始漏。
+  aiPressure: {
+    readMul: 0.95,     // 满疲劳时 readErr 额外放大的比例(1.0 = 翻倍)
+    timingAdd: 4,      // 满疲劳时额外时机误差(帧,正 = 更易漏)
+    speedMul: 0.10,    // 满疲劳时跑位降速比例(腿沉了:不是接不到,是慢半拍)
+    // 力竭**大演出**的行为闸门:血条掉到底(≤0.04)不等于这一档真的废了 —— easy 的 crush 只有
+    // 0.5,那条"力竭"只是本档一半的疲劳。放不加闸,满屏「对手力竭!」还在稳稳接球。
+    cueFloor: 0.6,
+  },
+
+  // ===== AI 体力能量槽 (boss 血条规格:下挂在 AI 比分卡底缘,与卡对齐) =====
+  // 5 段斜切槽当**刻度**,血量是连续滑过去的填充(hud.ts 缓动 + 掉血残影),
+  // 随连击压力 S.pressure 扣减(展示层按本档 crush 归一化,三档都能看到全程变化 ——
+  // 否则 hard(0.3)永远 4~5 格、easy(0.5)永不力竭)。从前一格一跳,玩家打完整回合
+  // 才看见掉了一格,「在消耗」这件事根本读不出来。
+  // 分档色与 game-root 的阶段线同源:充沛(>0.6 青黄) → 消耗(>0.2 橙) → 危险(红) →
+  // 力竭(≤0.04 暗槽慢闪红框)
   aiStaminaBar: {
-    w: 180,            // 总槽宽(boss 血条:一眼可读,不再缩在 pill 角落)
-    h: 13,             // 槽高
+    plateW: 176,       // 底板宽 = 比分卡 196 左右各内缩 10(对齐而不越界)
+    plateH: 22,        // 底板高
+    drop: 5,           // 底板顶缘到比分卡底缘的缝
+    padX: 8,           // 底板左右内边距
+    labelW: 26,        // 「体力」标签列宽(段槽从它右边开始)
+    h: 12,             // 单段高
     segments: 5,       // 5 段斜切小方块
     gap: 3,            // 格间距
-    skew: -6,          // 斜切角偏移(px)
-    x: 335,            // 槽中心 X(top 坐标系):AI 比分卡右侧,让开中央状态行/连击徽章/发球旗
-    y: 196,            // 槽中心 Y:pill 底缘(~201)之下,与状态行(y=190,±100 内)无 X 交叠
+    skewDeg: 8,        // 斜切角:与比分卡同一把尺(从前 6/13 ≈ 25°,和卡不像一家人)
   },
 
   // AI 难度:全部走同一套挥拍机制,只是**看走眼更狠、判定区更窄、出手更不准**
   // read=站位认定误差(px) · zone=单打判定区缩放(双打再与 doubles.aiZone 取 min)
   // shotErr=出球落点误差(px,进 player.buildShot 的误差预算,会下网/出界)
   // composure=情绪修正闸门(0=落后不会变强;见 ai.ts emotionModifiers)
-  // crush=连击压力闸门(0=完全不吃压力;见 ai.ts rallyPressure) · notice=接球反应延迟帧(拟人)
-  // qualityGate=接球质量双向闸门(0=压力只随拍数单调涨;见 ai.ts noteHit)
+  // crush=连击压力闸门(0=完全不吃压力;见 ai.ts pressureOf) · notice=接球反应延迟帧(拟人)
+  // softGate=轻松拍回气闸门(0=接软球也不回;见 ai.ts noteHit 的负成本)
   // 数值口径:ai-check 的真人替身(走位 ±35px、反应 10 帧、时机早 5/晚 10 帧)打出
   // easy 60% / normal 46% / hard 32% 的得分率、回合 10.8~19.3 拍(2026-10-01 随新触发系统
   // 重校准;工具与 serve-check 均已种子化,同代码同结果)。改任何 diffs.* 都要重跑
@@ -1521,9 +1574,9 @@ export const CFG = {
   // 适配,风就变成"AI 自己会输"而不是"玩家要读的方向";补太满又把机制从玩家手里拿走
   // (大师 0.85 也刻意不补满)。入门档剩下的破绽靠 read 45 / shotErr 70,真人肉眼看得出来。
   diffs: {
-    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.93, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5, windSense: 0.25, qualityGate: 0 },
-    normal: { label: "普通", tick: 14, speed: 0.94, read: 35, readFloor: 0.40, zone: 0.94, shotErr: 14, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 1.0, notice: 3, windSense: 0.55, qualityGate: 1 },
-    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 32, readFloor: 0.62, zone: 0.96, shotErr: 12, timingErr: 3, aggr: 0.52, composure: 1, crush: 0.3, notice: 2, windSense: 0.85, qualityGate: 1 },
+    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.93, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5, windSense: 0.25, softGate: 0 },
+    normal: { label: "普通", tick: 14, speed: 0.94, read: 35, readFloor: 0.40, zone: 0.94, shotErr: 14, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 1.0, notice: 3, windSense: 0.55, softGate: 1 },
+    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 32, readFloor: 0.62, zone: 0.96, shotErr: 12, timingErr: 3, aggr: 0.52, composure: 1, crush: 0.3, notice: 2, windSense: 0.85, softGate: 1 },
   } as Record<DiffKey, AiTier>,
 
   // ===== AI 每一档带哪一招 =====
@@ -1689,21 +1742,29 @@ export const DIFF_PICKS: DiffPick[] = [
 // (far=「右滑」深球 / near=「左滑」短球,只驱动引导文案与时机条)。这两个字段曾被混用成一回事,
 // 结果游戏里喂出的球和标定结果完全不符 —— 名字拆开就是为了不再踩第二次。
 // 改了 shuttle / loftByHeight / classify 之后跑训练场校验脚本会告诉你哪关串味了。
+//
+// ⚠ 这里**不再有** contactX / demoH:引导演示的站位、击球点高度、来回球弧线改由
+//   core/drill-demo.ts 沿真实喂球弧线 + 本表判据现算(旧的两枚手拍数字只喂给一条假抛物线,
+//   演的是「教的一套」、判的是另一套)。钉子:node .tools-build/tools/drill-diagram-check.js
 // ============================================================
-// demoH / contactX 只服务引导动画:演示用的接触点高度与横向位置,
-// 决定引导里那条理想弹道从哪儿起、画成什么弧度(和游戏判据无关)
 export const DRILLS: DrillDef[] = [
   {
     id: "smash", label: "后场重杀", tag: "SMASH", desc: "跳起来把球压下去",
     goal: 3, want: ["smash"],
     feed: { depth: 0.70, jumpLead: 0 },
     wantKey: "far",
-    contactX: 300, demoH: 150,
     cue: "起跳,在最高点右滑击球",
+    zoneName: "下压得分区",
     points: [
       "球要跳到高过网带才压得动 —— 站着够只能挑",
       "起跳后别急着按,等球落到头顶",
       "右滑压得下去;左滑会收成网前点杀",
+    ],
+    demoSteps: [
+      { name: "迎球", desc: "盯住青色那条来球弧", note: "喂球机往高处抛" },
+      { name: "起跳", desc: "按住起跳键升到顶", note: "这球站着够不到" },
+      { name: "击球", desc: "最高点按右滑下压", note: "左滑不算扣杀" },
+      { name: "落点", desc: "压进绿色带才算", note: "越靠底线越好" },
     ],
     pose: { style: "over", jump: true },
   },
@@ -1712,12 +1773,18 @@ export const DRILLS: DrillDef[] = [
     goal: 3, want: ["clear"], minLandX: 790,
     feed: { depth: 0.42, jumpLead: 11 },
     wantKey: "far",
-    contactX: 262, demoH: 122,
     cue: "站定,举过头顶右滑击球",
+    zoneName: "后场底线深区",
     points: [
       "高远球是防守的根:球要又高又深,才换得到回位时间",
       "击球点举过头顶,身体正对球网",
       "落点要压过对方后场横线,浅了不算一拍",
+    ],
+    demoSteps: [
+      { name: "迎球", desc: "来球很高但不快", note: "站着就能够到" },
+      { name: "就位", desc: "退进蓝圈正对网", note: "别跳,跳了就压平" },
+      { name: "击球", desc: "举过头顶再右滑", note: "这一拍求高不求快" },
+      { name: "落点", desc: "压过那条白线才算", note: "浅了不记这一拍" },
     ],
     pose: { style: "over", jump: false },
   },
@@ -1726,12 +1793,18 @@ export const DRILLS: DrillDef[] = [
     goal: 3, want: ["slash"],
     feed: { depth: 0.70, jumpLead: 0 },
     wantKey: "near",
-    contactX: 330, demoH: 132,
     cue: "同样的高球,改左滑收着打",
+    zoneName: "网前小球区",
     points: [
       "和重杀同一个来球,只是收力:拍面立一点、不挥满",
       "腕部向前下压,球落在前场就赢",
       "这一关练的是「同一拍球能打出两种结果」",
+    ],
+    demoSteps: [
+      { name: "迎球", desc: "和重杀同一个来球", note: "只是这关不必跳" },
+      { name: "就位", desc: "站进蓝圈把拍举高", note: "出手低就只能挑" },
+      { name: "击球", desc: "高点改左滑收着力", note: "拍面立一点不挥满" },
+      { name: "落点", desc: "落在网前绿带里", note: "深了这一拍不算" },
     ],
     pose: { style: "over", jump: false, cut: 9 },
   },
@@ -1740,12 +1813,18 @@ export const DRILLS: DrillDef[] = [
     goal: 3, want: ["netshot"],
     feed: { depth: 0.42, jumpLead: 11 },
     wantKey: "near",
-    contactX: 424, demoH: 72,
     cue: "球到网前低处,左滑轻放",
+    zoneName: "网前小球区",
     points: [
       "越贴网越低,只能向上送,不能压",
       "上网弓步,手要伸到球的前下方",
       "左滑放得近;右滑会挑成高远球",
+    ],
+    demoSteps: [
+      { name: "迎球", desc: "球贴着网往下走", note: "不上网就接不到" },
+      { name: "就位", desc: "朝球网跑一个弓步", note: "手伸到球的前下方" },
+      { name: "击球", desc: "左滑轻放,不许压", note: "只能向上送一点" },
+      { name: "落点", desc: "越贴网越是好球", note: "落进绿色小球区" },
     ],
     pose: { style: "under", jump: false, lunge: 26 },
   },
@@ -1754,12 +1833,18 @@ export const DRILLS: DrillDef[] = [
     goal: 3, want: ["drive", "slash"], maxSteps: 44, minDepth: 0.5,
     feed: { depth: 0.85, jumpLead: 14 },
     wantKey: "far",
-    contactX: 380, demoH: 116,
     cue: "早出手,球还没落到头顶就右滑击球",
+    zoneName: "中后场深区",
     points: [
       "平抽拼的是出手早晚:等球落到肩高就只剩挑球",
       "拍面近乎水平向前送,不求高只求快",
       "球必须又快又深,浅浅一挡不算这一拍",
+    ],
+    demoSteps: [
+      { name: "迎球", desc: "来球又平又快", note: "等它落就只剩挑球" },
+      { name: "就位", desc: "站中场架平拍面", note: "这一关不必起跳" },
+      { name: "击球", desc: "没到头顶就右滑", note: "出手早就是全部" },
+      { name: "落点", desc: "又深又快才算数", note: "慢了浅了都不记" },
     ],
     pose: { style: "over", jump: false, tight: true },
   },
@@ -1768,12 +1853,18 @@ export const DRILLS: DrillDef[] = [
     goal: 3, want: ["lob"],
     feed: { depth: 0.05, jumpLead: 8 },
     wantKey: "near",
-    contactX: 402, demoH: 46,
     cue: "等球落到脚下,晚一点左滑击球",
+    zoneName: "后场过渡区",
     points: [
       "球已经贴地了,只能向上铲,别想着压",
       "出手要晚:让球落到拍面下方再抬",
       "挑得越高越深,才换得到退防时间",
+    ],
+    demoSteps: [
+      { name: "迎球", desc: "球已经贴着地面", note: "只能向上铲起来" },
+      { name: "就位", desc: "退到球后面蹲低", note: "让拍子在脚下等" },
+      { name: "击球", desc: "球落到拍下再左滑", note: "这一拍出手要晚" },
+      { name: "落点", desc: "挑得越高越好", note: "才换得到退防时间" },
     ],
     pose: { style: "under", jump: false, lunge: 18, crouch: true },
   },

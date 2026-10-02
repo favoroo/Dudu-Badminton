@@ -2,7 +2,7 @@
 // 应用版本定义与语义化版本比较工具
 // ============================================================
 
-export const APP_VERSION = "0.0.21";
+export const APP_VERSION = "0.0.22";
 export const APP_VERSION_NAME = `v${APP_VERSION}`;
 
 export const REPO_CONFIG = {
@@ -41,6 +41,18 @@ export function isVersionNewer(candidate: string, current: string = APP_VERSION)
     if (num1 < num2) return false;
   }
   return false;
+}
+
+/**
+ * 发布页直链 —— 交给浏览器下载安装包时的去向。
+ *
+ * 为什么要自己拼:Gitee 的 releases API **不返回 html_url**(GitHub 才有),
+ * 于是「拿不到 APK 就去开发布页」那条路会拿到空串。这里按仓库配置兜底,
+ * 国内优先 Gitee,与 checkForUpdate 的候选源顺序保持一致。
+ */
+export function releasePageUrl(tagName = ""): string {
+  const base = `https://gitee.com/${REPO_CONFIG.giteeOwner}/${REPO_CONFIG.giteeRepo}/releases`;
+  return tagName ? `${base}/tag/${tagName}` : `${base}/latest`;
 }
 
 /**
