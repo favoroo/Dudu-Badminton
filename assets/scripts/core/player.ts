@@ -503,6 +503,10 @@ function settle(p: PlayerEntity, ball: Ball, best: SwingBestShot): ShotResult {
   p.hitLock = SW.doubleHitLock;
   p.contactFlash = 8;
   p.stats.hits++;
+  // 甜蜜/完美统计**按物理质量**记,与后面 ShotResult 上报的档位是两本账:
+  // 技能钩子(modifyShot)会把 opt.sweet/perfect 抬到顶档去兑现反馈分级,
+  // 但那是"这一拍有多凶",不是"这一拍按得多准" —— 别把 buff 折进统计,否则三星判据与
+  // 命中率报表会被技能洗白,连击热手(下面 heat)也跟着虚涨。
   if (sweet) {
     p.stats.sweets++;
     p.sweetGlow = 12;
@@ -574,6 +578,12 @@ function settle(p: PlayerEntity, ball: Ball, best: SwingBestShot): ShotResult {
 
 // 由瞄准 + 击球点高度 + 击球质量解出这一拍
 function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
+  // 技能钩子必须排在解构**之前**:modifyShot 会改写 opt.sweet/perfect/q。
+  // 旧写法是先解构常量再调钩子(2026-10-03 前),那三个写入全成死值 —— err 不清零、
+  // perfectBoost/perfect.powerDeg 不生效,ShotResult 还按旧档上报,于是「下次挥击必定暴扣」
+  // 的技能永远拿不到顶档反馈(晚按 9 帧的附魔拍实测 q=0.30、8 次同参 8 个落点)。
+  // 钩子只读球员状态 + opt.lungeShot/opt.q,不依赖误差计算,前置安全。
+  const sm = Skills.modifyShot(p, opt);
   const q = opt.q ?? 0.5, sweet = !!opt.sweet, perfect = !!opt.perfect, dEdge = opt.dEdge ?? 0;
   const dir = p.side === "left" ? 1 : -1;
   const h = CO.groundY - ball.y;
@@ -594,7 +604,6 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   // 技能与连击热手加成统一在此汇聚
   const lungeShot = !!opt.lungeShot;
   const heatBoost = Math.min((opt.heat || 0) * C.heat.speedBonus, C.heat.speedBonusMax);
-  const sm = Skills.modifyShot(p, opt);
   const jm = !!opt.jumpSmash;
   const boost = Math.min(
     (perfect ? C.shot.perfectBoost : sweet ? C.shot.sweetBoost : 0) + heatBoost
@@ -618,7 +627,7 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   if (sm.forceSmash || jm) {
     shot.kind = "smash";
   }
-  if (shot.kind === "smash") p.stats.smashes++;
+  if (shot.kind === "smash" && !opt.preview) p.stats.smashes++;
   return {
     kind: shot.kind, q, sweet, perfect,
     // 报「真正打出去的深度」而不是瞄的那个数:求解器可能把落点往场内收过
@@ -645,6 +654,9 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
  * 用甜蜜点下限当基准质量(预告回答的是「踩准了会打出什么」),落点误差的随机项仍在 ——
  * 预告与实打共用同一条代码路径,config 怎么改都不会出现「徽标一套判定、实球另一套」。
  * 跳杀成因前置:空中 + 高球直接报扣杀,不等求解器反推。
+ * **preview: true 是这条通道的安全带**:buildShot 里的技能钩子会消耗 buff,而本函数
+ * 每个真实帧(按 ≤10 帧节流)跑一次。旧写法没有它 —— 按下重击后的第一记预告就把附魔
+ * 清零,玩家看到「按了没反应、下一拍还是普通球」还白付冷却(判据 tools/smash-check.ts)。
  */
 function previewKind(p: PlayerEntity, ball: Ball): ShotResult["kind"] {
   const isNear = typeof p.swingAim === "string" ? p.swingAim === "near" : false;
@@ -653,7 +665,7 @@ function previewKind(p: PlayerEntity, ball: Ball): ShotResult["kind"] {
     return "smash";
   }
   const q = 1 - C.sweet.coreRatio;
-  return buildShot(p, ball, { q, sweet: true, dEdge: 0, heat: 0 }).kind;
+  return buildShot(p, ball, { q, sweet: true, dEdge: 0, heat: 0, preview: true }).kind;
 }
 
 export const Player = { create, update, tryHit, buildShot, previewKind, depthOf, strikeZone, ballInZone, setPlayerModifier, getPlayerModifier };

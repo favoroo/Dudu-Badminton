@@ -434,6 +434,18 @@ export interface HitOpt {
   jumpSmash?: boolean;
   /** 发球等场景直接指定落点深度(绕过瞄准表) */
   forced?: { depth: number };
+  /**
+   * 纯预览(球种预告徽标,player.previewKind):照旧走同一条 buildShot + Skills.modifyShot
+   * 通道 ⇒ 加成一并算、徽标说的就是实打会发生的事;但**消耗一律跳过** ——
+   * buffT / flashStrikeT / magnetPulling / stats.smashes 四处写入在此一律不发。
+   * 为什么需要这个标志:预告每个真实帧(按 ≤10 帧节流)就跑一次,而 modifyShot 是按
+   * 「真打一拍」写的。旧写法里按下重击后的第一记预告就把附魔清零,玩家看到的是
+   * 「按了没反应、下一拍还是普通球」,顺手白付 3.5s 冷却(2026-10-03 真机现场)。
+   * 同理被偷的还有闪现的必中窗(它还兼 tryHit 的门槛)与引力吸球的回球加成。
+   * 规矩:往 modifyShot 里加任何**状态消耗**,必须同步过 `!preview` 这道闸,
+   * 判据与反例见 tools/smash-check.ts。
+   */
+  preview?: boolean;
 }
 
 /** 挥拍峰值追踪的结算快照(记账期攒最优帧,球离区/窗走完时按它出手) */

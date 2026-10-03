@@ -42,7 +42,7 @@
 | 改虚拟按键能放在哪儿 | [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 的 `clampDelta`(唯一约束 = 整块留在可视区内) |
 | 改技能键的冷却读数 | 浓度/几何/文案全在 [pad-cd.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/pad-cd.ts)(零 cc 依赖:`cdAlpha`·`cdArcs`·`cdText`·`drawCooldown`),取值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `padSkin.cd` 段,[touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 只照参数摆笔 + 挂键心秒数 Label,剩余秒数由 `game-root.ts` 喂;回归 `node .tools-build/tools/pad-cd-check.js`、出图 `node .tools-build/tools/pad-cd-preview.js` |
 | 改 AI 难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `diffs` 段(`read`=每记球只认定一次的站位误差 / `zone`=CPU 判定区 / `shotErr`=出球误差 / `composure`=落后是否变强),生效逻辑在 [ai.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/ai.ts),落档到球员在 `rules.ts` 的 `applyAiTier()`;验收 `node .tools-build/tools/ai-check.js`(三档胜负口径) |
-| 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、出图 `node .tools-build/tools/flash-preview.js` |
+| 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);**副作用契约**:球种预告 `player.previewKind` 与实打共用同一条 `buildShot`,靠 `HitOpt.preview` 分流 —— 往 `modifyShot` 加任何状态消耗(`buffT`/`flashStrikeT`/`magnetPulling`)或记账必须过 `!preview` 闸,漏一处就是「按了没反应」(2026-10-03 重击现场);顶档质量改写(`q/perfect`)只给真人,AI 的准头归 `diffs` 管;附魔类起手字挂人物头顶(`floatSys`)读作"上弦",完成时的兑现字才挂场边。验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、`node .tools-build/tools/smash-check.js`(+ `--selftest`)、出图 `node .tools-build/tools/flash-preview.js` |
 | 改技能配置弹窗排版 | [skill-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-layout.ts)(纯函数:详情板折行 + 右对齐块按实测宽倒推 + 面板竖排留缝,回归见 `tools/skill-check.ts`)+ [skill-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-dialog.ts) 只照坐标摆 —— 卡片只留「标签/名字/CD/装备」,完整说明在底部详情板,点卡片切换 |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
@@ -122,6 +122,19 @@ node .tools-build/tools/reach-check.js
 node .tools-build/tools/flash-check.js
 node .tools-build/tools/flash-check.js --selftest
 node .tools-build/tools/flash-preview.js --out .tools-build/flash-preview   # 折跃六帧出图
+
+# 4.6.5 百分百重击附魔回归(exit 0;「按了没反应」这类坏不崩、不报错,只会安静地不兑现。
+#     断言:球种预告 previewKind 前后 buffT/flashStrikeT/magnetPulling/stats.* 逐字段不变,
+#     而徽标照旧报扣杀(预告与实打必须同一条路径,不许靠"跳过钩子"来实现);上弦后的下一拍
+#     = 必定暴扣且只消耗一次;modifyShot 回写的 q/perfect 真的生效(旧顺序先解构后调用,
+#     那三个写全是死值 → 技能拍永远拿不到顶档反馈),而 stats.sweets/perfects 仍按物理档记;
+#     挥空不吃附魔、附魔期发球也算暴扣(均为用户 2026-10-03 拍板);AI 吃 forceSmash/加成
+#     但不吃顶档改写(一并生效会把真人得分率 60%→46%,等于给对手加难度)。
+#     改 modifyShot 的任何消耗写入、buildShot 的调用顺序、或 skills/player/rules 技能路径都要跑。
+#     --selftest 两份反例:legacy(预告也算命中)/ noOverride(顶档改写读不到)必须各自被拦 ——
+#     只装回其中一份,另一份的断言照样绿)
+node .tools-build/tools/smash-check.js
+node .tools-build/tools/smash-check.js --selftest
 
 # 4.7 闯关进度与「下一关」判据(exit 0;大厅直达条、卡片「▶ 下一关」印章、
 #     结算页「下一关 ▶ 第 N 关」三处全押在 CampaignManager.getNextStage/getStageByNo 上,

@@ -297,6 +297,18 @@ export function update(p: Player, ball: Ball): void {
 
 /**
  * 击球修正钩子: 在 player.tryHit / buildShot 中注入技能加成
+ *
+ * **副作用契约**:本函数会消耗技能状态(附魔 / 必中窗 / 吸球回击),因此只能挂在
+ * 真正出手的那一次上。球种预告(player.previewKind)与实打共用同一条 buildShot
+ * 通道,靠 opt.preview 区分:加成与质量改写照旧计算(徽标才不撒谎),
+ * 下面三处「消耗」加 `!preview` 闸。漏一处就是"按了没反应"—— 判据 tools/smash-check.ts。
+ *
+ * **质量改写只给真人**(`applyQuality`):q/sweet/perfect 那三个回写会一路决定
+ * 误差归零 + perfectBoost + perfect.powerDeg,等于把这一拍从"按得一般"抬成"顶档"。
+ * 2026-10-03 修好读取顺序后它第一次真的生效,结果 AI 侧一并吃到 —— serve-check/ai-check
+ * 实测真人得分率 easy 60%→46%、normal 39%→15%,相当于把技能 buff 当成难度补丁偷偷加给
+ * 对手。AI 的准头归 diffs.* 那根旋钮管,技能不该覆盖它;forceSmash/speedBoost/powerDeg
+ * 照旧两侧都吃(那本来就是旧代码里唯一真正生效的部分,行为与修前一致)。
  */
 export function modifyShot(p: Player, opt: HitOpt): {
   speedBoost: number;
@@ -304,6 +316,8 @@ export function modifyShot(p: Player, opt: HitOpt): {
   forceSmash: boolean;
   skillKind?: SkillId;
 } {
+  const preview = !!opt.preview;   // 预告通道:只算不花
+  const applyQuality = !!p && !p.isAI;   // 顶档改写只给真人:AI 的强度归 diffs 管
   let speedBoost = 0;
   let powerDeg = 0;
   let forceSmash = false;
@@ -322,24 +336,29 @@ export function modifyShot(p: Player, opt: HitOpt): {
 
   // 2. 百分百重击 (消耗附魔)
   if (p.skill.id === "smash" && p.skill.buffT > 0) {
-    opt.sweet = true;
-    opt.perfect = true;
-    opt.q = 1.0;
+    if (applyQuality) {
+      opt.sweet = true;
+      opt.perfect = true;
+      opt.q = 1.0;
+    }
     forceSmash = true;
     speedBoost += C.skills.smash.speedBoost;
     powerDeg += C.skills.smash.powerDeg;
-    p.skill.buffT = 0; // 命中消耗附魔
+    if (!preview) p.skill.buffT = 0; // 命中消耗附魔(预告不许吃 —— 旧写法把「上弦」当「已击发」)
     skillKind = "smash";
   }
 
   // 3. 闪现扣杀:只在保底接触窗口内兑现,命中即消耗
   //    (旧版拿 flashT 那 20 帧当 buff,漏球之后随手一拍还能白嫖一记必杀)
   if (p.skill.id === "flash" && (p.flashStrikeT ?? 0) > 0) {
-    opt.sweet = true;
-    opt.perfect = true;
-    opt.q = Math.max(opt.q ?? 0, C.skills.flash.guaranteedQ);
+    if (applyQuality) {
+      opt.sweet = true;
+      opt.perfect = true;
+      opt.q = Math.max(opt.q ?? 0, C.skills.flash.guaranteedQ);
+    }
     forceSmash = true;
-    p.flashStrikeT = 0;
+    // 这个窗还兼 tryHit 必中分支的门槛(player.ts),预告把它关掉就是把手到的一球变成挥空
+    if (!preview) p.flashStrikeT = 0;
     speedBoost += C.skills.flash.speedBoost;
     powerDeg += C.skills.flash.powerDeg;
     skillKind = "flash";
@@ -347,7 +366,7 @@ export function modifyShot(p: Player, opt: HitOpt): {
 
   // 4. 引力吸球回击
   if (p.skill.id === "magnet" && p.skill.magnetPulling) {
-    p.skill.magnetPulling = false;
+    if (!preview) p.skill.magnetPulling = false;   // 回击窗口只由真正那一拍关闭(否则回球加成被预告偷走)
     speedBoost += C.skills.magnet.speedBoost;
     powerDeg += 6;
     skillKind = "magnet";

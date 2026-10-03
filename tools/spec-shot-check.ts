@@ -7,7 +7,10 @@
 // 新契约(本文件逐条钉死):
 //   ① 跳杀(飞行场景):空中 + 击球点离地 ≥ C.jumpSmash.minHeight = 必然扣杀,
 //      真人与 AI 走同一条 tryHit 通道;地面拍 / 空中低球不许触发。
-//   ② 球种预告:previewKind 与实打共用同一条 buildShot 代码路径。
+//   ② 球种预告:previewKind 与实打共用同一条 buildShot 代码路径;
+//      且这条路径**只看不摸** —— 不许动 buffT / magnetPulling / flashStrikeT / stats.*
+//      (预告每个真实帧都跑一次,挂着的 modifyShot 是按"真打一拍"写的,靠 HitOpt.preview
+//       分流;完整判据见 tools/smash-check.ts,这里钉的是本契约的副作用面)。
 //   ③ 时机(飞行场景,球直线飞向判定区心):
 //      - 按提示按(late=0)必出完美特殊球,timingGrade≈0、无早/晚提示;
 //      - ±2 帧内仍完美(峰值追踪:挥拍峰落进判定区即 qRaw 顶格);
@@ -141,6 +144,26 @@ for (const side of ["left", "right"] as TeamSide[]) {
 assert(C.jumpSmash.minHeight > -C.swing.pivotY,
   `跳杀门槛 ${C.jumpSmash.minHeight} 必须高于站地击球点(${-C.swing.pivotY}),否则地面拍也会被算成跳杀`);
 
+/** 技能状态 + 击球记账的指纹:预告这类"只看不摸"的路径必须一个字节都不动它 */
+function stateKey(p: PlayerEntity): string {
+  const s = p.skill as NonNullable<PlayerEntity["skill"]>;
+  return `buffT=${s.buffT} cd=${s.cd} pull=${!!s.magnetPulling} strikeT=${p.flashStrikeT ?? 0} `
+    + `smashes=${p.stats.smashes} sweets=${p.stats.sweets} perfects=${p.stats.perfects} heat=${p.heat}`;
+}
+
+/** 三种 buff 全部摆上,再挂一点记账位 —— 供「预告无副作用」的钉子正反两用 */
+function buffedScene(): { hero: PlayerEntity; ball: Ball } {
+  const { hero, ball } = setup({});
+  hero.skill = Skills.initSkillState("smash");
+  Skills.resetPoint(hero);
+  const s = hero.skill as NonNullable<PlayerEntity["skill"]>;
+  s.buffT = 100;
+  s.magnetPulling = true;
+  hero.flashStrikeT = 7;
+  hero.stats.smashes = 0;
+  return { hero, ball };
+}
+
 console.log("② 球种预告:previewKind 与实打同一代码路径");
 {
   const { hero } = setup({ lift: 70 });   // 击球点 ≈144 ≥ jumpSmash.minHeight(140)才预告扣杀
@@ -158,6 +181,16 @@ console.log("② 球种预告:previewKind 与实打同一代码路径");
   assert(pk === "netshot", `near 瞄准应预告放网(实际:${pk})`);
   const { shot } = flight({ aim: "near" });
   assert(!!shot && shot.kind === "netshot", `near 瞄准实打也应是放网(实际:${shot?.kind})`);
+}
+{
+  // 「同一代码路径」的另一半:同一条路径**只看不摸**。previewKind 每个真实帧(≤10 帧节流)
+  // 都被 game-root 喂一次,而路径里挂着会消耗技能的 modifyShot —— 旧写法没有 opt.preview
+  // 这道闸,按下重击后的第一记预告就把附魔清零(用户 2026-10-03 真机:"按了没反应,下一拍
+  // 还是普通球")。完整判据在 tools/smash-check.ts,这里钉的是本文件这条契约的副作用面。
+  const { hero, ball } = buffedScene();
+  const before = stateKey(hero);
+  for (let i = 0; i < 8; i++) Pl.previewKind(hero, ball);
+  assert(stateKey(hero) === before, `球种预告不许动技能状态与记账(${before} → ${stateKey(hero)})`);
 }
 
 console.log("③ 时机契约(飞行场景):按准必完美 + 偏差带正确符号");
@@ -304,22 +337,42 @@ if (process.argv.includes("--grid")) {
 }
 
 // ---------- --selftest:反例必须被报警 ----------
-// 把 blockText 文案表清空 = 旧版「静默拒绝」的真实状态(判据还在,玩家什么都看不到)。
-// 门槛原因的断言在这套旧世界里必须红掉,否则本工具没有牙齿。
+// 反例一:把 blockText 文案表清空 = 旧版「静默拒绝」的真实状态(判据还在,玩家什么都看不到)。
+// 反例二:把 modifyShot 装回旧写法(预告也算命中,三处 buff 无条件消耗)—— ②里那条
+//        「不许动状态」的钉子必须红。两份都必须被抓住,否则本工具没有牙齿。
 if (process.argv.includes("--selftest")) {
   const table = C.skills.blockText as Record<string, string>;
   const saved = { ...table };
-  for (const k of Object.keys(table)) table[k] = "";
   let anti = 0;
   const antiAssert = (cond: boolean, msg: string): void => { if (!cond) { anti++; console.log(`    (反例命中)${msg}`); } };
   const { R, hero } = setup({ lift: 60 });
   hero.skill = Skills.initSkillState("lunge");
   Skills.resetPoint(hero);
   hero.swingT = -1; hero.lungeT = -1;
+  for (const k of Object.keys(table)) table[k] = "";
   antiAssert(Skills.skillBlockReason(hero, R.ball) === saved.needGround, "空文案表下门槛原因断言应失败");
   for (const k of Object.keys(table)) table[k] = saved[k];
+
+  {
+    const original = Skills.modifyShot;
+    try {
+      Skills.modifyShot = (p, opt) => {
+        const r = original(p, opt);
+        if (p && p.skill) { p.skill.buffT = 0; p.skill.magnetPulling = false; p.flashStrikeT = 0; }
+        return r;
+      };
+      const b = buffedScene();
+      const before = stateKey(b.hero);
+      Pl.previewKind(b.hero, b.ball);
+      // antiAssert 的口径是「这条断言在旧世界里必须为假」:旧写法下状态被改动 ⇒ key 不等 ⇒ 记一次命中
+      antiAssert(stateKey(b.hero) === before, "旧消耗写法下「预告无副作用」的钉子应红");
+    } finally {
+      Skills.modifyShot = original;
+    }
+  }
+
   if (anti === 0) {
-    console.log("✗ 反例没被抓住:空文案表下断言仍全绿 —— 本工具没有牙齿");
+    console.log("✗ 反例没被抓住:两套旧写法下断言仍全绿 —— 本工具没有牙齿");
     process.exit(1);
   }
   console.log(`--selftest 通过:反例被正确报警(${anti} 条)`);

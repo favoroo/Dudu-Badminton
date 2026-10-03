@@ -131,12 +131,10 @@ export class GameRoot extends Component {
     touchPad.setPlaying(Rules.isPlaying());
     this.frameT++;
     // 累加器速度。BGM 跑在音频时钟上,所以变速不会拖慢音乐节奏。
-    // 定格段恒按真实速度走:定格步调 stepFx(frozen),慢动作计时 slowT 被一起冻住不递减,
-    // 若这里照旧乘 timeScale,慢放的速度就会泄漏进定格段 —— 顶档定格曾被拉成半秒多的完全静止。
-    // 慢放段与赛点常驻 0.9 微慢放统一由 config.fx.slowmoEnabled 总闸决定(当前 false:世界恒速)。
-    const mp = R.state === "RALLY" && Rules.isMatchPoint();
+    // 定格段恒按真实速度走:定格步调 stepFx(frozen),慢动作计时 slowT 被一起冻住不递减。
+    // 移除赛点常驻微慢放(保证肌肉记忆与真实手感一致),慢放受 config.fx.slowmoEnabled 约束。
     const speed = this.stopFrames > 0 ? 1
-      : this.slowmoOn ? this.world.timeScale() * (mp ? 0.9 : 1)
+      : this.slowmoOn ? this.world.timeScale()
         : 1;
     this.acc += Math.min(dt, 0.25) * speed;          // 切后台回来不追帧
 
@@ -221,8 +219,12 @@ export class GameRoot extends Component {
    * cap 直接等于最坏静止毫秒数 × 60,任何档都不许把画面按停超过它。
    */
   private setStop(frames: number): void {
+    if (frames <= 0) {
+      this.stopFrames = 0;
+      return;
+    }
     const cap = C.fx.hitstopCap || 7;
-    this.stopFrames = Math.max(1, Math.min(cap, Math.round(frames)));
+    this.stopFrames = Math.min(cap, Math.round(frames));
   }
 
   // ---------- 按拍预告:来球逼近判定区心 → 击球两键渐亮,到最佳按拍帧闪一下 ----------
@@ -311,7 +313,7 @@ export class GameRoot extends Component {
         onWhiff: () => {
           this.sfx.play("whiff");
           this.world.shake(C.fx.shakeWhiff || 1.5);
-          this.setStop(C.fx.hitstopWhiff || 1);
+          if (C.fx.hitstopWhiff) this.setStop(C.fx.hitstopWhiff);
         },
         onFootstep: (p) => {
           this.world.fx.stepDust(p.x, C.court.groundY);
@@ -358,11 +360,18 @@ export class GameRoot extends Component {
       this.sfx.play("lunge");
       if (!p.isAI) haptic("skillLight");
     } else if (id === "smash") {
-      // 百分百重击起手:聚能爆气 + 镜头推近 + 强力震屏 + 炽热金红爆闪 + 飘字
+      // 百分百重击起手:聚能爆气 + 镜头推近 + 强力震屏 + 炽热金红爆闪 + 头顶「上弦」字
       this.world.fx.flameBurst(p.x, p.y - 20);
       this.world.punch(p.x, p.y, C.skills.smash.castPunch || 1.05);
       this.world.shake(C.skills.smash.castShake || 6);
-      if (showLab) this.floatSideLab({ text: "暴烈重扣!!", color: "#f43f5e", size: 28, life: 52, plate: "star" }, p.x);
+      // 起手字挂人物头顶,不占场边锚点:附魔是欠「下一拍」的债,钉在左边缘写完成时的
+      // 「暴烈重扣!!」会被读成"已经扣过了"(而它确实马上就被预告吃掉了,见 previewKind)。
+      // 命中那记「必杀重扣!!」仍按接触点挂场边,两者一个说"上弦"一个说"兑现",不打架。
+      // 夹左边界:真人可退到 wallL=44(config.court),不夹就贴出屏外。
+      if (showLab) {
+        const cf = F.smashCastFloat as FloatLabel;
+        this.world.floatSys(Math.max(90, p.x), p.y - 96, cf.text, cf.color, cf.size, cf.life, -1, cf.plate);
+      }
       this.sfx.play("smash");
       if (!p.isAI) haptic("skill");
     } else if (id === "magnet") {
@@ -472,13 +481,14 @@ export class GameRoot extends Component {
                   : TIER_NORMAL;
           const vx = (e.vx as number) ?? 0, vy = (e.vy as number) ?? 0;
           const hitAng = (vx || vy) ? Math.atan2(vy, vx) : undefined;
-          // 六档打击阶梯(hitstop + 震屏 + 镜头 punch;赛点重锤另有慢动作)
+          // 六档打击阶梯(hitstop + 震屏 + 镜头 punch)
+          // 普通击球(normal)不顿帧(0 帧),把定格对比度完全留给 sweet / smash / perfect
           this.setStop((perfect && smash) ? (C.fx.hitstopPerfectSmash || 7)
             : perfect ? (C.fx.hitstopPerfect || 5)
             : (smash && sweet) ? (C.fx.hitstopSweetSmash || 6)
             : smash ? (C.fx.hitstopSmash || 5)
             : sweet ? (C.fx.hitstopSweet || 4)
-            : (C.fx.hitstopNormal || 2));
+            : (C.fx.hitstopNormal ?? 0));
           this.world.shake((perfect && smash) ? (C.fx.shakePerfectSmash || 18)
             : perfect ? (C.fx.shakePerfect || 9)
             : (smash && sweet) ? (C.fx.shakeSweetSmash || 15)
@@ -493,12 +503,7 @@ export class GameRoot extends Component {
           else if ((e.q as number) >= 0.5) this.world.punch(e.x as number, e.y as number, C.fx.punchNormal || 1.012);
           // 球体运动学档位:命中这一下给 pop/裙摆炸开/档位辉光定幅度(与丝带同源的一档)
           this.world.shuttleHit(tier, clamp((e.q as number) + (perfect ? 0.2 : 0), 0, 1), heat);
-          // 赛点重锤慢动作(老 game.js:训练场单独放行——它永不记分,赛点判定恒 false)
-          // 受 fx.slowmoEnabled 总闸控制:关掉后这一拍只剩 hitstop 顿帧,世界不减速
-          if (this.slowmoOn && (smash || perfect) && R.state === "RALLY"
-            && (R.mode === "drill" || Rules.isMatchPoint())) {
-            this.world.slowmo(C.fx.slowmoFrames || 10, C.scoring.matchPointSlowmo || 0.5);
-          }
+          // 去除击球过程中的重锤慢动作(赛点与训练场均不触发击球慢放,彻底保护接发与扣杀肌肉记忆)
           this.sfx.hit(e.q as number, e.kind as string, sweet, perfect);
           this.bgm.onHit({ rally: R.rally, kind: e.kind as string, q: e.q as number, sweet, perfect, intoNet: !!e.intoNet });
           if (smash) this.sfx.play("smash");

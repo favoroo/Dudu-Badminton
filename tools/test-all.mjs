@@ -26,6 +26,10 @@ const CHECKS = [
   "stamina-check",
   "sim-check",
   "flash-check",
+  // 百分百重击附魔:钉住「球种预告是纯预览」与「技能的质量改写真的生效」。
+  // 这两条坏都不会崩,只会安静地"按了没反应",flash-check 走的是 Rules.step、根本不喂
+  // previewKind,所以旧代码在那边全绿 —— 判据必须常驻这张表。
+  "smash-check",
   "campaign-check",
   "haptic-check",
   "env-check",
@@ -51,6 +55,7 @@ const CHECKS = [
 /** 带反例的 check:--selftest 必须也绿(规则脚本最怕悄悄全绿) */
 const SELFTESTS = [
   "flash-check",
+  "smash-check",
   "campaign-check",
   "haptic-check",
   "env-check",

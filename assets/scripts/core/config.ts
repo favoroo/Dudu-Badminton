@@ -744,7 +744,10 @@ export const CFG = {
     // —— 侧风 ——
     // 周期是这个机制能不能被读懂的关键:一拍滞空约 60-80 步,一个完整来回要
     // 明显长于此,风才近似"每拍一个方向"(读得出);短于此就成了逐帧乱摆(读不成)。
-    windOscRate: 0.016,      // rad/步 → 2π/此值 ≈ 393 步 ≈ 6.6s 一个来回
+    // 0.016 → 0.008(2026-10-03):用户真机第 1 关现场「风变化速度太快了,体验不太好」——
+    // 换向只有 3.3s,比一分球还短,指针刚看懂就翻过去了,读出来是噪声而不是"这一拍顺/逆风"。
+    // 现在半个来回 ≈ 6.5s,一次发球到下一拍之间风基本不动,机制变成可以规划的东西。
+    windOscRate: 0.008,      // rad/步 → 2π/此值 ≈ 785 步 ≈ 13.1s 一个来回(约 6.5s 换向)
     windDefaultBase: 0.18,   // 关卡设了 oscillate 却没设 windX 时的基准幅度(px/步²)
     windLookahead: 60,       // 风向标"预读针"往前看的步数 ≈ 一记典型回球的滞空
     windFullScale: 0.20,     // 风向标满量程(px/步²),用来把实时风力折成指针偏角
@@ -879,15 +882,13 @@ export const CFG = {
   },
 
   fx: {
-    // 慢动作总闸。true 时下列四组变速旋钮全部生效:fx.slowmoFrames / fx.scoreSlowmo(Frames)、
-    // scoring.matchPointSlowmo,以及主循环里赛点常驻的 0.9 微慢放。
-    // 曾因用户反馈「重击卡住不好操控」关过一段时间;操纵问题已由 hitstop 期间
-    // 保留输入边沿(keepEdges)解决,重新打开赛点演出与扣杀庆祝慢放。
+    // 慢动作总闸。true 时下列变速旋钮生效:fx.scoreSlowmo(Frames)、技能慢放等。
+    // 赛点重锤击球慢动作与赛点常驻微慢放已彻底移除(避免干扰玩家肌肉记忆)。
     slowmoEnabled: true,
     // hitstop 定格帧数 = 真实帧数(主循环在定格段不乘慢放系数),换算 ms ≈ 帧数 × 16.7。
     // 顶档压在 7 帧:够读出「啪」的一下,又不会把手指按下去的那段时间整段吃掉。
     hitstopCap: 7,          // 定格帧总闸:任何来源(六档/发球/擦网/挥空)都不许超过
-    hitstopNormal: 2,
+    hitstopNormal: 0,       // 普通击球不顿帧(0帧),保障拉锯节奏流畅,把顿挫感全留给 sweet/smash
     hitstopSweet: 4,        // 约 0.07 秒,微幅定格制造绝佳打击顿挫感
     hitstopSmash: 5,
     hitstopSweetSmash: 6,   // 甜蜜点扣杀的重顿挫
@@ -924,7 +925,7 @@ export const CFG = {
 
     // 四、Whiff 挥空相机反馈
     shakeWhiff: 1.5,          // 挥空微抖:扑空的轻微颤感
-    hitstopWhiff: 1,          // 挥空 1 帧微顿
+    hitstopWhiff: 0,          // 挥空不顿帧(0帧),避免操作卡壳感,依靠人物动作硬直和扑空音效表达失衡
 
     // 六、闪现折跃演出(时停 → 出刀 → 慢放三段)
     // 定格走主循环现成的 hitstop 通道,所以也吃 fx.hitstopCap 总闸:这里给到的就是顶格。
@@ -933,6 +934,13 @@ export const CFG = {
     flashCastShake: 7,
     flashCastPunch: 1.05,     // 镜头向落点推近,读作「镜头跟着折跃过去」
     flashCastFloat: { text: "时停 · 闪现", color: "#eab308", size: 26, life: 44, plate: "slant" },
+    // 百分百重击起手字。这条必须读成「上弦」而不是「已经扣完了」:旧写法在场边锚点打
+    // 完成时的「暴烈重扣!!」,而附魔要到下一拍才兑现 —— 玩家按下技能看到的是一条
+    // 离自己很远的红字 + 随后一个普通球(2026-10-03 真机现场,根因见 player.previewKind)。
+    // 所以它不占场边锚点(那条留给命中档的「必杀重扣!!」floatSkillSmash),改挂人物头顶,
+    // 与居合/心流/力竭同用 world.floatSys:关掉设置里的「飘字提示」也照常显示。
+    // plate 用 none —— 带底板的字会进同侧堆叠,把后到的场边评价字向下错行(world.floatSpawn)。
+    smashCastFloat: { text: "重击附魔!", color: "#f43f5e", size: 24, life: 44, plate: "none" },
     flashSmashSlowmo: 10,     // 闪现扣杀命中后的短慢放时长(模拟帧)
     // 0.45 而不是更低:整段只有 ~0.37s 真实时间。曾经给到 0.32×14 帧(≈0.73s),
     // 用户已经说过"重击卡住不好操控" —— 时停的爽点由前面那记定格负责,尾巴要短。
@@ -1471,8 +1479,12 @@ export const CFG = {
   // 再接 —— 按过截面点站位,球会落在身后死角;陡坠球滑行小,维持原截点。
   // scramble*:够不到时的「扑救俯冲」表现(只给渲染读,不改判定区/不影响平衡)—— AI 判定
   // 这一球赶不上时置 scrambleT,人物做一次前倾伸臂的鱼跃,读作「拼了但没够到」。
+  // backBias:拦截站位向后墙方向偏移(px)。侧视球场角色恒面向球网,判定区圆心在身前
+  // radius*0.34≈25px 处,身后完全盲区。高远球落点深,球常落在 AI 脚下或身后一两步,
+  // dx < -r*0.34 的「背后死角」检查直接拒掉,AI 永远不起拍(实测入门档高远发球漏接 40%)。
+  // 向后墙偏 25px 让球落在身前判定区圆心附近,正常来球不受影响(仍在区内)。
   aiReach: { stand: 140, attack: 182, jump: 236, contact: 72, contactDrift: 48,
-    scrambleFrames: 16, scrambleLean: 9, scrambleDip: 14 },
+    scrambleFrames: 16, scrambleLean: 9, scrambleDip: 14, backBias: 15 },
 
   // ===== AI 预判(read):它每记来球只「认定」一次站位偏差,之后一路认账 =====
   // 旧写法是每次重规划(tick 帧一次)重掷 ±aimErr —— 均值归零,几次重规划下来

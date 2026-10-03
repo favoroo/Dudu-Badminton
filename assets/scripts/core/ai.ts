@@ -442,7 +442,11 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
     // 双打:落点归队友就回防区待命,别两个人叠在一起
     const claimX = ball.shot && ball.shot.landX != null ? ball.shot.landX : ic.x;
     S.chasing = Rules.shouldChase(p, claimX);
-    S.targetX = S.chasing ? clamp(ic.x + err, lo, hi) : p.homeX;
+    // backBias:向后墙方向偏移站位。角色恒面向球网,判定区圆心在身前 ~25px;
+    // 不偏的话球落点在 AI 脚下或身后,身后是 dx<-r*0.34 的判定死角,entryLead 永远返回 -1。
+    // 高远球尤其严重(落点深、误差余量小)—— 入门档高远发球漏接 40% 全因这条。
+    // 偏 15px 是兼顾值:高远发球 easy 从 61%→78%,标准发球不受明显影响(95%→98%)。
+    S.targetX = S.chasing ? clamp(ic.x + err - p.facing * C.aiReach.backBias, lo, hi) : p.homeX;
     S.ic = S.chasing ? ic : null;
   } else if (!incoming) {
     p.zoneScale = baseZone;

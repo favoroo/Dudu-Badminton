@@ -98,6 +98,14 @@ function windOnlyOps(phase: number): StubGraphics["ops"] {
 
 console.log("第 1 关的风:画出来、画在看得见的位置、方向不许镜像\n");
 
+/**
+ * 探针相位:满顺风 = 四分之一个来回,满逆风 = 四分之三个来回。
+ * 从前这里写死 98 / 294(那是 windOscRate=0.016 时的四分之一周期)—— 风力周期一改
+ * 就同时对不上:98 步不再是满偏,294 步甚至翻回顺风,§3 的方向判据会红在"脚本自己过期"
+ * 上,而不是风真的画错了。现在跟着 config 的旋钮走。
+ */
+const QUARTER = Math.round(Math.PI / 2 / C.env.windOscRate);
+
 // ---------- §1 风平 = 一笔不出 ----------
 {
   // windAt(0) = sin(0) = 0:开局那一阵是"风平",此时风带与风丝都不该出现
@@ -106,7 +114,7 @@ console.log("第 1 关的风:画出来、画在看得见的位置、方向不许
 }
 
 // ---------- §2/§3/§4 顺风与逆风 ----------
-for (const [label, phase] of [["顺风(+x)", 98], ["逆风(-x)", 294]] as const) {
+for (const [label, phase] of [["顺风(+x)", QUARTER], ["逆风(-x)", QUARTER * 3]] as const) {
   const w = Math.sin(phase * C.env.windOscRate) * C.env.windDefaultBase;
   const dir = w > 0 ? 1 : -1;
   const ops = windOnlyOps(phase);
@@ -167,7 +175,7 @@ for (const [label, phase] of [["顺风(+x)", 98], ["逆风(-x)", 294]] as const)
   if (oi >= 0) {
     const dirOut = process.argv[oi + 1] || ".tools-build/wind-preview";
     fs.mkdirSync(dirOut, { recursive: true });
-    for (const [name, phase] of [["calm", 0], ["forward", 98], ["back", 294]] as const) {
+    for (const [name, phase] of [["calm", 0], ["forward", QUARTER], ["back", QUARTER * 3]] as const) {
       Physics.setEnvModifier({
         windX: C.env.windDefaultBase, windOscillate: true,
         gravityMul: 1, dragMul: 1, erratic: false, laserRail: false,
