@@ -90,7 +90,7 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   st.setPart({ padAlpha: 5 });
   ok(near(st.v.padAlpha, PAD_LIMIT.alphaMax), `padAlpha >1 夹到 ${PAD_LIMIT.alphaMax}`);
   st.setPart({ padAlpha: -1 });
-  ok(near(st.v.padAlpha, PAD_LIMIT.alphaMin), `padAlpha <0.2 夹到 ${PAD_LIMIT.alphaMin}`);
+  ok(near(st.v.padAlpha, PAD_LIMIT.alphaMin), `padAlpha 越下限夹到 ${PAD_LIMIT.alphaMin}`);
 }
 
 // ---------- ③ 消毒:坏 JSON 不许崩,认得出的一部分要留住 ----------
@@ -244,25 +244,26 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(near(st.v.slider.dx, 0) && near(st.v.slider.r, SLIDER_BASE.r), "resetPad 滑轨本体也回默认");
 }
 
-// ---------- ⑩ moveMode 老档默认 buttons / 新档默认 joystick / 支持 slider ----------
+// ---------- ⑩ moveMode 新老档一律默认 slider(0.0.24 滑轨升为默认,用户指令) ----------
 
 {
-  // 老档:raw 里带 pad 但没有 moveMode → 判定为摇杆功能上线前装机,保持左右键
+  // 老档:raw 里带 pad 但没有 moveMode → 一并迁到 slider(新手引导按滑轨教);
+  // 用户想回摇杆/按键,设置页随时可切,迁移只动默认值不锁选择
   const old = sanitize({ pad: { left: { dx: 10, dy: 0, r: 44 } } });
-  ok(old.moveMode === "buttons", "老档(有 pad 无 moveMode)默认 buttons,不打断既成习惯");
-  // 新装机:raw = null → sanitize 走 fresh 的 joystick
+  ok(old.moveMode === "slider", "老档(有 pad 无 moveMode)也迁到 slider,统一按滑轨教");
+  // 新装机:raw = null → sanitize 走 fresh 的 slider
   const newInstall = sanitize(null);
-  ok(newInstall.moveMode === "joystick", "新装机默认 joystick,直接体验新玩法");
+  ok(newInstall.moveMode === "slider", "新装机默认 slider,直接体验新玩法");
   // 显式存过 moveMode 的档,照实读回
   const explicit = sanitize({ moveMode: "joystick", pad: { left: { dx: 10, dy: 0, r: 44 } } });
-  ok(explicit.moveMode === "joystick", "显式存的 moveMode 优先于「老档 → buttons」的兜底");
+  ok(explicit.moveMode === "joystick", "显式存的 moveMode 优先于默认(选了摇杆的不被打断)");
   const explicitBtn = sanitize({ moveMode: "buttons" });
   ok(explicitBtn.moveMode === "buttons", "显式存 buttons 也照读");
   const explicitSld = sanitize({ moveMode: "slider" });
   ok(explicitSld.moveMode === "slider", "显式存 slider 也照读");
-  // 垃圾值 → 回默认(注意此时 raw 里没 pad → 视作新档,默认 joystick)
+  // 垃圾值 → 回默认(新老档都落 slider)
   const junk = sanitize({ moveMode: "nonsense" });
-  ok(junk.moveMode === "joystick", "moveMode 收到垃圾值 → 走默认");
+  ok(junk.moveMode === "slider", "moveMode 收到垃圾值 → 走默认 slider");
 }
 
 // ---------- ⑪ 摇杆与滑轨本体字段:消毒与夹取 ----------

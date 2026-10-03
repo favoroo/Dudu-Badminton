@@ -138,7 +138,7 @@ ok(hammered >= 0 && hammered <= A.capacity, `200 拍极限敲打后 fatigue 仍�
 // ---------- ⑤ 归一化契约:pressure = fatigue/capacity × crush ----------
 // hud / game-root 三处展示端都拿 `1 - pressure/crush` 反推血条;这条公式被谁
 // "顺手简化"了,三档的血条就会一起失真 —— 在账本这一侧钉死它。
-for (const key of ["easy", "normal", "hard"] as const) {
+for (const key of ["easy", "normal", "hard", "expert"] as const) {
   const tier = CFG.diffs[key];
   for (const fatigue of [0, A.capacity * 0.3, A.capacity * 0.77, A.capacity]) {
     const S = { fatigue, pressure: 0 } as unknown as AiState;
@@ -148,9 +148,11 @@ for (const key of ["easy", "normal", "hard"] as const) {
   }
 }
 // 档位语义:crush 决定「同样累,多快漏」,softGate 只管回气 —— 两把闸门都得在
-ok(CFG.diffs.easy.softGate === 0 && CFG.diffs.normal.softGate === 1 && CFG.diffs.hard.softGate === 1,
+ok(CFG.diffs.easy.softGate === 0
+  && CFG.diffs.normal.softGate === 1 && CFG.diffs.hard.softGate === 1 && CFG.diffs.expert.softGate === 1,
   "softGate:easy 不回气(新手 80% 回球是软球,一路回血会把正反馈抹掉)");
-ok(CFG.diffs.easy.crush > 0 && CFG.diffs.hard.crush > 0, "crush 三档都 >0(=0 的档位血条永远满格,等于没做)");
+ok(CFG.diffs.easy.crush > 0 && CFG.diffs.hard.crush > 0 && CFG.diffs.expert.crush > 0,
+  "crush 各档都 >0(=0 的档位血条永远满格,等于没做)");
 
 // ---------- ⑥ 表自洽 ----------
 ok(A.base === 0, `base(${A.base})必须为 0:常规拍免费是设计决策(接发/对拉不掉血),别改回去`);

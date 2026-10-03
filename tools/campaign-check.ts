@@ -92,7 +92,7 @@ function auditTable(stages: StageDef[]): string[] {
     }
     if (!(s.targetScore >= 1)) out.push(`${s.id}: targetScore ${s.targetScore} 打不到`);
     if (!(s.rewards.coins > 0 && s.rewards.exp > 0)) out.push(`${s.id}: 奖励为 0,通关没成就感`);
-    if (!["easy", "normal", "hard"].includes(s.aiDiff)) out.push(`${s.id}: aiDiff ${s.aiDiff} 没有对应的难度文案`);
+    if (!["easy", "normal", "hard", "expert"].includes(s.aiDiff)) out.push(`${s.id}: aiDiff ${s.aiDiff} 没有对应的难度文案`);
   }
   for (let i = 0; i < stages.length; i++) {
     if (stages[i].stageNo !== i + 1) out.push(`第 ${i + 1} 张表的 stageNo 是 ${stages[i].stageNo}(线性解锁按数组序走)`);

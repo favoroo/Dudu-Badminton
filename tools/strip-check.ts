@@ -22,6 +22,7 @@ import {
   stripLayout, stripOverlaps, stripTextOverflow, type StripLayout,
 } from "../assets/scripts/ui/editor-strip";
 import { textW } from "../assets/scripts/core/text-metrics";
+import { PAD_LIMIT } from "../assets/scripts/core/settings";
 
 const h = makeChecker({});
 const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
@@ -66,7 +67,7 @@ for (const modeName of ["摇杆", "滑轨", "大小"]) {
     ok(it.w >= 150, `${key} 滑杆宽 ${it.w} >= 150(手指点得着)`);
   }
   const alpha = L.items.find((i) => i.key === "alpha")!;
-  const pxPerStep = alpha.w / ((1.0 - 0.2) / 0.05);
+  const pxPerStep = alpha.w / ((PAD_LIMIT.alphaMax - PAD_LIMIT.alphaMin) / 0.05);
   ok(pxPerStep >= 7, `透明度每档 ${pxPerStep.toFixed(1)}px,拖得动也停得住`);
 }
 

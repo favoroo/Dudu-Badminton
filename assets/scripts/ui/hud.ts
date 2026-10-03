@@ -10,6 +10,7 @@ import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransf
 import { CFG } from "../core/config";
 import { Rules } from "../core/rules";
 import { Drill } from "../core/drill";
+import { Tutorial } from "../core/tutorial";
 import { Physics } from "../core/physics";
 import type { RulesState } from "../core/rules";
 import { col } from "./ui-manager";
@@ -18,6 +19,8 @@ import {
   ARCADE, bannerOnce, burstOnce, cancelFade, drawDiagStripes, drawSawtooth, drawSlantPanel,
   drawSlantShadow, fadeOutHide, popScore, retainedDraw, safePad, skewOf, slashIn, slantPath, textW,
 } from "./ui-arcade";
+import { ROLE, SLANT } from "./p5-tokens";
+import { drawIconBtn } from "./p5-paint";
 import { clamp, rand } from "../core/utils";
 import { objectiveLines, physicsModReadout, playerModReadout, progressText } from "../core/campaign-hud";
 
@@ -465,17 +468,37 @@ export class Hud {
     this.banner.setParent(top);
     this.banner.active = false;
 
-    // ---------- 暂停按钮(右上角,Widget 对齐真机拉宽后的边缘并避让安全区) ----------
-    // 64×64:横屏下离拇指最远的角落,不能再小;字号跟着按钮走(默认 6° 斜切)
-    this.pauseBtn = kit.button(this.root, "II", 64, 64, { bg: P.panel, size: 24, stroke: P.line, strokeAlpha: 0.35 });
-    const wd = this.pauseBtn.addComponent(Widget);
-    wd.isAlignTop = true; wd.top = 12 + safeTop;
-    wd.isAlignRight = true; wd.right = safeRight;
-    wd.updateAlignment();
-    this.pauseBtn.on(Button.EventType.CLICK, () => {
+    // ---------- 暂停按钮(右上角:P5 斩劈红实底印章色块 + 纯白几何暂停图标) ----------
+    // 告别旧版无 retainedDraw 导致原生平台底块丢失变透明、细白字融进海滩强光太阳的问题。
+    // 视觉尺寸 42×42 实底纯色块,触摸判定区 58×58;双竖杠纯白几何一笔画成,零字体依赖。
+    const pauseBtn = new Node("pause-btn");
+    pauseBtn.layer = this.root.layer;
+    pauseBtn.addComponent(UITransform).setContentSize(58, 58);
+    const pauseG = pauseBtn.addComponent(Graphics);
+    retainedDraw(pauseG, () => {
+      drawIconBtn(pauseG, 42, ROLE.primary.face, ROLE.primary.edge, { slantDeg: SLANT.button });
+      // 暂停双竖杠图标:纯白几何圆角矩形,带细微立体阴影
+      const barW = 4, barH = 14, gap = 4.8, r = 1.2;
+      pauseG.fillColor = col("#000000", 0.4);
+      pauseG.roundRect(-gap / 2 - barW + 1, -barH / 2 - 1, barW, barH, r);
+      pauseG.roundRect(gap / 2 + 1, -barH / 2 - 1, barW, barH, r);
+      pauseG.fill();
+      pauseG.fillColor = col(ARCADE.paper, 0.98);
+      pauseG.roundRect(-gap / 2 - barW, -barH / 2, barW, barH, r);
+      pauseG.roundRect(gap / 2, -barH / 2, barW, barH, r);
+      pauseG.fill();
+    });
+    const pauseBtnComp = pauseBtn.addComponent(Button);
+    pauseBtnComp.transition = Button.Transition.SCALE;
+    pauseBtnComp.zoomScale = 0.92;
+    pauseBtnComp.target = pauseBtn;
+    pauseBtn.setPosition(CFG.world.w / 2 - (safeRight + 10 + 21), CFG.world.h / 2 - (safeTop + 10 + 21), 0);
+    pauseBtn.setParent(this.root);
+    pauseBtn.on(Button.EventType.CLICK, () => {
       kit.sfx.play("back");
       Rules.pause();
     });
+    this.pauseBtn = pauseBtn;
   }
 
   setPlaying(on: boolean): void {
@@ -883,11 +906,21 @@ export class Hud {
   sync(R: RulesState): void {
     if (!this.root.active) return;
     this.frameT++;
-    const drill = R.mode === "drill";
+    const drill = R.mode === "drill" || R.mode === "tutorial";
     const endless = R.mode === "endless";
     const campaign = R.mode === "campaign";
     const playing = Rules.isPlaying(R.state);   // 与虚拟按键的显隐共用同一判据
     this.pauseBtn.active = playing;
+    if (playing) {
+      // 实时贴齐可视区右上角(避让安全区):保证在 16:9 ~ 21:9 超宽屏真机上
+      // 均紧贴屏幕右边缘,不因固定 960 视口落进海滩大太阳光晕正中
+      const vs = view.getVisibleSize();
+      const k = vs.height > 0 ? CFG.world.h / vs.height : 1;
+      const rightEdge = (vs.width * k) / 2 - (4 + this.safeRight);
+      const pauseX = rightEdge - 21;
+      const pauseY = CFG.world.h / 2 - (10 + this.safeTop + 21);
+      this.pauseBtn.setPosition(pauseX, pauseY, 0);
+    }
     this.pills.active = !drill;
     this.badgeNode.active = !drill;
     this.statusLine.node.active = playing;
@@ -897,7 +930,9 @@ export class Hud {
     if (!R.players.length) return;
 
     // ---- 局别标签(老 #modeTag):打的是什么档,一眼能看到 ----
-    const tag = drill
+    const tag = R.mode === "tutorial"
+      ? "TUTORIAL · 操作教学"
+      : drill
       ? `TRAINING · ${(Drill.cur()?.tag ?? "")}`
       : endless
       ? `ENDLESS · ${(CFG.diffs[R.diff]?.label) ?? R.diff ?? ""}`
@@ -920,7 +955,10 @@ export class Hud {
     this.syncGust(R);
 
     // ---- 比分 / 训练进度 ----
-    if (drill) {
+    if (R.mode === "tutorial") {
+      // 教学不计分:顶栏跟着教学状态机走(「教学 1/3 · 先看讲解,再去练「移动」」)
+      this.drillInfo.string = Tutorial.goalText();
+    } else if (drill) {
       // 训练不计分:直接喂 goalText()(「后场重杀 1/3 · 起跳,在最高点按「深球」」)
       this.drillInfo.string = Drill.goalText();
     } else {
@@ -1041,12 +1079,12 @@ export class Hud {
     this.combo.active = showCombo;
     if (showCombo) {
       // 手动收边:FIXED_HEIGHT 下可视区宽随屏幕比例涨,右缘按可视宽实时算,
-      // 贴暂停键正下方。中心锚:y = 可视顶 - 88(键底 76 + 12 间隙) - 半高 24,
+      // 贴暂停键正下方。中心锚:y = 可视顶 - 64(键底 52 + 12 间隙) - 半高 24,
       // 少减半高会把徽章顶进按钮底下(上一版被遮的根因)。
       const vs = view.getVisibleSize();
       const k = vs.height > 0 ? CFG.world.h / vs.height : 1;
       const rightEdge = (vs.width * k) / 2 - (4 + this.safeRight);
-      const topY = CFG.world.h / 2 - (88 + this.safeTop) - 24;
+      const topY = CFG.world.h / 2 - (64 + this.safeTop) - 24;
       this.combo.setPosition(rightEdge - this.comboW / 2, topY, 0);
       const r = R.rally;
       const epic = r >= 15;

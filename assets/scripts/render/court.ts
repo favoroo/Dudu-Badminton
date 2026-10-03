@@ -978,7 +978,7 @@ export class CourtRenderer {
     }
   }
 
-  /** 慢速层:目前只有黄昏馆有大面积慢速装饰(观众群 + LED 跑马),其它主题为空 */
+  /** 慢速层:目前只有黄昏馆有大面积慢速装饰(LED 跑马 + 荧光棒;观众群走批次层),其它主题为空 */
   drawSlowTo(g: Graphics, vp: Viewport, rallyCount = 0): void {
     this.ensureTheme();
     if (this.currentTheme !== "arena") return;
@@ -1257,7 +1257,8 @@ export class CourtRenderer {
     this.drawLines(g, vp, colRgba(255, 248, 235, 0.92), colRgba(255, 248, 235, 0.55));
   }
 
-  /** 慢速层:LED 跑马方块 / 观众 bob / 相持荧光棒 —— 动得很慢但人数多,每 3 渲染帧重画一次 */
+  /** 慢速层:LED 跑马方块 / 相持荧光棒 —— 动得很慢但人数多,每 3 渲染帧重画一次。
+   *  观众 bob 群已拆到独立批次层(drawCrowdBatchTo,world 侧轮转重画),不再在这里画。 */
   private drawArenaSlow(g: Graphics, vp: Viewport, time: number, glow: number): void {
     // LED 点阵发光装饰条与跑马方块
     const ledOff = (time * 1.5) % 180;
@@ -1265,24 +1266,6 @@ export class CourtRenderer {
       const isBright = ((x + ledOff) % 90 < 36);
       const col = isBright ? colRgba(255, 225, 77, 0.65) : colRgba(255, 225, 77, 0.18);
       fillRect(g, vp, x, 98, 9, 6, col);
-    }
-
-    // 阶梯看台上的微动观众群(bob 幅度 0.9px、周期 ~3.7s,20fps 重画肉眼不可辨)
-    for (const c of this.crowd) {
-      const bob = Math.sin(time * 0.028 + c.ph) * 0.9;
-      const shade = c.shadeBase + c.tone * 22;
-      // 观众身体
-      fillRect(
-        g,
-        vp,
-        c.x - c.r * 1.1,
-        c.y + bob + c.r * 0.7,
-        c.r * 2.2,
-        c.r * 2.0,
-        colRgba(shade - 4, shade - 6, shade + 16, 0.92)
-      );
-      // 观众头部
-      fillCircle(g, vp, c.x, c.y + bob, c.r, new Color(shade + 8, shade + 6, shade + 28, 255));
     }
 
     // 相持高潮挥动荧光棒
@@ -1298,6 +1281,33 @@ export class CourtRenderer {
         g.lineTo(vp.x(c.x + 8 + wave), vp.y(c.y - 12));
         g.stroke();
       }
+    }
+  }
+
+  /**
+   * 观众批次层:把 bob 群按索引取模拆批,world 侧每 9 渲染帧轮转重画一批。
+   * 单独成层是因为慢速层是整体 clear —— 批次只画 1/3 观众,不分层就会把
+   * 没画到的那 2/3 从屏上抹掉。bob 幅度 0.9px、周期 ~3.7s,7.5Hz 的批次刷新肉眼不可辨。
+   */
+  drawCrowdBatchTo(g: Graphics, vp: Viewport, batch: number, batches: number): void {
+    this.ensureTheme();
+    if (this.currentTheme !== "arena") return;
+    for (let i = batch; i < this.crowd.length; i += batches) {
+      const c = this.crowd[i];
+      const bob = Math.sin(this.time * 0.028 + c.ph) * 0.9;
+      const shade = c.shadeBase + c.tone * 22;
+      // 观众身体
+      fillRect(
+        g,
+        vp,
+        c.x - c.r * 1.1,
+        c.y + bob + c.r * 0.7,
+        c.r * 2.2,
+        c.r * 2.0,
+        colRgba(shade - 4, shade - 6, shade + 16, 0.92)
+      );
+      // 观众头部
+      fillCircle(g, vp, c.x, c.y + bob, c.r, new Color(shade + 8, shade + 6, shade + 28, 255));
     }
   }
 

@@ -111,6 +111,42 @@ export function cdText(cdSec: number): string {
   return Math.max(CD.numMin, Math.ceil(cdSec * 10) / 10).toFixed(1);
 }
 
+/**
+ * 冷却扫掠的重画门控。
+ *
+ * 基准必须是「上一次画上屏的值」:setSkillState 每帧都会被喂最新的 cdRatio,
+ * 如果拿「上一帧喂值」当基准,stepTol 比较的就退化成相邻帧增量(= 1/maxCd)——
+ * 四款长 CD(smash/flash/magnet/focus)每帧增量 0.003~0.005,全都低于阈值,
+ * 扫掠中途就再也不重画:阴影起手画一次后整段冻结,只在玩家点按被拒的键
+ * (upOf 无条件重画)时跳进一截 —— 现场就是「阴影只能 1/3 地消失,不连续」。
+ * 这里把基准的推进收进 step()/sync() 两个口子,谁都不许在外面另抄一份。
+ */
+export interface CdGate {
+  /** 当前基准 = 上一次画上屏的 cdRatio(只读暴露,回归工具拿它对账「屏上滞后」) */
+  readonly painted: number;
+  /** 距上次重画的累计变化超过 CD.stepTol 才允许重画;返回 true 时基准已同步到 ratio */
+  step(ratio: number): boolean;
+  /** 其他重画路径(down/upOf/apply 画过屏后)调用:把基准对齐到刚画上屏的值 */
+  sync(ratio: number): void;
+}
+
+export function makeCdGate(): CdGate {
+  let painted = 0;
+  return {
+    get painted(): number { return painted; },
+    step(ratio: number): boolean {
+      if (Math.abs(painted - ratio) > CD.stepTol) {
+        painted = ratio;
+        return true;
+      }
+      return false;
+    },
+    sync(ratio: number): void {
+      painted = ratio;
+    },
+  };
+}
+
 /** 技能专属色(进度环按它上色,让「谁的冷却」也一眼可辨);表里没有就回落第一款 */
 export function skillAccent(skillId: string): string {
   const list = CFG.skills.list as Array<{ id: string; accent: string }>;

@@ -308,8 +308,8 @@ const hitRate = (h: number, w: number): string =>
   (h + w ? `${((h / (h + w)) * 100).toFixed(0)}%(${h}/${h + w})` : "—");
 
 const MATCHES_PER_DIFF = Number(process.env.AI_CHECK_MATCHES ?? 12);
-// 标定时只跑一档(AI_CHECK_DIFFS=easy),省时间;正式回归留空跑三档
-const DIFFS = (process.env.AI_CHECK_DIFFS ?? "easy,normal,hard").split(",") as DiffKey[];
+// 标定时只跑一档(AI_CHECK_DIFFS=easy),省时间;正式回归留空跑四档
+const DIFFS = (process.env.AI_CHECK_DIFFS ?? "easy,normal,hard,expert").split(",") as DiffKey[];
 interface Row { diff: DiffKey; pointRate: number; avgRally: number; receive: number; st: TierStat }
 const rows: Row[] = [];
 
@@ -336,24 +336,30 @@ const rateOf = (d: string): number => rows.find((r) => r.diff === d)?.pointRate 
 const rallyOf = (d: string): number => rows.find((r) => r.diff === d)?.avgRally ?? 0;
 
 // 只跑部分档位 = 标定模式:打印数字就够,跨档断言无从判定
-if (DIFFS.length < 3) {
-  console.log(`\n(标定模式:只跑了 ${DIFFS.join("/")},跳过三档断言 —— 这不是回归判定)`);
+if (DIFFS.length < 4) {
+  console.log(`\n(标定模式:只跑了 ${DIFFS.join("/")},跳过四档断言 —— 这不是回归判定)`);
   process.exit(failures ? 1 : 0);
 }
 
-// —— 真需求:三档必须拉开,入门档要打得动 ——
-// 【2026-10-03 重校准】backBias=15 修复高远发球背后死角后,AI 接发率全面提升
-// (标准发球三档 98-100%,高远发球 78-99%)。替身只能从 AI 失误得分,接发漏得少了
-// 替身得分率自然下降:easy 60→49% / normal 50→26% / hard 30→19%。三档仍单调拉开,
-// easy 仍赢下 6/12 局(打得动);阈值随基线下移,不是放松要求而是对齐新真值。
+// —— 真需求:四档必须拉开,入门档要打得动 ——
+// 【2026-10-03 四档整体重校准】用户现场:大师档打 100 拍 0 分。根因是 hard 的 crush=0.3
+// (AI 几乎不累,长回合 99% 挥拍命中率)。四档 zone/shotErr/crush 整体重铺后,
+// 替身得分率:easy 53% / normal 34% / hard 28% / expert 12%(25 局基线)。
+// hard 新增下限断言 ≥15%:防止再出现"打不下一分"的局面(旧值 19% 对真人来说约等于 0)。
 assert(rateOf("easy") >= 0.45, `入门:真人得分率应 ≥45%(实际 ${pct(rateOf("easy"))})`);
 assert(rateOf("normal") >= 0.20 && rateOf("normal") <= 0.55,
   `普通:真人得分率应在 20%~55%(实际 ${pct(rateOf("normal"))})`);
-assert(rateOf("hard") <= 0.45, `大师:真人得分率应 ≤45%(实际 ${pct(rateOf("hard"))})`);
+assert(rateOf("hard") >= 0.15 && rateOf("hard") <= 0.45,
+  `大师:真人得分率应在 15%~45%(实际 ${pct(rateOf("hard"))})—— 低于 15% 是打不赢,用户现场`);
 assert(rateOf("easy") > rateOf("normal") + 0.06,
   `入门必须明显好过普通(只差 ${pct(rateOf("easy") - rateOf("normal"))})`);
 assert(rateOf("normal") > rateOf("hard") + 0.04,
   `普通必须明显好过大师(只差 ${pct(rateOf("normal") - rateOf("hard"))})`);
+assert(rateOf("hard") > rateOf("expert") + 0.04,
+  `大师必须明显好过极限(只差 ${pct(rateOf("hard") - rateOf("expert"))})`);
+// expert = 天花板档:替身(±35px 走位误差 + 10 帧反应)还该能得分,但 ≤30%
+assert(rateOf("expert") >= 0.10 && rateOf("expert") <= 0.30,
+  `极限:真人得分率应在 10%~30%(实际 ${pct(rateOf("expert"))})—— 高了天花板不够硬,低了变稻草人`);
 
 // —— 护栏:不许把 AI 打成不会接球的稻草人(用户要保留长回合) ——
 // easy 的下限是 9 而不是 10,而这 9.2 **不是一次性的**:把出货默认移速改到慢 15% 之前
@@ -365,7 +371,7 @@ assert(rateOf("normal") > rateOf("hard") + 0.04,
 // AI 接重扣要扣体力、更容易漏 —— 回合被新机制按设计缩短(capacity 100/115/135 三档
 // 实测 easy 均值钉在 8.8~8.9,p50 仍是 7 与旧版一致,得分率 60~64% 单调健康)。
 // 用户拍板:「打累了所以漏」就是要的效果,护栏让位;p50/单调/送分机器三道判据仍守住。
-for (const d of ["easy", "normal", "hard"] as DiffKey[]) {
+for (const d of ["easy", "normal", "hard", "expert"] as DiffKey[]) {
   assert(rallyOf(d) >= (d === "easy" ? 8.5 : 10),
     `${d}:回合均值应 ≥${d === "easy" ? 8.5 : 10} 拍(实际 ${rallyOf(d).toFixed(1)})—— 掉了是削弱过头,不是"能得分"`);
   assert(rateOf(d) <= 0.85, `${d}:真人得分率不该高到 ${pct(rateOf(d))}(AI 变成送分机器)`);
@@ -373,6 +379,9 @@ for (const d of ["easy", "normal", "hard"] as DiffKey[]) {
 const hardRow = rows.find((r) => r.diff === "hard");
 assert((hardRow?.receive ?? 0) >= 0.85,
   `大师接发率应 ≥85%(实际 ${pct(hardRow?.receive ?? 0)})—— 顶档不许被这次改动砍废`);
+const expertRow = rows.find((r) => r.diff === "expert");
+assert((expertRow?.receive ?? 0) >= 0.85,
+  `极限接发率应 ≥85%(实际 ${pct(expertRow?.receive ?? 0)})—— 天花板档也不许砍废接发`);
 // 纪律 3:替身自己必须能打
 if (hardRow) {
   const s = hardRow.st.shots;

@@ -15,6 +15,7 @@ import type { ObjectiveResult } from "../core/campaign-hud";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
 import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, ROLE, slantPath, skewOf, textW } from "./ui-arcade";
+import { clearKids } from "./ui-shell";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -221,7 +222,7 @@ export class SettlePanel {
    * 宽度按实测文案量、超宽再等比缩回卡片内 —— 三颗钮的文案长短差得很多(第 1 关 vs 第 20 关)。
    */
   private buildActions(p: SettlePayload): void {
-    this.actionRow.removeAllChildren();
+    clearKids(this.actionRow);
     const camp = p.campaign;
 
     const toMenu = (primary = false): Act => ({

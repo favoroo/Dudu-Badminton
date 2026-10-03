@@ -504,6 +504,14 @@ export class SettingsPanel extends Component {
       });
     }
 
+    // 重看新手教学:训练场列表页之外的第二处入口(首次启动会自动弹一次)
+    const tut = this.kit.button(page, "重看新手教学", wOf(A.tutBtn), A.tutBtn.h, { size: 15 });
+    tut.setPosition(cOf(A.tutBtn), A.tutBtn.cy, 0);
+    tut.on(Button.EventType.CLICK, () => {
+      this.kit.sfx.play("ui");
+      this.kit.openTutorial();
+    });
+
     this.aboutStatus = this.txt(page, this.aboutReadout(), 11, P.dim,
       A.status.left, A.status.cy, wOf(A.status));
     // 说明行跟着上面那颗键走:键不在的时候不许提它,否则就是「界面上说有个按钮,人找不到」

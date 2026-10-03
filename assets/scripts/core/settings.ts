@@ -69,7 +69,8 @@ export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swing", "swin
  *                 支持**上滑跳跃**与**双击跳跃**。
  *   "buttons"  —— 老式「左 / 右」两个按钮,离散全速。
  *                 没摇杆可推,跳跃退回左簇那个实体键(PAD_BASE.jump)。
- * 新装机默认 joystick;老用户存档 sanitize 时保留 buttons,不打断肌肉记忆。
+ * 默认 slider(0.0.24 起,用户指令:滑轨升为默认操作方式,新手引导也按滑轨教);
+ * 老档 sanitize 时一并切到 slider(可在设置页切回,不打断谁都不如让新手第一眼学会)。
  */
 export type MoveMode = "joystick" | "buttons" | "slider";
 
@@ -77,10 +78,11 @@ export type MoveMode = "joystick" | "buttons" | "slider";
  * 位移上限 PLACE_GUARD 只是**坏档护栏**,不是手感限制:能拖到哪儿由视口决定
  * (input/touchpad.ts 的 clampDelta —— 控件整块不许出可视区)。取 2000 设计像素,
  * 任何机型半屏都到不了这个量级,它拦的只有手改 JSON 传进来的离谱值。
- * 半径给一个手指可点又不至于糊屏的区间;透明度 0.2~1.0(1.0 = 完全不透明)。
+ * 半径给一个手指可点又不至于糊屏的区间;透明度 0.05~1.0(1.0 = 完全不透明,
+ * 下限 0.05:几乎隐形但冷却读数仍有 cdAlpha 的 keep 保底,重置默认随时可回 0.8)。
  */
 export const PLACE_GUARD = 2000;
-export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: PLACE_GUARD, maxDy: PLACE_GUARD, alphaMin: 0.2, alphaMax: 1.0 };
+export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: PLACE_GUARD, maxDy: PLACE_GUARD, alphaMin: 0.05, alphaMax: 1.0 };
 
 /** 摇杆本体默认:底圈圆心在左簇内的位置(与 PAD_BASE.left 同参考系)+ 底圈半径 */
 export const JOYSTICK_BASE = { x: 78, y: 78, r: 68 };
@@ -145,7 +147,7 @@ export interface GameSettings {
   // 按钮整体透明度(0.2~1.0,1.0 = 完全不透明)—— 全局一条,不逐键独立
   padAlpha: number;
   pad: Record<PadAction, PadBtn>;
-  /** 触屏移动方式:摇杆 or 左右按键 or 滑轨。老档缺失时 sanitize 走 "buttons"(不打断既成习惯) */
+  /** 触屏移动方式:滑轨 or 摇杆 or 左右按键。默认 slider(新手引导按滑轨教),老档 sanitize 一并迁到 slider */
   moveMode: MoveMode;
   /**
    * 球速档位 id(取值 = CFG.pace.tiers[*].id,不存索引也不存系数:插档不会让老存档指错)。
@@ -181,7 +183,7 @@ function fresh(): GameSettings {
     hapticLevel: CFG.haptic.default,
     padAlpha: 0.8,
     pad,
-    moveMode: "joystick",
+    moveMode: "slider",
     paceTier: CFG.pace.default,
     gaitTier: CFG.gait.default,
     joystick: { dx: 0, dy: 0, r: JOYSTICK_BASE.r },
@@ -228,12 +230,10 @@ export function sanitize(raw: unknown): GameSettings {
   s.paceTier = paceTierOf(r.paceTier, s.paceTier);
   s.gaitTier = gaitTierOf(r.gaitTier, s.gaitTier);
   const pad = r.pad as Record<string, Partial<PadBtn>> | null | undefined;
-  let padSeen = false;
   if (pad && typeof pad === "object") {
     for (const a of PAD_ACTIONS) {
       const p = pad[a];
       if (!p || typeof p !== "object") continue;
-      padSeen = true;
       s.pad[a] = {
         dx: num(p.dx, 0, -PAD_LIMIT.maxDx, PAD_LIMIT.maxDx),
         dy: num(p.dy, 0, -PAD_LIMIT.maxDy, PAD_LIMIT.maxDy),
@@ -250,10 +250,10 @@ export function sanitize(raw: unknown): GameSettings {
   if (typeof r.v !== "number" || r.v < 3) {
     for (const a of PAD_ACTIONS) s.pad[a] = { dx: 0, dy: 0, r: s.pad[a].r };
   }
-  // 老档升级:raw 里带 pad 却没有 moveMode → 判定为摇杆功能上线前装机的老玩家,
-  // 保持他们的「左右按键」体验,不无预警换成摇杆。新装机走 fresh() 的 "joystick"。
-  const legacyMode: MoveMode = padSeen ? "buttons" : "joystick";
-  s.moveMode = moveModeOf(r.moveMode, legacyMode);
+  // 老档升级:raw 里带 pad 却没有 moveMode → 摇杆功能上线前的老玩家。
+  // 0.0.24 起一并迁到 slider(用户指令:滑轨升为默认操作方式,新手引导也按滑轨教);
+  // 想回摇杆/按键,设置页「操控」随时可切 —— 迁移只动默认值,不锁选择。
+  s.moveMode = moveModeOf(r.moveMode, "slider");
   const joy = r.joystick as Partial<PadBtn> | null | undefined;
   if (joy && typeof joy === "object") {
     s.joystick = {

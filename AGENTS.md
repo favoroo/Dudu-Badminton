@@ -30,6 +30,7 @@
 | 改面板形状(衬纸/大色块/卡片/凹陷槽/开关/滑杆/网点/印章) | 形状出点列 [p5-shapes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-shapes.ts)(零 cc),画笔 [p5-paint.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-paint.ts)(只 import cc 的 Color/Graphics ⇒ **node 跑得动**),ui-arcade 再导出。**卡片用 `drawP5Card`(墨面 + 一条色带)不要整面实底** —— 一屏十几张会排成彩虹,大色块留给少数大面。出图 `node .tools-build/tools/panel-preview.js --out .tools-build/panel-preview` |
 | 改面板的可点件工厂 | [ui-shell.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-shell.ts) 的 `solidTab`/`solidBlock`/`sectionTitle`/`bevelSlot`/`pressable`(**一律自带 `addComponent(Button)`** —— 漏了就是「点了没反应」,闸门 `tools/ui-click-check.js`)。四面板经 `UiKit` 的 `plate/block/tab/title/slot/press` 取用 |
 | 改四面板排版(设置/闯关大厅/训练场/商店) | 版式是零 cc 纯函数:`ui/settings-layout.ts`、`ui/campaign-layout.ts`、`ui/drill-layout.ts`、`ui/shop-shelf.ts`(`SHOP`/`shopTopBar`/`shopTabs`/`shopContent`/`shopStats`)。各导出 `XOverlaps()`/`XOverflow()` 判据,统一由 `node .tools-build/tools/panel-check.js`(+`--selftest`)断言:对比度 ≥4.0、网点 ≤900 点、可点件 ≥44、不撞不溢出、文案无 emoji 与桌面键名。**改任何一块坐标都要去判据里核** |
+| 改新手操作教学(滑轨引导,三主题讲解+实操) | 状态机 [tutorial.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/tutorial.ts)(零 cc:移动进圈/起跳离地/回球过网三道门控 + 喂球机 + moveMode 内存态临时切换恢复)、版式 [tutorial-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/tutorial-layout.ts)(零 cc,判据 `tools/tutorial-check.ts`)、**演示真值烘焙 [tutorial-demo.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/tutorial-demo.ts)**(零 cc:复用 drill-demo 的喂球模拟/回球解算,烘出教学演示的来球弧/接触点/站位/三颗回球/跳跃表)、手势演示动画 [tutorial-anim.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/tutorial-anim.ts)(只画不算:真人偶/真羽毛球/真值弧线/手势补全/喂球机/判定圈,滑轨与实机 railGeo 1:1 对位)、面板 [tutorial-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/tutorial-panel.ts)(实操页=顶部横幅,滑轨/击球键必须全露);首启自动弹与入口装配在 ui-manager.ts 的 `openTutorial()`,重看入口在训练场列表页入口条与设置「关于」页;文案表 `TUTORIAL_TOPICS` 在 config.ts |
 | 改训练场引导演示(六关 × 四步定格) | 演示真值在 [drill-demo.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/drill-demo.ts)(零 cc:`bake(def)` 沿**真实喂球弧线**搜出接触点、回球必须过 `Drill.matches`、落点带由本关 `minLandX`/`maxLandX` 反推、「按错会怎样」直接吃 `Drill.diagnoseFail`),动画只消费它 —— [drill-anim.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/drill-anim.ts) 的 `gotoStep`/`drawFrame`/`callouts`(标字是数据,引擎 Graphics 画不了字,由 [drill-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/drill-panel.ts) 摆 Label);分步文案与落点区名写在 `config.ts` 的 `DRILLS[].demoSteps`/`zoneName`,搜法参数在 `CFG.drill.demo`;回归 `node .tools-build/tools/drill-diagram-check.js`(+`--selftest`)、出图 `node .tools-build/tools/drill-diagram-preview.js --out .tools-build/drill-diagram` |
 | 主循环/事件分发 | [game-root.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/game-root.ts) |
 | UI 面板/菜单 | [ui-manager.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-manager.ts) |
@@ -184,6 +185,19 @@ node .tools-build/tools/brief-check.js
 node .tools-build/tools/brief-check.js --selftest   # 反例必须被报警
 node .tools-build/tools/brief-preview.js --out .tools-build/brief-preview   # 出 SVG,再用 headless Chrome 光栅化 eyeball(青色游标 = 算出来的行尾)
 
+# 6.7 新手操作教学回归(exit 0;滑轨教学三主题「讲解+实操」:版式不撞/文案无 emoji
+#     无桌面键名/可点件 ≥44/横幅给下半屏控件让位 + 门控行为套件 —— 圈外不算、
+#     没离地不算、下网挥空不算、非击球实操喂球机抱球、三关全过才 allDone、
+#     moveMode 临时切换可恢复 + **演示真值套件** —— 演示里那条来球弧必须与
+#     实机喂球 simulateFeed 重算逐点一致(手编贝塞尔在这里现形)、接触点站立
+#     可够到/落点带真实/跳跃表与引擎同步/标字不出画布/advance 越圈回卷。
+#     改 config.ts tutorial 段/TUTORIAL_TOPICS、core/tutorial.ts、core/tutorial-demo.ts、
+#     tutorial-layout/panel/anim 任一都要跑;
+#     --selftest 喂旧式无条件放行门控 + 手编弧线假烘焙两份反例,必须被拦下)
+node .tools-build/tools/tutorial-check.js
+node .tools-build/tools/tutorial-check.js --selftest
+node .tools-build/tools/tutorial-demo-preview.js --out .tools-build/tutorial-demo   # 三主题分段出图,Chrome 光栅化肉眼判观感
+
 # 6.8 技能配置弹窗排版回归(exit 0;卡片只有 118 宽,而五句说明实测 198~321px ——
 #     Label 没设 overflow 时 contentSize 一律被忽略,五句各按一条无限宽的行画,
 #     互相盖字(用户拍的现场图)。现在说明整条搬进底部 652 宽详情板,15 号字一行读完。
@@ -244,6 +258,17 @@ node .tools-build/tools/panel-preview.js --out .tools-build/panel-preview   # �
 # 7.5 击打/轨迹/球体特效预览与几何断言(exit 0;NaN 坐标、丝带点数上限、粒子预算、
 #     羽片拆片、滞后角追踪各有一条断言兜着 —— 特效改坏了先在 node 里出图看,别上真机猜)
 node .tools-build/tools/fx-preview.js --out .tools-build/fx-preview   # 单页: closeups / trails / impacts
+
+# 7.6 场边飘字「车道分配」回归(exit 0;用户现场:「同时触发多个特殊击打(跳杀+重击
+#     附魔),左侧的标签会重叠」。旧错行只数条数且 Math.min(n,2) 封顶两行 —— 一拍最多
+#     同帧出生四条场边字(档位+技能+跳杀+热手),第 3、4 条叠回同一点。分配逻辑在
+#     render/float-lane.ts(零 cc 纯函数:接着同侧最低占位下沿往下排,夹在地面线上方),
+#     world.floatSpawn 只喂记录。断言:最坏四条两两不叠、混合尺寸按前行实际占位算行距、
+#     左右侧互不干扰、非成员(头顶起手字)与已隐藏字不占行、旧字浮过锚点后新字回锚点行。
+#     改 float-lane.ts / world.floatSpawn 堆叠段 / config floatLaneGap·floatSide 都要跑。
+#     --selftest 喂旧算法(计数 + min(n,2) + size*1.9),等字号第 3、4 条叠回同一点必须被拦)
+node .tools-build/tools/float-lane-check.js
+node .tools-build/tools/float-lane-check.js --selftest   # 反例(旧错行算法)必须被报警
 
 # 8. 全量类型检查(零错误)
 npx tsc -p tools/tsconfig.check.json

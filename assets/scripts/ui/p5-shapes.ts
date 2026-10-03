@@ -352,6 +352,39 @@ export function knobDL(s: number, faceHex: string, cx = 0, cy = 0, slantDeg = SL
   ];
 }
 
+// ---------- 图标按钮:实底斜方印章(关闭 ✕ 等小键纯色块) ----------
+
+export interface IconBtnOpts {
+  /** 面不透明度,默认 1.0 纯色块实底 */
+  faceA?: number;
+  /** 描边不透明度,默认 1.0 */
+  edgeA?: number;
+  /** 斜切角,默认 SLANT.button —— 按钮档,比色块更斜一点才像能按下去的东西 */
+  slantDeg?: number;
+}
+
+/**
+ * 图标按钮底:实底斜方印章 = blockDL 配方小件版(纯色块实底)。
+ * 告别旧圆底与暗色半透明感:100% 不透明实底面色 + 同色压暗厚底边 + 硬阴影 + 顶缘高光 + 提亮描边。
+ * 偏移全按小件收:阴影 2.5(大块是 5/8,小面积上会读成「掉出来的黑块」)、
+ * 厚底边 peek 3(大块 5,按面积比例缩)。
+ */
+export function iconBtnDL(s: number, faceHex: string, edgeHex: string, o: IconBtnOpts = {}): Paint[] {
+  const deg = o.slantDeg ?? SLANT.button;
+  const skew = skewOf(s, deg);
+  return [
+    { kind: "fill", hex: "#000000", a: 0.55, pts: slantQuad(s, s, skew, 2.5, -2.5) },
+    // 厚底边:加高 3 的同斜率四边形下移 1.5 → 顶缘与主面齐平、底下 peek 3, 100% 实底不透明
+    { kind: "fill", hex: shadeHex(faceHex, 0.45), a: 1, pts: slantQuad(s, s + 3, skewOf(s + 3, deg), 0, -1.5) },
+    // 主面:纯色块实底,默认完全不透明
+    { kind: "fill", hex: faceHex, a: o.faceA ?? 1.0, pts: slantQuad(s, s, skew) },
+    // 顶缘高光线
+    { kind: "stroke", hex: "#ffffff", a: 0.25, lw: 1, close: false, pts: [[-s / 2 + skew / 2 + 2.5, s / 2], [s / 2 + skew / 2 - 2.5, s / 2]] },
+    // 提亮描边
+    { kind: "stroke", hex: edgeHex, a: o.edgeA ?? 1.0, lw: 1.5, pts: slantQuad(s, s, skew) },
+  ];
+}
+
 // ---------- 开关行 ----------
 
 /**

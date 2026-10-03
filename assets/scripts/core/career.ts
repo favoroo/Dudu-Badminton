@@ -29,6 +29,12 @@ export interface Profile {
   equipped: Record<SkinKind, string>;
   /** 当前装备的技能 */
   equippedSkill?: SkillId;
+  /**
+   * 新手操作教学看过了吗(首次启动自动弹一次;跳过/看完/手动关闭都算看过)。
+   * 老档缺这个字段由 profile() 逐字段补默认 —— 补出来是 false,正好实现
+   * 「滑轨升为默认操作方式后,所有人(含老玩家)第一次启动都看一遍教学」。
+   */
+  tutorialDone?: boolean;
   streak: number;
   bestStreak: number;
   /** 无限练习手动收局的个人单局最高分(最长相持共用 stats.maxRally) */
@@ -65,6 +71,7 @@ const fresh = (): Profile => ({
   owned: KINDS.map((k) => DEFAULTS[k].id),
   equipped: { player: DEFAULTS.player.id, racket: DEFAULTS.racket.id, shuttle: DEFAULTS.shuttle.id, face: DEFAULTS.face.id },
   equippedSkill: "lunge",
+  tutorialDone: false,
   streak: 0, bestStreak: 0,
   bestEndlessScore: 0,
   drills: {},
@@ -102,6 +109,8 @@ function profile(): Profile {
     if (!cache.owned.includes(DEFAULTS[k].id)) cache.owned.push(DEFAULTS[k].id);
   }
   if (!cache.equippedSkill) cache.equippedSkill = "lunge";
+  // 手改存档把教学标记写坏(字符串/null)→ 退回「没看过」,下次启动再教一遍,无害
+  if (typeof cache.tutorialDone !== "boolean") cache.tutorialDone = false;
   // 首次自动合流散落的旧 wins / matches 记录
   const legacyWins = load<number>("wins", 0);
   const legacyMatches = load<number>("matches", 0);
@@ -365,6 +374,14 @@ function equipSkill(id: SkillId): boolean {
   return true;
 }
 
+/** 新手教学看完/跳过/手动关闭都落这个标记:同设备只自动弹一次(重看入口在训练场与设置页) */
+function setTutorialDone(): void {
+  const p = profile();
+  if (p.tutorialDone) return;
+  p.tutorialDone = true;
+  saveProfile();
+}
+
 // 把当前装备解析成 theme / playerSkin / racketSkin 与当前技能,只挂在左队 0 号真人(「你」)身上。
 // CPU 与 P2 保持阵营色 —— 敌我一眼分明,这也是现有视觉语言。
 // theme 只承载三色(与 CPU 阵营色同构),发型/头饰/纹样/光环等设计字段走 playerSkin
@@ -384,5 +401,5 @@ function applyToMatch(): void {
 export const Career = {
   KINDS, profile, skinOf, skinById, owns, unlocked,
   expNeed, levelCoin, settle, settleDrill, buy, equip, buyAndEquip, applyToMatch,
-  equippedSkill, isSkillUnlocked, equipSkill, maxOut, sandboxed,
+  equippedSkill, isSkillUnlocked, equipSkill, setTutorialDone, maxOut, sandboxed,
 };

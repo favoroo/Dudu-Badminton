@@ -74,7 +74,7 @@ import {
 } from "../core/settings";
 import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
-import { cdAlpha, cdText, drawCooldown, drawBlockedSlash, skillAccent } from "./pad-cd";
+import { cdAlpha, cdText, drawCooldown, drawBlockedSlash, makeCdGate, skillAccent, type CdGate } from "./pad-cd";
 import { applyFont } from "../game/fonts";
 
 /** 有按下/抬起两种状态的键;跨步键是纯边沿语义,抬起不动它。
@@ -155,6 +155,8 @@ interface BtnRec {
   cdOp: UIOpacity | null;
   /** 技能 CD 比例: 0 (就绪) .. 1 (全量冷却中) */
   cdRatio?: number;
+  /** 冷却重画门控:基准 = 上一次画上屏的 ratio(基准写错成上一帧喂值时扫掠会整段冻结,见 pad-cd.makeCdGate) */
+  cdGate?: CdGate;
   /** 技能剩余冷却秒数(与 cdRatio 同源,给键心读数用) */
   cdSec?: number;
   /** 技能是否满足当前局势释放条件 (不满足置灰, 满足点亮) */
@@ -320,6 +322,10 @@ function paint(rec: BtnRec, edit: boolean): void {
     g.arc(0, 0, rec.r - 4, a0, a1, false);
     g.stroke();
   }
+
+  // 这一笔画的是什么,ratio 就是什么:所有重画路径(down/upOf/apply/edit 拖动)都在这里
+  // 统一重定冷却门控的基准,stepTol 比的才是「屏上状态与真值的累计漂移」
+  rec.cdGate?.sync(rec.cdRatio ?? 0);
 }
 
 /** 冲击环:按下瞬间亮一下,半径与按钮一致,alpha/scale 由 tween 驱动淡出;hex 传入档位色(甜蜜/完美辉光、滑动方向色复用同一子节点) */
@@ -1006,7 +1012,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     action, node, ut, g, cluster, r, pressed: false, selected: false, glow: 0,
     flash, flashG, flashOp, swipeDir: 0, labelOp, labelComp, cdOp, cdComp,
     badgeComp, badgeOp, hintComp, hintOp,
-    cdRatio: 0, cdSec: 0, skillReady: true, skillId: "lunge", skillBlock: null, readyPulsing: false,
+    cdRatio: 0, cdGate: makeCdGate(), cdSec: 0, skillReady: true, skillId: "lunge", skillBlock: null, readyPulsing: false,
   };
   paint(rec, !!opts.edit);
 
@@ -1853,7 +1859,9 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     for (const rec of recs) {
       if (rec.action !== "lunge") continue;
       const block = blockReason ?? null;
-      const changed = Math.abs((rec.cdRatio ?? 0) - cdRatio) > CFG.padSkin.cd.stepTol
+      // 比例项走 gate:基准是「上一次画上屏的值」。直接比 rec.cdRatio 的旧写法基准每帧被
+      // 覆盖,阈值退化成相邻帧增量(= 1/maxCd),长 CD 的扫掠会整段冻结(见 pad-cd.makeCdGate)
+      const changed = (rec.cdGate?.step(cdRatio) ?? true)
         || rec.skillReady !== ready
         || rec.skillId !== skillId
         || rec.skillBlock !== block;

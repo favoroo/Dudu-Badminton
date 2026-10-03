@@ -12,6 +12,7 @@ import { installStorageBackend } from "./host";
 import { Rules } from "../core/rules";
 import { AI } from "../core/ai";
 import { Drill } from "../core/drill";
+import { Tutorial } from "../core/tutorial";
 import { Career } from "../core/career";
 import { flightFramesToClosest } from "../core/physics";
 import { Pace } from "../core/pace";
@@ -20,6 +21,7 @@ import { Player, PRESS_LEAD_FRAMES } from "../core/player";
 import { Skills } from "../core/skills";
 import { clamp } from "../core/utils";
 import { Ball, FaceKind, GameEvent, PlayerInput, ShotKind, ShotResult, SkillId } from "../core/types";
+import type { DiffKey } from "../core/types";
 import { WorldView } from "../render/world";
 import { TIER_FIRE, TIER_NORMAL, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "../render/shuttle-motion";
 import { newPad, clearEdges, buildIntent, emptyIntent, tickHolds, Pad } from "../input/pad";
@@ -55,6 +57,12 @@ export class GameRoot extends Component {
   private previewShotRef: ShotResult | null = null;
   private previewFrame = -99;
   private previewKindCache: ShotKind | null = null;
+  /** 最近逼近帧(fc)缓存:flightFramesToClosest 每次做 56 步弹道积分,是最重的固定
+   *  每帧 CPU 热点。fc 本来就是「还剩几帧」的整数帧预算,改每 2 帧重算一次,
+   *  一帧粒度的滞后在 60Hz 下不可感知;换球(引用变)立即重算,不吃旧轨迹。 */
+  private swingCueBall: Ball | null = null;
+  private swingCueFcFrame = -99;
+  private swingCueFc: number | null = null;
   /** 时机环入参复用对象(setTimingRing 只存引用、draw 时读字段,复用安全) */
   private cueRing = { zx: 0, zy: 0, zr: 0, progress: 0, locked: false };
 
@@ -99,7 +107,7 @@ export class GameRoot extends Component {
   }
 
   /** 老菜单的占位:startMode 的直连版(阶段 3 接菜单 UI) */
-  private startMatch(mode: string, diff: "easy" | "normal" | "hard"): void {
+  private startMatch(mode: string, diff: DiffKey): void {
     Rules.newMatch(mode, diff);
     Career.applyToMatch();      // 换上的皮肤跟人走
     this.world.clearFloats();
@@ -156,6 +164,7 @@ export class GameRoot extends Component {
         } else {
           this.worldT++;                     // 只有世界真正推进的 step 累加世界时钟
           Rules.step(this.buildInputs());
+          Tutorial.frame();                  // 教学实操门控逐帧轮询(移动进圈/起跳离地)
           // 跳跃按住时长:只在世界真推进的步里数。放这里而不是跟着 clearEdges 走 ——
           // hitstop 定格段世界不升,按住时长也不该涨,否则 tapCommitFrames
           // 会把「顿帧里松手」误判成点跳并补一段现实里没发生的上升。
@@ -255,7 +264,13 @@ export class GameRoot extends Component {
     // 与档无关);折了反而让慢档的提前量变长,与 swingCue 的设计意图相反。详见 pace.ts 头注释。
     // fc = 最近逼近帧(对走位误差鲁棒):玩家有走位误差,坠落轨迹不穿区心是常态,
     // 「进入小圆」式锚环要么系统性早按、要么要求精确穿心直接失联 —— 见 config.swingCue 注。
-    const fc = flightFramesToClosest(ball, z.x, z.y, z.r, cue.horizonFrames);
+    // 56 步积分每 2 帧才算一次(见字段注释),换球立即重算。
+    if (this.swingCueBall !== ball || this.frameT - this.swingCueFcFrame >= 2) {
+      this.swingCueBall = ball;
+      this.swingCueFcFrame = this.frameT;
+      this.swingCueFc = flightFramesToClosest(ball, z.x, z.y, z.r, cue.horizonFrames);
+    }
+    const fc = this.swingCueFc;
     if (fc === null) {
       this.swingCueArmed = true;
       touchPad.setSwingGlow(0);
@@ -324,9 +339,12 @@ export class GameRoot extends Component {
     }
     const hooks = this.inputHooks;
     return R.players.map((p) => {
-      // 训练场的右半边不是对手,是喂球机:走同一条 inputs 通道(一拍一落是结构必然)
+      // 训练场/新手教学的右半边不是对手,是喂球机:走同一条 inputs 通道(一拍一落是结构必然)
       if (R.mode === "drill" && p.side === "right") {
         return { ...emptyIntent(), ...hooks, ...Drill.feederInput(p, R) };
+      }
+      if (R.mode === "tutorial" && p.side === "right") {
+        return { ...emptyIntent(), ...hooks, ...Tutorial.feederInput(p, R) };
       }
       if (p.isAI) return { ...AI.think(p, R.ball as Ball, R.state), ...hooks };
       return buildIntent(this.pad, hooks);   // 阶段 2:左队 0 号真人用 P1 键位/虚拟按键
@@ -425,7 +443,7 @@ export class GameRoot extends Component {
    */
   private syncPressureCue(): void {
     const R = Rules.R;
-    if (R.mode === "drill") { this.pStage = 0; return; }   // 喂球机没有体力这回事
+    if (R.mode === "drill" || R.mode === "tutorial") { this.pStage = 0; return; }   // 喂球机没有体力这回事
     const ai = R.players.find((p) => p.side === "right" && p.isAI);
     if (!ai || !ai.ai) { this.pStage = 0; return; }
     const tier = ai.aiTier ?? C.diffs[ai.aiDiff ?? "normal"];
@@ -523,7 +541,7 @@ export class GameRoot extends Component {
           }
 
           // 夸奖只给真人:喂球那拍不飘字(判据可信度)
-          const praise = !(R.mode === "drill" && e.side === "right");
+          const praise = !((R.mode === "drill" || R.mode === "tutorial") && e.side === "right");
           const hitterIdx = e.idx as number;
           // 触觉:只给真人打出来的特殊击球 —— 普通对拉不震、AI 击球不震(旧写法两条都没挡住,
           // 结果是"每拍都在嗡嗡"反而什么都读不出来)。档位判据在 core/haptic.ts 的 shotKey
@@ -647,7 +665,7 @@ export class GameRoot extends Component {
             this.world.float(e.x as number, (e.y as number) - 44, e.timingHint === "early" ? "早了!" : "晚了!", "#ff9664", 14, 36);
           }
           // 表情:扣杀凶相 / 完美星眼 / 下网冒汗(训练场喂球机不做人,不给它表情)
-          if (!(R.mode === "drill" && e.side === "right")) {
+          if (!((R.mode === "drill" || R.mode === "tutorial") && e.side === "right")) {
             if (e.intoNet) this.faceOf(hitterIdx, "oops", 50);
             else if (perfect) this.faceOf(hitterIdx, "star", 55);
             else if (smash) this.faceOf(hitterIdx, "fierce", 45);
@@ -720,6 +738,22 @@ export class GameRoot extends Component {
           if (p.done) this.finishDrill();
           break;
         }
+        // ---------- 新手教学:每一球结束(反馈飘字与训练场同款,判分归 Tutorial) ----------
+        case "tut-end": {
+          const hadGate = Tutorial.gateDone(1);
+          Tutorial.onEnd(e as never);
+          if (Tutorial.gateDone(1) && !hadGate) {
+            this.world.floatSys(C.world.w / 2, C.court.groundY - 96, "就是这样!", "#ffe14d", 26, 70);
+            this.sfx.score(true);
+          } else {
+            const msg = Tutorial.curFail();
+            if (msg) {
+              const landX = (e.landX as number) || (C.world.w / 2);
+              this.world.floatSys(landX, C.court.groundY - 64, msg, "#ffaaa0", 16, 52);
+            }
+          }
+          break;
+        }
         case "score": {
           this.sfx.score(true);
           this.bgm.onScore();
@@ -731,7 +765,7 @@ export class GameRoot extends Component {
           // boss 战爽感的闭环就在这一句:玩家亲眼看到「这分是我拖出来的」。
           // 扣杀得分有自己的中央大字(同区 y=96),不再叠一层;训练场没有对手体力。
           // 同样吃 cueFloor:easy 血条掉空时行为侧才一半,别替它喊「体力透支」。
-          if (e.side === "left" && e.reason !== "扣杀得分" && R.mode !== "drill") {
+          if (e.side === "left" && e.reason !== "扣杀得分" && R.mode !== "drill" && R.mode !== "tutorial") {
             const ai = R.players.find((p) => p.side === "right" && p.isAI);
             if (ai && ai.ai) {
               const tier = ai.aiTier ?? C.diffs[ai.aiDiff ?? "normal"];

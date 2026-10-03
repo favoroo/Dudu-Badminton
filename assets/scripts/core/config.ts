@@ -2,7 +2,7 @@
 // 全部平衡数值 / 键位 / 配色集中在这里 —— 想调手感只改这个文件
 // 单位约定:1 step = 1/60 s;长度 px;速度 px/step;加速度 px/step²
 // ============================================================
-import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, ShotKind, DrillDef, AiSmashDefenseDef, AiTier, ServeMixTier, SkillId } from "./types";
+import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, ShotKind, DrillDef, AiSmashDefenseDef, AiTier, ServeMixTier, SkillId, TutTopic } from "./types";
 
 // ===== 稀有度元数据:商店卡片框色/角标用;配色只进 config =====
 export const RARITY_META: Record<Rarity, { name: string; color: string }> = {
@@ -681,6 +681,7 @@ export const CFG = {
     easy:   { flick: 0.04, clear: 0.34, vsBackCamper: 0.24, vsNetRusher: 0.12 },
     normal: { flick: 0.16, clear: 0.36, vsBackCamper: 0.50, vsNetRusher: 0.22 },
     hard:   { flick: 0.26, clear: 0.30, vsBackCamper: 0.62, vsNetRusher: 0.34 },
+    expert: { flick: 0.34, clear: 0.28, vsBackCamper: 0.72, vsNetRusher: 0.42 },
   },
 
   // ===== 训练场:喂球节奏 / 达标与星级阈值 =====
@@ -720,6 +721,34 @@ export const CFG = {
         runShare: 0.42,  // 来球段的后这么多比例用来跑位(全程站着不动看不出「要跑」)
         minIn: 14, minOut: 14, maxPhase: 90,   // 两段真实帧数的兜底夹取(异常喂球不至于卡住)
       },
+    },
+  },
+
+  // ===== 新手操作教学(滑轨):门控阈值 + 喂球 + 演示节拍 =====
+  // 逻辑在 core/tutorial.ts(照 drill.ts 骨架:世界推进仍交给 Rules.step),
+  // 版式在 ui/tutorial-layout.ts、动画在 render/tutorial-anim.ts,这里只放数值真话。
+  // 门控阈值全是「第一颗球就该成功」的宽限值 —— 教学是教会,不是考试。
+  tutorial: {
+    pointPause: 46,        // 每球结束到重喂的停顿(比训练场 40 略长,留出读提示的时间)
+    settle: 16,            // 喂球机回位后先站稳几帧再放球(与训练场同源)
+    // —— 实操门控 ——
+    moveTargetX: 120,      // 「把人拖进圈」的目标点(世界坐标:左半场后场;必须离出生点 homeX=270 远,站着不动不许算过)
+    moveEps: 30,           // 目标圈半径:圈画多大,人就多宽容
+    dwellFrames: 24,       // 在圈内连续停稳多少帧算完成(≈0.4s,防止拖过去路过就算)
+    hitGoal: 2,            // 击球实操要打回几拍有效球
+    // —— 喂球(击球实操专用):不跳、低手抛,出来的是慢而高的好接球 ——
+    feed: { depth: 0.5, jumpLead: 0 },
+    // —— 三段手势演示的节拍(render/tutorial-anim 唯一读处,帧 @60Hz)——
+    // 位置与弹道是**真值**:滑轨 1:1 对位 railGeo 的可达区间;来球/回球弧线与帧数、
+    // 站位、跳跃高度全部来自 core/tutorial-demo 的烘焙(与实操同一颗喂球)。
+    // 这里只放手势节奏与定格,不写任何坐标或弧线。
+    demo: {
+      dash: { on: 12, off: 8 },   // 演示弧线的虚线节奏(世界 px:画 12 停 8)
+      move: { press: 12, slide: 58, dwell: 30, back: 26 },  // 按住→拖到圈→停稳→松手回中
+      hit: { wind: 6, freeze: 7, hold: 26, minIn: 30, maxIn: 95, minOut: 26, maxOut: 95 },
+      // jump:手势圈两式交替(上滑 / 双击);air 段帧数 = 真实跳跃递推的全程,不由这里定
+      jump: { press: 8, slideUp: 10, tap: 5, tapGap: 6, hold: 24, land: 12,
+              minIn: 30, maxIn: 95, minOut: 26, maxOut: 95 },
     },
   },
 
@@ -1122,6 +1151,9 @@ export const CFG = {
     // 可读性靠实底,不挡球靠挪位置;真机仍嫌抢眼再整体调低
     floatPlateDim: 1,          // 底板所有 alpha 的全局乘数
     floatPlatePadScale: 0.85,  // 底板外扩尺寸乘数(1=原版,越小底板越紧凑)
+    // 场边字同侧堆叠的行间缝隙:一拍最多四条场边字(档位+技能+跳杀+热手),旧错行
+    // 封顶两行会把第 3、4 条叠回同一点(render/float-lane.ts 接着最低下沿往下排)
+    floatLaneGap: 8,
     // 夸奖档位的文案/字号/寿命:原先硬编码在 game-root 的 drain 里(六档各一行),
     // 挪进配置后"这一档给多大的字"与别的特效旋钮一处对齐;
     // 位置不跟球 —— game 层按击球方挂到场边锚点 floatSide,底板才不会挡住球
@@ -1251,7 +1283,8 @@ export const CFG = {
       numY: 0.08,                   // 倒计时圆心高度比例:往上让开键名标签那一带(断言④)
       numOutlineColor: "#0a0d18",
       numMin: 0.1,                  // 冷却中最低读数:宁显示 0.1 也不显示 0.0(0.0 = 看着像就绪)
-      stepTol: 0.008,               // cdRatio 变化超过这个才重画(0.015 时 6 秒档的扫掠会跳格)
+      stepTol: 0.008,               // 冷却扫掠的重画阈值:距**上次重画**的累计变化超过它才重画(门控在 pad-cd.makeCdGate;
+                                    // 基准若错写成「上一帧喂值」,阈值退化成相邻帧增量,长 CD 的扫掠会整段冻结、只随点按跳格)
       // --- 「就绪但当前局势不给放」三态(笔画在 input/pad-cd.ts,原因文案在 skills.blockText)---
       // 冷却中 = 扇形墨底 + 倒计时;门槛未满足 = 键上斜杠 + 键上方红字原因;就绪 = 呼吸辉光
       slashColor: "#8a8f9e",        // 门槛斜杠颜色(灰:是「局势不让」,不是「出错」)
@@ -1550,7 +1583,7 @@ export const CFG = {
   // ===== AI 体力能量槽 (boss 血条规格:下挂在 AI 比分卡底缘,与卡对齐) =====
   // 5 段斜切槽当**刻度**,血量是连续滑过去的填充(hud.ts 缓动 + 掉血残影),
   // 随连击压力 S.pressure 扣减(展示层按本档 crush 归一化,三档都能看到全程变化 ——
-  // 否则 hard(0.3)永远 4~5 格、easy(0.5)永不力竭)。从前一格一跳,玩家打完整回合
+  // 否则 hard(0.55)永远 4~5 格、easy(0.5)永不力竭)。从前一格一跳,玩家打完整回合
   // 才看见掉了一格,「在消耗」这件事根本读不出来。
   // 分档色与 game-root 的阶段线同源:充沛(>0.6 青黄) → 消耗(>0.2 橙) → 危险(红) →
   // 力竭(≤0.04 暗槽慢闪红框)
@@ -1573,33 +1606,45 @@ export const CFG = {
   // crush=连击压力闸门(0=完全不吃压力;见 ai.ts pressureOf) · notice=接球反应延迟帧(拟人)
   // softGate=轻松拍回气闸门(0=接软球也不回;见 ai.ts noteHit 的负成本)
   // 数值口径:ai-check 的真人替身(走位 ±35px、反应 10 帧、时机早 5/晚 10 帧)打出
-  // easy 60% / normal 46% / hard 32% 的得分率、回合 10.8~19.3 拍(2026-10-01 随新触发系统
-  // 重校准;工具与 serve-check 均已种子化,同代码同结果)。改任何 diffs.* 都要重跑
-  // ai-check 连同替身口径一起看,贴线断言的余量校准用 AI_CHECK_MATCHES=25。
-  // 回滚成旧行为(逐项精确复现):read 填回 92/66/20 并把 aiRead 的 readFloor 设 1、
-  // zone 全 1、shotErr 全 0、composure 全 1、crush 全 0、notice 全 0 —— 但 read 不抵消这条一改就回不去。
+  // easy 53% / normal 34% / hard 28% / expert 12% 的得分率(25 局基线,2026-10-03 重校准)。
+  // 改任何 diffs.* 都要重跑 ai-check 连同替身口径一起看,贴线断言的余量校准用 AI_CHECK_MATCHES=25。
+  //
+  // ===== 2026-10-03 四档整体重校准(用户现场:大师档打 100 拍 0 分) =====
+  // 旧值 hard crush=0.3:AI 几乎不累,长回合里 99% 挥拍命中率,真人打不穿。
+  // 四档防守参数原来挤在很窄的带里(zone 0.93~0.98 / shotErr 12~70),主要靠 crush 拉开,
+  // 而 easy 的 shotErr=70 是"AI 自己打飞送分"——不是好设计,且与 normal(14)断层 5 倍。
+  // 这次重铺:四档 zone 统一下移并拉开(0.88/0.86/0.90/0.92)、shotErr 均匀阶梯、
+  // crush 恢复正常>hard 的差距(0.85 vs 0.55 = 0.3 差,原 1.0 vs 0.3 = 0.7 太极端)。
+  // hard 的 crush 0.3→0.55 是核心:AI 现在会在长回合里累、开始漏球,玩家打得穿。
+  // 回滚成旧行为(逐项精确复现):speed 填回 0.90/0.94/1.00/1.02、read 45/35/32/26、
+  // zone 0.93/0.94/0.96/0.98、shotErr 70/14/12/10、crush 0.5/1.0/0.3/0.15。
+  //
+  // expert(极限)是给通关玩家的天花板档:不再靠 read/shotErr 拉开(那两格 hard 已收得很窄,
+  // 再压只会把 AI 变成不会出手的稻草人),改压「时机与反应」—— tick 重规划更勤、起手误差
+  // 只剩 2 帧、愣神 1 帧、判定区收满,加上更抗疲劳(crush 0.3)与完全看风下手(windSense 1)。
   // windSense=这一档**看风下手**的程度(0=一味不补,1=补满 aiWindDepth):
   // 出球解算的 "aim" 口径故意不认风(见 physics.ts 的 IntegrateIntent),所以风会真把
   // AI 的球吹偏 —— 从前它一味不补,风关(第 1 关)等于自杀式送分:用户现场
   // 「他发球我就得分了、他根本不会根据风向来进行适配」。
   // 入门档刻意**留一点**(0.25 而不是 0):第 1 关正是玩家学风的地方,对面要是一点都不
   // 适配,风就变成"AI 自己会输"而不是"玩家要读的方向";补太满又把机制从玩家手里拿走
-  // (大师 0.85 也刻意不补满)。入门档剩下的破绽靠 read 45 / shotErr 70,真人肉眼看得出来。
+  // (极限 1 是满补 —— 想赢极限档,风这层红利就不存在了)。
   diffs: {
-    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.93, shotErr: 70, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5, windSense: 0.25, softGate: 0 },
-    normal: { label: "普通", tick: 14, speed: 0.94, read: 35, readFloor: 0.40, zone: 0.94, shotErr: 14, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 1.0, notice: 3, windSense: 0.55, softGate: 1 },
-    hard:   { label: "困难", tick: 8,  speed: 1.00, read: 32, readFloor: 0.62, zone: 0.96, shotErr: 12, timingErr: 3, aggr: 0.52, composure: 1, crush: 0.3, notice: 2, windSense: 0.85, softGate: 1 },
+    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.88, shotErr: 50, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5, windSense: 0.25, softGate: 0 },
+    normal: { label: "普通", tick: 14, speed: 0.91, read: 42, readFloor: 0.40, zone: 0.86, shotErr: 24, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 0.85, notice: 3, windSense: 0.55, softGate: 1 },
+    hard:   { label: "困难", tick: 8,  speed: 0.95, read: 38, readFloor: 0.62, zone: 0.90, shotErr: 20, timingErr: 4, aggr: 0.52, composure: 1, crush: 0.55, notice: 2, windSense: 0.85, softGate: 1 },
+    expert: { label: "极限", tick: 6,  speed: 0.98, read: 30, readFloor: 0.62, zone: 0.92, shotErr: 14, timingErr: 2, aggr: 0.55, composure: 1, crush: 0.30, notice: 1, windSense: 1, softGate: 1 },
   } as Record<DiffKey, AiTier>,
 
   // ===== AI 每一档带哪一招 =====
   // 从前 rules.applyAiTier() 里是 `if easy / else if normal / else` 三个分支写同一个人
   // —— 看着像差异化配置,其实是恒等空转,读代码的人会以为入门档和大师档打法不同。
-  // 现在它是一张**看得出来的表**:三档都是 lunge,与改动前逐位一致(0.0.21 试过
+  // 现在它是一张**看得出来的表**:四档都是 lunge,与改动前逐位一致(0.0.21 试过
   // normal=magnet / hard=focus,ai-check 立刻从「普通 46%」掉到 33%、普通档 0/12 局能赢
-  // —— 吸球与领域减速是补位的量,不是"性格",要动它就得连带重校准三档,那是另一件事)。
+  // —— 吸球与领域减速是补位的量,不是"性格",要动它就得连带重校准各档,那是另一件事)。
   // 关卡表里的 aiSkill 仍然覆盖这一行(第 5/10/14/15/20 关各有指定),战前简报会写出来。
   aiSkillByDiff: {
-    easy: "lunge", normal: "lunge", hard: "lunge",
+    easy: "lunge", normal: "lunge", hard: "lunge", expert: "lunge",
   } as Record<DiffKey, SkillId>,
 
   // ===== AI 扣杀防守难度 (扣杀突破 AI 防线的核心机制) =====
@@ -1613,6 +1658,7 @@ export const CFG = {
     easy:   { noticeAdd: 8, readMul: 2.4, zoneMul: 0.70, timingAdd: 6, shotErrAdd: 50 },
     normal: { noticeAdd: 6, readMul: 2.0, zoneMul: 0.78, timingAdd: 4, shotErrAdd: 30 },
     hard:   { noticeAdd: 4, readMul: 1.6, zoneMul: 0.86, timingAdd: 3, shotErrAdd: 20 },
+    expert: { noticeAdd: 2, readMul: 1.3, zoneMul: 0.92, timingAdd: 2, shotErrAdd: 10 },
   } as Record<DiffKey, AiSmashDefenseDef>,
 
   // ===== 生涯成长:赛后奖励 / 等级 / 皮肤经济(纯数值,逻辑在 career.ts) =====
@@ -1624,6 +1670,7 @@ export const CFG = {
       easy:   { win: 30, lose: 8,  expWin: 22, expLose: 6 },
       normal: { win: 50, lose: 14, expWin: 36, expLose: 10 },
       hard:   { win: 90, lose: 22, expWin: 60, expLose: 16 },
+      expert: { win: 140, lose: 30, expWin: 90, expLose: 24 },
     },
     doublesMul: 1.2,
     // 表现加成:赢得漂亮拿得更多,封顶防极端局刷爆
@@ -1657,6 +1704,7 @@ export const CFG = {
     taps: 6,        // 连点次数
     gapMs: 1200,    // 相邻两下的最长间隔;点慢了就重新计数,正常选馆不会误触
     coins: 99999,   // 拉满后的金币(全商店皮肤合计 ≈ 7400,这里够买穿一整轮)
+    profTaps: 4,    // 拉满后继续连点这几下 → 切引擎统计(profiler)开关,真机看 FPS/帧时间
   },
 
   // ===== 三星判据阈值:判据类型见 campaign.ts 的 StarCond,文案在关卡表 starsGoal =====
@@ -1716,13 +1764,15 @@ export const MENU: MenuEntry[] = [
   { id: "1p-easy",   label: "单人 · 简单", tag: "EASY",   desc: "AI 反应慢、常打飞,适合热身", mode: "1p", diff: "easy" },
   { id: "1p-normal", label: "单人 · 普通", tag: "NORMAL", desc: "有来有回,会抓你的空当", mode: "1p", diff: "normal" },
   { id: "1p-hard",   label: "单人 · 困难", tag: "HARD",   desc: "跳起就扣杀,落点很刁", mode: "1p", diff: "hard" },
+  { id: "1p-expert", label: "单人 · 极限", tag: "EXPERT", desc: "反应极限,几乎不失误", mode: "1p", diff: "expert" },
   { id: "2v2", label: "双打 · 两人组队",   tag: "CO-OP 2P", desc: "你 + 队友 打两个 AI",       mode: "2v2", diff: "normal", humans: 2 },
   { id: "1v2", label: "双打 · 带AI搭档", tag: "CO-OP 1P", desc: "你 + AI 搭档 打两个 AI",   mode: "2v2", diff: "normal", humans: 1 },
 ];
 
-// 难度选择展示表:对练屏与无限练习屏共用的三档「海报文案」。
-// 档位与 CFG.diffs 一一对应;颜色即难度语言(绿 → 黄 → 橙,一眼看出强度)。
-// 主菜单改版后三档难度不再直接铺在首页,而是收进「对练」屏统一选档。
+// 难度选择展示表:对练屏与无限练习屏共用的四档「海报文案」。
+// 档位与 CFG.diffs 一一对应;颜色即难度语言(绿 → 黄 → 橙 → 红,一眼看出强度)。
+// 主菜单改版后各档难度不再直接铺在首页,而是收进「对练」屏统一选档(2×2 大色块)。
+// desc 写给 312 宽色块卡的单行位,别超过 16 个全角字符。
 export interface DiffPick {
   key: DiffKey;
   name: string;
@@ -1732,9 +1782,10 @@ export interface DiffPick {
 }
 
 export const DIFF_PICKS: DiffPick[] = [
-  { key: "easy",   name: "入门", tag: "EASY",   accent: "#7dff9e", desc: "球速温和 · 回球稳定 · 适合热身挥拍" },
+  { key: "easy",   name: "入门", tag: "EASY",   accent: "#7dff9e", desc: "球速温和 · 回球稳定 · 适合热身" },
   { key: "normal", name: "普通", tag: "NORMAL", accent: "#ffe14d", desc: "攻守兼备 · 会抓空当 · 标准拉吊" },
   { key: "hard",   name: "大师", tag: "HARD",   accent: "#ff6a1f", desc: "反应迅捷 · 跳起重扣 · 落点很刁" },
+  { key: "expert", name: "极限", tag: "EXPERT", accent: "#f43f5e", desc: "反应极限 · 几乎不失误 · 天花板" },
 ];
 
 // ============================================================
@@ -1879,6 +1930,44 @@ export const DRILLS: DrillDef[] = [
       { name: "落点", desc: "挑得越高越好", note: "才换得到退防时间" },
     ],
     pose: { style: "under", jump: false, lunge: 18, crouch: true },
+  },
+];
+
+// ============================================================
+// 新手操作教学的三条主题(讲解 ①②③ + 实操一句话)。文案唯一真话:
+// 讲解页(ui/tutorial-panel)、实操横幅、判据文案(tools/tutorial-check)都读这一份。
+// 写法纪律:只写触屏语言,不出现桌面键名与 emoji(原生无彩色 emoji 字体)。
+// ============================================================
+export const TUTORIAL_TOPICS: TutTopic[] = [
+  {
+    id: "move", label: "移动",
+    lines: [
+      "按住屏幕下方的滑轨,按哪里都行",
+      "左右拖动:手指在哪,人就在哪",
+      "松手,人立刻停住",
+    ],
+    practice: "把人拖进圆圈里,停稳一下",
+    hint: "手指按在滑轨上,拖到圆圈正上方",
+  },
+  {
+    id: "hit", label: "击球",
+    lines: [
+      "按「击球」键就挥拍,不用蓄力",
+      "按住向右滑 = 打深球,向左滑 = 放网前",
+      "球到身前肩高再按,回球又快又准",
+    ],
+    practice: "把喂球机喂来的 2 个球打回对面场内",
+    hint: "喂球机放球前会站稳几拍,看准了再按",
+  },
+  {
+    id: "jump", label: "起跳",
+    lines: [
+      "手指按在滑轨上,向上快速一滑 = 起跳",
+      "也可以在滑轨上快速双击起跳",
+      "跳起来能打到高球,还能扣杀",
+    ],
+    practice: "原地起跳 1 次",
+    hint: "上滑或双击都行,跳起来就算过",
   },
 ];
 

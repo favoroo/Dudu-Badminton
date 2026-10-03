@@ -82,6 +82,15 @@ export function repaint(g: Graphics, draw: () => void): void {
   draw();
 }
 
+/**
+ * 容器整树清空:children 先 slice 再逐个 destroy —— `removeAllChildren()`/`removeFromParent()`
+ * 只是**摘下来**不打断销毁,那些画过一次的 Graphics 会飘在场景外占着渲染数据
+ * (切页重建两轮就翻一倍)。凡「清空重来」的容器一律走这里,别手写摘除。
+ */
+export function clearKids(n: Node): void {
+  for (const c of n.children.slice()) c.destroy();
+}
+
 export interface TabSpec {
   name: string;
   label: string;

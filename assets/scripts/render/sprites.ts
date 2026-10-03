@@ -69,7 +69,12 @@ function playerFrame(vp: Viewport, wx: number, wy: number, facing: number, sx: n
   const vs = Math.sqrt(vsx * vsy) || 1;
   const k = Math.sqrt(Math.abs(facing * sx * sy)) * vs;
   return {
-    pt: (lx, ly) => ({ x: vp.x(wx + facing * sx * lx), y: vp.y(wy + sy * ly) }),
+    pt: (lx, ly) => {
+      const p = pooledPt();
+      p.x = vp.x(wx + facing * sx * lx);
+      p.y = vp.y(wy + sy * ly);
+      return p;
+    },
     lw: (v) => v * k,
     kx: sx * vsx,
     ky: sy * vsy,
@@ -115,8 +120,11 @@ function shuttleFrame(vp: Viewport, wx: number, wy: number, ang: number, sqX: nu
   const k = Math.sqrt(Math.abs(sqX * sqY)) * vs;
   return {
     pt: (lx, ly) => {
+      const p = pooledPt();
       const rx = lx * sqX, ry = ly * sqY;
-      return { x: vp.x(wx + rx * cos - ry * sin), y: vp.y(wy + rx * sin + ry * cos) };
+      p.x = vp.x(wx + rx * cos - ry * sin);
+      p.y = vp.y(wy + rx * sin + ry * cos);
+      return p;
     },
     lw: (v) => v * k,
     kx: 0, ky: 0,
@@ -124,6 +132,35 @@ function shuttleFrame(vp: Viewport, wx: number, wy: number, ang: number, sqX: nu
 }
 
 // ---------- 折线 / 采样:cc.Graphics.arc 扫向与 canvas 相反,统一自采样最稳 ----------
+
+// ---------- 采样点池:圆弧采样每帧零分配 ----------
+// drawPlayer/drawShuttle 一帧要采几十处圆弧,旧写法每点 new {x,y}、每弧 new 数组,
+// 两名角色 + 球合计每帧 1500~2500 个短命对象 —— 周期性 major GC 尖峰的主要来源。
+// 全文件对采样点的用法都是「采完立刻 polyPath/读值,不跨调用树持有」,所以一页
+// 环形池轮转即可:槽位复用、游标只进不退;单帧峰值用量 ~3000 点 / 几十条数组,
+// 池深 8192 / 256,任何还活着的点在被覆盖前早就画完了。offset/scaled/rotate 三类
+// 子帧只是委托父帧变换,本身不产出新点,无需自己过池。
+const PT_POOL_N = 8192;
+const ptPool: Pt[] = Array.from({ length: PT_POOL_N }, () => ({ x: 0, y: 0 }));
+let ptHead = 0;
+const ARR_POOL_N = 256;
+const arrPool: Pt[][] = Array.from({ length: ARR_POOL_N }, () => []);
+let arrHead = 0;
+
+/** 取下一个复用点(调用方立即写 x/y) */
+function pooledPt(): Pt {
+  const p = ptPool[ptHead];
+  ptHead = (ptHead + 1) % PT_POOL_N;
+  return p;
+}
+
+/** 取一条复用折线(长度清零,调用方 push) */
+function pooledPts(): Pt[] {
+  const a = arrPool[arrHead];
+  arrHead = (arrHead + 1) % ARR_POOL_N;
+  a.length = 0;
+  return a;
+}
 
 /** canvas arc 语义的扫角归一化:ccw=false 扫增角(区间 (0,2π]),ccw=true 扫减角(区间 [-2π,0)) */
 function sweepDelta(a0: number, a1: number, ccw: boolean): number {
@@ -146,7 +183,7 @@ const CIRCLE_SEGS = 20;
 function arcPts(f: Frame, cx: number, cy: number, r: number, a0: number, a1: number, ccw: boolean): Pt[] {
   const d = sweepDelta(a0, a1, ccw);
   const steps = Math.max(2, Math.ceil((Math.abs(d) / TAU) * CIRCLE_SEGS));
-  const pts: Pt[] = [];
+  const pts = pooledPts();
   for (let i = 0; i <= steps; i++) {
     const th = a0 + (d * i) / steps;
     pts.push(f.pt(cx + r * Math.cos(th), cy + r * Math.sin(th)));
@@ -156,7 +193,7 @@ function arcPts(f: Frame, cx: number, cy: number, r: number, a0: number, a1: num
 
 /** 一般椭圆参数采样(带旋转/非均匀缩放的椭圆 cc ellipse 画不了,统一折线) */
 function ellipsePts(f: Frame, cx: number, cy: number, rx: number, ry: number): Pt[] {
-  const pts: Pt[] = [];
+  const pts = pooledPts();
   for (let i = 0; i < CIRCLE_SEGS; i++) {
     const t = (i / CIRCLE_SEGS) * TAU;
     pts.push(f.pt(cx + rx * Math.cos(t), cy + ry * Math.sin(t)));
@@ -347,7 +384,12 @@ export function drawSwingArcGhost(
 ): void {
   if (alpha <= 0.004) return;
   const F: Frame = {
-    pt: (lx, ly) => ({ x: vp.x(sa.x + (sa.facing || 1) * lx), y: vp.y(sa.y + ly) }),
+    pt: (lx, ly) => {
+      const p = pooledPt();
+      p.x = vp.x(sa.x + (sa.facing || 1) * lx);
+      p.y = vp.y(sa.y + ly);
+      return p;
+    },
     lw: (v) => v,
     kx: 0, ky: 0,
   };
@@ -512,7 +554,13 @@ interface Torso {
 function makeTorso(tx: number, top: number, h: number, w: number, spineX: (v: number) => number): Torso {
   return {
     top, h, w,
-    pt(v: number, u: number): Pt { return { x: tx + spineX(v) + w * u, y: top + h * v }; },
+    // 躯干点是每帧最热的一路采样(带/轮廓全走它),一律出池
+    pt(v: number, u: number): Pt {
+      const p = pooledPt();
+      p.x = tx + spineX(v) + w * u;
+      p.y = top + h * v;
+      return p;
+    },
   };
 }
 
@@ -527,7 +575,7 @@ function torsoBand(g: Graphics, f: Frame, t: Torso, v0: number, v1: number,
   const lxMid = minLx === undefined ? mid.x : Math.max(mid.x, minLx);
   if (lxMid >= t.pt((v0 + v1) / 2, u1).x) return;
   const n = Math.max(2, Math.ceil((v1 - v0) * t.h / C.pose.spineRowH));
-  const pts: Pt[] = [];
+  const pts = pooledPts();
   for (let i = 0; i <= n; i++) {                        // 背侧边:v0 → v1
     const p = t.pt(v0 + (v1 - v0) * (i / n), u0);
     pts.push(f.pt(minLx === undefined ? p.x : Math.max(p.x, minLx), p.y));
@@ -1601,7 +1649,7 @@ function drawHairCover(g: Graphics, f: Frame, color: string, hr: number, cx: num
 // 刺猬头:沿头顶轮廓向外扎 7 根尖刺(长短错落),根部埋进头圆
 function drawHairSpiky(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
   const N = 7, a0 = Math.PI * 1.06, a1 = Math.PI * 1.94;
-  const pts: Pt[] = [];
+  const pts = pooledPts();
   for (let i = 0; i <= N; i++) {
     const a = a0 + ((a1 - a0) * i) / N;
     pts.push(f.pt(cx + Math.cos(a) * hr * 1.02, cy + Math.sin(a) * hr * 1.02));
@@ -1617,7 +1665,7 @@ function drawHairSpiky(g: Graphics, f: Frame, color: string, hr: number, cx: num
 // 莫霍克:头顶正中一排高耸窄刺,从后脑排到额前
 function drawHairMohawk(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
   const N = 5, a0 = Math.PI * 1.22, a1 = Math.PI * 1.78;
-  const pts: Pt[] = [];
+  const pts = pooledPts();
   for (let i = 0; i <= N; i++) {
     const a = a0 + ((a1 - a0) * i) / N;
     pts.push(f.pt(cx + Math.cos(a) * hr * 0.98, cy + Math.sin(a) * hr * 0.98));
@@ -1972,7 +2020,7 @@ function drawFaceSticker(g: Graphics, f: Frame, t: number, face: FaceKind, faceT
     g.stroke();
   } else if (kind === "star") {
     // 四芒星:外尖内收的 8 点多边形
-    const pts: Pt[] = [];
+    const pts = pooledPts();
     for (let i = 0; i < 8; i++) {
       const ang = -Math.PI / 2 + (i * Math.PI) / 4;
       const r = i % 2 === 0 ? 5 : 1.5;
@@ -2026,7 +2074,7 @@ function drawHand(g: Graphics, f: Frame, hx: number, hy: number, r = 3.6, alpha 
  * 顶端微平展扩大甜区,两侧破风挺拔流线,底端平滑收拢至 T 头。
  */
 function isometricHeadPts(R: Frame, rx = 9.2, ry = 11.5, steps = CIRCLE_SEGS): Pt[] {
-  const pts: Pt[] = [];
+  const pts = pooledPts();
   for (let i = 0; i < steps; i++) {
     const th = (i / steps) * TAU;
     const ct = Math.cos(th), st = Math.sin(th);

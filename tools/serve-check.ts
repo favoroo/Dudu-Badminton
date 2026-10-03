@@ -147,7 +147,7 @@ function measure(diff: DiffKey, mode: ServeMode = "standard"): { received: numbe
 // ---------- 主流程:标准发球 ----------
 console.log(`=== 接发成功率(标准发球):脚本发球机(60% 近网 / 40% 深球)vs AI 接发,每难度 ${TRIALS_PER_DIFF} 个发球样本 ===`);
 const table: Array<[string, number]> = [];
-for (const diff of ["easy", "normal", "hard"] as DiffKey[]) {
+for (const diff of ["easy", "normal", "hard", "expert"] as DiffKey[]) {
   const r = measure(diff, "standard");
   const rate = r.total > 0 ? r.received / r.total : 0;
   table.push([diff, rate]);
@@ -160,6 +160,8 @@ const rateOf = (d: string) => table.find((t) => t[0] === d)?.[1] ?? 0;
 assert(rateOf("normal") >= 0.82, `normal 接发成功率应 ≥82%(实际 ${(rateOf("normal") * 100).toFixed(0)}%)`);
 assert(rateOf("hard") >= 0.90, `hard 接发成功率应 ≥90%(实际 ${(rateOf("hard") * 100).toFixed(0)}%)`);
 assert(rateOf("hard") >= rateOf("normal") - 0.05, "hard 接发成功率不应明显低于 normal");
+assert(rateOf("expert") >= 0.90, `expert 接发成功率应 ≥90%(实际 ${(rateOf("expert") * 100).toFixed(0)}%)`);
+assert(rateOf("expert") >= rateOf("hard") - 0.05, "expert 接发成功率不应明显低于 hard(天花板档必须更强)");
 // 入门档的**天花板**:这一档要故意漏(用户要的"打得动"),但也不许漏成不会接球的木桩。
 // 【2026-10-03 重校准】backBias 修复后(判定区背后死角消除),标准发球实测 99%(240
 // 样本仅 2 漏)。天花板从 98 抬到 99 —— 修复合法改善了所有发球站位,不是回退;
@@ -173,7 +175,7 @@ assert(rateOf("easy") >= 0.70, `easy 接发率不应低于 70%(入门≠不会�
 // 修复 aiReach.backBias=25 后,三档地板都要 ≥70%(高远球比标准球难接,余量放宽)。
 console.log(`\n=== 接发成功率(高远发球):蓄力 70-94 帧全触发 clear 分支,每难度 ${TRIALS_PER_DIFF} 个发球样本 ===`);
 const clearTable: Array<[string, number]> = [];
-for (const diff of ["easy", "normal", "hard"] as DiffKey[]) {
+for (const diff of ["easy", "normal", "hard", "expert"] as DiffKey[]) {
   const r = measure(diff, "clear");
   const rate = r.total > 0 ? r.received / r.total : 0;
   clearTable.push([diff, rate]);
@@ -182,10 +184,11 @@ for (const diff of ["easy", "normal", "hard"] as DiffKey[]) {
     + `  漏接:挥空 近${m.whiff.near}/深${m.whiff.deep} · 没起拍 近${m.noswing.near}/深${m.noswing.deep}`);
 }
 const clearRateOf = (d: string) => clearTable.find((t) => t[0] === d)?.[1] ?? 0;
-// 高远发球地板:三档都要 ≥70%。修复前 easy 实测 ~61%(40% 漏接,几乎全是不起拍)。
+// 高远发球地板:各档都要 ≥70%。修复前 easy 实测 ~61%(40% 漏接,几乎全是不起拍)。
 assert(clearRateOf("easy") >= 0.70, `easy 高远发球接发率应 ≥70%(实际 ${(clearRateOf("easy") * 100).toFixed(0)}%)`);
 assert(clearRateOf("normal") >= 0.80, `normal 高远发球接发率应 ≥80%(实际 ${(clearRateOf("normal") * 100).toFixed(0)}%)`);
 assert(clearRateOf("hard") >= 0.80, `hard 高远发球接发率应 ≥80%(实际 ${(clearRateOf("hard") * 100).toFixed(0)}%)`);
+assert(clearRateOf("expert") >= 0.80, `expert 高远发球接发率应 ≥80%(实际 ${(clearRateOf("expert") * 100).toFixed(0)}%)`);
 
 if (failures) {
   console.log(`\n${failures} 项断言失败`);

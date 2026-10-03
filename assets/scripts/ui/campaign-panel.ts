@@ -40,7 +40,7 @@ import {
   drawPosterPlate, drawRankBadge, drawSectionBand, drawStarGlyph, fadeOutHide, inkFor,
   mkLabel as uiMkLabel, retainedDraw, slamIn, uiIconButton, type Role,
 } from "./ui-arcade";
-import { faceOf, pressable, repaint, solidBlock, solidTab, uinode, type TabHandle } from "./ui-shell";
+import { clearKids, faceOf, pressable, repaint, solidBlock, solidTab, uinode, type TabHandle } from "./ui-shell";
 import {
   BRIEF, BRIEF_BTN, briefInput, layoutBrief, type BriefButton, type BriefItem,
 } from "./brief-layout";
@@ -60,7 +60,7 @@ const THEMES_ORDER: { court: CourtTheme; name: string; icon: string }[] = [
 ];
 
 /** 难度文案与主菜单/无限模式同一套产品命名(同一个 DiffKey 全应用只叫一个名) */
-const CN_DIFF: Record<string, string> = { easy: "入门", normal: "普通", hard: "大师" };
+const CN_DIFF: Record<string, string> = { easy: "入门", normal: "普通", hard: "大师", expert: "极限" };
 
 /**
  * 简报每一块的长相 —— 几何由 brief-layout 算,这里只配颜色/对齐(颜色一律取自令牌表)。
@@ -226,9 +226,9 @@ export class CampaignPanel {
     // 总星数徽章(右锚点:x 就是文字收尾处,给 ✕ 让开命中区)
     this.totalStarsLabel = mkLabel(this.panelNode, "starsTotal", "", CMP.stars.size, ac(C.acid), { align: 2 });
 
-    // 关闭按钮:小面大键(命中 44、视觉 36),颜色取自 primary 角色的厚底边与提亮边
+    // 关闭按钮:实底纯色块(命中 44、视觉 36),P5 斩劈红实底 + 纯白 ✕
     const closeBtn = uiIconButton(this.panelNode, "✕", {
-      bg: ROLE.primary.dk, edge: ROLE.primary.edge, fontSize: 18, hit: CMP.close.hit, vis: CMP.close.vis,
+      fontSize: 18, hit: CMP.close.hit, vis: CMP.close.vis,
     });
     closeBtn.setPosition(CMP.close.x, CMP.close.cy, 0);
     closeBtn.on(Button.EventType.CLICK, () => this.close());
@@ -382,7 +382,7 @@ export class CampaignPanel {
   // ---------- 关卡卡片 ----------
 
   private refreshCards(): void {
-    this.cardContainer.removeAllChildren();
+    clearKids(this.cardContainer);
     const stages = CampaignManager.getStagesByCourt(this.currentCourt);
     const next = CampaignManager.getNextStage();
     const boxes = cardRow(stages.length);

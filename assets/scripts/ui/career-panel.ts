@@ -25,7 +25,7 @@ import {
   retainedDraw, ROLE, skewOf, slamIn, SLANT, slantPath, textW, TOUCH_MIN, uiIconButton,
 } from "./ui-arcade";
 import { C } from "./p5-tokens";
-import { solidTab, type TabHandle } from "./ui-shell";
+import { clearKids, solidTab, type TabHandle } from "./ui-shell";
 import {
   SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, SHOP,
   shopContent, shopStats, shopTabs, shopTopBar, thumbCenterY, thumbHeight,
@@ -507,8 +507,8 @@ export class CareerPanel extends Component {
       x: T.coins.left + 26 + (coinW - 26) / 2, y: 0, w: coinW - 26, align: 1,
     });
 
-    // 返回按钮:命中区 56(视觉圆底 44),Button.CLICK 自带按压反馈
-    const back = uiIconButton(bar, "✕", { bg: C.slashDk, edge: ROLE.primary.edge, fontSize: 20 });
+    // 返回按钮:命中区 56(视觉斜方底 44),Button.CLICK 自带按压反馈
+    const back = uiIconButton(bar, "✕", { fontSize: 20 });
     back.setPosition(cx(T.close), 0, 0);
     back.on(Button.EventType.CLICK, () => {
       this._onCloseCb?.();
@@ -782,10 +782,7 @@ export class CareerPanel extends Component {
     const host = this._contentNode;
     if (!this._gridNode || !host || !host.isValid) return;
     // 清空旧卡片:只清货架,别把挂着 Mask 的可视窗和滚动条一起摘了
-    const children = host.children;
-    for (let i = children.length - 1; i >= 0; i--) {
-      children[i].removeFromParent();
-    }
+    clearKids(host)
 
     const list = this._list();
     const lay = shelfLayout(list.length);
@@ -1038,10 +1035,7 @@ export class CareerPanel extends Component {
     }
 
     // 清空旧统计卡片
-    const children = this._statsNode.children;
-    for (let i = children.length - 1; i >= 0; i--) {
-      children[i].removeFromParent();
-    }
+    clearKids(this._statsNode)
 
     const p = Career.profile();
     const st = p.stats;

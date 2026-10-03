@@ -131,6 +131,9 @@ export const KEYS = {
 
 export const BTNS = { go: "开始训练", back: "换个项目" } as const;
 
+/** 操作教学入口条上的文案(训练场是重看新手教学的入口) */
+export const TUTORIAL_ENTRY = "第一次玩?先来一遍「操作教学」";
+
 /** 头部读数 */
 export function headText(done: number, total: number): string {
   return `${done} / ${total} 已练成`;
@@ -209,7 +212,7 @@ export function titleBand(): Box {
 
 /**
  * 关闭键命中盒:整块 44 = TOUCH.min。
- * ui-arcade.uiIconButton 默认给 56 的命中区(它带 44 的视觉圆底),这里显式传 hit:44 ——
+ * ui-arcade.uiIconButton 默认给 56 的命中区(它带 44 的视觉斜方底),这里显式传 hit:44 ——
  * 顶栏只有 32 高,56 会把命中盒捅到内容区上缘以外。
  */
 export function closeHit(): Box {
@@ -223,14 +226,28 @@ export function headInfoBand(): Box {
   return box(60, right - 60, DRILL.barCy, 24);
 }
 
-// ---------- 列表页:6 张卡 ----------
+// ---------- 列表页:操作教学入口条 + 6 张卡 ----------
 
-/** 卡片的**面板局部**包围盒:整排居中于内容宽,两行在内容高里垂直居中 */
+/** 操作教学入口条高与它和卡片之间的缝 */
+export const ENTRY_H = TOUCH.min;
+export const ENTRY_GAP = 10;
+
+/**
+ * 「操作教学」入口条(列表页顶部整行):滑轨是默认操作方式,新手引导也按滑轨教 ——
+ * 训练场是重看教学的入口(用户指令),这条就是那扇门。卡片网格给它让出整行。
+ */
+export function tutorialEntryBox(): Box {
+  return box(DRILL.left, DRILL.right - DRILL.left, DRILL.contentTop - ENTRY_H / 2, ENTRY_H);
+}
+
+/** 卡片的**面板局部**包围盒:整排居中于入口条之下的可用区,两行垂直居中 */
 export function cardBoxes(): Box[] {
   const n = DRILLS.length;
   const rows = Math.ceil(n / DRILL.cols);
   const totalH = rows * DRILL.ch + (rows - 1) * DRILL.gapY;
-  const topEdge = DRILL.contentTop - (DRILL.contentTop - DRILL.contentBottom - totalH) / 2;
+  const entryBottom = bottom(tutorialEntryBox()) - ENTRY_GAP;
+  const avail = entryBottom - DRILL.contentBottom;
+  const topEdge = entryBottom - (avail - totalH) / 2;
   const totalW = DRILL.cols * DRILL.cw + (DRILL.cols - 1) * DRILL.gapX;
   return Array.from({ length: n }, (_, i) => {
     const col = i % DRILL.cols, row = Math.floor(i / DRILL.cols);
@@ -517,7 +534,12 @@ export function drillOverlaps(drills: readonly DrillDef[] = DRILLS): string[] {
   };
 
   pairs("顶栏", [titleBand(), headInfoBand(), closeHit()]);
-  pairs("列表页卡片", cardBoxes());
+  const entry = tutorialEntryBox();
+  const listCards = cardBoxes();
+  pairs("列表页卡片", listCards);
+  for (const [i, b] of listCards.entries()) {
+    if (boxesOverlap(entry, b)) out.push(`教学入口条压到卡片#${i}`);
+  }
 
   const rows = cardRows();
   pairs("卡内上排", [rows.tag, rows.stars]);
@@ -630,6 +652,12 @@ export function drillOverflow(drills: readonly DrillDef[] = DRILLS): string[] {
     const o = baseOverflow(b);
     if (o) out.push(`底排 ${nm} ${o}`);
   }
+  const oEntry = baseOverflow(tutorialEntryBox());
+  if (oEntry) out.push(`教学入口条 ${oEntry}`);
+  // 入口条文案必须一行放得下(实底条上没有第二行的位置)
+  if (textW(TUTORIAL_ENTRY, DRILL.bandSize) + 28 > widthOf(tutorialEntryBox()) + EPS) {
+    out.push(`教学入口条「${TUTORIAL_ENTRY}」文案比条宽`);
+  }
   return out;
 }
 
@@ -651,5 +679,6 @@ export function drillTouch(): Array<[string, number]> {
     ["连播/暂停", K.play.h], ["慢放", K.speed.h], ["第一步", K.replay.h],
     ["开始训练", K.go.h], ["换个项目", K.back.h], ["关闭键", closeHit().h],
     ["分步卡", DRILL.stepCh],
+    ["操作教学入口", ENTRY_H],
   ];
 }

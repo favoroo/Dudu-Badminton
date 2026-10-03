@@ -16,6 +16,7 @@ import { Physics } from "../core/physics";
 import { Settings } from "../core/settings";
 import { Rules } from "../core/rules";
 import { Drill } from "../core/drill";
+import { Tutorial } from "../core/tutorial";
 import { meter, winU, targetZoneFor } from "./drill-anim";
 import { DrillDemo } from "../core/drill-demo";
 import type { Viewport } from "./world";
@@ -122,6 +123,11 @@ export class HudOverlay {
     if (R.mode === "drill") {
       this.drillFieldGuides(R, t);
       this.drillMeter(R);
+    }
+
+    // ---------- 新手教学:移动实操的目标圈 ----------
+    if (R.mode === "tutorial") {
+      this.tutorialGuides(t);
     }
 
     // ---------- 赛点霓虹旗标 ----------
@@ -522,6 +528,28 @@ export class HudOverlay {
         this.g.stroke();
       }
     }
+  }
+
+  // ---------- 新手教学:移动实操的目标圈 ----------
+  // 只在「移动」实操未完成时画:地面上一只虚线椭圆 + 脉冲,与训练场站位圈同一套语言。
+  // 教学状态读 Tutorial(core)的快照 —— 本模块只画不算,门控判定在 core/tutorial.ts。
+  private tutorialGuides(t: number): void {
+    if (!Tutorial.isPracticing() || Tutorial.curTopic() !== 0 || Tutorial.gateDone(0)) return;
+    const T = C.tutorial;
+    const cx = this.vp.x(T.moveTargetX);
+    const gy = this.vp.y(CO.groundY);
+    const pulse = 0.5 + 0.5 * Math.sin(t * 0.2);
+    // 完成前的呼吸感:站进圈里时(门控累计过半)提亮,玩家能读出「就差停稳这一下」
+    const inZone = Tutorial.dwellProgress() > 0.35;
+    const col = inZone ? "#ffe14d" : "#00f0ff";
+    const a = (inZone ? 0.85 : 0.6) + 0.25 * pulse;
+    this.g.strokeColor = withAlpha(pal(col), Math.min(1, a));
+    this.g.lineWidth = inZone ? 2.6 : 1.8;
+    this.g.ellipse(cx, gy - 2, T.moveEps, T.moveEps * 0.32);
+    this.g.stroke();
+    // 圈心小准星
+    this.g.circle(cx, gy - 2, 4);
+    this.g.stroke();
   }
 
   // ---------- 训练场:头顶挥拍时机条 ----------

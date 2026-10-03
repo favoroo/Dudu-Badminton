@@ -27,6 +27,8 @@ import { installStorageBackend } from "../game/host";
 import { Rules } from "../core/rules";
 import { Career } from "../core/career";
 import { Drill } from "../core/drill";
+import { Tutorial } from "../core/tutorial";
+import { UpdateService } from "../game/update-service";
 import type { DiffKey, SkillId } from "../core/types";
 import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
@@ -45,6 +47,7 @@ import { PausePanel } from "./pause-panel";
 import { SettleBadge, SettlePanel, SettlePayload, SettleStat } from "./settle-panel";
 import { CareerPanel } from "./career-panel";
 import { DrillPanel } from "./drill-panel";
+import { TutorialPanel } from "./tutorial-panel";
 import { CampaignPanel } from "./campaign-panel";
 import { CampaignManager, type StageDef } from "../core/campaign";
 import { objectiveResults } from "../core/campaign-hud";
@@ -366,6 +369,8 @@ export interface UiKit {
   endEndless(): void;
   openCareer(): void;
   openDrills(): void;
+  /** 新手操作教学(滑轨):首启自动弹一次;重看入口在训练场列表页与设置「关于」页 */
+  openTutorial(): void;
   openCampaign(): void;
   startCampaignStage(stage: StageDef): void;
   /** 对练屏(模式屏:三档难度 + 球馆 + 技能;主菜单大色块点入,screenSwap 转场) */
@@ -411,7 +416,10 @@ export class UIManager extends Component {
   private campaignPanel!: CampaignPanel;
   private careerPanel: CareerPanel | null = null;
   private drillPanel: DrillPanel | null = null;
+  private tutorialPanel: TutorialPanel | null = null;
   private settingsPanel: SettingsPanel | null = null;
+  /** ui-root 根节点:教学面板要插在 ui-root 内部(暂停页之下),不是 Canvas 的晚到兄弟 */
+  private uiRootNode: Node | null = null;
   private capture: SettleCapture | null = null;
   private prevSt = "";
   private toastNode: Node | null = null;
@@ -437,6 +445,7 @@ export class UIManager extends Component {
 
     this.buildKit();
     const root = uiRoot(this.node, "ui-root");
+    this.uiRootNode = root;
     // 兄弟顺序即渲染顺序(后加者在上):HUD < 菜单 < 暂停 < 结算
     this.hud = new Hud(root, this.kit);
     this.menu = new MainMenu(root, this.kit);
@@ -459,6 +468,15 @@ export class UIManager extends Component {
     // UI 音复用同一批烘焙 WAV(resources 缓存共享)。
     // 只 load 这一次:重复调用会往节点上再挂一个 AudioSource。
     this.sfx.load(this.node);
+
+    // 首启自动弹新手教学(滑轨是默认操作方式,第一次就该有人教):
+    // 错开 0.6s 等主菜单先立起来;挂着待展示更新弹窗时让位(下次冷启动再教);
+    // 用户若抢先进了别的屏(Rules 离开 MENU),这一门就算错过,入口留在训练场与设置页。
+    if (coldBoot && !Career.profile().tutorialDone && !UpdateService.instance.pendingUpdate) {
+      tween(this.node).delay(0.6).call(() => {
+        if (Rules.R.state === "MENU" && !Career.profile().tutorialDone) this.openTutorial();
+      }).start();
+    }
   }
 
   // ---------- 对外统一接口(正式契约) ----------
@@ -558,8 +576,9 @@ export class UIManager extends Component {
     }
     this.hud.sync(R);
     this.settlePanel.tick(dt);
-    this.careerPanel?.update(dt);
-    this.drillPanel?.update(dt);
+    // careerPanel / drillPanel 不在这里手动驱动 —— 它们是挂在本节点上的 Component,
+    // 引擎调度器本来就每帧调它们的 update(里面的 !root 守卫负责隐藏时零开销)。
+    // 手动再调一遍 = 开着商店每帧画两次完整人物、训练引导每帧画两次演示画布。
   }
 
   private onState(st: string): void {
@@ -575,6 +594,7 @@ export class UIManager extends Component {
       case "MENU": {
         this.pausePanel?.hide();
         this.settlePanel?.hide();
+        this.tutorialPanel?.hide(false);   // 教学-暂停-返回主菜单:收摊但不落「看过了」
         this.menu?.show();
         this.hud?.setPlaying(false);
         break;
@@ -719,7 +739,9 @@ export class UIManager extends Component {
 
   private doRestart(): void {
     this.sfx.play("ui");
-    if (Rules.R.mode === "drill") {
+    if (Rules.R.mode === "tutorial") {
+      this.openTutorial();               // 教学重开 = 从头再来一遍
+    } else if (Rules.R.mode === "drill") {
       this.doStartDrill(Drill.cur()?.id || DRILLS[0].id);
     } else if (Rules.R.mode === "endless") {
       this.doStartEndlessMatch(Rules.R.diff);
@@ -835,6 +857,41 @@ export class UIManager extends Component {
     }));
   }
 
+  /**
+   * 新手操作教学。进局走 slashWipe(与开赛同一套黑带),中点里 newMatch("tutorial")
+   * + Tutorial.begin()(焊发球权、必要时内存态切滑轨),随后面板盖上来。
+   * 面板插在 ui-root 内部、暂停面板之下 —— 教学里按暂停,暂停页要盖得住讲解卡。
+   */
+  private openTutorial(): void {
+    if (!this.tutorialPanel) {
+      this.tutorialPanel = this.node.addComponent(TutorialPanel);
+    }
+    const panel = this.tutorialPanel;
+    // 重看/重开:先收掉旧树(hide(false) 不落「看过了」),再走一整遍开场
+    panel.hide(false);
+    this.sfx.play("ui");
+    slashWipe(this.node, () => {
+      Rules.newMatch("tutorial", "easy");
+      Tutorial.begin();
+      this.sfx.play("whistle");
+      panel.show(this.uiRootNode ?? this.node, this.kit, {
+        onExit: () => this.doQuit(),
+        onGoPlay: () => this.doTutorialGoPlay(),
+        below: this.pausePanel.root,
+      });
+    });
+  }
+
+  /** 完成-「去打一局」:收掉教学局落回 MENU,再切到对练屏选难度 */
+  private doTutorialGoPlay(): void {
+    this.sfx.play("ui");
+    slashWipe(this.node, () => {
+      Rules.R.state = "MENU";            // onState(MENU) 会把主菜单抬回来(在扫屏底下,无感)
+    }, () => {
+      screenSwap(this.node, this.menu.root, () => this.matchSetup.show());
+    });
+  }
+
   private openDrills(): void {
     if (!this.drillPanel) {
       this.drillPanel = this.node.addComponent(DrillPanel);
@@ -850,6 +907,8 @@ export class UIManager extends Component {
       () => {
         screenSwap(this.node, null, () => { panel.hide(); this.menu.show(); });
       },
+      // 列表页「操作教学」入口条:重看新手教学(先收训练场面板,教学自己开黑带)
+      () => this.openTutorial(),
     ));
   }
 
@@ -940,6 +999,7 @@ export class UIManager extends Component {
       },
       openCareer: () => this.openCareer(),
       openDrills: () => this.openDrills(),
+      openTutorial: () => this.openTutorial(),
       openCampaign: () => this.openCampaign(),
       startCampaignStage: (stage) => this.doStartCampaign(stage),
       openMatchSetup: () => screenSwap(this.node, this.menu.root, () => this.matchSetup.show()),

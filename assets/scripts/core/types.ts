@@ -9,8 +9,8 @@ export type TeamSide = "left" | "right";
 /** Physics.classify 的球种判定,全游戏唯一的球种体系 */
 export type ShotKind = "smash" | "slash" | "lob" | "netshot" | "drive" | "clear";
 
-/** AI 难度档位 key(对应 CFG.diffs) */
-export type DiffKey = "easy" | "normal" | "hard";
+/** AI 难度档位 key(对应 CFG.diffs);expert = 天花板挑战档 */
+export type DiffKey = "easy" | "normal" | "hard" | "expert";
 
 /** AI 面对扣杀时的防守削弱参数 */
 /**
@@ -613,4 +613,21 @@ export interface DrillDef {
   minLandX?: number; maxLandX?: number;
   minSteps?: number; maxSteps?: number;
   minContact?: number; maxContact?: number;
+}
+
+/**
+ * 新手操作教学的主题条目(表在 config.ts 的 TUTORIAL_TOPICS,照 DRILLS 先例文案进 config)。
+ * 每个主题 = 一页「讲解(①②③)」+ 一页「实操」,阶段推进由 core/tutorial.ts 状态机管,
+ * 这里只承载文案 —— 版式在 ui/tutorial-layout.ts、动画在 render/tutorial-anim.ts。
+ */
+export interface TutTopic {
+  id: "move" | "hit" | "jump";
+  /** 编号 chip 上的名字(1 移动 · 2 击球 · 3 起跳) */
+  label: string;
+  /** 讲解页右侧的编号行,正好三条(版式判据钉死) */
+  lines: string[];
+  /** 实操横幅的一句话目标 */
+  practice: string;
+  /** 实操横幅第二行的补充提示(怎么做) */
+  hint: string;
 }

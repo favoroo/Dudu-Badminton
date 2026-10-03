@@ -8,13 +8,16 @@
 //   玩家读出来的是「这颗键按不动,是不是坏了」,不是「这个技能还剩 3 秒」。
 // 现在:冷却层浓度走 cdAlpha()(只跟随滑杆一部分,留下限),外加键心「还剩几秒」。
 //
-// 断言分五段,判据全是能在真机变成「看不见东西」的那类:
+// 断言分六段,判据全是能在真机变成「看不见东西」的那类:
 //   ① 滑杆全程(0.2..1.0):冷却浓度有下限、单调不减、不越 1;
 //   ② 亮度对比 —— 按引擎真实的 sRGB 逐通道合成算:冷却态必须比就绪态压得下去,
 //      而进度环与数字必须在墨底上提得起来(旧写法在②的第一条就红);
 //   ③ 扫掠几何:扇形 + 环恒等于整圈、随剩余冷却单调、最小档上半径仍落在键圆内侧;
 //   ④ 键心排版:字号随半径缩放、与键名标签不打架、不出圆(半径取最小档时最容易撞);
-//   ⑤ 读数内容:冷却中永不显示 0.0、就绪时不显示、五款技能的起手读数与专属色齐活。
+//   ⑤ 读数内容:冷却中永不显示 0.0、就绪时不显示、五款技能的起手读数与专属色齐活;
+//   ⑥ 重画节奏:冷却门控的基准必须是「上次画上屏的值」—— 写错成「上一帧的喂值」时
+//      stepTol 退化成相邻帧增量,长 CD 的阴影起手画一次后整段冻结,只在点按被拒时
+//      跳进一截(用户现场:「阴影只能 1/3 地消失,不连续」,数字却在连续倒数)。
 // 另带 --selftest:拿修好之前的真实写法当反例,断言它**会**被报警 ——
 // 规则脚本最怕悄悄全绿。
 //
@@ -24,7 +27,7 @@
 // ============================================================
 import { makeChecker } from "./harness";
 import {
-  CD, CD_TOP, cdAlpha, cdArcs, cdRingR, cdText, skillAccent,
+  CD, CD_TOP, cdAlpha, cdArcs, cdRingR, cdText, makeCdGate, skillAccent,
 } from "../assets/scripts/input/pad-cd";
 import { CFG } from "../assets/scripts/core/config";
 import { PAD_BASE, PAD_LIMIT } from "../assets/scripts/core/settings";
@@ -100,7 +103,7 @@ const numLum = (aCd: number): number => lum(over(
   over(rgbOf(CD.sweep), CD.sweepA * aCd, BG),
 ));
 
-console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 键心排版 / 倒计时读数\n");
+console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 键心排版 / 倒计时读数 / 重画节奏\n");
 
 // ---------- ① 滑杆全程都不许把读数抹掉 ----------
 {
@@ -245,9 +248,43 @@ console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 
   ok(CD.stepTol > 0 && CD.stepTol <= 0.01, `重画阈值 ${CD.stepTol}(旧值 0.015 让 6 秒档的扫掠每 9° 跳一格)`);
 }
 
+// ---------- ⑥ 重画节奏:门控基准 = 「上次画上屏的值」,不是「上一帧的喂值」 ----------
+{
+  // game-root 每渲染帧喂一次 clamp(s.cd / s.maxCd, 0, 1);s.cd 每模拟步 -1,
+  // 所以比例沿整段冷却线性下行:起手 1 → 走完 0(60Hz 固定步长)。
+  const feed = (maxCd: number): number[] =>
+    Array.from({ length: maxCd + 1 }, (_, f) => 1 - f / maxCd);
+
+  ok(makeCdGate().step(0) === false, "门控初值 = 0(就绪态),同值喂入不触发重画");
+  const g0 = makeCdGate();
+  g0.sync(0.5);
+  ok(g0.step(0.5) === false, "sync 把基准对齐到刚画上屏的值,同值喂入不触发重画");
+  ok(g0.step(0.5 + CD.stepTol * 2) === true, "累计变化跨过阈值的那一下必须触发重画");
+
+  for (const sk of CFG.skills.list) {
+    const maxCd = sk.cooldownFrames;
+    const gate = makeCdGate();
+    let repaints = 0;
+    let maxLag = 0;
+    let frozen = 0;
+    let maxFrozen = 0;
+    for (const ratio of feed(maxCd)) {
+      if (gate.step(ratio)) { repaints++; frozen = 0; }
+      else { frozen++; maxFrozen = Math.max(maxFrozen, frozen); }
+      maxLag = Math.max(maxLag, Math.abs(gate.painted - ratio));
+    }
+    ok(maxLag <= CD.stepTol + 1e-9,
+      `${sk.id}: 屏上阴影与真值的滞后全程 ≤ stepTol(实测 ${maxLag.toFixed(4)};基准写错会冻结到 1)`);
+    ok(maxFrozen <= Math.ceil(CD.stepTol * maxCd) + 2,
+      `${sk.id}: 最长不重画 ${maxFrozen} 帧,不超过阈值档 × 总帧 + 2(约每 ${Math.max(1, Math.round(CD.stepTol * maxCd))} 帧必前进)`);
+    ok(repaints >= 30,
+      `${sk.id}: 整段冷却重画 ${repaints} 次 ≥ 30(扫掠是连续的,不是几大格)`);
+  }
+}
+
 // ---------- selftest:修好之前的真实写法必须被报警 ----------
 if (process.argv.includes("--selftest")) {
-  console.log("\nselftest:拿旧写法当反例(浓度线性跟随滑杆 / 22 号字写死在圆心 / 弧度排成递增被引擎绕成补集)");
+  console.log("\nselftest:拿旧写法当反例(浓度线性跟随滑杆 / 22 号字写死在圆心 / 弧度排成递增被引擎绕成补集 / 门控基准每帧覆盖)");
   const S = alphas();
   /** 旧判据:冷却层就是「再乘一次滑杆」 */
   const legacyAlpha = (A: number): number => A;
@@ -300,6 +337,36 @@ if (process.argv.includes("--selftest")) {
   const fixedRingR = rMin - 1.5 + 6 / 2;
   ok(fixedRingR > rMin, `反例几何@r=${rMin.toFixed(1)}:环外沿 ${fixedRingR.toFixed(1)} 顶出键圆`);
   ok(cdRingR(rMin) + CD.ringW / 2 < rMin, "现在的环位按 ringW 比例内收,最小档也在圆内");
+
+  /** 反例门控(2026-10-03 现场「阴影只能 1/3 地消失」):比较基准 = 上一帧的喂值,
+   *  且每帧被无条件覆盖 → stepTol 比的是相邻帧增量 = 1/maxCd,长 CD 全程低于阈值,
+   *  扫掠中途永不重画:阴影起手画一次后冻结,只在点按被拒时跳进一截。
+   *  结尾就绪翻转的那次强制重画也算给它,中段的冻结照样救不回来 —— ⑥必须拦住。 */
+  const legacySweep = (maxCd: number): { repaints: number; maxLag: number } => {
+    let prevFed = 0;
+    let painted = 0;
+    let repaints = 0;
+    let maxLag = 0;
+    for (let f = 0; f <= maxCd; f++) {
+      const ratio = 1 - f / maxCd;
+      if (Math.abs(prevFed - ratio) > CD.stepTol) { repaints++; painted = ratio; }
+      prevFed = ratio;                       // ← 病根:基准每帧被覆盖
+      maxLag = Math.max(maxLag, Math.abs(painted - ratio));
+    }
+    repaints++;                              // 结尾 skillReady 翻转的强制重画(阴影整块消失)
+    return { repaints, maxLag };
+  };
+  const freezeIds = CFG.skills.list
+    .filter((sk) => 1 / sk.cooldownFrames <= CD.stepTol)   // 每帧增量够不着阈值的长 CD
+    .map((sk) => sk.id);
+  ok(freezeIds.length >= 4, `每帧增量够不着阈值的长 CD 有 ${freezeIds.length} 款(${freezeIds.join(" / ")})`);
+  for (const sk of CFG.skills.list.filter((x) => freezeIds.includes(x.id))) {
+    const legacy = legacySweep(sk.cooldownFrames);
+    ok(legacy.maxLag > CD.stepTol * 4,
+      `${sk.id}: 旧门控的屏上滞后峰值 ${legacy.maxLag.toFixed(3)} 远超 stepTol —— ⑥的第一条拦得住`);
+    ok(legacy.repaints < 30,
+      `${sk.id}: 旧门控整段冷却只重画 ${legacy.repaints} 次(< 30)—— ⑥的第三条也拦`);
+  }
 }
 
 console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);

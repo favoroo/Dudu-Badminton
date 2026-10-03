@@ -15,7 +15,7 @@ import { BlockInputEvents, Button, Color, Component, Font, Graphics, Label, Laye
 import { CFG } from "../core/config";
 import { textW } from "../core/text-metrics";
 import { applyFont, getBodyFont, getDisplayFont, onBodyFont, onDisplayFont } from "../game/fonts";
-import { C, TOUCH, inkFor, isBright } from "./p5-tokens";
+import { C, ROLE, TOUCH, inkFor, isBright } from "./p5-tokens";
 
 export { applyFont, getBodyFont, getDisplayFont, onBodyFont, onDisplayFont };
 
@@ -32,12 +32,13 @@ export { C as TOKENS };
 // 这里再导出,面板一律 `import { drawPosterPlate } from "./ui-arcade"` 就够了。
 // 为什么要拆三层:形状算成点列(零 cc)才能在 node 里出图与断言,
 // 而 tools/cc-stub.ts 只桩得住 Color + Graphics —— 于是出图与实机共用同一份形状代码。
+import { drawIconBtn } from "./p5-paint";
 export {
-  drawBevelSlot, drawHalftone, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
+  drawBevelSlot, drawHalftone, drawIconBtn, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
   drawSectionBand, drawSliderFace, drawSlantKnob, drawStarGlyph, drawToggleFace,
   paintP5,
 } from "./p5-paint";
-export type { BadgeKind, CardOpts, HalftoneOpts, PlateOpts, SliderDL } from "./p5-shapes";
+export type { BadgeKind, CardOpts, HalftoneOpts, IconBtnOpts, PlateOpts, SliderDL } from "./p5-shapes";
 export { bandDL, blockDL, cardDL, halftoneCount, plateDL, slotDL, sliderDL, styleOf, toggleDL } from "./p5-shapes";
 export { ROLE, SLANT, HALFTONE, INK_TEXT, inkFor, isBright, contrast } from "./p5-tokens";
 export type { Role } from "./p5-tokens";
@@ -191,8 +192,10 @@ export function cancelFade(node: Node): void {
 }
 
 /**
- * 图标按钮:视觉圆底小、命中区大 —— 触摸目标是 contentSize(默认 56),
- * 圆底只是其中央一块,拇指不用瞄准。返回节点自带 Button(SCALE),接 CLICK 用。
+ * 图标按钮:实底斜方纯色块 —— 视觉斜方小、命中区大(触摸目标为 contentSize 默认 56,
+ * 拇指不用瞄准)。底块为 100% 不透明 P5 斩劈红纯色块(ROLE.primary.face #e60012),
+ * 带暗红厚底边与硬阴影,与全站实底大色块同一套立体贴纸语言。
+ * 返回节点自带 Button(SCALE),接 CLICK 用。
  */
 export function uiIconButton(
   parent: Node, glyph: string,
@@ -204,18 +207,10 @@ export function uiIconButton(
   n.layer = parent.layer;
   n.addComponent(UITransform).setContentSize(hit, hit);
   const g = n.addComponent(Graphics);
-  const r = vis / 2;
   retainedDraw(g, () => {
-    g.fillColor = ac("#000000", 0.45);          // 硬偏移阴影
-    g.circle(2.5, -2.5, r);
-    g.fill();
-    g.fillColor = ac(opts.bg ?? "#6e2029", opts.bgA ?? 0.94);
-    g.circle(0, 0, r);
-    g.fill();
-    g.strokeColor = ac(opts.edge ?? "#ff8a8a", opts.edgeA ?? 0.7);
-    g.lineWidth = 1.5;
-    g.circle(0, 0, r);
-    g.stroke();
+    drawIconBtn(g, vis, opts.bg ?? ROLE.primary.face, opts.edge ?? ROLE.primary.edge, {
+      faceA: opts.bgA, edgeA: opts.edgeA,
+    });
   });
   const ln = new Node("glyph");
   ln.layer = parent.layer;
@@ -228,7 +223,7 @@ export function uiIconButton(
   l.horizontalAlign = Label.HorizontalAlign.CENTER;
   l.verticalAlign = Label.VerticalAlign.CENTER;
   l.color = ac(opts.fg ?? ARCADE.paper);
-  applyFont(l, false);
+  applyFont(l, true);
   const b = n.addComponent(Button);
   b.transition = Button.Transition.SCALE;
   b.zoomScale = 0.9;
@@ -1140,10 +1135,18 @@ let swapBusy = false;
 /**
  * 模式屏之间的转场:旧屏淡出收触摸 + 红黑斜带扫屏 + 新屏就位。
  * 与 slashWipe(进对局:黑带盖满、状态在中点切换)的分工 —— 这里状态不动,
- * 只是 UI 层换页:斜带压过时新屏已经在 show() 里逐级入场,交接过程看得见。
- * showIn() 立即调用(新屏自己的 stagger 动画自带节奏);转场层挂 BlockInputEvents
- * 防连点,扫完自毁。进行中重复调用:直接执行 showIn 并跳过(与 slashWipe 同语义)。
+ * 只是 UI 层换页:带子让开时新屏已经在 show() 里逐级入场,交接过程看得见。
+ * showIn() 延迟到黑带完全盖屏的瞬间才调用 —— 重面板(生涯/训练/设置/闯关)的
+ * 整树重建加首次中文字形光栅化都落在这一帧,不延迟就全卡在点击帧上;
+ * 盖屏后才建,几十毫秒的构建完全被带子遮住(黑带宽 2400、行程 -1900→+1900、
+ * 0.02s 起跑 0.38s 扫完:约 0.14s 起完全盖住 960 宽屏幕,0.28s 后让开 ——
+ * SHOW_AT 取 0.15 正落在覆盖窗里)。
+ * 转场层挂 BlockInputEvents 防连点,扫完自毁。进行中重复调用:直接执行 showIn 并跳过
+ * (与 slashWipe 同语义)。
  */
+const SWAP_SHOW_AT = 0.15;
+const SWAP_TOTAL = 0.64;
+
 export function screenSwap(parent: Node, out: Node | null, showIn?: () => void): void {
   if (swapBusy) { showIn?.(); return; }
   swapBusy = true;
@@ -1174,9 +1177,10 @@ export function screenSwap(parent: Node, out: Node | null, showIn?: () => void):
   };
   mkBand("swap-band-ink", 780, ARCADE.ink, 0.97, 0.02);
   mkBand("swap-band-red", 270, ARCADE.slash, 0.9, 0.13);
-  showIn?.();
   tween(root)
-    .delay(0.64)
+    .delay(SWAP_SHOW_AT)
+    .call(() => showIn?.())
+    .delay(SWAP_TOTAL - SWAP_SHOW_AT)
     .call(() => {
       swapBusy = false;
       if (root.isValid) root.destroy();

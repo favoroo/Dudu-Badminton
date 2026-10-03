@@ -199,21 +199,21 @@ export class MainMenu {
     makeChip(hero, "MATCH", 10, "#0a0e1c", ARCADE.acid).setPosition(-102, 126, 0);
     const heroName = kit.label(hero, "对练", 44, ARCADE.paper, { disp: true });
     heroName.node.setPosition(-96, 74, 0);
-    this.txt(hero, "三档难度 · 选球馆 · 随时开局", 12, col(ARCADE.paper, 0.8), -104, 24, 240);
-    // 三档强度色点:绿→黄→橙,颜色本身就在报难度(与对练屏 DIFF_PICKS 同源)
+    this.txt(hero, "四档难度 · 选球馆 · 随时开局", 12, col(ARCADE.paper, 0.8), -104, 24, 240);
+    // 四档强度色点:绿→黄→橙→红,颜色本身就在报难度(与对练屏 DIFF_PICKS 同源)
     const dots = new Node("diff-dots");
     dots.layer = hero.layer;
     dots.addComponent(UITransform);
     const dg = dots.addComponent(Graphics);
-    const dotHexes = ["#7dff9e", "#ffe14d", "#ff6a1f"];
+    const dotHexes = ["#7dff9e", "#ffe14d", "#ff6a1f", "#f43f5e"];
     for (let i = 0; i < dotHexes.length; i++) {
       dg.fillColor = col(dotHexes[i], 0.95);
-      slantPath(dg, 26, 14, skewOf(14, 8), -34 + i * 34, 0);
+      slantPath(dg, 26, 14, skewOf(14, 8), -51 + i * 34, 0);
       dg.fill();
     }
     dots.setPosition(-88, -22, 0);
     dots.setParent(hero);
-    const heroHint = this.txt(hero, "EASY / NORMAL / HARD", 10, col(ARCADE.paper, 0.55), -104, -58, 200);
+    const heroHint = this.txt(hero, "EASY / NORMAL / HARD / EXPERT", 10, col(ARCADE.paper, 0.55), -104, -58, 240);
     heroHint.horizontalAlign = Label.HorizontalAlign.LEFT;
     const heroChev = new Node("hero-chev");
     heroChev.layer = hero.layer;

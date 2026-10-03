@@ -24,6 +24,7 @@ import { Ribbon } from "./ribbon";
 import { advanceShuttle, makeShuttleMotion, shuttleImpact } from "./shuttle-motion";
 import { easeOutBack, fadePow } from "./easing";
 import { drawFloatPlate, FloatPlateStyle, measureTextW } from "./p5kit";
+import { nextLaneY } from "./float-lane";
 import { applyFont } from "../game/fonts";
 
 const C = CFG;
@@ -132,6 +133,10 @@ interface FloatText {
   plate: FloatPlateStyle;
   /** 出生点世界 x:场边底板字靠它记边,同侧后到的字向下错行不叠成一块 */
   wx: number;
+  /** 出生点世界 y(错行后的最终行位):同侧后到的字接着本字占位盒的下沿往下排 */
+  wy: number;
+  /** 车道占位盒高(板高 size*1.7);0 = 非堆叠成员(头顶起手字/系统字不占行) */
+  laneH: number;
   opacity: UIOpacity;
   life: number;
   maxLife: number;
@@ -142,6 +147,10 @@ interface FloatText {
   age: number;
 }
 
+/** 观众轮转批数:200 人拆 3 批,每 3×3=9 渲染帧每批重画一次,
+ *  把旧「每 3 帧 ~500 笔」的慢速层尖峰摊薄到每批 ~130 笔 */
+const CROWD_BATCHES = 3;
+
 /** 氛围暗角的输入(渲染层不 import Rules,由 game-root 每帧喂入只读快照) */
 export interface AtmoState { state: string; rally: number; matchPoint: boolean }
 
@@ -151,7 +160,10 @@ interface SwingArcGhost extends SwingArcFx { life: number; max: number }
 export class WorldView {
   readonly root: Node;          // 受震屏/镜头冲击影响的容器
   private courtGfx: Graphics;   // 球场静态层:只在主题切换时画一次
-  private courtSlowGfx!: Graphics; // 球场慢速层:观众/LED 跑马,每 3 渲染帧
+  /** 观众批次层(arena 主题):200 观众拆 3 批各占一层,轮转重画 ——
+   *  慢速层整体 clear,批次不分层就会把没画的那 2/3 从屏上抹掉 */
+  private crowdGfx: Graphics[] = [];
+  private courtSlowGfx!: Graphics; // 球场慢速层:LED 跑马/荧光棒,每 3 渲染帧
   private courtDynGfx!: Graphics;  // 球场动态层:球网/光束/微尘,每帧
   private g: Graphics;
   private vp: Viewport;
@@ -231,6 +243,15 @@ export class WorldView {
     bg.addComponent(UITransform);
     bg.setParent(this.root);
     this.courtGfx = bg.addComponent(Graphics);
+    // 观众批次层:夹在静态层与慢速层之间 —— LED 在观众后面、荧光棒仍压在观众上面,
+    // 与旧单层内「LED → 观众 → 荧光棒」的叠序一致(LED 与观众群不在同一条屏幕带,不重叠)
+    for (let i = 0; i < CROWD_BATCHES; i++) {
+      const n = new Node(`court-crowd${i}`);
+      n.layer = Layers.Enum.UI_2D;
+      n.addComponent(UITransform);
+      n.setParent(this.root);
+      this.crowdGfx.push(n.addComponent(Graphics));
+    }
     const bgSlow = new Node("court-slow");
     bgSlow.layer = Layers.Enum.UI_2D;
     bgSlow.addComponent(UITransform);
@@ -322,6 +343,10 @@ export class WorldView {
   private redrawCourt(rallyCount = 0): void {
     this.courtGfx.clear();
     courtRenderer.drawStaticTo(this.courtGfx, this.vp);
+    for (let i = 0; i < CROWD_BATCHES; i++) {
+      this.crowdGfx[i].clear();
+      courtRenderer.drawCrowdBatchTo(this.crowdGfx[i], this.vp, i, CROWD_BATCHES);
+    }
     this.courtSlowGfx.clear();
     courtRenderer.drawSlowTo(this.courtSlowGfx, this.vp, rallyCount);
     this.courtDynGfx.clear();
@@ -432,26 +457,32 @@ export class WorldView {
       applyFont(label, true);
       labelNode.setParent(node);
       node.setParent(this.floatLayer);
-      item = { node, label, plateG, plate: "none", wx: 0, opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
+      item = { node, label, plateG, plate: "none", wx: 0, wy: 0, laneH: 0, opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
     }
     item.life = life;
     item.maxLife = life;
     item.age = 0;
     item.vy = vy || -1;
     item.sys = sys;
-    // 场边底板字(评价/技能)同侧堆叠:数一下还活着的同侧底板字,新字向下错行
-    // (行高 size*1.9,封顶两行),连打好球也不会两条 PERFECT 叠成一坨
+    // 场边字同侧堆叠:接着同侧最低占位下沿往下排(render/float-lane.ts 的 nextLaneY)。
+    // 旧写法数条数且 Math.min(n,2) 封顶两行 —— 跳杀+附魔一拍同帧四条场边字
+    // (档位+技能+跳杀+热手),第 3、4 条会叠回同一点。堆叠成员 = 带底板的字
+    // + 挂在场边锚点的无板字(「好球」);头顶「重击附魔!」这类非锚点无板字
+    // 保持不参与(config.smashCastFloat 的刻意设计,那条锚点留给命中档)。
+    // 占位高用板高 size*1.7;star 星芒外径是装饰外溢允许交叠,保证的是文字不叠。
+    const sideAnchorY = C.fx.floatSide.y;
+    const laneMember = plate !== "none" || wy === sideAnchorY;
     let sy = wy;
-    if (plate !== "none") {
-      const mySide = wx < C.court.netX ? 0 : 1;
-      let n = 0;
-      for (const o of this.floats) {
-        if (o.plate === "none" || !o.node.active) continue;
-        if ((o.wx < C.court.netX ? 0 : 1) === mySide) n++;
-      }
-      sy += Math.min(n, 2) * size * 1.9;
+    if (laneMember) {
+      const records = this.floats.map((o) => ({ active: o.node.active, wx: o.wx, wy: o.wy, laneH: o.laneH }));
+      sy = nextLaneY(records, {
+        wx, netX: C.court.netX, anchorY: sideAnchorY, boxH: size * 1.7,
+        gap: C.fx.floatLaneGap ?? 8, maxCenter: C.court.groundY - size * 0.6,
+      });
     }
     item.wx = wx;
+    item.wy = sy;
+    item.laneH = laneMember ? size * 1.7 : 0;
     item.node.setPosition(this.vp.x(wx), this.vp.y(sy), 0);
     item.node.setScale(1, 1, 0);
     item.label.string = text;
@@ -579,11 +610,18 @@ export class WorldView {
     const windNow = envMod ? Physics.windAt(Physics.envPhase()) : 0;
     courtRenderer.setWind(windNow * C.env.ambience.k, windNow !== 0 ? C.env.ambience.idle : 1);
 
-    // 球场分层重绘:静态层仅在主题切换时重画;慢速层(观众/跑马)每 3 渲染帧;
-    // 动态层(球网/光束/微尘)每帧。旧版这里每帧全量重画整个球场(~900 个图元)。
+    // 球场分层重绘:静态层仅在主题切换时重画;观众 200 人拆 3 批轮转(每批每 9 渲染帧);
+    // 慢速层(LED 跑马/荧光棒)每 3 渲染帧;动态层(球网/光束/微尘)每帧。
+    // 旧版这里每帧全量重画整个球场(~900 个图元)。
     if (courtRenderer.consumeStaticDirty()) {
       this.courtGfx.clear();
       courtRenderer.drawStaticTo(this.courtGfx, this.vp);
+    }
+    for (let i = 0; i < CROWD_BATCHES; i++) {
+      if (this.frameT % (CROWD_BATCHES * 3) === i * 3) {
+        this.crowdGfx[i].clear();
+        courtRenderer.drawCrowdBatchTo(this.crowdGfx[i], this.vp, i, CROWD_BATCHES);
+      }
     }
     if (this.frameT % 3 === 0) {
       this.courtSlowGfx.clear();
@@ -823,6 +861,9 @@ export class WorldView {
 
     // 飘字:弹入 → 减速上浮 → 曲线淡出(老实现是匀速上升 + 只在最后 35% 线性淡,
     // 字像被"贴"上去又"抽"走的,没有任何存在感)
+    // vy 沿用世界系约定(负 = 世界坐标向上);飘字是 UI 节点,y 向上 ——
+    // 所以上浮要取负号。旧写法 pos.y + vy*rise 实际一直在缓慢下沉,把堆叠
+    // 行距随时间吃掉(先出生的行朝后出生的行靠)
     const FF = C.fx;
     const popFrames = FF.floatPopFrames || 6;
     const fadeK = FF.floatFadeK ?? 0.5;
@@ -831,7 +872,7 @@ export class WorldView {
       const pos = f.node.position;
       const remain = Math.max(0, f.life / f.maxLife);
       const rise = 0.35 + 0.65 * Math.pow(remain, FF.floatRiseEase || 1.8);
-      f.node.setPosition(pos.x, pos.y + f.vy * rise, 0);
+      f.node.setPosition(pos.x, pos.y - f.vy * rise, 0);
       const p = Math.min(1, f.age / popFrames);
       const sc = 0.55 + 0.45 * easeOutBack(p, FF.floatPopBack || 1.7);
       f.node.setScale(sc, sc, 1);

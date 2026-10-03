@@ -695,6 +695,21 @@ function score(scorerSide: TeamSide, reason: string): void {
     return;
   }
 
+  // 新手教学:与训练场同一条「不记分、不换手」链路,事实抛给 Tutorial 判实操门控。
+  // 位置同理 —— 必须在 R.scores++ 之前,发球权恒在喂球机一侧,喂球循环自持。
+  if (R.mode === "tutorial") {
+    R.state = "POINT";
+    R.timer = C.tutorial.pointPause;
+    R.reason = reason;
+    const s = R.ball && R.ball.shot;
+    emit("tut-end", {
+      scorer: scorerSide, reason,
+      lastHitter: R.ball && R.ball.lastHitter, crossed: R.ball && R.ball.crossed, netted: R.ball && R.ball.netted,
+      landX: R.ball && R.ball.x,
+    });
+    return;
+  }
+
   // 三星判据的比分侧计数(各模式照记,判星只在闯关消费):
   // 扣杀直接得分 / 滑行中的制胜拍 / 最后一分口径。发球失误 = 整分只打了发球那一拍
   // (rally===1)就自己出界/下网/未过网,任何对方触拍都会把 rally 推到 2。
@@ -880,7 +895,7 @@ function winTarget(): number {
 
 // 赛点判定:任一方距获胜只差 1 分(供 BGM/HUD/镜头切紧张模式)
 function isMatchPoint(): boolean {
-  if (R.mode === "drill" || R.mode === "endless") return false;
+  if (R.mode === "drill" || R.mode === "endless" || R.mode === "tutorial") return false;
   const w = winTarget();
   const s0 = R.scores[0], s1 = R.scores[1];
   // 平分期间:领先 1 分即赛点(下一分可能赢)
@@ -891,7 +906,7 @@ function isMatchPoint(): boolean {
 
 // 赛点归属信息
 function matchPointInfo(): { active: boolean; side: TeamSide | "both" | null; label: string } {
-  if (R.mode === "drill" || R.mode === "endless") return { active: false, side: null, label: "" };
+  if (R.mode === "drill" || R.mode === "endless" || R.mode === "tutorial") return { active: false, side: null, label: "" };
   const w = winTarget();
   const s0 = R.scores[0], s1 = R.scores[1];
   if (R.deuce) {

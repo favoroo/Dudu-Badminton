@@ -80,6 +80,7 @@ function zoneRadius(rad: number, speed: number): number {
   const fast = Math.min(1, Math.max(0, (speed - SW.zoneFullSpeed) / SW.zoneTightenSpan));
   return (rad * 0.92 + SW.headR) * (1 - fast * (1 - SW.zoneFastMul));
 }
+export { zoneRadius };   // 教学演示(core/tutorial-demo)反解站位要用同一把尺,不抄第三份
 
 /**
  * 站立时能够到的最高点(离地)。用 Physics.reachRadius 而不是抄公式:
@@ -348,7 +349,7 @@ function bakeNow(def: DrillDef): DemoBake | null {
 }
 
 /** 把一记求解结果展开成逐帧点列(渲染要的是弧,不是只有落点) */
-function arcOf(s: SolveResult, from: { x: number; y: number }): { x: number; y: number }[] {
+export function arcOf(s: SolveResult, from: { x: number; y: number }): { x: number; y: number }[] {
   const b: Ball = {
     x: from.x, y: from.y, px: from.x, py: from.y,
     vx: s.vx, vy: s.vy, held: false, live: true,

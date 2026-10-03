@@ -41,12 +41,12 @@ import {
   slamIn, uiIconButton, type BadgeKind, type Role,
 } from "./ui-arcade";
 import { C } from "./p5-tokens";
-import { faceOf, pressable, uinode } from "./ui-shell";
+import { clearKids, faceOf, pressable, uinode } from "./ui-shell";
 import {
-  BAR_TITLE, BTNS, DEMO_TAG, DRILL, KEYS, SECTIONS, animBox, briefInfo, cardBoxes, cardRows,
+  BAR_TITLE, BTNS, DEMO_TAG, DRILL, KEYS, SECTIONS, TUTORIAL_ENTRY, animBox, briefInfo, cardBoxes, cardRows,
   cardRowsOf, centerX, closeHit, demoTagBox, examStarRow, footTextOf, goalTextOf, headInfoBand,
   headText, keyRow, keyTextLabel, pauseBars, playTri, requirementOf,
-  stepCardBoxes, stepCardRows, stepLines, starCenters, titleBand, widthOf, type Box,
+  stepCardBoxes, stepCardRows, stepLines, starCenters, titleBand, tutorialEntryBox, widthOf, type Box,
 } from "./drill-layout";
 
 const { ccclass } = _decorator;
@@ -107,14 +107,6 @@ function toLocal(b: Box, px: number, py: number): Box {
   return { left: b.left - px, right: b.right - px, cy: b.cy - py, h: b.h };
 }
 
-/**
- * 容器整树清空:children 先 slice 再逐个 destroy —— `removeAllChildren()` 只是**摘下来**
- * 不打断销毁,那些画过一次的 Graphics 会飘在场景外占着渲染数据(切页重建两轮就翻一倍)。
- */
-function clearKids(n: Node): void {
-  for (const c of n.children.slice()) c.destroy();
-}
-
 /** 满星奖励(首通 + 3 星),只用来把卡脚那一行算出来 */
 function prize(): { coin: number; exp: number } {
   const cd = CFG.career.drill;
@@ -146,10 +138,11 @@ export class DrillPanel extends Component {
 
   // ---------- 公开接口 ----------
 
-  /** 构建并显示面板(列表 + 引导) */
-  show(parent: Node, onSelectDrill: (drill: DrillDef) => void, onBack: () => void) {
+  /** 构建并显示面板(列表 + 引导);onTutorial = 列表页「操作教学」入口条的去处 */
+  show(parent: Node, onSelectDrill: (drill: DrillDef) => void, onBack: () => void, onTutorial?: () => void) {
     this._onSelectDrill = onSelectDrill;
     this._onBack = onBack;
+    this._onTutorial = onTutorial ?? null;
     this._page = "list";
     this._sel = 0;
     this._buildAll();
@@ -168,6 +161,7 @@ export class DrillPanel extends Component {
     input.off(Input.EventType.KEY_DOWN, this._onKey, this);
     this._onSelectDrill = null;
     this._onBack = null;
+    this._onTutorial = null;
     // 复位动画状态,防止 update() 对已销毁 Graphics 继续绘制报错
     this._page = "list";
     this._dropBrief();
@@ -201,6 +195,7 @@ export class DrillPanel extends Component {
   private _panelNode: Node | null = null;
   private _onSelectDrill: ((drill: DrillDef) => void) | null = null;
   private _onBack: (() => void) | null = null;
+  private _onTutorial: (() => void) | null = null;
 
   private _page: "list" | "brief" = "list";
   private _sel = 0;
@@ -283,7 +278,7 @@ export class DrillPanel extends Component {
     // 56 会往下捅进内容区(判据见 drill-layout 的顶栏那条)—— 这里显式收到 44。
     const hit = closeHit();
     const back = uiIconButton(panel, "✕", {
-      hit: widthOf(hit), vis: 36, bg: ROLE.primary.dk, edge: ROLE.primary.edge, fontSize: 18,
+      hit: widthOf(hit), vis: 36, fontSize: 18,
     });
     back.setPosition(centerX(hit), hit.cy, 0);
     back.on(Button.EventType.CLICK, () => {
@@ -300,6 +295,22 @@ export class DrillPanel extends Component {
     clearKids(this._gridNode);
     const boxes = cardBoxes();
     const rows = cardRows();
+
+    // 「操作教学」入口条:滑轨是默认操作方式,重看教学从训练场走(用户指令)。
+    // 整行实底键 —— 列表页里它是唯一与「练什么」并列的另类动作,值得一块大色。
+    const entry = tutorialEntryBox();
+    const entryNode = uinode("tutorialEntry", this._gridNode, widthOf(entry), entry.h);
+    entryNode.setPosition(centerX(entry), entry.cy, 0);
+    const entryG = entryNode.addComponent(Graphics);
+    retainedDraw(entryG, () => drawP5Block(entryG, widthOf(entry), entry.h, ROLE.info.face, SLANT.button));
+    mkLabel(entryNode, "txt", TUTORIAL_ENTRY, 14, inkFor(ROLE.info.face), {
+      x: 0, y: 0, w: widthOf(entry) - 20, align: 1,
+    });
+    pressable(entryNode, 0.96);
+    entryNode.on(Button.EventType.CLICK, () => {
+      this._onTutorial?.();
+      this.hide();
+    });
 
     DRILLS.forEach((d, i) => {
       const b = boxes[i];

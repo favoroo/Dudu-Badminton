@@ -36,7 +36,7 @@ import {
 import { cardBoxes as drillCardBoxes, DRILL } from "../assets/scripts/ui/drill-layout";
 import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopTabs, shopTopBar } from "../assets/scripts/ui/shop-shelf";
 import {
-  drawBevelSlot, drawHalftone, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
+  drawBevelSlot, drawHalftone, drawIconBtn, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
   drawSliderFace, drawStarGlyph, drawToggleFace, sliderDL,
 } from "../assets/scripts/ui/p5-paint";
 
@@ -163,6 +163,22 @@ function primitivesSheet(): string {
     drawRankBadge(g, "own", 26, ROLE.drill.face, 120, 0);
   }));
   out.push(txt(700, iy, "← 状态印章 lock / next / best / own(全 Graphics:原生无彩色 emoji 字体,🔒 会变方框)", 12, "#7e8bb0", { anchor: "start" }));
+  y += 60;
+
+  // 图标按钮:实底斜方纯色块(关闭 ✕ 等小键)—— P5 斩劈红纯色块 + 厚底边 + 硬阴影 + 纯白 ✕
+  const ibS = 40, ibY = y + 20;
+  const ibRow: Array<[string, string, string]> = [
+    ["primary.face(关闭键实底纯色块)", ROLE.primary.face, ROLE.primary.edge],
+    ["primary.dk(旧暗色对照)", ROLE.primary.dk, ROLE.primary.edge],
+    ["off(中性对照)", C.navy2, C.line],
+  ];
+  ibRow.forEach(([nm, face, edge], i) => {
+    const x = 40 + i * 250;
+    out.push(shape(x + ibS / 2, ibY, (g) => drawIconBtn(g, ibS, face, edge)));
+    out.push(txt(x + ibS / 2, ibY, "✕", 15, C.paper, { bold: true }));
+    out.push(tag(x, ibY + 38, nm));
+  });
+  out.push(tag(40, y - 12, "图标按钮 iconBtnDL:实底纯色块 = block 配方小件版(斩劈红实底/厚底边/主面/顶缘高光/提亮描边),斜切吃 SLANT.button 档"));
   return out.join("\n");
 }
 
@@ -346,7 +362,7 @@ function panelsSheet(): string {
   return out.join("\n");
 }
 
-const SYNTAX_H = 1040;
+const SYNTAX_H = 1100;
 // 拼装图 1:1:宽 = 40 + 880 + 80 + 880 + 40,高 = 四行面板摞起来
 // 行 1:设置(操控页) + 闯关大厅;行 2:设置(声音画面) + 设置(关于);行 3:训练场 + 商店
 const PANELS_W = 40 + 880 + 80 + 880 + 40;

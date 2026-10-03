@@ -4,16 +4,16 @@
 // 设计动机:
 // - 用户指令:模式选择不再用弹窗 —— 点首页大色块要「斩进一块新界面」,
 //   返回时斩回来,进出都走 ui-arcade.screenSwap 的斜带转场。
-// - 两块屏骨架同构(暗底 + 氛围 + 返回条 + 三档难度实底大色块条),
+// - 两块屏骨架同构(暗底 + 氛围 + 右上 ✕ 关闭键 + 四档难度 2×2 实底大色块),
 //   差异只在赛前准备区(技能胶囊两块屏都有,基类提供;球馆是对练屏独有)与选档后的去向 ——
 //   抽成基类 + buildExtra/onPick 钩子,子类只补差异,不复制骨架。
-// - 三档难度文案统一吃 config.DIFF_PICKS(主菜单旧三卡的展示表收编于此),
+// - 四档难度文案统一吃 config.DIFF_PICKS(主菜单旧三卡的展示表收编于此),
 //   色面用 drawSolidBlock 实底大色块,文字用色由 inkOn(accent) 决定。
 // - 触摸卫生沿用仓库契约:hide 走 fadeOutHide(禁交互件、不 deactivate),
 //   show 走 cancelFade 整树放行;不挂任何裸 TOUCH 监听,不造隐形挡板。
 // - 作者通道(连点同一个球馆 tab 拉满档)随球馆 tabs 从主菜单迁到这里。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, UITransform, Vec2 } from "cc";
+import { Button, Color, Graphics, Label, Node, profiler, UITransform, Vec2 } from "cc";
 import { CFG, DIFF_PICKS } from "../core/config";
 import { Career } from "../core/career";
 import { Skills } from "../core/skills";
@@ -23,7 +23,7 @@ import type { UiKit } from "./ui-manager";
 import {
   ARCADE, cancelFade, drawChevron, drawMenuCard, drawSlantPanel, drawSlantShadow,
   drawSolidBlock, fadeOutHide, inkOn, makeChip, riseIn, retainedDraw, safePad, skewOf,
-  slashIn, slantPath, TOUCH_MIN,
+  slashIn, slantPath, textW, TOUCH_MIN, uiIconButton,
 } from "./ui-arcade";
 import { pressable as shellPressable, solidBlock as shellSolidBlock } from "./ui-shell";
 
@@ -37,7 +37,7 @@ export abstract class ModeScreen {
   private bars: Node[] = [];
   private extras: Node[] = [];
   private titleNode!: Node;
-  private backNode!: Node;
+  private closeNode!: Node;
   /** 技能胶囊的名字读数:只有调过 buildSkillBadge 的屏才有(基类重绘时要能空转) */
   private skillNameLabel: Label | null = null;
 
@@ -63,7 +63,7 @@ export abstract class ModeScreen {
     cancelFade(this.root);
     this.root.active = true;
     this.refreshExtra();
-    slashIn(this.backNode, 0, -34, -6);
+    slashIn(this.closeNode, 0, 34, 6);
     slashIn(this.titleNode, 0.06, -38, -6);
     for (let i = 0; i < this.bars.length; i++) riseIn(this.bars[i], 0.14 + i * 0.06);
     for (let i = 0; i < this.extras.length; i++) riseIn(this.extras[i], 0.36 + i * 0.05);
@@ -78,22 +78,15 @@ export abstract class ModeScreen {
   private buildHeader(): void {
     const sp = safePad();
 
-    // 返回键:黑面斜切小片(视觉与主菜单右上角徽章同族)
-    const back = new Node("back");
-    back.layer = this.root.layer;
-    back.addComponent(UITransform).setContentSize(96, 40);
-    const bg = back.addComponent(Graphics);
-    drawSlantShadow(bg, 96, 40, skewOf(40, 8), 3, 3, 0.45);
-    drawSlantPanel(bg, 96, 40, skewOf(40, 8), { face: "#16161f", alpha: 0.96, edge: ARCADE.paper, edgeA: 0.35 });
-    this.kit.label(back, "‹ 返回", 13, ARCADE.paper, { disp: true });
-    this.pressable(back, 0.92);
-    back.on(Button.EventType.CLICK, () => {
+    // 关闭键:右上角 ✕,与闯关大厅/训练场/生涯面板同一颗斜方形 uiIconButton ——
+    // 「离开当前界面」全站一个角、一个形状(旧写法是左上手绘「‹ 返回」黑斜片,两套逻辑)。
+    const close = uiIconButton(this.root, "✕", { fontSize: 20 });
+    close.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("back");
       this.goBack();
     });
-    back.setPosition(-480 + sp.left + 52, 214, 0);
-    back.setParent(this.root);
-    this.backNode = back;
+    close.setPosition(480 - sp.right - 52, 214, 0);
+    this.closeNode = close;
 
     // 标题:红黑斜切衬底 + 大字(主菜单标题同构,窄一号)
     const holder = new Node("title");
@@ -129,25 +122,27 @@ export abstract class ModeScreen {
     this.titleNode = holder;
   }
 
-  /** 三档难度实底大色块条:整条即按钮,文案全吃 DIFF_PICKS */
+  /** 四档难度 2×2 实底大色块:每块即按钮,文案全吃 DIFF_PICKS */
   private buildBars(): void {
     DIFF_PICKS.forEach((p, i) => {
       const ink = inkOn(p.accent) ? "#0a0e1c" : "#f5efe1";
-      const node = this.solidBlock(`diff:${p.key}`, 640, 82, p.accent, 4);
-      node.setPosition(0, 104 - i * 92, 0);
-      const idx = this.kit.label(node, `0${i + 1}`, 22, col(ink, 0.4));
-      idx.node.setPosition(-286, 0, 0);
-      makeChip(node, p.tag, 10, "#0a0e1c", p.accent).setPosition(-226, 0, 0);
+      const node = this.solidBlock(`diff:${p.key}`, 312, 108, p.accent, 4);
+      // 2×2:上排 easy/normal、下排 hard/expert,行距 12(块高 108 → 两行共 228,
+      // 顶到标题下沿、底到球馆/说明上方,不挤不撞)
+      node.setPosition(i % 2 === 0 ? -164 : 164, i < 2 ? 92 : -32, 0);
+      // 名字 + 标签胶囊 + 一行说明:左列竖排,占块左侧 250 宽
       const name = this.kit.label(node, p.name, 26, ink, { disp: true });
-      name.node.setPosition(-142, 0, 0);
-      this.txt(node, p.desc, 12, col(ink, 0.72), -96, 0, 360);
-
-      // 箭标:独立子节点挂笔(一个节点只容一个渲染组件,块面已占该节点的 Graphics)
+      name.node.setPosition(-128 + textW(p.name, 26) / 2, 32, 0);
+      makeChip(node, p.tag, 10, "#0a0e1c", p.accent).setPosition(-98, 4, 0);
+      this.txt(node, p.desc, 12, col(ink, 0.75), -128, -30, 250);
+      // 右侧大号水印序号 + 箭标:一个节点只容一个渲染组件,标和箭各自挂笔
+      const idx = this.kit.label(node, `0${i + 1}`, 46, col(ink, 0.16));
+      idx.node.setPosition(110, 0, 0);
       const chev = new Node("chev");
       chev.layer = node.layer;
       chev.addComponent(UITransform);
       drawChevron(chev.addComponent(Graphics), 12, ink, 0.65, 2);
-      chev.setPosition(288, 0, 0);
+      chev.setPosition(134, 34, 0);
       chev.setParent(node);
 
       node.on(Button.EventType.CLICK, () => {
@@ -246,7 +241,7 @@ export abstract class ModeScreen {
 }
 
 // ============================================================
-// 对练屏:三档难度 + 球馆 + 技能胶囊 —— 主菜单搬空的「赛前准备」都在这
+// 对练屏:四档难度 + 球馆 + 技能胶囊 —— 主菜单搬空的「赛前准备」都在这
 // ============================================================
 
 export class MatchSetupScreen extends ModeScreen {
@@ -255,6 +250,9 @@ export class MatchSetupScreen extends ModeScreen {
   private authorTabId: string | null = null;
   private authorTaps = 0;
   private authorAt = 0;
+  /** 本次连点已拉满:后续点击改判 profiler 开关(见 authorTap) */
+  private authorMaxed = false;
+  private profilerOn = false;
 
   constructor(parent: Node, kit: UiKit, goBack: () => void) {
     super(parent, kit, "match-setup", "对练", goBack);
@@ -342,18 +340,33 @@ export class MatchSetupScreen extends ModeScreen {
    * 连点同一个球馆 tab 满 CFG.author.taps 下 → 等级/金币拉满,方便真机测商店与技能解锁。
    * 换 tab 或两下点慢过 gapMs 就重新计数,所以正常「挨个看球馆」不会误触;
    * 触发时顺带吃掉这次点击,不再叠一层「球馆已切换」的提示(同一条 toast 通道,会互相盖)。
-   * 拉满只在内存生效且此后 profile 不再落盘,所以重开应用会退回原档 —— 每次进应用都得重新连点。
-   * @returns 本次是否触发了拉满
+   * 拉满后**继续**连点 profTaps 下 → 切引擎统计(profiler)显示开关:真机排查卡顿
+   * 看 FPS/帧时间用,同一条手势链不用记新手势。两项都只在内存生效,重开应用即退回。
+   * @returns 本次是否触发了拉满/统计开关
    */
   private authorTap(courtId: string): boolean {
     const A = CFG.author;
     if (!A.enabled) return false;
     const now = Date.now();
-    if (this.authorTabId !== courtId || now - this.authorAt > A.gapMs) this.authorTaps = 0;
+    if (this.authorTabId !== courtId || now - this.authorAt > A.gapMs) {
+      this.authorTaps = 0;
+      this.authorMaxed = false;
+    }
     this.authorTabId = courtId;
     this.authorAt = now;
+    if (this.authorMaxed) {
+      if (++this.authorTaps < A.profTaps) return true;
+      this.authorTaps = 0;
+      this.authorMaxed = false;
+      this.profilerOn = !this.profilerOn;
+      if (this.profilerOn) profiler.showStats(); else profiler.hideStats();
+      this.kit.sfx.play("ui");
+      this.kit.toast(this.profilerOn ? "性能统计 · 开(再连点关)" : "性能统计 · 关");
+      return true;
+    }
     if (++this.authorTaps < A.taps) return false;
     this.authorTaps = 0;
+    this.authorMaxed = true;
     const r = Career.maxOut(A.coins);
     this.paintCourts();
     this.kit.sfx.play("levelup");

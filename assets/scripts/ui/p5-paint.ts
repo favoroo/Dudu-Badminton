@@ -11,9 +11,9 @@
 // 里多个 moveTo 子路径(见 ui-arcade.drawScanlines 同样的批量写法)。
 // ============================================================
 import { Color, Graphics } from "cc";
-import type { CardOpts, HalftoneOpts, Paint, PlateOpts, SliderDL } from "./p5-shapes";
+import type { CardOpts, HalftoneOpts, IconBtnOpts, Paint, PlateOpts, SliderDL } from "./p5-shapes";
 import {
-  bandDL, blockDL, cardDL, halftoneDL, knobDL, plateDL, rankBadgeDL, sliderDL, slotDL,
+  bandDL, blockDL, cardDL, halftoneDL, iconBtnDL, knobDL, plateDL, rankBadgeDL, sliderDL, slotDL,
   starGlyphDL, toggleDL, type BadgeKind,
 } from "./p5-shapes";
 
@@ -111,6 +111,11 @@ export function drawBevelSlot(g: Graphics, w: number, h: number, slantDeg = 5, f
 /** 斜切旋钮(替代滑杆那颗白圆) */
 export function drawSlantKnob(g: Graphics, s: number, faceHex: string, cx = 0, cy = 0): void {
   paintP5(g, knobDL(s, faceHex, cx, cy));
+}
+
+/** 图标按钮底:斜方印章(替代关闭 ✕ 等小键旧的光滑圆底) */
+export function drawIconBtn(g: Graphics, s: number, faceHex: string, edgeHex: string, o: IconBtnOpts = {}): void {
+  paintP5(g, iconBtnDL(s, faceHex, edgeHex, o));
 }
 
 /** 开关行面:开 = 实底色块,关 = 凹陷槽 */

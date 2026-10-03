@@ -240,6 +240,8 @@ export interface AboutLayout {
   checkBtn: Box;
   /** 「浏览器下载」:应用内那条路走不通时的第二条路,整条链交给系统浏览器 */
   siteBtn: Box;
+  /** 「重看新手教学」:教学的重看入口之一(另一处在训练场列表页) */
+  tutBtn: Box;
   /** 检查结果读数(未检查 / 检查中 / 已是最新 / 发现新版本 / 失败原因) */
   status: Box;
   hint: Box;
@@ -262,6 +264,7 @@ export function aboutLayout(): AboutLayout {
     siteBtn: box(SET.colX + btnW + btnGap, btnW, rowY(1), SET.rowH),
     status: box(SET.colX, wide, rowY(2), 18),
     hint: box(SET.colX, wide, rowY(3), 16),
+    tutBtn: box(SET.colX, 220, rowY(4), SET.rowH),
   };
 }
 
@@ -301,7 +304,7 @@ export function settingsOverlaps(): string[] {
     ["操控·移动方式", K.modes],
     ["操控·动作键", K.actions],
     ["操控·手感行", K.tiers.flatMap((t) => [t.name, t.slider, t.caption])],
-    ["关于", [A.section, A.verName, A.verValue, A.checkBtn, A.siteBtn, A.status, A.hint]],
+    ["关于", [A.section, A.verName, A.verValue, A.checkBtn, A.siteBtn, A.status, A.hint, A.tutBtn]],
   ];
   for (const [nm, bs] of rows) {
     for (let i = 0; i < bs.length; i++) {
