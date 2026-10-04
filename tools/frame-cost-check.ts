@@ -160,11 +160,13 @@ function runMeasure(dynEveryFrame: boolean): Measure {
 
     if (step >= WARMUP) {
       const m = bill(mainG);
-      // 各层按真实节奏摊销:dyn/slow 只在重绘帧计入全额,彩带层内容隔帧保留故恒 ÷2
+      // 各层按真实节奏摊销:dyn/slow 只在重绘帧计入全额,彩带层按 fx.confetti.layerEvery 摊
+      // (0.0.28 起礼花只在终局庆祝段活着、且庆祝段满帧渲染 ⇒ "恒 ÷2" 那条旧假设不再成立;
+      //  本工具从不放礼花,这一项恒为 0,写出来只为不再误导读者)
       const cost = m.ops
         + (dynDue ? dynG.ops.length : 0)
         + (slowDue ? slowG.ops.length / 3 : 0)
-        + cfG.ops.length / 2;
+        + cfG.ops.length / (C.fx.confetti.layerEvery || 1);
       billed += cost;
       billedFrames++;
       if (cost > peakOps) {

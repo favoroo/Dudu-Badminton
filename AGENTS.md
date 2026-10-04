@@ -25,6 +25,8 @@
 | 改角色姿势/外观 | [sprites.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/sprites.ts) |
 | 改传说皮肤「脚下法阵」(溢光/齿环/断环/符文/星尘/升尘六层) | 画法 [aura.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/aura.ts)(零状态,只画不算),数值与配色表全在 `config.ts` 的 `fx.aura` 段;调用点只有一处:sprites.ts `drawPlayer` 画身体之前。**别再画光滑椭圆环** —— 与全站 P5 语汇相反。验收 `node .tools-build/tools/aura-preview.js`(+`--selftest` 七份反例必须被拦下)、出图 `.tools-build/aura-preview/aura-sigil.html` 与 `aura-people.html`(headless Chrome 光栅化肉眼判) |
 | 改击打/轨迹/球体特效 | 数值全在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `fx` 段;丝带 [ribbon.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/ribbon.ts) + 球体运动学 [shuttle-motion.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/shuttle-motion.ts) + 粒子 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts) + 缓动 [easing.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/easing.ts);出图验收 `node .tools-build/tools/fx-preview.js` |
+| 改胜利礼花 / 终局庆祝段时钟 | 弹道与喷口全在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `fx.confetti` 段(注释带实测),池与画法在 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts)(`confettiVolley` / `_stepConfetti` / 零分配 `writeConfettiQuad`);**时钟档位**(`sim`/`celebrate`/`still` 与各自的渲染频率)是零 cc 纯函数 [celebration.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/celebration.ts),`game-root.ts` 主循环只照它执行 —— 旧写法把 frozen 六个态一视同仁,OVER 时连 `fx.step()` 都不跑,礼花钉在半空(用户:「胜利时的这个礼花效果会有点卡顿」)。验收 `node .tools-build/tools/confetti-check.js`(+`--selftest` 四份反例必须被拦住)、出图 `node .tools-build/tools/fx-preview.js --out .tools-build/fx-preview` 的 `confetti.html`(六帧,灰框 = 结算卡占位,纸屑必须打在框外侧) |
+
 | 改手机震动(触觉) | 强度表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `haptic` 段(键名与 `fx` 六档同源,强度=时长×振幅两维);判据与排队在 [haptic.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/haptic.ts)(零 cc:`shotKey`/`plan`/`HapticGate`),平台出口在 [haptics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/haptics.ts)(Android 反射 `AppActivity.vibrate(ms,amp)` / 微信 `wx.vibrateShort` / Web `navigator.vibrate`,失败不静默 —— `hapticStatus()` 给设置页读数);Java 桥与能力探测在 `native/engine/android/app/src/com/cocos/game/AppActivity.java`;档位「轻/标准/强」在设置页声音画面 tab(存 `Settings.hapticLevel`),验收 `node .tools-build/tools/haptic-check.js`(+`--selftest`)。**改 Java 侧必须重打 APK 才生效**。**Android 12+ 不带 `VibrationAttributes` 的 `vibrate()` 会被系统归到 `TOUCH` 档,而这一档跟着「设置 → 声音与振动 → 触摸振动」总闸走 —— 总闸关了系统就把整段震动静默丢掉(不抛异常、Java 仍返回 true,JS 侧怎么探都是健康的),所以 API 31+ 一律显式声明 `USAGE_PHYSICAL_EMULATION`;真机取证看 `adb shell dumpsys vibrator_manager` 的 `Recent vibrations`(按 usage 分组,`finished` / `ignored_*` 一眼分明)**。**波形形状(包络/厂商预置)这一层做过又被撤了**(2026-10-02:真机 A/B 用户表示分辨不出、不要改手感,只保留恒幅 one-shot;线性马达的"嗡嗡"是已知取舍)—— 别再往 `HapticSeg` 里加 steps/preset,那套东西的坑与实证记在 CHANGELOG 与记忆里 |
 | 改 P5 视觉构件(尖刺环/星芒/斜切/飘字底板/斩劈 cut-in) | render 层 [p5kit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/p5kit.ts),UI 层 [ui-arcade.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-arcade.ts);规范见下方「开发规范」P5 条 |
 | 改面板层配色/斜切档/色即功能 | 令牌唯一真话 [p5-tokens.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-tokens.ts)(零 cc:`C` 色板、`SLANT` 只许 3/5/6/10 四档、`ROLE` 六角色、`RARITY` 用 config 的 `RARITY_META`、`inkFor`/`contrast`、网点预算)。`ARCADE`/`PAL` 是它的再导出/派生,**别再抄一份色表** |
@@ -38,15 +40,21 @@
 | 作者通道(测试拉满档) | 对练屏连点**同一个**球馆 tab 6 下 → 等级满 + 金币 99999,**只在内存生效、本局不落盘**(重开退回原档,每次进应用要重新连点)。参数 `CFG.author`(发版想关掉置 `enabled: false`)、手势判定 `mode-screen.ts` 的 `MatchSetupScreen.authorTap()`(0.0.18 随球馆 tab 从主菜单迁来)、执行与沙箱 `career.maxOut()` / `career.sandboxed()` |
 | 改更新链路(检查/下载/浏览器出路) | 入口在设置「关于」页(`settings-panel.ts` 的 `buildAboutPage`,那颗「浏览器下载」**只在 `UpdateService.pendingUpdate` 非空时才建** —— 没更新时点它是把人丢进空发布页)+ 冷启动 24h 静默检查(`main-menu.ts` 的 `show()`,首页不再挂按钮);弹窗 [update-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/update-dialog.ts) 三条出口:立即更新(应用内下载+调安装)/ 浏览器下载(`browserDownloadUrl()` → `sys.openURL` 发布页)/ 稍后再说;候选源与原生下载器在 [update-service.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/update-service.ts),发布页直链 `releasePageUrl()` 在 [version.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/version.ts)(Gitee 的 releases API **不返回 html_url**,空串喂给 openURL 就是"点了没反应")。弹窗挂 Canvas 而不是 ui-root,并在 `show()` 里抬到最上层 —— 设置/商店是晚到的兄弟节点,不抬就被它们的暗底压死 |
 | 改更新说明排版 | 折行算法 [release-notes.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/release-notes.ts),回归 `node .tools-build/tools/notes-check.js` |
+| 改结算屏那一屏字(奖励/明细/升级/新品上架) | [settle-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settle-panel.ts) 的 `fillRewards()`(数据来自 `Career.SettleResult`;`unlocked` 是 `SkinDef[]`,拼字符串必须先 `map(s => s.name)`,否则玩家看到 `[object Object]`)。闸门 `node .tools-build/tools/text-object-check.js` |
+| 改结算谢幕演出(卡片弹出前的留白/斜带扫场/冷幕缓沉/标语砸落缓沉/逐行浮现/点按跳过) | 时间轴纯函数 [settle-cine.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settle-cine.ts)(零 cc,`buildCine` 胜负两路,训练不出仪式)+ 消费 [settle-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settle-panel.ts) 的 `playCine`;数值全在 config.ts 的 `fx.settleCine` 段;留白段球场由 celebration 的 celebrate 时钟养着(彩带才落得完,busy 归零自动回省电)。验收 `node .tools-build/tools/settle-cine-check.js`(+`--selftest` 旧单一快路径/拖沓档/阶梯过大三反例必须被拦下) |
 | 改「调整位置」顶栏排版 | [editor-strip.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/editor-strip.ts)(纯函数,回归见 `tools/strip-check.ts`)+ [settings-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settings-panel.ts) 消费它 |
 | 改闯关大厅/进度/「下一关」 | 关卡表与 `getNextStage()`·`getStageByNo()` 在 [campaign.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/campaign.ts);大厅(直达条、卡片「▶ 下一关」印章、tab 自动聚焦)在 [campaign-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/campaign-panel.ts);结算页那颗「下一关 ▶ 第 N 关」在 [settle-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/settle-panel.ts) 的 `buildActions()`(按钮整排按场景重建);验收 `node .tools-build/tools/campaign-check.js` |
 | 改闯关「战前简报」弹窗排版 | [brief-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/brief-layout.ts)(纯函数:折行 + 堆块 + 弹窗按内容长高,回归见 `tools/brief-check.ts`、出图 `tools/brief-preview.ts`)+ [campaign-panel.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/campaign-panel.ts) 只照坐标摆 |
 | 改虚拟按键能放在哪儿 | [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 的 `clampDelta`(唯一约束 = 整块留在可视区内) |
+| 改击球键滑动手势(左/右=落点深浅,**上/下=弧线高低**,斜滑两轴组合如「上+右=挑高到后场」) | 双轴判定 [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) `trackSwingSwipe`(横轴 commitPx=10、纵轴 commitPxY=16,纵向阈值更紧防点按漂移误触)→ 数据池 [pad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/pad.ts) `swingSwipe`/`swingSwipeY` → 挥拍中实时覆写 [player.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/player.ts) `p.swingAim`(深浅)/`p.swingLoft`(挑高/平抽)→ `buildShot` 的 loft 下托/压平分支(排在跳杀压平**之前**;发球 forced 不吃手势)。数值全在 config.ts `touchAim`/`shot.loftUpMinDeg·loftDownMaxDeg`;键盘 U/I 对应上/下滑;预告徽标走真实解算器自动跟随。回归 `node .tools-build/tools/swipe-vertical-check.js`(+`--selftest`) |
 | 改技能键的冷却读数 | 浓度/几何/文案全在 [pad-cd.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/pad-cd.ts)(零 cc 依赖:`cdAlpha`·`cdArcs`·`cdText`·`drawCooldown`),取值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `padSkin.cd` 段,[touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 只照参数摆笔 + 挂键心秒数 Label,剩余秒数由 `game-root.ts` 喂;回归 `node .tools-build/tools/pad-cd-check.js`、出图 `node .tools-build/tools/pad-cd-preview.js` |
 | 改 AI 难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `diffs` 段(`read`=每记球只认定一次的站位误差 / `zone`=CPU 判定区 / `shotErr`=出球误差 / `composure`=落后是否变强),生效逻辑在 [ai.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/ai.ts),落档到球员在 `rules.ts` 的 `applyAiTier()`;验收 `node .tools-build/tools/ai-check.js`(三档胜负口径) |
-| 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);**副作用契约**:球种预告 `player.previewKind` 与实打共用同一条 `buildShot`,靠 `HitOpt.preview` 分流 —— 往 `modifyShot` 加任何状态消耗(`buffT`/`lungeShotT`/`flashStrikeT`/`magnetPulling`)或记账必须过 `!preview` 闸,漏一处就是「按了没反应」(2026-10-03 重击现场);顶档质量改写(`q/perfect`)只给真人,AI 的准头归 `diffs` 管;**凡是"替真人打"的机制一律 `!p.isAI` 闸**(AI 也装 lunge、也会自己按键 `ai.ts:487-501`,给它开等于白送永不失误的回球,而 `serve-check`/`ai-check` 的真人替身从不按技能键 ⇒ 那两把尺子量不到);附魔类起手字挂人物头顶(`floatSys`)读作"上弦",完成时的兑现字才挂场边。验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、`node .tools-build/tools/smash-check.js`(+ `--selftest`)、出图 `node .tools-build/tools/flash-preview.js` |
+| 改主动技能(7 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);**副作用契约**:球种预告 `player.previewKind` 与实打共用同一条 `buildShot`,靠 `HitOpt.preview` 分流 —— 往 `modifyShot` 加任何状态消耗(`buffT`/`lungeShotT`/`flashStrikeT`/`magnetPulling`/**`rage`**)或记账必须过 `!preview` 闸,漏一处就是「按了没反应」(2026-10-03 重击现场;怒气那处漏了的后果是"攒一整局被预告无声抽干");顶档质量改写(`q/perfect`)只给真人,AI 的准头归 `diffs` 管;**凡是"替真人打"的机制一律 `!p.isAI` 闸**(AI 也装 lunge、也会自己按键 `ai.ts`,给它开等于白送永不失误的回球,而 `serve-check`/`ai-check` 的真人替身从不按技能键 ⇒ 那两把尺子量不到);附魔类起手字挂人物头顶(`floatSys`)读作"上弦",完成时的兑现字才挂场边。验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、`node .tools-build/tools/smash-check.js`(+ `--selftest`)、出图 `node .tools-build/tools/flash-preview.js` |
 | 改「跨步一键自动回球」(强力跨步 = 冲过去 + 自动把这一拍打完) | 承诺由 `skills.activate` 开(`p.lungeAutoT` 待发窗 + `p.lungeShotT` 加力窗,数值全在 `CFG.lunge` 的 `autoReturn/autoWindow/autoHorizon/autoLandHorizon/autoAim/autoOutMargin/autoSettleGrace/reachTailMul`),**那一拍由 [player.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/player.ts) 的 `autoSwingDue` 择帧 + `startSwing` 执行**(skills 不能 import player,会成环);择帧锚 `Physics.flightFramesToClosest` 与 `PRESS_LEAD_FRAMES` —— **与时机环/击球键辉光同一把尺子**,只差人不吃的 `swingCue.reactFrames`(那 10 帧是补"看到→按下"的反应,机器不吃);刻意**不给必中**(不碰 `flashStrikeT` 那条 `guar` 分支),走 `tryHit` 真实峰值追踪;手动优先:玩家一按击打键 `p.lungeAutoT = 0` 当场撤销承诺;起手不清窗(它是判定区尾段的开关,清了那一拍反而够不着自己判成"该打"的球)。整套只动真人(`!p.isAI`)。验收 `node .tools-build/tools/lunge-check.js`(+ `--selftest` 四份反例必须被拦住) |
 | 改「重击一键自动兑现」(百分百重击 = 上弦 + 到点替玩家轰出那一拍,挥空不罚冷却) | 承诺同样由 `skills.activate` 开(`p.smashAutoT` 代拍窗 + `p.skill.buffT` 附魔期,数值全在 `CFG.skills.smash` 的 `autoReturn/autoWindow/autoAim/autoHorizon/autoLandHorizon/autoOutMargin/autoSettleGrace/cdOnConsume`);**那一拍与跨步共用同一条 [player.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/player.ts) `autoSwingDue(p, ball, src)` 择帧尺子**(门控数值各取一份 config,判据 `smash-check ⑯` 钉住两侧不许分叉),起手当场清窗 ⇒ 一次施放最多代一拍,附魔过期或玩家自己按击打键都当场哑掉;**冷却推迟到真扣出去那一拍才付**(`Skills.defersCooldownToConsume`,只有真人重击;AI 按下即付 ⇒ ai-check / serve-check 基线不动);`autoWindow` 上限是 `buffDuration`(超出去会在没附魔的帧上代一记普通球)。窗长按球速档定标:实测「对方出手→该按那帧」标准档最远 84、极限慢 135 ⇒ 取 140。验收 `node .tools-build/tools/smash-check.js`(+ `--selftest` 七份反例必须被拦住) |
+| 改「怒气重击」(第 7 款:整局攒怒气 + 按档位兑现 + 一键代拍) | **资源制,不是冷却制** —— 怒气 `p.rage` 住 **`Player`** 而不是 `PlayerSkillState`(`Career.applyToMatch()` 是 `me.skill = initSkillState(...)` **整块换对象**,换装即丢;Player 只在 `Rules.newMatch` 重建 = 正好"每局清零"的生命周期,先例 `p.zenMeter`)。攒点写在 [player.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/player.ts) 的 **`settle()`** 而不是 `modifyShot`(预告每真实帧最多跑 10 次 ⇒ 增益写那儿等于按帧速自灌;`rules.applyShot` 又会被发球走到),且**只吃物理档**(`qRaw` 来的 sweet/perfect,不读被 buff 抬起来的 `shot.*`),释放那一拍整口不攒(`skillKind !== "rage"`);数值全在 `CFG.skills.rage`(max/perHit/三个乘数/`rageMinRelease`/`tierAt`/四行 `tiers[]` 演出表含 `castLab`+`lab`);**只有满怒**才 `forceSmash` + 顶档(挪出 `ratio>=1` 就等于把它退化成弱版 smash);一键代拍与跨步/重击共用 `autoSwingDue(p,ball,"rage")`,四个门控数三侧**逐字同源**(`rage-check ⑭` 钉);键面走第二条通道 `setSkillState(..., chargeRatio)` —— `cdRatio` 语义是"还剩多久能用"、焊着变灰/藏图标/印秒数,怒气是反向量,**偷渡就会"怒气越满键越暗"**;`cooldownFrames: 20` 只防同帧连点(真闸是资源 + `buffT` armed 窗,`resetPoint` 每分清 cd 是既有设计,别去"修"它)。验收 `node .tools-build/tools/rage-check.js`(+`--selftest` 十二份反例必须被拦住) |
+| 改「时空减速掌控」(接球后缓释结束 + 击球大幅强化 + 效果彻底结束后才进冷却) | 承诺由 `skills.activate` 开(`buffT`/`focusT` 保底 180 步,数值全在 `CFG.skills.focus`;`defersCooldownToConsume` 保证激活时 cd=0 不扣冷却),接球(`!preview`)时将领域时间收缩到 `postHitFrames`(22 步,出球慢放特写),`world.clampSlowmo` 同步收缩;缓释到期当帧 `update` 启动 270 帧冷却;`modifyShot` 赋予真人顶档品质(`sweet/perfect/q>=0.98`)与初速+5.0/压弧+14°;击球触发专属 `chronoBurst` 激波与 16 级震屏。验收 `node .tools-build/tools/focus-check.js`(+ `--selftest` 四份反例必须被拦住) |
+| 改「自动击打(辅助模式)」(全局开关:系统替真人起手每一拍) | 开关存 `Settings.autoHit`(默认关)+ 零 cc 单例 [auto-hit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/auto-hit.ts)(`AutoHit.on` = 总闸 && 用户开关 && 模式合格;模式由 `rules` 在 newMatch/startCampaign 两处报进来),数值全在 `CFG.autoHit`;**择帧不另写一套** —— 复用跨步/重击/怒气那条 `Player.autoSwingDue(p, ball, "auto")`(四个门控数与它们逐字同源,`rage-check ⑭`/`smash-check ⑯`/`auto-hit-check ⑨` 三处钉),分支排在整条 else-if 链**最后**(三条技能承诺与手动优先都在它前面)。**四条设计约束**:① 不写 `lungeAutoT`(那字段兼着 `strikeZone` 的判定区尾段倍率 = 白送手长)② 不写 `flashStrikeT`(必中支)③ 起手给字符串 `"mid"` 与真人点按同一条路,玩家滑过的深浅/高低由 `aimOverride` 在同帧覆盖 ⇒「击球键变纯瞄准键」零新增代码(`pad.swingSwipe` 本来就粘住不丢)④ **不接管发球**(实测四重不沾:`live=false`/`held`/`flying`/`lastHitter` 挂在发球方)。没有窗 ⇒ 逐帧轮询,靠 `maxTriesPerBall` 限次(`flightFramesToClosest` 从第 0 帧起扫,球在圈心时 fc=0 当即判"该按",不限次就是"人物自己乱挥")。表现层:时机环 `pressAt` 去掉 `reactFrames`(机器不吃反应)、徽标缀「· 自动」、飘字「自动」、早/晚时机条在 `e.autoHit` 时抑制。设置页第 4 个 tab「辅助」(`assistLayout()`,操控页竖排零余量塞不下)。验收 `node .tools-build/tools/auto-hit-check.js`(+ `--selftest` 九份反例必须被拦住) |
 | 改技能配置弹窗排版 | [skill-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-layout.ts)(纯函数:详情板折行 + 右对齐块按实测宽倒推 + 面板竖排留缝,回归见 `tools/skill-check.ts`)+ [skill-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-dialog.ts) 只照坐标摆 —— 卡片只留「标签/名字/CD/装备」,完整说明在底部详情板,点卡片切换 |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
@@ -190,6 +198,93 @@ node .tools-build/tools/lunge-check.js --selftest
 node .tools-build/tools/net-shot-check.js
 node .tools-build/tools/net-shot-check.js --selftest
 
+# 4.6.8 击球键纵向手势回归(exit 0;用户需求:「上滑或者下滑也能触发一些其他的击打效果,
+#     比如上滑是很高的球」。击球键手势从一维(左右=落点深浅)扩成二维(上下=弧线高低,
+#     两轴独立可组合):上滑 = loft 下托到 loftUpMinDeg(58>lobDeg55 ⇒ 必出挑高),
+#     下滑 = 压到 loftDownMaxDeg(12,低点击球被 safeAngle 抬回不自杀)。
+#     坏法全都不崩不报错:下托分支被拆(怎么滑都打不出高球)、手势漏进跳杀/发球
+#     (空中永远是扣杀、发球弧线不被改写)、没滑的那拍被带偏(spec/net/reach 的基线全歪)、
+#     AI/替身被带纵轴意图。
+#     断言:上滑 7 高度×3 深浅必出 lob、网前上滑豁免 mid 自动扑推、下滑高点击球 deg≤12
+#     落扣杀/劈吊档、低点击球全过网、上+右=挑到后场、预告与实打同路径、中性单按与旧公式
+#     逐位一致、jumpSmash 压平赢过手势、forced 发球不吃手势、inp.swingSwipeY 挥拍中实时
+#     覆写/AI 不带字段不动。改 CFG.touchAim.commitPxY、CFG.shot.loftUpMinDeg·loftDownMaxDeg、
+#     player.ts swingLoft·buildShot、pad.ts/keyboard.ts/touchpad.ts 纵轴管道都要跑;
+#     --selftest 喂「无下托分支/无压平分支/偏置顺序颠倒/阈值放松」四份反例必须被拦下)
+node .tools-build/tools/swipe-vertical-check.js
+node .tools-build/tools/swipe-vertical-check.js --selftest
+
+# 4.6.9 时空减速技能与接球缓释回归(exit 0;用户现场:「结束逻辑改成接完一个球过一会就可以结束，击球效果强化，冷却时间改成效果结束后才进冷却」。
+#     断言:激活时 cd=0、键面报"领域中"不可重复释放、预告 preview 绝不偷吃/缩短领域时间、
+#     真正接球时初速+5.0/压弧+14/顶档 sweet/perfect 品质改写、接球后时间精准收缩到 postHitFrames(22 帧)、
+#     缓释走完领域结束且当帧正式启动 270 帧冷却、未接球自然超时同样启动 270 帧冷却、resetPoint 彻底清零。
+#     改 config.ts focus.*、skills.ts focus 分支/defersCooldownToConsume、world.ts clampSlowmo/残影、
+#     fx.ts chronoBurst 都要跑。--selftest 四份反例:cdAtPress/noPostHit/previewConsumes/noQuality 必须全被拦下)
+node .tools-build/tools/focus-check.js
+node .tools-build/tools/focus-check.js --selftest
+
+# 4.6.10 胜利礼花与终局庆祝段时钟回归(exit 0;用户现场:「胜利时的这个礼花效果会有点卡顿」。
+#     根因不在"画得贵",在三处叠加:frozen 六态一视同仁地跳过 world.stepFx ⇒ fx.step() 不跑,
+#     纸屑出生后一帧没走钉在半空;frozen 还把整场渲染降到每 4 真实帧 ⇒ 就算走也是 15fps;
+#     旧弹道 g=0.02 无阻力按寿命积分全程在往上飞,而喷口一口居中正好打在结算卡(560×490)背后。
+#     断言:①时钟档位真值表(sim/celebrate/still × 六态,庆祝态 ⊆ frozen、暂停必须仍是定格帧)
+#     ②渲染节奏(庆祝满帧 / 面板每 4 帧 / 对局满帧、定格每 2 帧,庆祝必须比面板密)
+#     ③出生几何(两口关于屏心镜像、≥90% 片落在 |x-屏心|>280 的可见带、不许喷出场外)
+#     ④弹道(10 帧位移 >4px = 时钟真的在走;升程 ≥120px;不出屏顶;落回地面;第 N 帧池必空 =
+#     庆祝段收得回去,省电降频还得回来)⑤绘制零分配(_drawConfetti 里不许有数组字面量,
+#     角点必须走 writeConfettiQuad 复用缓冲)+ 角点公式与旧式逐位同构 + 彩带层 ≥30fps
+#     ⑥每片一笔、礼花最忙帧笔数 ≤ frame-cost 峰值预算。改 config.ts fx.confetti 任一键、
+#     core/celebration.ts、game-root 主循环时钟分支、fx.ts 彩带池、world.presentationBusy 都要跑。
+#     --selftest 四份反例:旧时钟(frozen 一律 still)/ 旧弹道(g=0.02 无阻力)/
+#     旧一口居中喷口 / 旧绘制体(逐片 new 两个数组)必须各自被点名拦住)
+node .tools-build/tools/confetti-check.js
+node .tools-build/tools/confetti-check.js --selftest
+node .tools-build/tools/fx-preview.js --out .tools-build/fx-preview   # confetti.html 六帧肉眼判(灰框=结算卡)
+
+# 4.6.11 结算谢幕演出回归(exit 0;用户现场:「目前比分到了之后就直接弹窗结算了,可以多加一点效果(失败和胜利的不一样)」。
+#     入场演出全靠 tween 摆出来,任何一步接错都是静默的:斜带忘了挂、胜负两条路径抄成同一条、
+#     节拍叠罗汉把卡片拖到三秒后才来 —— tsc 不报、运行时不炸。时间轴由 core/ui 纯函数 settle-cine.ts
+#     烘成 CinePlan,settle-panel.ts 的 playCine 照计划摆。
+#     断言:①胜负真的分化(斜带/星芒/轻震仅胜利,冷 veil 仅失败,标语 slam≠descend,卡片 pop≠sink,失败暗幕压得更慢);
+#     ②时间不打架、总时长不超防拖沓红线(暗幕升完卡片才来、标语落定不晚于卡片、行数 10 行逐行浮现不超 2.6s);
+#     ③训练模式不出仪式(保持旧快速入场);④settle-panel 确实在消费时间轴且跳过监听成对卸载。
+#     改 config.ts fx.settleCine、ui/settle-cine.ts、ui/settle-panel.ts 演出路径都要跑。
+#     --selftest 三份反例:旧单一快路径/拖沓档/阶梯过大必须被点名拦下)
+node .tools-build/tools/settle-cine-check.js
+node .tools-build/tools/settle-cine-check.js --selftest
+
+# 4.6.12 怒气重击(第 7 款:资源制 + 分档兑现 + 一键代拍)回归(exit 0;用户需求:「和重击机制类似,
+#     但可以击打过程攒怒气,特殊击球攒得更快,攒得越多释放越强,放完归零」。
+#     这款的坏法**全都不崩、不报错、tsc 也不报**:预告通道每真实帧最多跑 10 次 buildShot,消耗漏一个
+#     !preview 闸 ⇒ 攒一整局的怒气被无声抽干;四档塌成一档(tierAt 行数与演出表不齐 / rageTierOf
+#     从小往大找恒返回 0 —— 烟测真抓到过);一次施放吃掉多拍(兑现不收 armed 窗);释放那一拍自己给自己
+#     充能(增益读了被 buff 抬起来的 shot.sweet 而不是 qRaw 来的物理档);0 怒气也能放 ⇒ 每 20 帧白嫖强球;
+#     怒气住 PlayerSkillState ⇒ Career.applyToMatch 整块换对象时丢失;跨分留残窗 ⇒ 下一分凭空多打一拍;
+#     手动抢拍时把 armed 一起清 ⇒「我按了技能又自己挥一拍,怒气没了」;给 AI 开代拍窗 ⇒ 白送永不失误的暴扣
+#     而 serve-check/ai-check 量不到。16 段判据(含 300 格一键兑现 + 沉默必归因 + 完美手动豁免)+
+#     12 份 --selftest 反例。改 CFG.skills.rage 任一键、skills 的 rage 分支、player 的 settle 增益/
+#     autoSwingDue src="rage"/代拍链、pad-cd 的 charge* 任一都要跑)
+node .tools-build/tools/rage-check.js
+node .tools-build/tools/rage-check.js --selftest   # 十二份反例必须各自被点名拦住
+
+# 4.6.13 自动击打(辅助模式)回归(exit 0;用户需求:「做一个自动击打功能,玩家的人物会自动击打羽毛球,
+#     打开后玩家就只用移动方向和释放技能;设置里加个开关」。择帧复用 autoSwingDue(与三条一键化同一把尺),
+#     所以坏法同样全是静默的:把发球也代了(发球类型是"按下快慢"的手艺,实测四重不沾 live/held/flying/
+#     lastHitter,反例要四道全拆才咬得动)、白吃判定区尾段倍率(写 lungeAutoT 就是白送手长)、抢玩家自己
+#     那一拍、训练场/教学/本地对战也代打(那两处判的就是"你会不会这一拍")、关掉不干净(serve-check/
+#     ai-check/sim-check 的替人基线会一起漂)、同一球连挥("人物自己乱挥半天")。
+#     188 格网格(6 高 × 4 远近 × 4 来球速度 × 两侧 + 4 格"够得着但明摆着出界"的平抽)九段判据:
+#     ① 起必兑现 + 沉默必归因(唯一豁免:完美手动同一格也接不到)② 永不发球(含对照组,否则量的是死支)
+#     ③ 无免费手长(起手帧核 lungeAutoT 与半径)④ 手动优先 + 挥空后仍接得住 ⑤ 模式门控(真集成)
+#     ⑥ 关掉 = 零调用零写入(把 Player.autoSwingDue 换成计数壳)⑦ 不加强度(q 与手动同尺、瞄准同源)
+#     ⑧ 每球限次(冻结球 + 择帧恒"该按"逼出连挥,拿出厂值核)⑨ 四侧门控数值同源。
+#     写这套判据时 --selftest 当场抓出三份**哑反例**(界外豁免自量自配置、限次从没被逼到、发球只拆一道闸)
+#     —— 判据读被量的那个配置就等于没量,这条规矩记在文件头。
+#     改 CFG.autoHit 任一键、player 的代拍链/aimOverride/previewKind、auto-hit.ts、rules 的 onMatch、
+#     game-root 的 updateSwingCue 任一都要跑)
+node .tools-build/tools/auto-hit-check.js
+node .tools-build/tools/auto-hit-check.js --selftest   # 九份反例必须各自被点名拦住
+
 # 4.7 闯关进度与「下一关」判据(exit 0;大厅直达条、卡片「▶ 下一关」印章、
 #     结算页「下一关 ▶ 第 N 关」三处全押在 CampaignManager.getNextStage/getStageByNo 上,
 #     算歪不会崩、只会安静地不好用。断言:20 关表自洽(编号连续/四场景各 5 关/章节↔场景
@@ -295,6 +390,20 @@ node .tools-build/tools/ui-hide-check.js --selftest   # 反例(修好之前的�
 node .tools-build/tools/ui-click-check.js
 node .tools-build/tools/ui-click-check.js --selftest   # 反例(漏挂 Button 的真实写法)必须被报警
 node .tools-build/tools/ui-click-check.js -v           # 每文件明细:已装/工厂免检/链式不追/报警
+
+# 7.3 文案里的「对象被字符串化」闸门(exit 0;用户现场:胜利结算页写着
+#     「新品上架:[object Object] · [object Object] · [object Object]」。
+#     `SettleResult.unlocked` 是 SkinDef[],旧代码 `res.unlocked.join(" · ")` 直接吃隐式字符串化。
+#     这类坏法不崩、不报错、**tsc 也不报** —— 把对象塞进字符串槽位有两个合法出口:
+#     `${x}` 插值不做可文本化检查;`.join()` / `+` / `String(x)` 签名接受任意元素类型。
+#     (而 `label.string = 对象` 那种直接赋值 tsc 会报错,所以本工具只补那两个洞,不是 tsc 重复品。)
+#     判据用 TypeScript 编译器 API 读真实类型:扫 assets/scripts 全部插值/join/拼接/String() 站点,
+#     元素类型是对象且该类型没自己声明 toString 就报警;console.* 实参整条放行(那是调试不是文案)。
+#     另钉三条「防自己变瞎」的计数:文件数 >60、字符串化站点 >500、join 调用 >10。
+#     改任何用户可见文案的拼接(结算/简报/技能详情/商店)都要跑)
+node .tools-build/tools/text-object-check.js
+node .tools-build/tools/text-object-check.js --selftest   # 四种出口各一份坏样本必须被点名,四份合法写法必须放行
+node .tools-build/tools/text-object-check.js -v           # 站点统计 + 逐条 file:line:col 明细
 
 # 7.4 P5 面板语法闸门(exit 0;四面板大色块改版的地基。防的是四类**不会崩、只会安静地
 #     难看/难点**的坏:①面色与字色对比不够 —— 商店旧 tab 是 navy2 底 + 白 5% 描边,约

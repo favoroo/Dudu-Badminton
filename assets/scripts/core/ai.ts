@@ -527,6 +527,17 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
       if (Math.hypot(ball.vx, ball.vy) > 13 || em.aggr > 0.45) {
         inp.skillPressed = true;
       }
+    } else if (sId === "rage") {
+      // 怒气重击:**只在满怒才放**。半管就放等于把资源换成一个普通强度球,而 CPU 不懂
+      // "下一分还能接着攒"这层经济 —— 那层判断归玩家,给 AI 放开会把技能按成空响。
+      //
+      // 今天这段到不了:aiSkillByDiff 四档恒 "lunge",关卡 aiSkill 只出现过 smash/magnet/flash。
+      // 写它是因为**不该出现"装了 rage 的 AI 一声不吭"那种中间态** —— 要么给个明确策略,
+      // 要么别让它装上(rage-check ⑱ 钉住"rage 不在 AI 技能表里",这一句就是那条断言的注脚)。
+      // AI 也永远拿不到 rageAutoT 代拍窗(activate 里按 !p.isAI 给零),它的准头归 diffs.* 管。
+      if (Skills.rageRatioOf(p) >= 1) {
+        inp.skillPressed = true;
+      }
     }
   }
 

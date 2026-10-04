@@ -30,7 +30,7 @@ import { C, ROLE, SLANT, inkFor } from "../assets/scripts/ui/p5-tokens";
 import { RARITY_META } from "../assets/scripts/core/config";
 import { textW } from "../assets/scripts/core/text-metrics";
 import { APP_VERSION_NAME } from "../assets/scripts/core/version";
-import { SET, aboutLayout, controlLayout, donePos, mediaLayout, SETTINGS_TABS, tabBoxes } from "../assets/scripts/ui/settings-layout";
+import { ASSIST_COPY, ASSIST_COPY_SIZE, assistLayout, SET, aboutLayout, controlLayout, donePos, mediaLayout, SETTINGS_TABS, tabBoxes } from "../assets/scripts/ui/settings-layout";
 import {
   cardRow, cardRows, CMP, resumeRow as cmpResume, tabRow as campTabRow,
 } from "../assets/scripts/ui/campaign-layout";
@@ -277,6 +277,21 @@ function panelsSheet(): string {
     out.push(block(a, A.siteBtn, null, "浏览器下载", 15, SLANT.button));
     out.push(txt(a.X(A.status.left), a.Y(A.status.cy), "发现新版本 v0.0.22 · 可点上方「浏览器下载」 · 上次检查 10-02 19:22", 11, C.dim, { anchor: "start" }));
     out.push(txt(a.X(A.hint.left), a.Y(A.hint.cy), "应用内下载不动就点「浏览器下载」,用浏览器存安装包再装", 11, C.dim, { anchor: "start" }));
+    // 辅助页:自动击打那一颗开关 + 三行说明。为什么要出图 —— 这一页整页只有一颗开关,
+    // 版式判据(不撞/不溢出/标签宽)全绿也可能长得像"半成品";而三行说明是这个开关最容易被
+    // 省掉的部分,省掉之后玩家第一次遇到"它为什么不捞那个明显能到的球"就会以为游戏坏了。
+    const g2 = cell(40 + SET.pw + 80 + 880 + 80, 610, SET.pw, SET.ph, ROLE.primary.face, "设置 · 辅助");
+    out.push(g2.head);
+    tabBoxes().forEach((b, i) => out.push(block(g2, b, i === 1 ? ROLE.primary.face : null, SETTINGS_TABS[i].label, 15)));
+    const SS = assistLayout();
+    out.push(block(g2, SS.section, ROLE.drill.face, "辅助", 13, SLANT.band));
+    out.push(shape(g2.X((SS.toggle.left + SS.toggle.right) / 2), g2.Y(SS.toggle.cy),
+      (gg) => drawToggleFace(gg, SS.toggle.right - SS.toggle.left, SS.toggle.h, true, ROLE.star.face)));
+    out.push(txt(g2.X(SS.toggle.left + 14), g2.Y(SS.toggle.cy), "自动击打", 15, inkFor(ROLE.star.face), { anchor: "start", bold: true }));
+    out.push(txt(g2.X(SS.toggle.right - 8), g2.Y(SS.toggle.cy), "开", 13, inkFor(ROLE.star.face), { anchor: "end" }));
+    out.push(txt(g2.X(SS.scope.left), g2.Y(SS.scope.cy), ASSIST_COPY.scope, ASSIST_COPY_SIZE, C.paperDim, { anchor: "start" }));
+    out.push(txt(g2.X(SS.tip.left), g2.Y(SS.tip.cy), ASSIST_COPY.tip, ASSIST_COPY_SIZE, C.paper, { anchor: "start" }));
+    out.push(txt(g2.X(SS.landingHint.left), g2.Y(SS.landingHint.cy), ASSIST_COPY.landing, ASSIST_COPY_SIZE, C.dim, { anchor: "start" }));
   }
 
   // ---------- ② 闯关大厅(880×480)----------
@@ -371,9 +386,9 @@ function panelsSheet(): string {
 }
 
 const SYNTAX_H = 1100;
-// 拼装图 1:1:宽 = 40 + 880 + 80 + 880 + 40,高 = 四行面板摞起来
-// 行 1:设置(操控页) + 闯关大厅;行 2:设置(声音画面) + 设置(关于);行 3:训练场 + 商店
-const PANELS_W = 40 + 880 + 80 + 880 + 40;
+// 拼装图 1:1:宽 = 40 + 880 + 80 + 880 + 80 + 设置(辅助页 760) + 40
+// 行 1:设置(操控页) + 闯关大厅;行 2:设置(声音画面) + 设置(关于) + 设置(辅助);行 3:训练场 + 商店
+const PANELS_W = 40 + 880 + 80 + 880 + 80 + 760 + 40;
 const PANELS_H = 1068 + 470 + 60;
 
 function sheet(body: string, w: number, h: number, bg: string): string {

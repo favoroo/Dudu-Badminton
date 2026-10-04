@@ -5,7 +5,7 @@
 // 经验条:从结算前快照滚到结算后档位,跨级时分段填充并逐级闪「Lv.X」;
 // 满级静态显示 MAX(经济曲线只有一份,动画只负责演)。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3 } from "cc";
+import { BlockInputEvents, Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3, view, Widget } from "cc";
 import { CFG } from "../core/config";
 import { Career } from "../core/career";
 import type { SettleResult } from "../core/career";
@@ -14,9 +14,10 @@ import type { StageDef } from "../core/campaign";
 import type { ObjectiveResult } from "../core/campaign-hud";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
+import { buildCine, type CinePlan } from "./settle-cine";
 import {
-  ARCADE, cancelFade, drawMenuCard, drawSectionBand, drawSlantShadow, fadeOutHide, inkFor, paintP5,
-  progressDL, retainedDraw, ROLE, SLANT, slantPath, skewOf, textW,
+  ARCADE, burstOnce, cancelFade, drawMenuCard, drawSectionBand, drawSlantShadow, drawVeil, fadeOutHide, inkFor, paintP5,
+  progressDL, retainedDraw, riseIn, ROLE, SLANT, slantPath, skewOf, slashIn, textW,
 } from "./ui-arcade";
 import { clearKids } from "./ui-shell";
 
@@ -70,6 +71,9 @@ const STAT_Y = 76;
 
 const stars = (n: number): string => "★".repeat(n) + "☆".repeat(Math.max(0, 3 - n));
 
+/** 胜利扫场三带的纵向位(占屏高比例:上/中/下三条平行斜带,构造与 show 时共用一份) */
+const BAND_Y = [0.3, 0, -0.28];
+
 export class SettlePanel {
   readonly root: Node;
   private kit: UiKit;
@@ -95,6 +99,31 @@ export class SettlePanel {
   private anim: ExpAnim | null = null;
   private payload: SettlePayload | null = null;
   private cMax = new Color();
+  // ---------- 谢幕演出(胜负两条路径,时间轴来自 settle-cine.buildCine) ----------
+  /** 暗幕节点:演出里它要从透明度 0 缓缓压上来(从前一步到位,球场瞬间被盖住) */
+  private dimNode: Node;
+  private dimOp: UIOpacity;
+  /** 氛围层(扫描线+暗角+红斜带):失败时整层收掉,别给败局添红 */
+  private atmoNode: Node;
+  /** 失败限定冷 veil:叠在暗幕上压得更深更冷,胜利恒隐 */
+  private loseVeil!: Node;
+  private loseVeilOp!: UIOpacity;
+  /** 谢幕演出层(压在卡片之上):斜带扫场 + 标语舞台;演出期吞触摸供「点按跳过」 */
+  private cine!: Node;
+  private cineBlock!: BlockInputEvents;
+  /** 标语舞台:大字先于卡片砸落/沉落,所以从卡片里搬出来钉在同一坐标(卡片 (0,2)+标语 (0,198) → (0,200)) */
+  private stage!: Node;
+  private verdictBg!: Node;
+  private verdictBgOp!: UIOpacity;
+  private verdictBgLose!: Node;
+  private verdictBgLoseOp!: UIOpacity;
+  private verdictOp!: UIOpacity;
+  /** 胜利扫场斜带 ×3(形状构造时一次画好,show 时只摆位起 tween) */
+  private bands: Node[] = [];
+  /** 当前入场阶段:beat=留白演出(可点按跳过)→ card=卡片已入场 → done */
+  private cinePhase: "beat" | "card" | "done" = "done";
+  private plan: CinePlan | null = null;
+  private readonly onCineSkip = (): void => this.skipCine();
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -103,8 +132,30 @@ export class SettlePanel {
     this.root.active = false;
     this.cMax.fromHEX(P.dim);
 
-    kit.dim(this.root, 0.28, 0.55);
-    kit.atmosphere(this.root);
+    this.dimNode = kit.dim(this.root, 0.28, 0.55);
+    this.dimOp = this.dimNode.addComponent(UIOpacity);
+    this.atmoNode = kit.atmosphere(this.root);
+
+    // 失败限定冷 veil:压在卡片之下(只暗球场,不压内容)、暗幕之上。
+    // 胜利恒隐;失败时叠上暗幕缓缓压下来 —— 败局的暗要更冷、更深,但不能一步到位。
+    const veil = new Node("lose-veil");
+    veil.layer = this.root.layer;
+    veil.addComponent(UITransform);
+    const vw = Math.max(CFG.world.w, view.getVisibleSize().width);
+    const vh = Math.max(CFG.world.h, view.getVisibleSize().height);
+    const vgw = veil.addComponent(Graphics);
+    const SC = CFG.fx.settleCine;
+    retainedDraw(vgw, () => drawVeil(vgw, vw, vh, SC.loseVeilCenter, SC.loseVeilEdge, 8, SC.loseVeilHex));
+    const veilW = veil.addComponent(Widget);
+    veilW.isAlignTop = true; veilW.top = 0;
+    veilW.isAlignBottom = true; veilW.bottom = 0;
+    veilW.isAlignLeft = true; veilW.left = 0;
+    veilW.isAlignRight = true; veilW.right = 0;
+    this.loseVeilOp = veil.addComponent(UIOpacity);
+    this.loseVeilOp.opacity = 0;
+    veil.active = false;
+    veil.setParent(this.root);
+    this.loseVeil = veil;
 
     const card = kit.panel(this.root, CW, CH, {
       r: 18, alpha: 0.94, bandHex: ROLE.primary.face,
@@ -113,27 +164,99 @@ export class SettlePanel {
     this.card.setPosition(0, 2, 0);
     this.cardOp = this.card.addComponent(UIOpacity);
 
-    // 大标语斜切衬底(P5):胜利时红色斩劈块,失败/训练不亮
+    // ---------- 谢幕演出层(压在卡片之上, Widget 撑满):斜带扫场 + 标语舞台 ----------
+    // 大字先于卡片砸落/沉落,所以标语从卡片里搬出来,钉在同一坐标
+    // (卡片在 (0,2)、标语原卡内 (0,198) → 舞台 (0,200),逐像素不动)。
+    // 演出期 BlockInputEvents 吞触摸:留白段不许误触卡片下还没显形的按钮,
+    // 卡片入场即关 —— 按钮要能点。点按跳过也挂在这层(ui-hide-check:有 on 必有 off)。
+    this.cine = new Node("settle-cine");
+    this.cine.layer = this.root.layer;
+    this.cine.addComponent(UITransform).setContentSize(CFG.world.w, CFG.world.h);
+    const cineW = this.cine.addComponent(Widget);
+    cineW.isAlignTop = true; cineW.top = 0;
+    cineW.isAlignBottom = true; cineW.bottom = 0;
+    cineW.isAlignLeft = true; cineW.left = 0;
+    cineW.isAlignRight = true; cineW.right = 0;
+    this.cineBlock = this.cine.addComponent(BlockInputEvents);
+    this.cineBlock.enabled = false;
+    this.cine.setParent(this.root);
+
+    // 胜利扫场斜带 ×3:金/红/墨三条平行斜带错相位横扫(形状一次画好,show 时只摆位)。
+    // 与 slashWipe 同一套语汇但更轻:不盖满屏、不挡触摸、扫完即隐。
+    for (let i = 0; i < 3; i++) {
+      const b = new Node(`cine-band-${i}`);
+      b.layer = this.cine.layer;
+      b.addComponent(UITransform);
+      const bg = b.addComponent(Graphics);
+      const th = SC.bandsThick, bw = 2400, sk = th * SC.bandsSkewK;
+      retainedDraw(bg, () => {
+        bg.fillColor = col(SC.bandsColors[i % SC.bandsColors.length], SC.bandsAlpha);
+        slantPath(bg, bw, th, sk);
+        bg.fill();
+      });
+      b.setPosition(-1850, BAND_Y[i] * CFG.world.h, 0);
+      b.active = false;
+      b.setParent(this.cine);
+      this.bands.push(b);
+    }
+
+    // 标语舞台:斜切衬底(胜=斩劈红 / 败=冷墨)+ 大字
+    const stage = new Node("verdict-stage");
+    stage.layer = this.cine.layer;
+    stage.addComponent(UITransform);
+    stage.setPosition(0, 200, 0);
+    stage.setParent(this.cine);
+    this.stage = stage;
+
+    // 大标语斜切衬底(P5):胜利=红色斩劈块(slashIn 斩入),失败=冷墨横带(淡入),训练不亮
     const verdictBg = new Node("verdict-bg");
-    verdictBg.layer = this.card.layer;
+    verdictBg.layer = stage.layer;
     verdictBg.addComponent(UITransform);
     const vbg = verdictBg.addComponent(Graphics);
     const vsk = skewOf(88, 9);
-    drawSlantShadow(vbg, 470, 88, vsk, 7, 7, 0.55);
-    vbg.fillColor = col(ARCADE.slash, 0.96);
-    slantPath(vbg, 470, 88, vsk);
-    vbg.fill();
-    vbg.strokeColor = col("#ff6b72", 0.5);
-    vbg.lineWidth = 1.5;
-    slantPath(vbg, 470, 88, vsk);
-    vbg.stroke();
-    verdictBg.setPosition(0, 198, 0);
-    verdictBg.setParent(this.card);
+    retainedDraw(vbg, () => {
+      drawSlantShadow(vbg, 470, 88, vsk, 7, 7, 0.55);
+      vbg.fillColor = col(ARCADE.slash, 0.96);
+      slantPath(vbg, 470, 88, vsk);
+      vbg.fill();
+      vbg.strokeColor = col("#ff6b72", 0.5);
+      vbg.lineWidth = 1.5;
+      slantPath(vbg, 470, 88, vsk);
+      vbg.stroke();
+    });
+    verdictBg.setPosition(0, 0, 0);
+    verdictBg.setParent(stage);
     verdictBg.active = false;
+    this.verdictBg = verdictBg;
+    this.verdictBgOp = verdictBg.addComponent(UIOpacity);
+    this.verdictBgOp.opacity = 0;
 
-    this.verdict = kit.label(this.card, "", 42, P.text, { outline: P.ink, outlineW: 2, disp: true });
-    this.verdict.node.setPosition(0, 198, 0);
+    const verdictBgLose = new Node("verdict-bg-lose");
+    verdictBgLose.layer = stage.layer;
+    verdictBgLose.addComponent(UITransform);
+    const vbl = verdictBgLose.addComponent(Graphics);
+    retainedDraw(vbl, () => {
+      drawSlantShadow(vbl, 470, 88, vsk, 7, 7, 0.55);
+      vbl.fillColor = col(ARCADE.ink, 0.78);
+      slantPath(vbl, 470, 88, vsk);
+      vbl.fill();
+      vbl.strokeColor = col(SC.loseVeilHex, 0.9);
+      vbl.lineWidth = 1.5;
+      slantPath(vbl, 470, 88, vsk);
+      vbl.stroke();
+    });
+    verdictBgLose.setPosition(0, 0, 0);
+    verdictBgLose.setParent(stage);
+    verdictBgLose.active = false;
+    this.verdictBgLose = verdictBgLose;
+    this.verdictBgLoseOp = verdictBgLose.addComponent(UIOpacity);
+    this.verdictBgLoseOp.opacity = 0;
+
+    this.verdict = kit.label(stage, "", 42, P.text, { outline: P.ink, outlineW: 2, disp: true });
+    this.verdict.node.setPosition(0, 0, 0);
     this.verdict.node.angle = 2;
+    this.verdictOp = this.verdict.node.addComponent(UIOpacity);
+    this.verdictOp.opacity = 0;
     this.verdict.enableShadow = true;
     this.verdict.shadowColor = new Color(0, 0, 0, 140);
     this.verdict.shadowOffset = new Vec2(0, -5);
@@ -383,8 +506,9 @@ export class SettlePanel {
     // 大标语:胜利压在红衬纸上;训练用中文,语气也不同(老 .verdict / .verdict.lose)
     this.verdict.string = match ? (won ? "VICTORY!" : "DEFEAT") : (won ? "训练完成!" : "再接再厉");
     this.verdict.color = col(won ? P.text : P.dim);
-    // 红衬纸只在「比赛获胜」时亮(失败/训练标语直接压在面板上)
-    (this.card.getChildByName("verdict-bg"))!.active = match && won;
+    // 衬纸只在比赛模式亮:胜利=红色斩劈块(slashIn 斩入),失败=冷墨横带(随标语沉落淡入)
+    this.verdictBg.active = match && won;
+    this.verdictBgLose.active = match && !won;
     this.score.node.active = match;
     this.sub.node.active = !match;
     this.score.string = `${p.scores[0]} : ${p.scores[1]}`;
@@ -400,32 +524,247 @@ export class SettlePanel {
     this.anim = this.buildExpAnim(p);
     this.renderBar(true);
 
-    // ---------- 入场:卡片弹入,标语随后砸下 ----------
+    // ---------- 入场:谢幕演出(胜负两条路径;训练保持旧快速入场) ----------
+    this.playCine(buildCine(won, match));
+  }
+
+  hide(): void {
+    // 谢幕演出的一切计时随收摊停掉:节拍调度/斜带/暗幕/标语,跳过监听随 off 卸干净
+    // (ui-hide-check:裸 TOUCH 监听有 on 必有 off —— 面板关掉不能留隐形挡板)
+    this.teardownCine();
+    fadeOutHide(this.root);
+    this.anim = null;
+    this.payload = null;
+  }
+
+  // ---------- 谢幕演出(计划由 ui/settle-cine.ts 烘出,这里只照计划摆 tween) ----------
+  //
+  // 节拍:留白段(球场在暗幕后面活着 —— 彩带在 celebrate 时钟里真正落完、欢呼、
+  // 定格表情)→ 斜带扫场(胜)/冷 veil 压下(败)→ 卡片入场 + 标语 slam/descend
+  // → 内容逐行浮现。留白段点一下屏幕直接快进到卡片, repeated 败局不被拖时间。
+
+  private playCine(plan: CinePlan): void {
+    this.teardownCine();
+    this.plan = plan;
+    this.cinePhase = "beat";
+
+    const card = this.card;
+    const op = this.cardOp;
+    Tween.stopAllByTarget(card);
+    card.setPosition(0, 2, 0);
+    card.setScale(1, 1, 1);
+    // 卡片本体在留白段必须隐身:上一局正常收场时 opacity 是 255,不复位就会
+    // 整张卡提前明晃晃地压在球场上,等 beatWin 才"入场"
+    op.opacity = 0;
+
+    // —— 复位:上一局(或上一次快速开关)的任何残留全部归零 ——
+    this.dimOp.opacity = plan.cinematic ? 0 : 255;
+    this.loseVeilOp.opacity = 0;
+    this.loseVeil.active = plan.veil != null;
+    this.atmoNode.active = true;
+    this.verdictBgOp.opacity = 0;
+    this.verdictBgLoseOp.opacity = 0;
+    this.verdictOp.opacity = 0;
+    this.verdict.node.setScale(1, 1, 1);
+    this.verdict.node.setPosition(0, 0, 0);
+    this.verdict.node.angle = 2;
+    for (const b of this.bands) { Tween.stopAllByTarget(b); b.active = false; }
+
+    if (!plan.cinematic) {
+      // 训练场:保持旧快速入场 —— 卡片弹入、标语随后砸下(与改版前逐帧同款)
+      this.cinePhase = "done";
+      this.verdictOp.opacity = 255;
+      card.setScale(0.72, 0.72, 1);
+      op.opacity = 0;
+      tween(card).to(plan.card.dur, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+      tween(op).to(0.2, { opacity: 255 }).start();
+      this.verdict.node.setScale(1.9, 1.9, 1);
+      tween(this.verdict.node)
+        .delay(plan.verdict.at)
+        .to(plan.verdict.dur, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" })
+        .start();
+      this.startRows(plan, 0, true);
+      return;
+    }
+
+    // —— 暗幕:从 0 缓缓压上来(不一步到位,球场多活一小会儿)——
+    tween(this.dimOp)
+      .delay(plan.dim.delay)
+      .to(plan.dim.dur, { opacity: 255 }, { easing: "quadOut" })
+      .start();
+
+    if (plan.won && plan.bands) {
+      // —— 胜利:金/红/墨三条平行斜带错相位从左扫到右,卡片落地前扫完主段 ——
+      const B = plan.bands;
+      this.bands.forEach((b, i) => {
+        b.active = true;
+        b.setPosition(-1850, BAND_Y[i] * CFG.world.h, 0);
+        tween(b)
+          .delay(B.at + i * B.stagger)
+          .to(B.dur, { position: new Vec3(1850, BAND_Y[i] * CFG.world.h, 0) }, { easing: "quadIn" })
+          .call(() => { b.active = false; })
+          .start();
+      });
+    } else if (plan.veil) {
+      // —— 失败:氛围红斜带整层收掉,冷 veil 叠上暗幕一起压下来(更冷更深)——
+      this.atmoNode.active = false;
+      tween(this.loseVeilOp)
+        .delay(plan.veil.at)
+        .to(plan.veil.dur, { opacity: 255 }, { easing: "quadOut" })
+        .start();
+    }
+
+    if (!plan.won) {
+      // —— 失败标语:DEFEAT 从上方 26px 缓沉(quadIn 加速下坠,无弹跳)。
+      //    起点烘在 beatLose − verdictDescend,标语沉完那一帧卡片正好浮上来 ——
+      const v = this.verdict.node;
+      v.setPosition(0, 26, 0);
+      tween(v)
+        .delay(plan.verdict.at)
+        .to(plan.verdict.dur, { position: new Vec3(0, 0, 0) }, { easing: "quadIn" })
+        .start();
+      tween(this.verdictOp)
+        .delay(plan.verdict.at)
+        .to(plan.verdict.dur * 0.45, { opacity: 255 })
+        .start();
+      tween(this.verdictBgLoseOp)
+        .delay(plan.verdict.at)
+        .to(plan.verdict.dur * 0.6, { opacity: 255 })
+        .start();
+    }
+
+    // —— 留白段可点按跳过:演出层吞触摸(防误触卡片下还没显形的按钮),点到即快进 ——
+    this.cineBlock.enabled = true;
+    this.cine.on(Node.EventType.TOUCH_END, this.onCineSkip, this);
+
+    // —— 到卡片节拍:胜利在 beatWin 同时砸落,失败在 beatLose 浮上来(调度挂在
+    //    stage 上,与卡片/标语自己的 tween 目标互不干扰)——
+    tween(this.stage).delay(plan.card.at).call(() => this.enterCard(false)).start();
+  }
+
+  /** 卡片入场:胜利=弹入+标语砸落+星芒爆+落定轻震;失败=沉重浮现(无弹跳)。fast=点按跳过的快进 */
+  private enterCard(fast: boolean): void {
+    if (this.cinePhase !== "beat" || !this.plan) return;
+    this.cinePhase = "card";
+    this.cineBlock.enabled = false;              // 按钮要能点了
+    this.cine.off(Node.EventType.TOUCH_END, this.onCineSkip, this);   // 跳过通道关闭(ui-hide-check:off 配对)
+    const plan = this.plan;
     const card = this.card;
     const op = this.cardOp;
     Tween.stopAllByTarget(card);
     Tween.stopAllByTarget(this.verdict.node);
-    card.setScale(0.72, 0.72, 1);
-    op.opacity = 0;
-    tween(card).to(0.28, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
-    tween(op).to(0.2, { opacity: 255 }).start();
-    this.verdict.node.setScale(1.9, 1.9, 1);
-    tween(this.verdict.node)
-      .delay(0.16)
-      .to(0.32, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" })
+    Tween.stopAllByTarget(this.verdictOp);
+
+    if (plan.card.mode === "pop") {
+      card.setScale(0.86, 0.86, 1);
+      op.opacity = 0;
+      tween(card).to(plan.card.dur, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+      tween(op).to(plan.card.dur * 0.6, { opacity: 255 }).start();
+      // 标语砸落 + 红衬纸斩入 + 星芒爆(插在 cine 层底,光刺从衬纸四周探出来)
+      const v = this.verdict.node;
+      v.setScale(1.9, 1.9, 1);
+      v.setPosition(0, 0, 0);
+      tween(this.verdictOp).to(0.12, { opacity: 255 }).start();
+      tween(v).delay(0.02).to(plan.verdict.dur, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
+      slashIn(this.verdictBg, 0, -46, -5, 0.3);
+      burstOnce(this.cine, CFG.fx.settleCine.bandsColors[0], plan.burst?.r ?? 130, plan.burst?.points ?? 12, 0, 200, true);
+      tween(this.stage).delay(0.22).call(() => {
+        if (this.cinePhase === "card") this.shakeCard(plan.card.shakeAmp, plan.card.shakeDur);
+      }).start();
+    } else {
+      // 失败:沉重 = 淡入 + 从上方 18px 缓沉,无弹性曲线;标语若在沉落途中被跳过则当场归位
+      card.setScale(1.03, 1.03, 1);
+      op.opacity = 0;
+      const y = card.position.y;
+      card.setPosition(0, y + 18, 0);
+      tween(card).to(plan.card.dur, { scale: new Vec3(1, 1, 1), position: new Vec3(0, y, 0) }, { easing: "quadOut" }).start();
+      tween(op).to(plan.card.dur * 0.7, { opacity: 255 }).start();
+      Tween.stopAllByTarget(this.verdictBgLoseOp);
+      this.verdictBgLoseOp.opacity = 255;
+      if (fast) {
+        const v = this.verdict.node;
+        v.setScale(1, 1, 1);
+        v.setPosition(0, 0, 0);
+        v.angle = 2;
+        this.verdictOp.opacity = 255;
+      }
+    }
+    this.startRows(plan, fast ? 0 : 0.08, plan.card.mode === "pop");
+  }
+
+  /** 留白段点按:暗幕/冷 veil 立即到位、斜带收掉,直接进卡片 */
+  private skipCine(): void {
+    if (this.cinePhase !== "beat" || !this.plan) return;
+    Tween.stopAllByTarget(this.dimOp);
+    Tween.stopAllByTarget(this.loseVeilOp);
+    this.dimOp.opacity = 255;
+    this.loseVeilOp.opacity = 255;
+    for (const b of this.bands) { Tween.stopAllByTarget(b); b.active = false; }
+    this.enterCard(true);
+  }
+
+  /** 落定轻震:标语砸下那一下,卡片 ±amp 抖两下归位(失败不震) */
+  private shakeCard(amp: number, dur: number): void {
+    if (amp <= 0) return;
+    const card = this.card;
+    const y = card.position.y;
+    const step = dur / 4;
+    tween(card)
+      .to(step, { position: new Vec3(amp, y, 0) })
+      .to(step, { position: new Vec3(-amp, y, 0) })
+      .to(step, { position: new Vec3(amp * 0.5, y, 0) })
+      .to(step, { position: new Vec3(0, y, 0) })
       .start();
   }
 
-  hide(): void {
-    fadeOutHide(this.root);
-    this.anim = null;
-    this.payload = null;
+  /** 卡片内容逐行浮现:胜利 riseIn 上浮,失败安静淡入;训练/旧路径(rows=0)整体直接显形 */
+  private startRows(plan: CinePlan, base: number, move: boolean): void {
+    const rows = [
+      this.score.node, this.sub.node, this.badgeBg.node, this.statLayer,
+      this.coinLine.node, this.bonusLine.node, this.barWrap, this.newsLine.node,
+      this.objRow, this.actionRow,
+    ];
+    if (plan.rows <= 0) {
+      for (const n of rows) {
+        const rowOp = n.getComponent(UIOpacity) ?? n.addComponent(UIOpacity);
+        Tween.stopAllByTarget(rowOp);
+        rowOp.opacity = 255;
+      }
+      return;
+    }
+    rows.forEach((n, i) => {
+      if (!n.active) return;   // 不在场的行(训练 sub / 非闯关 objRow / 无奖励 bar)不动
+      if (move) { riseIn(n, base + i * plan.rows, 14, 0.5); return; }
+      const rowOp = n.getComponent(UIOpacity) ?? n.addComponent(UIOpacity);
+      Tween.stopAllByTarget(rowOp);
+      Tween.stopAllByTarget(n);
+      rowOp.opacity = 0;
+      tween(rowOp).delay(base + i * plan.rows).to(0.4, { opacity: 255 }).start();
+    });
+  }
+
+  /** 收摊:停掉演出的一切 tween 与节拍调度、卸掉跳过监听、关吞触摸(hide 与重 show 都走这里) */
+  private teardownCine(): void {
+    Tween.stopAllByTarget(this.stage);
+    Tween.stopAllByTarget(this.dimOp);
+    Tween.stopAllByTarget(this.loseVeilOp);
+    Tween.stopAllByTarget(this.verdictOp);
+    Tween.stopAllByTarget(this.verdict.node);
+    Tween.stopAllByTarget(this.verdictBgOp);
+    Tween.stopAllByTarget(this.verdictBgLoseOp);
+    for (const b of this.bands) Tween.stopAllByTarget(b);
+    this.cine.off(Node.EventType.TOUCH_END, this.onCineSkip, this);
+    this.cineBlock.enabled = false;
+    this.cinePhase = "done";
+    this.plan = null;
   }
 
   /** UIManager 每帧驱动:经验条滚动 + 升级闪标 */
   tick(dt: number): void {
     const a = this.anim;
     if (!this.root.active || !a || a.done) return;
+    // 留白段卡片还隐着,经验条别偷偷先滚:入场那刻才开始,玩家才看得到"涨经验"本身
+    if (this.cinePhase === "beat") return;
     a.elapsed += dt;
     const p = Math.min(1, a.elapsed / DUR);
     let acc = a.total * p;
@@ -484,7 +823,8 @@ export class SettlePanel {
         ? `↑ 连升 ${res.levelUps.length} 级 → Lv.${res.levelUps[res.levelUps.length - 1]} · 奖励金币 +${coinSum}`
         : `↑ 升级 Lv.${res.levelUps[0]} · 奖励金币 +${coinSum}`);
     }
-    if (res.unlocked.length > 0) news.push(`新品上架:${res.unlocked.join(" · ")}`);
+    // unlocked 是 SkinDef[],直接 join 会排成 "[object Object]" —— 只取商店里那套名字
+    if (res.unlocked.length > 0) news.push(`新品上架:${res.unlocked.map((s) => s.name).join(" · ")}`);
     this.newsLine.string = news.join("\n");
   }
 

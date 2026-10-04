@@ -97,7 +97,10 @@ export type FaceKind =
 // ---------- 技能系统 ----------
 
 /** 可装备技能标识 */
-export type SkillId = "lunge" | "smash" | "flash" | "magnet" | "focus";
+export type SkillId = "lunge" | "smash" | "flash" | "magnet" | "focus" | "shadow" | "rage";
+
+/** 键面读数走哪条通道:"cd" = 剩余冷却倒计时(默认) / "charge" = 蓄能环 + 百分比 */
+export type SkillReadout = "cd" | "charge";
 
 /** 技能静态定义 */
 export interface SkillDef {
@@ -110,6 +113,13 @@ export interface SkillDef {
   cooldownFrames: number;
   accent: string;
   icon: string;
+  /**
+   * 键面读数种类。缺省 = "cd"。
+   * "charge" 意味着这款技能的门槛**不是**冷却而是一个可累积的资源(怒气重击),
+   * 于是键面不许变灰、不许印秒数 —— 判据只有 skills.isChargeSkill 一份,
+   * pad-cd / touchpad / game-root / skill-layout 共用,别在调用点各写一遍 id 比较。
+   */
+  kind?: SkillReadout;
 }
 
 /** 球员身上的技能运行时状态 */
@@ -118,9 +128,13 @@ export interface PlayerSkillState {
   cd: number;               // 剩余冷却帧数 (<=0 表示已就绪)
                             // 按下即付是四个瞬发技能的口径;百分百重击(真人)例外 ——
                             // 它是"上弦等兑现",冷却在真正扣出去那一拍才付,挥空不罚冷却(见 skills.ts)
+                            // 怒气重击是第三种口径:cd 只有 20 帧、按下即付,**不是门槛**(真闸是怒气
+                            // 资源本身 + armed 窗 buffT),它只挡同一帧连点 —— 与影分身同一条先例
   maxCd: number;            // 技能基础冷却总帧数
   activeT: number;          // 激活执行中的剩余帧数 (-1=空闲)
   buffT: number;            // 增益状态剩余帧数 (如百分百重击附魔, >0 表示激活中)
+                            // 怒气重击借用同一个字段位:它表示「按下释放、等下一拍兑现」的armed窗,
+                            // 递减处仍是 Skills.update 那一处,不再另起一个计时器(少一处双减风险)
   ready: boolean;           // 当前局势下是否满足激活门槛 (如闪现扣杀要求球高/在己方半场)
   magnetPulling?: boolean;  // 引力吸球进行中
 }
@@ -155,6 +169,14 @@ export interface PlayerInput {
    * 键盘路径通过 press("swingFar"/"swingNear") 直接设 ±1,等价于即按即定。
    */
   swingSwipe?: number;
+  /**
+   * 纵向滑动手势(触屏击球键专用):0=未提交(弧线由物理自动决定),
+   * 1=上滑(挑高/高远,弧线下托),-1=下滑(平抽/下压,弧线压平)。
+   * 与 swingSwipe 两轴独立可组合(上+右 = 后场高远球);语义与横滑完全同构:
+   * 挥拍期间可动态提交/反向覆盖,player.ts 在命中前用它设置 p.swingLoft。
+   * 键盘路径通过 press("swingUp"/"swingDown") 直接设 ±1。AI 不设置此字段。
+   */
+  swingSwipeY?: number;
   lungePressed: boolean;
   /** 跨步方向(-1=向左, 1=向右; 未指定时兜底面向方向 p.facing)。Pad 端按最近的方向键解出 */
   lungeDir?: number;
@@ -167,6 +189,9 @@ export interface PlayerInput {
   onWhiff?(p: Player): void;
   onLunge?(p: Player): void;
   onSkill?(p: Player, skillId: SkillId): void;
+  /** 「自动击打(辅助模式)」真替玩家起手那一帧的钩子(只在起手的当帧调一次,不是每帧轮询)。
+   *  表现层用它飘「自动」;规则/训练/教学走不到这条分支,所以训练工具不接也不报错。 */
+  onAutoSwing?(p: Player, ball: Ball): void;
 }
 
 // ---------- 实体 ----------
@@ -274,6 +299,25 @@ export interface HitCostInput {
   isServeReturn?: boolean;
 }
 
+/**
+ * 影分身(「影分身」技能的召唤物):挂在宿主身上的独立 Player 实体。
+ * **刻意不进 RulesState.players** —— 发球轮转(mates[serveIdx % length])、计分名单、
+ * game-root 的 R.players[0]=真人假设都不许被凭空多出的第三名球员污染;
+ * 它由 AI.think 出输入、Pl.update/Pl.tryHit 跑完整套移动+挥拍机器,rules 只挂两个钩子。
+ */
+export interface ShadowCloneState {
+  /** 分身本体(isAI=true,side 与宿主同侧,idx=-1 不占名单索引) */
+  entity: Player;
+  /** 已替宿主接住的球数(玩家自己接球不计数,见 shadow.noteHit) */
+  hits: number;
+  /** 召唤演出剩余帧(>0 期间闪烁成影,不接球 —— 演出期来球归玩家) */
+  spawnT: number;
+  /** 消散演出剩余帧(>0 期间不再接球,演完整个状态清空) */
+  despawnT: number;
+  /** 出生定形种子:渲染层 mulberry32(seed) 定星芒/墨粒形状,逐帧只衰减不重掷 */
+  seed: number;
+}
+
 /** 球员。字段与 Rules/Player 的既有用法一一对应,渲染层也只读这里 */
 export interface Player {
   side: TeamSide;
@@ -319,6 +363,12 @@ export interface Player {
   swingBuf: number;
   swingBufAim: string | number | null;
   swingAim: string | number;
+  /**
+   * 纵向手势的弧线意图(与 swingAim 的深浅维度正交):0=未提交(由物理自动决定),
+   * 1=上滑挑高(buildShot 里把 loft 下托到 loftUpMinDeg),-1=下滑平抽(压到 loftDownMaxDeg)。
+   * 起拍清零、挥拍期间由 inp.swingSwipeY 实时覆盖;发球(forced)与跳杀压平分支不受它影响。
+   */
+  swingLoft: number;
   swingRadius: number;
   racket: { x: number; y: number; ang: number };
   racketPrev: { x: number; y: number };
@@ -364,6 +414,52 @@ export interface Player {
    * 做成可选:AI 永远拿不到它(activate 里按 !p.isAI 给零),商店/预览的半成品人物字面量也不带,读侧一律 `?? 0`。
    */
   smashAutoT?: number;
+  /**
+   * 「怒气重击」整局累积的怒气(0..C.skills.rage.max,刻意用整数 ⇒ 1 点 = 1% 读得通)。
+   *
+   * 为什么住 Player 而不是 PlayerSkillState:后者会被 Career.applyToMatch() **整块对象替换**
+   * (me.skill = Skills.initSkillState(...)),而它在 equipSkill() 与每次开赛都会跑 ——
+   * 怒气放进技能状态对象,玩家换个技能就把攒了半管的东西无声抹掉。Player 只在 Rules.newMatch
+   * 重建,那正好是「每局清零」想要的生命周期(先例:p.zenMeter 同样是 Player 上的累积计量)。
+   *
+   * 生命周期:只有**释放兑现的那一拍**归零(modifyShot 的 !preview 分支)。
+   * Skills.resetPoint 每分不清它 —— 用户口径「只有释放才归零」,攒是整局的事。
+   * 挥空、待发窗走完、跨分都不扣怒气(资源制下罚它等于白罚:那一拍本来就没兑现)。
+   */
+  rage?: number;
+  /**
+   * 「怒气重击」一键化的「代出一拍」待发窗剩余帧:>0 且释放窗(s.skill.buffT)还开着 = 系统替玩家轰那一拍。
+   * 与 smashAutoT 同口径:出拍**当场清零**(它不兼判定区开关,留着就是替玩家连挥第二下);
+   * 玩家自己按击打键同样当场清零,但**不清 buffT** —— 那一拍照旧由玩家自己把怒气砸出去,
+   * 清了就等于「我按了技能、又自己挥了一拍,结果怒气没了」(rage-check 的反例 armedClearedByManual)。
+   * 做成可选:AI 永远拿不到它(activate 里按 !p.isAI 给零),读侧一律 `?? 0`。
+   */
+  rageAutoT?: number;
+  /**
+   * 「自动击打(辅助模式)」的**每球限次**账:见 C.autoHit.maxTriesPerBall 与 auto-hit-check ⑧。
+   * autoTryRef 存这一发来球的身份(Ball.shot 引用:rules.applyShot 写入、beginPoint 清空),
+   * 换了对象就从 0 重新数;autoTries = 这一拍已经替玩家起手过几次。
+   * 三条一键化不需要这两个数 —— 它们靠"起手当场清窗"免费拿到限次;这条**没有窗**(逐帧轮询),
+   * 而 flightFramesToClosest 从第 0 帧起扫,球已在判定区心时 fc = 0 当即判"该按",
+   * 不限次就是 smashAutoT 注释警告过的「人物自己乱挥半天」。
+   * 做成可选:AI 走不到这条分支,商店/预览的半成品人物字面量也不带,读侧一律 `?? 0`。
+   */
+  autoTryRef?: ShotResult | null;
+  autoTries?: number;
+  /**
+   * 当前这一拍是不是系统替玩家起手的(逐拍标记,不是逐球):startSwing 一律置 false,
+   * 只有 auto-hit 那条分支起手后当场置 true ⇒ 玩家自己抢的那拍绝不会被误标。
+   * settle 拿它写 ShotResult.autoHit,表现层据此抑制早/晚时机教学。
+   * 跨步/重击/怒气的代拍**刻意不算在这里**:那三拍玩家明明白白按了技能键,早/晚照样该教。
+   */
+  swingAuto?: boolean;
+  /**
+   * 「影分身」技能的本分召唤标记:true = 本分已召过(canActivate 据此拒绝再次释放)。
+   * 每分由 Skills.resetPoint 清零 —— 用户口径:「一分之内只能释放一次」。
+   */
+  shadowCast?: boolean;
+  /** 影分身召唤物(「影分身」技能):在场时非空,随每分 resetPoint 清空 */
+  shadowClone?: ShadowCloneState;
   /** 球员当前技能系统状态 */
   skill?: PlayerSkillState;
   /** 闪现扣杀残影与电光倒计时(纯视觉,渲染层读它画雷光/蓄力环) */
@@ -376,6 +472,8 @@ export interface Player {
   flashFrom?: { x: number; y: number } | null;
   /** 时空减速领域持续帧 */
   focusT?: number;
+  /** 时空领域内是否已完成接球反击(接球后进入缓释收尾) */
+  focusHit?: boolean;
   stats: {
     hits: number; smashes: number; sweets: number; perfects: number; whiffs: number;
     // ---- 闯关三星判据的逐局计数(球员随每局重建,天然按局归零) ----
@@ -453,6 +551,13 @@ export interface HitOpt {
   /** 发球等场景直接指定落点深度(绕过瞄准表) */
   forced?: { depth: number };
   /**
+   * 瞄准 hint:把"还没起拍的玩家意图"(击球键上粘住的那次滑动)喂给一次解算。
+   * 只有球种预告 player.previewKind 用它,实打路径不传 ⇒ 逐字等于旧行为。
+   * 为什么需要:自动击打开起来后玩家不再起拍,p.swingAim 停在上一拍的旧值,
+   * 徽标就会一直报上一拍的落点 —— 看不准的读数比没有读数更坏。
+   */
+  aimHint?: { aim: string | number; loft: number };
+  /**
    * 纯预览(球种预告徽标,player.previewKind):照旧走同一条 buildShot + Skills.modifyShot
    * 通道 ⇒ 加成一并算、徽标说的就是实打会发生的事;但**消耗一律跳过** ——
    * buffT / flashStrikeT / magnetPulling / stats.smashes 四处写入在此一律不发。
@@ -503,6 +608,12 @@ export interface ShotResult {
   /** 跳杀:空中 + 击球点够高触发的必然扣杀(飘字/专属特效读它) */
   jumpSmash?: boolean;
   /**
+   * 这一拍由「自动击打(辅助模式)」替玩家起手。表现层只有两处读它:量化时机条与「早了/晚了」
+   * —— 那两样教的是"你按得准不准",而机器挑的就是时机环教人的那一帧,张张满分,留着只是噪声。
+   * 球种/档位飘字、怒气、统计**一律不看来路**(用户口径「不打折」:代劳的是时机,不是判定)。
+   */
+  autoHit?: boolean;
+  /**
    * 带符号时机档(只给真人,恒上报):0 = 踩在窗口正中,负 = 偏早,正 = 偏晚,
    * 绝对值 = 距正中占半窗的比例。量化时机条与「早了/晚了」共用这一个数。
    */
@@ -514,6 +625,13 @@ export interface ShotResult {
   aim?: string;
   /** 触发的专属技能类型(用于飘字、音效、专属特效) */
   skillKind?: SkillId;
+  /**
+   * 「怒气重击」兑现那一刻释放的怒气比例(0..1)。**只在这一拍是怒气重击时非空。**
+   * 为什么要把一个已经清零的东西抄进结果里:怒气在兑现当帧就归零了,而表现层(game-root 的
+   * drain)跑在事件排空时,那时读 p.rage 永远是 0 ⇒ 四档演出全被打成最低档。
+   * 档位不在这里重复存一份:表现层用 Skills.rageTierOf(rageRatio) 现推 —— 两个数迟早会分叉。
+   */
+  rageRatio?: number;
   /** 闯关挑战模式:居合一闪拔刀斩 */
   iaiStrike?: boolean;
   /** 出手瞬间人在腾空(三星判据「空中击球占比」的分子口径) */

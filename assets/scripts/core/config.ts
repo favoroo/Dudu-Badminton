@@ -302,6 +302,14 @@ export const CFG = {
     perfectBoost: 3,   // 完美击球 +3(25+3=28;距 shuttle.maxSpeed 的差额留给热度加成)
     loftMinDeg: -24,
     loftMaxDeg: 79,
+    // 纵向手势的弧线意图(击球键上滑/下滑,阈值见 touchAim.commitPxY):
+    // 上滑 = 弧线下托到不低于此角。取 58:高于 lobDeg(55),classify 里 lob 又排在
+    // netshot 之前,所以「上滑必出挑高」与落点深浅无关;低于 loftByHeight 低段
+    // (66~74),低点球天然更高时这一档不插手。上+右 = 挑高到后场(防守过渡)。
+    // 下滑 = 弧线压平到不高于此角。取 12:高点击球自然落进扣杀/劈吊(下压),
+    // 低点击球落进平抽;压得过低过不了网时由 safeAngle 自动抬回,不会自杀下网。
+    loftUpMinDeg: 58,
+    loftDownMaxDeg: 12,
     solveIters: 14,    // 速度二分迭代次数
     // 求解器的「能过网」判定余量(px):球心过网时必须比网带高出这么多。
     // 二分解出来的是临界角,不夹余量就正好贴着网带擦过去 —— 轻击擦网的主因(实测 39% 的短球余量 <5px)。
@@ -355,6 +363,10 @@ export const CFG = {
       drive:   { text: "平抽", color: "#7dd3fc" },
       clear:   { text: "高远", color: "#c0d8ff" },
     } as Record<string, { text: string; color: string }>,
+    // 自动击打开起来时缀在球种后面:同一个 Label 追加几个字,零新节点、零新增绘制
+    // (frame-cost 中性)。颜色**不覆盖**球种色 —— 覆盖就把「这一拍是什么球」的读数洗成一片红;
+    // 模式读数由这两个字自己承担,再加代拍那一帧的 autoHit.castFloat 与重锚后的时机环。
+    autoSuffix: { text: " · 自动", color: "#ffe14d" },
   },
 
   // 出射角锚点:[击球点离地高度, θ]。这张表就是「滞空时间表」——
@@ -980,6 +992,11 @@ export const CFG = {
     // 与居合/心流/力竭同用 world.floatSys:关掉设置里的「飘字提示」也照常显示。
     // plate 用 none —— 带底板的字会进同侧堆叠,把后到的场边评价字向下错行(world.floatSpawn)。
     smashCastFloat: { text: "重击附魔!", color: "#f43f5e", size: 24, life: 44, plate: "none" },
+    // 「怒气重击」的起手字与兑现字**不在这里**:它们跟着档位走,住在 skills.rage.tiers[]
+    // 每一行的 castLab / lab。分成两组键放这儿,就会与 tierAt 的行数对不齐(某档缺一句 =
+    // 玩家看见别的档的字),而这件事不崩、不报错、tsc 也不报。
+    // 定式仍然照 smashCastFloat 那一条:起手字挂人物头顶 + plate 用 none(带底板的字会进
+    // 同侧堆叠,把后到的场边评价字向下错行 —— world.floatSpawn / float-lane)。
     flashSmashSlowmo: 10,     // 闪现扣杀命中后的短慢放时长(模拟帧)
     // 0.45 而不是更低:整段只有 ~0.37s 真实时间。曾经给到 0.32×14 帧(≈0.73s),
     // 用户已经说过"重击卡住不好操控" —— 时停的爽点由前面那记定格负责,尾巴要短。
@@ -1193,9 +1210,81 @@ export const CFG = {
     floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, plate: "star" },
     floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, plate: "slant" },
     floatSkillMagnetAir:   { text: "引力跳杀!!", color: "#a855f7", size: 30, life: 54, plate: "star" },
-    floatSkillFocus:       { text: "时空领域!!", color: "#06b6d4", size: 24, life: 46, plate: "slant" },
+    floatSkillFocus:       { text: "时空贯穿!!", color: "#00f0ff", size: 28, life: 52, plate: "star" },
+    floatSkillFocusCast:   { text: "时空领域!!", color: "#06b6d4", size: 26, life: 48, plate: "slant" },
+    // 「怒气重击」的场边字不在这里 —— 四档各一句,住在 skills.rage.tiers[].lab(单一真话)。
     // 跳杀(空中高球必然扣杀)专属飘字
     floatJumpSmash:        { text: "跳杀!!",     color: "#ff8a3d", size: 26, life: 46, plate: "slant" },
+
+    // ============================================================
+    // 五、胜利礼花(彩带池在 render/fx.ts;放行时钟的判据在 core/celebration.ts)
+    //
+    // 用户现场:「胜利时的这个礼花效果会有点卡顿」。查下来三件事叠在一起,而礼花
+    // 从头到尾**一帧都没走过**:
+    //   ① OVER/DRILLDONE 属 CFG.frozen,主循环在 frozen 态整块跳过 world.stepFx ——
+    //      而 fx.step() 只在那里被调用,60 片纸屑出生后就钉在半空直到结算卡关掉;
+    //   ② frozen 态还把整场渲染降到每 4 真实帧(≈15fps),而彩带层的"隔帧重绘"是按
+    //      **渲染帧**计数的,于是变成每 8 真实帧才动一次;
+    //   ③ 旧弹道是 g=0.02 且没有空气阻力:按 260 帧寿命积分,纸屑全程在往上飞
+    //      (升程 1400px,早就出屏),"重力下落"那句注释在撒谎;而喷口单点居中
+    //      (480, groundY-120),正落在结算卡(560×490 居中、alpha 0.94)背后 ——
+    //      玩家看得见的那两条侧边里一片纸屑都没有。
+    // 现在:两口贴地斜喷(喷口就摆在卡片外侧那两条可见带里)+ 真的会落下来的纸片模型
+    // (重力 / 空气阻力 / 翻飘 / 翻面收宽)。数值全部由 tools/confetti-check 钉住。
+    // 单位:长度 = 世界 px,速度 = px/帧,加速度 = px/帧²(模拟步 60Hz)。
+    // ============================================================
+    confetti: {
+      states: ["OVER", "DRILLDONE"],  // 值得为庆祝放行表现层时钟的态(必须是 frozen 的子集;PAUSED 不在内 = 暂停仍是定格帧)
+      nozzles: [0.058, 0.942],        // 喷口 x / 世界宽:结算卡外侧那两条边
+      nozzleY: 120,                   // 喷口离地高度(世界 px,向上为正)
+      spread: 44,                     // 出生横向抖动(出图核过:30 会排成两根细水柱,填不满两侧可见带)
+      count: 40,                      // 每口粒数(两口 80 片,离池上限 MAX_CF=200 还远;笔数预算见 confetti-check ⑥)
+      vyUp: [8.5, 13],                // 出膛竖直速度区间:实测升程 ~240px,最高一片停在 y≈113(不出屏顶)
+      inward: 1.8,                    // 侧口向内斜喷的横向初速(两口镜像)
+      vxJit: 1.5,                     // 横向初速随机附加
+      grav: 0.15,                     // 重力
+      drag: 0.975,                    // 纸片空气阻力:终端下落 ~5.9px/帧,约 1 秒落完剩余高度
+      flutter: 0.06,                  // 翻飘:每帧横向加速度 = sin(rot) × 此值(再乘阻力,摆幅自然收敛不发散)
+      spin: 0.16,                     // 自转角速度区间端点(弧度/帧)
+      w: [4, 9],                      // 纸片宽(世界 px)
+      h: [6, 14],                     // 纸片高(世界 px)
+      life: 210,                      // 寿命(帧)上限:落回地面/出屏即回收;实测第 144 帧全部收场 ⇒ 庆祝段一定回落到省电降频
+      floorPad: 2,                    // 地面回收线 = groundY - 此值(纸屑擦到地板就收,不许在地面上堆一层方块)
+      flipK: 0.34,                    // 画宽 = w ×(flipK + (1-flipK)·|cos rot|):翻面一闪,不加笔数
+      layerEvery: 1,                  // 彩带层每几帧重画一次(fx.draw 内;上升段最快 ~13px/帧,掉到 30fps 就是一串方块跳格)
+    },
+
+    // ============================================================
+    // 五·五、结算谢幕演出(ui/settle-cine.ts 出时间轴,settle-panel 照它演)
+    //
+    // 用户现场:「比分到了之后就直接弹窗结算了,可以多加一点效果(失败和胜利的不一样)」。
+    // 从前终局当帧切 OVER、下一渲染帧卡片就弹入,胜负只差标语颜色。现在卡片之前先给
+    // 一段谢幕(时间轴纯函数出,胜负两条路径):
+    //   胜利 = 球场停留(彩带在 celebration 的 celebrate 时钟里真正落完)→ 金红斜带
+    //          扫场 → VICTORY! 砸落 + 星芒爆 + 卡片轻震 → 内容逐行浮现;
+    //   失败 = 冷暗幕缓缓压下(氛围红斜带收掉)→ DEFEAT 缓沉 → 卡片沉重浮现,
+    //          无彩带无弹跳无星芒。
+    // 单位:秒(UI tween)/ px。验收 tools/settle-cine-check.ts(+ --selftest 喂
+    // 「旧单一快路径」与「拖沓档」必须被拦)。
+    // ============================================================
+    settleCine: {
+      dimDelayWin: 0.25, dimDurWin: 0.4,     // 胜利暗幕:晚一点起、升得快,球场多看一眼
+      dimDelayLose: 0.2, dimDurLose: 0.6,    // 失败暗幕:马上压、压得慢,落差感
+      beatWin: 0.7,                          // 卡片入场起点(胜利):留够彩带雨的一拍
+      beatLose: 0.9,                         // 卡片入场起点(失败):标语沉完卡片才来
+      bandsColors: ["#ffe14d", "#e60012", "#07070d"],  // 扫场斜带(金/斩劈红/墨,P5 红黑金)
+      bandsAlpha: 0.5,                       // 带峰值 alpha(衬底不糊场)
+      bandsDur: 0.5,                         // 单带扫完全程用时
+      bandsStagger: 0.09,                    // 三带错相位
+      bandsThick: 150,                       // 带厚(px),端帽斜切量 = 厚 × bandsSkewK
+      bandsSkewK: 0.9,                       // 端帽斜率(与 slashWipe 同款)
+      burstR: 130, burstPoints: 12,          // 标语星芒爆(半径/角数,双层错半步)
+      cardShakeAmp: 3, cardShakeDur: 0.22,   // 标语砸落时卡片轻震(幅度/时长)
+      loseVeilHex: "#101a2e", loseVeilCenter: 0.16, loseVeilEdge: 0.38,  // 失败冷 veil(叠在暗幕上)
+      verdictDescend: 0.55,                  // DEFEAT 缓沉时长(起点 = beatLose − 此值,沉完卡片正好到)
+      cardSinkDur: 0.5,                      // 失败卡片沉重浮现时长
+      rowStagger: 0.05,                      // 内容逐行浮现阶梯(秒)
+    },
 
     // ============================================================
     // 传说皮肤「脚下法阵」(纯装饰;画法在 render/aura.ts,调用点在 sprites.drawPlayer)
@@ -1325,8 +1414,9 @@ export const CFG = {
     blue: { main: "#3ea8ff", dark: "#1c53a8", glow: "#7fd0ff", name: "蓝方" },
     // 扣杀金焰专属色
     smash: { glow: "#ffe14d", flame: "#ff6a1f", core: "#ffffff", dark: "#c73e00" },
-    // 甜蜜点高能光效体系
-    sweet: { gold: "#ffe14d", core: "#ffffff", neonCyan: "#00f0ff", neonPurple: "#d946ef", amber: "#ff9f1c" },
+    // 甜蜜点高能光效体系(lob/drive 是击球键纵向手势的方向色:上滑挑高/下滑平抽,
+    // 与 shotBadge.kinds 同源 —— 徽标会在拇指上方预告真实球种)
+    sweet: { gold: "#ffe14d", core: "#ffffff", neonCyan: "#00f0ff", neonPurple: "#d946ef", amber: "#ff9f1c", lob: "#8ef2a3", drive: "#7dd3fc" },
     // 球场
     floor: "#c8703a",
     floorDark: "#8f4a22",
@@ -1379,17 +1469,48 @@ export const CFG = {
       stepTol: 0.008,               // 冷却扫掠的重画阈值:距**上次重画**的累计变化超过它才重画(门控在 pad-cd.makeCdGate;
                                     // 基准若错写成「上一帧喂值」,阈值退化成相邻帧增量,长 CD 的扫掠会整段冻结、只随点按跳格)
       // --- 「就绪但当前局势不给放」三态(笔画在 input/pad-cd.ts,原因文案在 skills.blockText)---
-      // 冷却中 = 扇形墨底 + 倒计时;门槛未满足 = 键上斜杠 + 键上方红字原因;就绪 = 呼吸辉光
+      // 冷却中 = 扇形墨底 + 倒计时;门槛未满足 = 键内 P5 斜切封条(内嵌原因文字如「球没过来」)+ 灰斜杠;就绪 = 呼吸辉光
       slashColor: "#8a8f9e",        // 门槛斜杠颜色(灰:是「局势不让」,不是「出错」)
       slashInset: 0.44,             // 斜杠端点内缩比例(端点在 r×(1-inset) 处)
       slashW: 3.5,                  // 斜杠线宽
       slashA: 0.8,                  // 斜杠不透明度
-      hintSize: 11,                 // 键上方原因文字字号
-      hintDyK: 1.42,                // 原因文字圆心 = 键心上方 r × 此倍率
-      hintColor: "#ff8a8a",         // 原因文字颜色(暖红:不是报错,是「差一点」)
-      hintA: 0.95,                  // 原因文字不透明度
+      // 封条底衬(P5 动感斜切胶带,居中内嵌在按键腰部,与冷却倒计时数字同高度重心)
+      tapeW: 1.44,                  // 封条宽度 = r × tapeW
+      tapeH: 0.42,                  // 封条高度 = r × tapeH
+      tapeSkewK: 0.07,              // P5 动感斜切比例(skew = r × tapeSkewK)
+      tapeBg: "#080b12",            // 封条墨黑深底
+      tapeBgA: 0.92,                // 封条底色不透明度
+      tapeEdge: "#5a454a",          // 封条细描边(暗暖灰/低饱和警示)
+      tapeEdgeA: 0.85,              // 描边不透明度
+      tapeEdgeW: 1.2,               // 描边线宽
+      watermarkA: 0.18,             // 受阻态背后技能图标水印透明度
+      hintSize: 10,                 // 键内封条原因文字字号(默认档)
+      hintY: 0.08,                  // 原因文字/封条圆心高度比例(与 numY 一致,让开底部键名)
+      hintDyK: 0.08,                // 兼容保留
+      hintColor: "#f8fafc",         // 原因文字颜色(清亮暖白,在墨黑封条上高对比)
+      hintOutline: "#05070c",       // 文字描边纯墨黑
+      hintOutlineW: 2.0,            // 文字描边粗细
+      hintA: 0.98,                  // 原因文字不透明度
       rejectFlash: "#ff5555",       // 按下被拒的冲击环颜色
       readyPulseK: 0.11,            // 就绪呼吸:循环 tween 单程秒数的系数(秒 = k × 10)
+      // ===== 「蓄能环」读数(kind: "charge" 的技能用,当前 = 怒气重击)=====
+      // 为什么不复用冷却那套:cdRatio 的语义是「还剩多久能用」,三处行为焊死在它上面 ——
+      // 键体变灰并藏图标、键心印秒数、就绪脉冲要求 cdRatio<=0。蓄能是它的**反向量**
+      // (越多越好、永远不该让键变灰),偷渡进 cdRatio 就会得到"怒气越满键越暗"。
+      // 算法在 input/pad-cd.ts 的 chargeArcs/drawCharge,与 cdArcs 同一条**补集规矩**
+      // (角度一律排成递减序,否则 cc 画出的是它的补集,见 AGENTS.md 必须知道的坑 8)。
+      charge: {
+        ringW: 5.5,                 // 蓄能环比冷却环粗半档:它是"进度"不是"惩罚",要更抢眼
+        ringA: 0.95,
+        trackA: 0.25,               // 满环底槽(不画它玩家读不出「离满还差多少」,只看得见「有多少」)
+        head: "#ffffff", headA: 1, headW: 6.5, headSpan: 0.5,  // 蓄能前沿白亮头
+        fullRingW: 2.2,             // 满怒那一圈外环(与 isFlashReady 的双白环同一族读法:满了就是在提示你按)
+        fullRingA: 0.9,
+        pctK: 0.42,                 // 百分比字号 = pctK × 按钮半径(比倒计时 numK 0.5 收一档:
+                                    // "100%" 比 "3.5" 宽得多,不收到 4 字宽会啃键名标签 —— pad-cd-check ④ 同一条判据)
+        pctY: 0.08,                 // 圆心高度比例:与倒计时同腰位,两层不叠字
+        stepTol: 0.008,             // 重画阈值:怒气一次跳 5~14 点(= 5%~14%),跨过它就必重画
+      },
     },
   },
 
@@ -1421,19 +1542,24 @@ export const CFG = {
   // (≥ commitPx/2),方向由 X 符号决定 —— 见 touchpad.ts trackSwingSwipe。
   touchAim: {
     commitPx: 10,       // 总位移超过这么多像素即提交深/浅(斜滑也认,横向分量需 ≥ commitPx/2)
+    // 纵向分量单独的提交阈值(px):比横向紧一档 —— 纵向在此前版本是有意无语义区
+    // (防纯纵向晃动误触),给了语义后仍要压住「点按时手指上下漂移」变成意外挑高/平抽。
+    // 两轴独立提交、可组合(上+右 = 挑高到后场),同一轴反向滑过阈值即改写。
+    commitPxY: 16,
   },
 
   // 键位表(桌面端按 e.code 绑定,跨布局稳定;每项可给多个候选)
-  // 击球键自带落点:J(swingFar)=右滑深球压底线,K(swingNear)=左滑短球放网前。
-  // 触屏合并为单个击球键 + 滑动手势;键盘仍保留两键(桌面不缺键位)。
+  // 击球键自带落点与弧线:J(swingFar)=右滑深球压底线,K(swingNear)=左滑短球放网前,
+  // U(swingUp)=上滑挑高,I(swingDown)=下滑平抽 —— 与触屏四向滑动手势一一对应。
+  // 触屏合并为单个击球键 + 滑动手势;键盘仍保留对应键(桌面不缺键位)。
   // 移动只占用方向键,跨步是独立一键(lunge):方向由输入层按「最近的方向键」解出。
   // 旧的「双击方向键跨步」已删 —— 对拉时快速换向会稳定凑成双击,误触代价是一次带恢复期的爆发位移。
   // 触屏端的虚拟按键在输入适配层映射到同一套语义,不另立第二张表
   keys: {
-    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], lunge: ["KeyL"], swingFar: ["KeyJ"], swingNear: ["KeyK"] },
+    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], lunge: ["KeyL"], swingFar: ["KeyJ"], swingNear: ["KeyK"], swingUp: ["KeyU"], swingDown: ["KeyI"] },
     p2: {
       left: ["ArrowLeft"], right: ["ArrowRight"], jump: ["ArrowUp"], lunge: ["Comma"],
-      swingFar: ["Slash"], swingNear: ["Period"],
+      swingFar: ["Slash"], swingNear: ["Period"], swingUp: ["Semicolon"], swingDown: ["Quote"],
     },
     sys: {
       pause: ["Escape", "KeyP"], restart: ["KeyR"], back: ["KeyQ"],
@@ -1498,6 +1624,36 @@ export const CFG = {
     lean: 14,               // 躯干沿跨步方向的前倾(度;退防跨步为负 = 后仰)
   },
 
+  // ===== 自动击打(辅助模式):系统替真人起手每一拍 =====
+  // 择帧与上面三条一键化**共用同一条** autoSwingDue(p, ball, "auto"),只是没有"窗"——
+  // 逐帧轮询。语义:玩家只管移动、瞄准(击球键横滑/纵滑照旧有效)和放技能;发球仍归玩家。
+  // 用户口径「不打折」:机器借的是时机不是判定 ⇒ 不给必中(不碰 flashStrikeT)、
+  // 不给手长(绝不写 lungeAutoT,那会白吃 reachTailMul)、不压 sweet/perfect 档。
+  autoHit: {
+    enabled: true,          // 代码侧总闸:发版想整套关掉这功能只改这里(玩家侧开关在 Settings.autoHit)
+    // 生效模式:对练 / 闯关 / 无限练习。训练场与新手教学**刻意排除** —— 那两处判的就是
+    // "你会不会这一拍"(Drill.matches 连球种与手势都要查),被代打等于把判据糊过去;
+    // 本地对战/双打同样排除:那是两个真人,替一个就等于替另一个。
+    modes: ["1p", "campaign", "endless"] as string[],
+    autoAim: "mid",         // 代拍起手的落点档。**给字符串 "mid" 而不是 C.lunge.autoAim 那种数值
+                            // 深度**:真人点按拿到的就是 "mid"(pad.buildIntent),而 "mid" 才会走
+                            // buildShot 的网前自适应扑推、才会上报 ShotResult.aim ⇒ 与手动逐位同路。
+                            // 玩家滑过的方向由 update 的 aimOverride 在同一帧覆盖上来(深浅 + 高低)。
+    // --- 以下四个门控数与 lunge / skills.smash / skills.rage **必须逐字相同** ---
+    // (共用一把尺子的代价就是分叉要连判据一起改:rage-check ⑭ / smash-check ⑯ / auto-hit-check ⑨)
+    autoHorizon: 40,        // 起手前瞻帧预算
+    autoLandHorizon: 90,    // 判"会不会出界"能看多远
+    autoOutMargin: 8,       // 要飞出边线的球不替玩家捞
+    autoSettleGrace: 2,     // 球在最近逼近帧之后至少还要活这么多帧才起手
+    // --- 每球限次(这条一键化独有的门控,那三条由"起手即清窗"免费提供限次)---
+    // 为什么必须有:flightFramesToClosest 从第 0 帧起扫,球已在判定区心时 fc = 0 当即判"该按"。
+    // 于是"玩家按早挥空 → 系统补一拍"会一路补下去,读起来就是人物自己乱挥。取 2 =
+    // 允许一次"没接住再救一次"(辅助模式不该罚玩家挥空),但挡住第三次。判据 ⑧。
+    maxTriesPerBall: 2,
+    // 代拍起手那一帧的场边飘字:回答"为什么人物自己动了"(看不见的状态会被读成 bug)
+    castFloat: { text: "自动", color: "#ffe14d", size: 14, life: 30 },
+  },
+
   // ===== 动态技能系统(数值集中管理,纯数据) =====
   skills: {
     list: [
@@ -1550,11 +1706,39 @@ export const CFG = {
         name: "时空减速",
         shortName: "时空",
         tag: "领域掌控",
-        desc: "开启 1.5 秒子弹时间，对手大幅减慢，自身高速穿梭，领域内回球更凶",
+        desc: "开启时空子弹时间，自身高速穿梭，接球后强力反击并脱离领域进入冷却",
         unlockLevel: 5,
         cooldownFrames: 270, // 4.5s
         accent: "#06b6d4",
         icon: "focus",
+      },
+      {
+        id: "shadow",
+        name: "影分身",
+        shortName: "分身",
+        tag: "影遁协战",
+        desc: "凝出影分身协防半场，替你接下三球后消散；自己出手不耗次数，每分限召一次",
+        unlockLevel: 6,
+        // 名义冷却:真闸是「每分一次」flag + 分身在场,而 resetPoint 每分都把 cd 清零,
+        // 这个倒计时几乎不会出现在键面上 —— 只防分身刚消散的同一帧被连点
+        cooldownFrames: 60,
+        accent: "#8b5cf6",
+        icon: "shadow",
+      },
+      {
+        id: "rage",
+        name: "怒气重击",
+        shortName: "怒气",
+        tag: "越战越勇",
+        desc: "越打怒气越满，攒得越足那一拍越狠；满怒释放必定暴扣并清空怒气",
+        unlockLevel: 7,
+        // 名义冷却:这款的门槛**不是**冷却而是怒气资源本身(攒 = 出手权,浪费一发就是真代价),
+        // 20 帧只挡同一帧连点。同影分身那条先例,且 resetPoint 每分把 cd 清零 —— 别指望它当闸。
+        // 键面因此走「蓄能环 + 百分比」(kind: "charge"),不画倒计时、永不变灰。
+        cooldownFrames: 20,
+        accent: "#f97316",
+        icon: "rage",
+        kind: "charge",
       },
     ],
     // 技能键「就绪但门槛未满足」的原因文案(skills.skillBlockReason 判定,touchpad 键上方显示)
@@ -1566,6 +1750,10 @@ export const CFG = {
       lowBall: "球不够高",
       pulling: "牵引中",
       focusing: "领域中",
+      shadowActive: "分身在场",
+      shadowUsed: "已召唤",
+      rageArmed: "重击中",
+      rageLow: "怒气未聚",
     },
     // 各技能专属机制数值
     smash: {
@@ -1631,21 +1819,124 @@ export const CFG = {
       vortexRadius: 24,     // 拍前引力吸积漩涡半径
     },
     focus: {
-      duration: 90,         // 持续 90 帧 = 1.5 秒
+      duration: 180,        // 领域上限 180 帧 = 3 秒(未击球时的保底持续超时)
+      postHitFrames: 22,    // 接完球后缓释收尾帧数(~0.36s 仿真 / slowmo 0.35 下 ~1.0s 慢特写出球)
       ballSlow: 0.35,       // 球速减速至 35%
       rivalSlow: 0.40,      // 对手移速减速至 40%
       playerSpeedMul: 4.2,  // 施法者时空领域内移速倍率(对抗 slowmo 0.35 并赋予超速跑位,现实体感达平时 1.47 倍)
       playerAccelMul: 4.5,  // 施法者起步加速度倍率(起步瞬时响应,高速变向不拖泥带水)
-      // 领域内击球强化。全局时间膨胀对「相对局势」是恒等变换(球/AI/所有计时器同比例变慢),
-      // 光靠移速那条只有跑位收益、拿不了分 —— 领域内打出的球必须更凶,把「从容反击」
-      // 兑现成得分手段。数值对齐 lunge/magnet 那一档(略高,因无 forceSmash 保底)。
-      speedBoost: 3.6,      // 领域内击球初速加成
-      powerDeg: 10,         // 领域内额外压弧(更平的直线)
-      castPunch: 1.035,     // 时空张开镜头推近
-      castShake: 4,         // 时空波纹震颤
+      // 领域内击球强化: 初速与压弧大幅强化, 并赋予顶档 sweet/perfect 品质
+      speedBoost: 5.0,      // 领域内击球初速加成(由 3.6 强化至 5.0)
+      powerDeg: 14,         // 领域内额外压弧(由 10 强化至 14,更凶险的平抽下压)
+      castPunch: 1.045,     // 时空张开镜头推近
+      castShake: 6,         // 时空波纹震颤
       castFlash: 0.40,      // 青碧色时空闪光
+      hitShake: 16,         // 接球强力反击震屏强度
+      hitPunch: 1.065,      // 接球强力反击特写镜头推近
       chronoGhosts: 4,      // 羽毛球慢动作时空残影重数
       vignetteAlpha: 0.28,  // 全屏时空领域暗角强度
+      cdOnExpire: true,     // 效果完全结束(接球缓释或超时)才开启冷却倒计时
+    },
+    shadow: {
+      // ===== 影分身(2026-10-04):召唤物替宿主接球,用户口径「接完三个球之后就消失,
+      // 如果是玩家自己接球,就不消耗次数;一分之内只能释放一次」=====
+      maxHits: 3,           // 分身成功回球 N 次后消散(玩家自己接球不计数)
+      cloneDiff: "normal" as DiffKey,  // 分身吃的 AI 档:恒标准档,不受对局难度影响 —— 它该是"稳定的助力",
+                            // 对局 easy 时它不该跟着变钝,hard 时也不该偷偷给玩家加拐
+      spawnFrames: 18,      // 召唤演出帧(隔帧闪烁成影):演出期不接球,来球归玩家 —— 召唤不是无敌帧
+      despawnFrames: 26,    // 消散演出帧(残影上飘):期间分身不再起拍,演完整个 shadowClone 清空
+      inkInterval: 20,      // 在场常态:每这么多帧掉一缕暗紫墨粒(渲染表现,不参与判定)
+      castPunch: 1.035,     // 技能起手镜头聚推
+      castShake: 4,         // 墨烟震屏
+      spawnPushBack: 14,    // 分身出生位在宿主身后偏移(px):从宿主影子里"拔出来"的读法
+    },
+    rage: {
+      // ===== 「怒气重击」(第 7 款,2026-10-04)=====
+      // 用户口径:「和百分百重击像,也自动击球,但不是固定附魔,而是在击打过程攒怒气,
+      // 特殊击打攒得更快,有上限,释放时怒气越满那一拍越狠,放完清零。」
+      // 与重击的三条既定契约同构:① 消耗只挂真出手(!preview 闸) ② 一键代拍共用
+      // player.autoSwingDue 那把择帧尺子 ③ 凡是"替真人打"的一律 !p.isAI。不另起一套。
+      //
+      // ---- 怒气经济:整数运算,1 点 = 1%,满怒判据 rage === max ----
+      max: 100,             // 上限 = 百分比分母。嫌攒得太快**只动这里**(→120 把一局释放次数
+                            // 从 ~4 拉到 ~3.5);别动 perHit —— 那会断掉「1 点 = 1%」这条读法,
+                            // 键面百分比与卡片「蓄满 N~M 拍」全成小数尾巴
+      perHit: 5,            // 每一记真实命中加这么多。口径 = 走过 player.settle 的那一拍:
+                            // **发球不涨**(rules.ts 的发球直接 buildShot,不经 settle),攒不到怒气
+                            // 是设计后果不是 bug,第一次试玩若报"发球怎么不涨"就指这一条注释
+      sweetMul: 1.8,        // 物理档踩进甜蜜/完美 ⇒ 5×1.8 = 9 点(奖励"按得准",与 heat 同源那把尺子)
+      smashMul: 2.0,        // 这一拍出手是扣杀/跳杀 ⇒ 10 点(奖励"敢进攻",跟越攒越狠形成正反馈)
+      bothMul: 2.8,         // 又准又杀 ⇒ 14 点。**合并系数,不做 1.8×2.0=3.6 叠乘** ——
+                            // 叠乘下一拍就 18 点,八拍的上限被六拍打穿,分档演出永远只见到满怒
+                            // 四个乘数都必须让 perHit×mul 落在整数上(rage-check ⑱ 钉住,否则
+                            // "1 点 = 1%" 断了,键面会印 78.5% 这种东西)
+      // 定标(11 分制、回合均值 10 拍、真人整局约 55 拍;P(甜)≈0.35、P(杀)≈0.22):
+      //   期望每拍 5×(1+0.28+0.22)=7.5 ⇒ 蓄满约 13 拍 ⇒ 一局 3~5 次满怒释放(目标区间)
+      //   一个普通 10 拍回合 = 75% ⇒ 一回合能填满大半管(有意义),但一分打不满(除非拍拍甜区扣杀)
+      rageMinRelease: 5,    // **释放门槛 = 一拍**。低于它按不出去(键面封条「怒气未聚」)。
+                            // 为什么要有这条:资源制最坏的漏洞是 0 怒气也能放 —— 那就变成
+                            // "每 20 帧白嫖一记 +speedMin 的球",不崩不报错、只会安静地变强。
+                            // 用户拍的是「怒气够一点就能放」,门槛取一拍(不是 1/3 管)。
+      // 四档下界(比例),**长度必须与下面 tiers[] 相等**:rageTierOf 返回的就是这里的下标。
+      // 曾经写成 [0.35,0.67,1] 三段 —— 那是"三个档",而演出表有四行:于是 0.34 与 0.5 都落
+      // 回下标 0、满怒落回 2,"四档"实际只有三档且最上面那档永远读不到(烟测抓到的现场)。
+      tierAt: [0, 0.35, 0.67, 1],   // 0 微怒 / 1 升温 / 2 沸腾 / 3 怒极;末档恒 1 ⇒ 满怒必落最后一档
+      // ---- 释放那一拍的强度:线性插值 speedMin + (speedMax-speedMin)·ratio ----
+      speedMin: 1.2,        // 空怒边缘那一拍的初速加成(仍略高于普通拍,读作"这是一记重击")
+      speedMax: 4.8,        // 满怒上限(高于重击的 4.0、与时空的 5.0 同级 —— 它要攒一整局)
+      powerMin: 4,          // 压弧下限(度)
+      powerMax: 18,         // 满怒压弧(重击/时空是 14;再凶由 forceSmash 的 loft≤10 夹住,不失控)
+      // 老实说一句给改数值的人:初速这一路被 player.ts 的总闸
+      // C.shuttle.maxSpeed(30) - C.shot.speedMax(25) = 5 夹死,满怒时 perfectBoost 3 + 4.8 早已越闸。
+      // 所以 ratio ≳0.6 之上"更狠"是靠 **powerDeg / forceSmash / 误差归零 / 演出分档** 落地的,
+      // 不是靠初速数字。别为了"看起来更凶"去动 maxSpeed —— 那归 pace/reach-check 那把尺子管,
+      // 抬它等于同时改接球难度与 AI 可赢性两套基线。
+      releaseWindow: 240,   // 按下释放 → 那一拍兑现的 armed 窗(帧,4 秒)。落进 s.buffT(与重击附魔
+                            // 同一个字段位、同一处递减),不再另起一个计时器 —— 少一处双减风险。
+                            // 窗走完不罚怒气(那一拍本来就没兑现)
+      // ===== 一键化:与跨步/重击共用 player.ts 的 autoSwingDue 那一把择帧尺子 =====
+      autoReturn: true,     // 总闸:false = 退回"按下之后那一拍玩家自己按"。整套撤掉只改这里
+      autoWindow: 140,      // 代拍窗(帧)。与重击同一份实测(球速「极限慢」档最远 135 帧 ⇒ 取 140);
+                            // 必须 ≤ releaseWindow,否则会在没 armed 的帧上代一记普通球(rage-check ⑱ 钉)
+      autoAim: 0.8,         // 代拍那一拍的落点深度(与 CFG.lunge.autoAim / smash.autoAim 同刻度;
+                            // 0.8 是跨步那轮量出的拐点,deep 0.92 会送出界)
+      autoHorizon: 40,      // ↓ 这四条与 lunge / smash **必须逐字相同**(一把尺子、三份参数)。
+      autoLandHorizon: 90,  //   判据 rage-check ⑯ 与 smash-check ⑯ 一起钉住,不许任何一侧分叉
+      autoOutMargin: 8,     //   要飞出边线的球不替玩家捞:对手的失误就该是这分
+      autoSettleGrace: 2,   //   球在"最近逼近帧"之后至少还要活这么多帧才起手
+      // ---- 分档演出(特效基调=分级炫技:低档克制、满怒才炸)----
+      // 下标 = Skills.rageTierOf(ratio)。**一行一档,数字与两句文案同住这一行**:起手字 castLab
+      // 挂人物头顶(plate none)、兑现字 lab 挂场边(plate star)。分成 fx 段两组键
+      // (rageCastFloatN + floatSkillRageN)的话,就会出现"某档有一行、另一档缺一句"的对不齐
+      // 中间态 —— 它不崩、不报错,只是玩家某一档看见的是别的档的字。
+      // shake/punch 填**绝对值**:world.shake 取 MAX、world.punch 是覆盖,填增量会随档位叠出
+      // 不可复现的强度。触觉只复用 haptic 段现成的四档键 ⇒ haptic-check 那张单调表一个字不动
+      // (不新增 HapticKey,那要动 core/haptic.ts 的联合类型与 haptic-check 的行数判据)。
+      // hitstop 刻意不进这张表:让 fx 那条六档阶梯独家持有,少一个旋钮、少一处双真话。
+      tiers: [
+        {
+          name: "微怒", castShake: 3, castPunch: 1.02, hitShake: 12, hitPunch: 1.04, haptic: "sweet",
+          castLab: { text: "怒气涌动!", color: "#f97316", size: 22, life: 40, plate: "none" },
+          lab: { text: "怒气重击!", color: "#f97316", size: 26, life: 50, plate: "star" },
+        },
+        {
+          name: "升温", castShake: 5, castPunch: 1.03, hitShake: 15, hitPunch: 1.05, haptic: "smash",
+          castLab: { text: "怒气升温!", color: "#fb8b24", size: 23, life: 42, plate: "none" },
+          lab: { text: "怒气升温 · 重击!", color: "#fb8b24", size: 27, life: 50, plate: "star" },
+        },
+        {
+          name: "沸腾", castShake: 8, castPunch: 1.045, hitShake: 18, hitPunch: 1.07, haptic: "sweetSmash",
+          castLab: { text: "怒气沸腾!!", color: "#ff6a1f", size: 25, life: 44, plate: "none" },
+          lab: { text: "怒气爆击!!", color: "#ff6a1f", size: 28, life: 52, plate: "star" },
+        },
+        {
+          // 兑现字与 floatSkillFlash(闪现扣杀!! 32)同量级顶格:攒满一整局的那一下,
+          // 字也得是全场最大的一档,否则演出分不出"这次不一样"
+          name: "怒极", castShake: 12, castPunch: 1.06, hitShake: 21, hitPunch: 1.09, haptic: "perfectSmash",
+          castLab: { text: "怒极 · 满溢!!", color: "#ffe14d", size: 28, life: 48, plate: "none" },
+          lab: { text: "怒极 · 必杀!!", color: "#ffe14d", size: 32, life: 58, plate: "star" },
+        },
+      ],
     },
   },
 
@@ -2045,6 +2336,7 @@ export const DRILLS: DrillDef[] = [
       "平抽拼的是出手早晚:等球落到肩高就只剩挑球",
       "拍面近乎水平向前送,不求高只求快",
       "球必须又快又深,浅浅一挡不算这一拍",
+      "按住向下滑,拍面放平就是平抽",
     ],
     demoSteps: [
       { name: "迎球", desc: "来球又平又快", note: "等它落就只剩挑球" },
@@ -2065,6 +2357,7 @@ export const DRILLS: DrillDef[] = [
       "球已经贴地了,只能向上铲,别想着压",
       "出手要晚:让球落到拍面下方再抬",
       "挑得越高越深,才换得到退防时间",
+      "按住向上滑,拍面立起来一键挑高",
     ],
     demoSteps: [
       { name: "迎球", desc: "球已经贴着地面", note: "只能向上铲起来" },
@@ -2097,6 +2390,7 @@ export const TUTORIAL_TOPICS: TutTopic[] = [
     lines: [
       "按「击球」键就挥拍,不用蓄力",
       "按住向右滑 = 打深球,向左滑 = 放网前",
+      "按住向上滑 = 挑高球,向下滑 = 平抽快球",
       "球到身前肩高再按,回球又快又准",
     ],
     practice: "把喂球机喂来的 2 个球打回对面场内",

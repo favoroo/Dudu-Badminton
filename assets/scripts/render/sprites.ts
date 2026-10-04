@@ -599,17 +599,18 @@ function torsoBand(g: Graphics, f: Frame, t: Torso, v0: number, v1: number,
 
 export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, alpha: number, ball: Ball | null): void {
   const pp = p as RPlayer;
+  const isShadow = p.label === "影分身" || p.idx === -1;
   const t = animT;
   const x = pp.rx ?? pp.x, y = pp.ry ?? pp.y;
-  const th = p.theme ?? DEFAULT_THEME;
-  // 完整人物皮肤(发型/头饰/纹样/光环/体型/默认脸):CPU/P2 没挂 → null 走原版画法
-  const ps = p.playerSkin ?? null;
+  const th = isShadow ? { main: "#000000", dark: "#000000", glow: "#000000", name: "影分身" } : (p.theme ?? DEFAULT_THEME);
+  // 完整人物皮肤(发型/头饰/纹样/光环/体型/默认脸):影分身不吃皮肤(纯黑剪影);CPU/P2 没挂 → null 走原版画法
+  const ps = isShadow ? null : (p.playerSkin ?? null);
   const H = C.player.h, W = C.player.w;
   // 体型档(纯视觉):髋高/躯干/头身比/肢宽的整体微调。肩点 pivotY 是判定
   // 锁定位,体型档不碰它 —— 只改轮廓观感,零手感影响。未知 key 兜 standard
   const body = C.bodies[ps?.body ?? "standard"] ?? C.bodies.standard;
-  // 人物肤色:手臂/手/膝盖皮肤与肤色系脸面共用的那一号颜色
-  const skinCol = ps?.skinTone ?? SKIN;
+  // 人物肤色:手臂/手/膝盖皮肤与肤色系脸面共用的那一号颜色(影分身为纯黑)
+  const skinCol = isShadow ? "#000000" : (ps?.skinTone ?? SKIN);
   // 脸面解析:CPU/P2 无 faceSkin → undefined → drawHead 兜墨面(敌我识别,不许动);
   // 真人装备位 "auto"(人物默认)→ 人物自带脸 → 全局默认肤色脸
   const eqFace = p.faceSkin?.faceStyle;
@@ -940,8 +941,8 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const kneeGapF = 0.34;                       // 膝盖皮肤段占小腿的比例(短裤与球袜之间)
   // 后腿(远侧)整体压暗 + 收窄,前腿(近侧)受光 —— 前后景深一眼读出侧身
   const legs = [
-    { bx: -W * 0.14, sock: "#cdc9bd", shoe: "#141824", s: -1, far: true },
-    { bx: W * 0.10, sock: "#f2efe6", shoe: "#1b1f2e", s: 1, far: false },
+    { bx: -W * 0.14, sock: isShadow ? "#000000" : "#cdc9bd", shoe: isShadow ? "#000000" : "#141824", s: -1, far: true },
+    { bx: W * 0.10, sock: isShadow ? "#000000" : "#f2efe6", shoe: isShadow ? "#000000" : "#1b1f2e", s: 1, far: false },
   ];
   const airK = clamp((p.vy + 3) / 6, 0, 1);           // 0=刚起跳(收腿) 1=快落地(展腿)
   const wAir = airborne ? 1 - runAmt : 0;
@@ -1001,27 +1002,29 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   };
   const T = makeTorso(tx, bodyTop, bodyH, tw, spineX);
   torsoBand(g, F, T, 0, 1, 0, 1, th.main);
-  // 前缘受光 / 背缘背光:旧写法两条一对(肩段一对、髋段一对),中间在 y∈[17,21] 留了
-  // 4 单位无明暗的死区,正好压在腰上读成一道"腰带"。现在各收成一条,沿脊柱贯通。
-  torsoBand(g, F, T, 5 / bodyH, 1 - 4 / bodyH, 1 - 3 / tw, 1, "rgba(255,255,255,0.18)");
-  torsoBand(g, F, T, 5 / bodyH, 1 - 4 / bodyH, 0, 3 / tw, "rgba(0,0,0,0.22)");
-  // 领口从脖子前沿(x=2)往网侧延伸:若拖到脖子后面,会在颈后留一块没归属的深色补丁。
-  // 宽度地板由 torsoBand 兜住 —— 退防跨步时躯干前缘会退到 x=2 之后,那时不该有领口。
-  torsoBand(g, F, T, 0, 5 / bodyH, 0, 1, th.dark, 2);
-  // 下摆亮边:spineX(1)=0 → 恒贴髋段背缘,与衣摆齐髋后正好落在短裤上沿
-  torsoBand(g, F, T, 1 - 4 / bodyH, 1, 0.25, 1, "rgba(255,255,255,0.20)");
-  // V 领:躯干上段顶部中央的 V 形线条,运动球衣的领口细节
-  const vCollarCx = T.pt(0, 0).x + tw * 0.52;
-  const vCollarTop = bodyTop + 3;
-  g.strokeColor = withAlpha(pal(FACE), 0.30);
-  g.lineWidth = F.lw(1.2);
-  lineSeg(g, F, vCollarCx - 3.5, vCollarTop, vCollarCx, vCollarTop + 5.5);
-  lineSeg(g, F, vCollarCx, vCollarTop + 5.5, vCollarCx + 3.5, vCollarTop);
-  g.stroke();
-  // 侧条纹:躯干前缘一道纵向亮线,运动球衣的常见装饰
-  // (旧写法 6 + 0.82·bodyH 会越过下摆 0.24 单位,矩形件时看不出来,脊柱带会照原样画到
-  //  轮廓外,所以在这里夹住)
-  torsoBand(g, F, T, 6 / bodyH, Math.min(1, 6 / bodyH + 0.82), 0.18, 0.18 + 1.5 / tw, "rgba(255,255,255,0.10)");
+  if (!isShadow) {
+    // 前缘受光 / 背缘背光:旧写法两条一对(肩段一对、髋段一对),中间在 y∈[17,21] 留了
+    // 4 单位无明暗的死区,正好压在腰上读成一道"腰带"。现在各收成一条,沿脊柱贯通。
+    torsoBand(g, F, T, 5 / bodyH, 1 - 4 / bodyH, 1 - 3 / tw, 1, "rgba(255,255,255,0.18)");
+    torsoBand(g, F, T, 5 / bodyH, 1 - 4 / bodyH, 0, 3 / tw, "rgba(0,0,0,0.22)");
+    // 领口从脖子前沿(x=2)往网侧延伸:若拖到脖子后面,会在颈后留一块没归属的深色补丁。
+    // 宽度地板由 torsoBand 兜住 —— 退防跨步时躯干前缘会退到 x=2 之后,那时不该有领口。
+    torsoBand(g, F, T, 0, 5 / bodyH, 0, 1, th.dark, 2);
+    // 下摆亮边:spineX(1)=0 → 恒贴髋段背缘,与衣摆齐髋后正好落在短裤上沿
+    torsoBand(g, F, T, 1 - 4 / bodyH, 1, 0.25, 1, "rgba(255,255,255,0.20)");
+    // V 领:躯干上段顶部中央的 V 形线条,运动球衣的领口细节
+    const vCollarCx = T.pt(0, 0).x + tw * 0.52;
+    const vCollarTop = bodyTop + 3;
+    g.strokeColor = withAlpha(pal(FACE), 0.30);
+    g.lineWidth = F.lw(1.2);
+    lineSeg(g, F, vCollarCx - 3.5, vCollarTop, vCollarCx, vCollarTop + 5.5);
+    lineSeg(g, F, vCollarCx, vCollarTop + 5.5, vCollarCx + 3.5, vCollarTop);
+    g.stroke();
+    // 侧条纹:躯干前缘一道纵向亮线,运动球衣的常见装饰
+    // (旧写法 6 + 0.82·bodyH 会越过下摆 0.24 单位,矩形件时看不出来,脊柱带会照原样画到
+    //  轮廓外,所以在这里夹住)
+    torsoBand(g, F, T, 6 / bodyH, Math.min(1, 6 / bodyH + 0.82), 0.18, 0.18 + 1.5 / tw, "rgba(255,255,255,0.10)");
+  }
 
   // ---------- 跨步后 1 秒内身体疾风残影与流光动效 (配合跨步重击) ----------
   if (p.lungeShotT > 0) {
@@ -1158,13 +1161,40 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     px(g, F, tx - 4, bodyTop - 4, tw + 8, bodyH + 8, withAlpha(pal("#ff6a1f"), 0.20 * buffK));
   }
 
-  // 时空减速:身体周围散发淡青色时空领域微澜
+  // 时空减速:身体周围散发 P5 风格时空脉冲光印(时钟断环 + 刻度符印 + 青碧色散光晕)
   if (p.focusT && p.focusT > 0) {
     const focusAlpha = clamp(p.focusT / C.skills.focus.duration, 0, 1);
-    const chronoR = 24 + Math.sin(t * 0.15) * 5;
-    g.strokeColor = withAlpha(pal("#06b6d4"), 0.40 * focusAlpha);
-    g.lineWidth = F.lw(1.8);
-    circleAA(g, F, 0, bodyTop + bodyH * 0.5, chronoR);
+    const cy = bodyTop + bodyH * 0.5;
+    const pulse = Math.sin(t * 0.12) * 3;
+    const baseR = 25 + pulse;
+    const rot = t * 0.03;
+
+    // 1) 躯干周围青碧微光晕
+    px(g, F, tx - 5, bodyTop - 5, tw + 10, bodyH + 10, withAlpha(pal("#06b6d4"), 0.18 * focusAlpha));
+
+    // 2) 4 段时钟微弧(断环),随时间慢速旋转
+    g.strokeColor = withAlpha(pal("#00f0ff"), 0.65 * focusAlpha);
+    g.lineWidth = F.lw(2.0);
+    for (let i = 0; i < 4; i++) {
+      const a0 = rot + i * (Math.PI / 2) + 0.15;
+      const a1 = a0 + 0.95;
+      const x0 = Math.cos(a0) * baseR, y0 = cy + Math.sin(a0) * baseR;
+      const x1 = Math.cos(a1) * baseR, y1 = cy + Math.sin(a1) * baseR;
+      lineSeg(g, F, x0, y0, x1, y1);
+    }
+    g.stroke();
+
+    // 3) 四极时空刻度符印点
+    g.strokeColor = withAlpha(pal("#ffffff"), 0.85 * focusAlpha);
+    g.lineWidth = F.lw(1.5);
+    const tickR = baseR + 5;
+    for (let i = 0; i < 4; i++) {
+      const a = -rot * 0.8 + i * (Math.PI / 2);
+      const txPt = Math.cos(a) * tickR;
+      const tyPt = cy + Math.sin(a) * tickR;
+      lineSeg(g, F, txPt - 2, tyPt, txPt + 2, tyPt);
+      lineSeg(g, F, txPt, tyPt - 2, txPt, tyPt + 2);
+    }
     g.stroke();
   }
   // ---------- 球衣纹样(设计款人物专属):压在底色上、领口描边之下 ----------
@@ -1205,7 +1235,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, skinCol);
   drawHead(g, F, th, hr, 2 + (lean - 2) * 0.6, bodyTop - hr * 1.12 + headDy,
     { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD, skin: ps,
-      faceStyle, skinTone: ps?.skinTone, focusT: p.focusT });
+      faceStyle, skinTone: ps?.skinTone, focusT: p.focusT, isShadow });
 
   // ---------- 持拍臂:一条姿势管线,挥拍弧线 ↔ 待机收拍全程连续 ----------
   // 命中后持拍臂横拉过身体:肩点朝网侧额外偏移(增强跟随感)
@@ -1324,7 +1354,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const ik = armIK(pose.hand, pose.bend);
   arm(g, A, th.dark, [{ x: 0, y: 0 }, ik.elbow], 5.5 * body.limbMul);
   arm(g, A, skinCol, [ik.elbow, pose.hand], 5.5 * body.limbMul);
-  drawRacket(g, A, pose.hand.x, pose.hand.y, pose.ang, pose.len, th, p);
+  drawRacket(g, A, pose.hand.x, pose.hand.y, pose.ang, pose.len, th, p, isShadow);
   drawHand(g, A, pose.hand.x, pose.hand.y, 3.6 * body.limbMul, 1, skinCol);
   // 肩关节衔接件:手臂从肩头长出来,不再从躯干边缘凭空伸出
   g.fillColor = pal(th.dark);
@@ -1371,7 +1401,15 @@ function drawPlayerCursor(g: Graphics, vp: Viewport, p: Player, x: number, y: nu
 // 所以「填充 + 描边」同一形状必须重建路径,攒路径后一次性 stroke 与 canvas 同构。
 function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
   opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number;
-    skin?: SkinDef | null; faceStyle?: string; skinTone?: string; focusT?: number } = {}): void {
+    skin?: SkinDef | null; faceStyle?: string; skinTone?: string; focusT?: number; isShadow?: boolean } = {}): void {
+  // 影分身纯黑无面剪影:零发带、零头饰、零高光、零五官,纯黑圆底一笔而成
+  if (opt.isShadow) {
+    g.fillColor = pal("#000000");
+    circleAA(g, f, cx, cy, hr);
+    g.fill();
+    return;
+  }
+
   const lx = opt.lookX || 0, ly = opt.lookY || 0;
   const face: FaceKind = (opt.faceT ?? 0) > 0 ? (opt.face ?? "normal") : "normal";
   const sk = opt.skin ?? null;
@@ -1521,14 +1559,14 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
 
   // 时空减速鹰眼激光流光 (Focus Zone Trail)
   if (opt.focusT && opt.focusT > 0) {
-    const fA = clamp(opt.focusT / C.skills.focus.duration, 0, 1) * 0.92;
-    g.strokeColor = withAlpha(pal("#06b6d4"), fA);
-    g.lineWidth = f.lw(2.2);
-    lineSeg(g, f, exN + lx, eyN + ly, exN + lx - 15, eyN + ly - 5);
-    lineSeg(g, f, exN + lx - 4, eyN + ly - 1, exN + lx - 22, eyN + ly - 8);
+    const fA = clamp(opt.focusT / C.skills.focus.duration, 0, 1) * 0.95;
+    g.strokeColor = withAlpha(pal("#00f0ff"), fA);
+    g.lineWidth = f.lw(2.4);
+    lineSeg(g, f, exN + lx, eyN + ly, exN + lx - 18, eyN + ly - 6);
+    lineSeg(g, f, exN + lx - 3, eyN + ly - 1, exN + lx - 26, eyN + ly - 9);
     g.stroke();
     g.fillColor = withAlpha(pal("#ffffff"), fA);
-    circleAA(g, f, exN + lx, eyN + ly, 2.0);
+    circleAA(g, f, exN + lx, eyN + ly, 2.2);
     g.fill();
   }
 
@@ -2096,19 +2134,41 @@ function isometricHeadPts(R: Frame, rx = 9.2, ry = 11.5, steps = CIRCLE_SEGS): P
 // 从手位 (hx,hy) 朝 ang 方向伸出的一支现代高质感羽毛球拍:
 // 包含:防脱底盖 → 螺旋手胶 → 封口胶带 → 控制锥盖 → 高模量圆柱高光中杆(挥拍弹性受力)
 //       → 内置 T 头加固喉部 → 现代方头立体破风拍框(高光刃/涂装/护线孔) → 高张力内嵌拍弦
-function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, len: number, th: Theme, p: Player): void {
+function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, len: number, th: Theme, p: Player, isShadow?: boolean): void {
   const rad = ang * D2R;
   const dx = Math.cos(rad), dy = -Math.sin(rad);
   // 侧向法向量(顺时针垂直于中杆)
   const nx = -dy, ny = dx;
 
+  // 拍框几何参数
+  const headRx = 9.2, headRy = 11.5;
+
+  if (isShadow) {
+    // 影分身专属纯黑剪影球拍:极简三段结构(拍柄/中杆/方头拍框),无金属反光与彩色
+    const buttEnd = -8.8;
+    g.lineCap = LineCap.ROUND;
+    g.strokeColor = pal("#000000");
+    g.lineWidth = f.lw(4.4);
+    lineSeg(g, f, hx + dx * buttEnd, hy + dy * buttEnd, hx + dx * 9.8, hy + dy * 9.8);
+    g.stroke();
+
+    const shaftStart = 9.8, shaftEnd = Math.max(shaftStart + 1.2, len - headRy + 0.6);
+    g.lineWidth = f.lw(2.2);
+    lineSeg(g, f, hx + dx * shaftStart, hy + dy * shaftStart, hx + dx * shaftEnd, hy + dy * shaftEnd);
+    g.stroke();
+
+    const R = rotateFrame(f, hx + dx * len, hy + dy * len, -rad + Math.PI / 2);
+    const head = isometricHeadPts(R, headRx, headRy, CIRCLE_SEGS);
+    g.lineWidth = R.lw(1.8);
+    polyPath(g, head, true);
+    g.stroke();
+    return;
+  }
+
   const sk = p.racketSkin || RACKET_DEFAULT;
   const frame = sk.frame || th.glow;
   const gripCol = sk.grip || "#20242f";
   const shaftCol = sk.shaft || "#efe7d8";
-
-  // 拍框几何参数
-  const headRx = 9.2, headRy = 11.5;
 
   // ---------- 1. 拍柄部件:防脱底盖(Butt Cap) ----------
   // 位于拍柄最底端(外露在手掌后方),喇叭口八角棱台

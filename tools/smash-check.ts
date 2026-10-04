@@ -828,10 +828,14 @@ const s16 = (ck: Checker): void => {
   ck.ok(SM.autoReturn, "⑯ 一键化总闸开着(autoReturn;要整套撤掉只改这里)");
   ck.ok(SM.autoWindow <= BUFF, `⑯ 代拍窗不许长过附魔本体(${SM.autoWindow} ≤ ${BUFF}):超出去会在没附魔的帧上代一记普通球`);
   ck.ok(SM.cdOnConsume, "⑯ 冷却随兑现的总闸开着(关掉就退回旧口径,①⑤⑭ 会一起报警)");
-  // 与跨步同一把尺子:门控数值刻意同源,分叉要连判据一起改
+  // 与跨步/怒气/全局自动击打同一把尺子:门控数值刻意同源,分叉要连判据一起改
   ck.ok(SM.autoHorizon === C.lunge.autoHorizon && SM.autoLandHorizon === C.lunge.autoLandHorizon
-    && SM.autoOutMargin === C.lunge.autoOutMargin && SM.autoSettleGrace === C.lunge.autoSettleGrace,
-    `⑯ 两条一键化的门控数值必须同源(重击 ${SM.autoHorizon}/${SM.autoLandHorizon}/${SM.autoOutMargin}/${SM.autoSettleGrace} vs 跨步 ${C.lunge.autoHorizon}/${C.lunge.autoLandHorizon}/${C.lunge.autoOutMargin}/${C.lunge.autoSettleGrace})`);
+    && SM.autoOutMargin === C.lunge.autoOutMargin && SM.autoSettleGrace === C.lunge.autoSettleGrace
+    && SM.autoHorizon === C.autoHit.autoHorizon && SM.autoLandHorizon === C.autoHit.autoLandHorizon
+    && SM.autoOutMargin === C.autoHit.autoOutMargin && SM.autoSettleGrace === C.autoHit.autoSettleGrace,
+    `⑯ 四条一键化的门控数值必须同源(重击 ${SM.autoHorizon}/${SM.autoLandHorizon}/${SM.autoOutMargin}/${SM.autoSettleGrace}`
+    + ` vs 跨步 ${C.lunge.autoHorizon}/${C.lunge.autoLandHorizon}/${C.lunge.autoOutMargin}/${C.lunge.autoSettleGrace}`
+    + ` vs 自动击打 ${C.autoHit.autoHorizon}/${C.autoHit.autoLandHorizon}/${C.autoHit.autoOutMargin}/${C.autoHit.autoSettleGrace})`);
   // 实测覆盖度:可及且完美手动救得到的格子里,一格都不许因为"窗先走完"而沉默
   const GRID = cells();
   const lat: number[] = [];

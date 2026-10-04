@@ -448,5 +448,29 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(hs.v.hapticOn === false && hs.v.hapticLevel === other, "总闸与强度互不干扰:关掉不影响已设的档");
 }
 
+// ---------- ⑮ 自动击打(辅助模式)开关:一个布尔,不加版本号 ----------
+// 为什么要单独一段:这个开关改变的是玩法(谁替玩家起手),它"默认关"这件事不是美德而是
+// 前提 —— serve-check / ai-check / sim-check 那些替人跑的工具全部依赖"存档里没有这个键
+// 就等于不开"。老档覆盖安装必须安静地退回关,而不是把一堆替身突然变成躺赢。
+{
+  freshKV();
+  const s = new SettingsStore().init();
+  ok(s.autoHit === false, "默认关(不改变任何人的既有手感)");
+  ok(sanitize(null).autoHit === false, "空档 → 关");
+  ok(sanitize({ hapticOn: true, padAlpha: 0.5 }).autoHit === false, "覆盖安装的老档(整份存档里没有这个键)→ 关,不需要 v 迁移");
+  ok(sanitize({ autoHit: "yes" }).autoHit === false, "垃圾值 → 回默认关(不会莫名其妙开起来)");
+  ok(sanitize({ autoHit: true }).autoHit === true, "显式存的 true 照读");
+  const as = new SettingsStore();
+  as.init();
+  as.setPart({ autoHit: true });
+  as.flush();
+  ok(new SettingsStore().init().autoHit === true, "setPart 打开后 flush → 重开读回开");
+  as.setPart({ autoHit: 1 as never });
+  ok(as.v.autoHit === true, "setPart 收到垃圾值 → 保持原状态不动(bool() 第二参是现值,不是 false —— 别写成「莫名关掉」)");
+  as.setPart({ autoHit: true });
+  as.setPart({ paceTier: CFG.pace.tiers[0].id });
+  ok(as.v.autoHit === true, "改别的字段不会把自动击打顺手关掉(各字段独立写)");
+}
+
 console.log(`\n${h.bad === 0 ? "全部通过" : `${h.bad} 项失败`}`);
 process.exit(h.bad === 0 ? 0 : 1);

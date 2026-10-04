@@ -161,6 +161,8 @@ export interface GameSettings {
    * 球速档调「留给玩家几帧」,这一档调「这几帧里能覆盖多少地面」。即时生效,不等下一球。
    */
   gaitTier: string;
+  /** 自动击打(辅助模式开关):默认关,由设置页独立开关控制 */
+  autoHit: boolean;
   /** 摇杆本体的位/大小:dx/dy 相对 JOYSTICK_BASE,r = 底圈半径(渲染时再乘设备 scale) */
   joystick: PadBtn;
   /** 滑轨本体的可调量:dy = 相对 SLIDER_BASE.y 的高度差(参考系是屏幕底边中点,不乘 scale);r = 底轨半高半径(渲染时乘设备 scale);dx 恒 0 —— 水平由球场对位锁死,见 SLIDER_BASE */
@@ -190,6 +192,7 @@ function fresh(): GameSettings {
     moveMode: "slider",
     paceTier: CFG.pace.default,
     gaitTier: CFG.gait.default,
+    autoHit: false,
     joystick: { dx: 0, dy: 0, r: JOYSTICK_BASE.r },
     slider: { dx: 0, dy: 0, r: SLIDER_BASE.r },
   };
@@ -226,6 +229,7 @@ export function sanitize(raw: unknown): GameSettings {
   s.hintShake = bool(r.hintShake, s.hintShake);
   s.hintFloat = bool(r.hintFloat, s.hintFloat);
   s.hapticOn = bool(r.hapticOn, s.hapticOn);
+  s.autoHit = bool(r.autoHit, s.autoHit);
   // 手改存档写了个不存在的强度档 → 保持默认,不带病下发反射调用
   s.hapticLevel = hapticLevelOf(r.hapticLevel, s.hapticLevel);
   s.padAlpha = num(r.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
@@ -381,7 +385,7 @@ export class SettingsStore {
    * persist=false 同 setPad:音量滑杆拖动时逐帧改内存、松手再 flush,
    * 原生 sys.localStorage.setItem 是同步文件 IO,不能跟着手指 60Hz 写盘。
    */
-  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "hapticLevel" | "padAlpha" | "moveMode" | "paceTier" | "gaitTier">>, persist = true): void {
+  setPart(p: Partial<Pick<GameSettings, "sfxOn" | "sfxVol" | "bgmOn" | "bgmVol" | "hintLanding" | "hintShake" | "hintFloat" | "hapticOn" | "hapticLevel" | "padAlpha" | "moveMode" | "paceTier" | "gaitTier" | "autoHit">>, persist = true): void {
     const s = this.v;
     if (p.sfxOn !== undefined) s.sfxOn = bool(p.sfxOn, s.sfxOn);
     if (p.sfxVol !== undefined) s.sfxVol = num(p.sfxVol, s.sfxVol, 0, 1);
@@ -391,6 +395,7 @@ export class SettingsStore {
     if (p.hintShake !== undefined) s.hintShake = bool(p.hintShake, s.hintShake);
     if (p.hintFloat !== undefined) s.hintFloat = bool(p.hintFloat, s.hintFloat);
     if (p.hapticOn !== undefined) s.hapticOn = bool(p.hapticOn, s.hapticOn);
+    if (p.autoHit !== undefined) s.autoHit = bool(p.autoHit, s.autoHit);
     if (p.hapticLevel !== undefined) s.hapticLevel = hapticLevelOf(p.hapticLevel, s.hapticLevel);
     if (p.padAlpha !== undefined) s.padAlpha = num(p.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
     if (p.moveMode !== undefined) s.moveMode = moveModeOf(p.moveMode, s.moveMode);

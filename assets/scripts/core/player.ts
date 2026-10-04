@@ -6,8 +6,9 @@ import { CFG } from "./config";
 import { clamp, lerp, approach, sweptHit } from "./utils";
 import { Physics, FuturePt, flightFramesToClosest } from "./physics";
 import { Gait } from "./gait";
+import { AutoHit } from "./auto-hit";
 import { Skills } from "./skills";
-import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShotResult, SwingBestShot } from "./types";
+import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShotResult, SwingBestShot, Theme } from "./types";
 
 // 本模块导出的 Player(值:移动/挥拍/命中的 API)与 types 的 Player 实体(类型)
 // 同名对外,调用方 `import { Player } from "./player"` 两个语义都拿得到,
@@ -57,7 +58,7 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     blinkSeed: Math.random() * 220,     // 眨眼周期相位,各角色错开
     face: "normal", faceT: 0,           // 表情状态:game 层事件设置,这里只负责衰减
     swingT: -1, swingStyle: "over", swingHit: false, swingQ: 0,
-    swingBuf: 0, swingBufAim: null, swingAim: "mid",
+    swingBuf: 0, swingBufAim: null, swingAim: "mid", swingLoft: 0,
     swingRadius: SW.radiusBase,
     racket: { x: homeX, y: CO.groundY - 40, ang: 0 },
     racketPrev: { x: homeX, y: CO.groundY - 40 },
@@ -91,6 +92,43 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
   };
 }
 
+/** 影分身专属墨色主题:全剪影人偶 + 紫光点缀,黑脸白线五官天然读作"无面之影" */
+const SHADOW_THEME: Theme = { main: "#232733", dark: "#12141c", glow: "#8b5cf6", name: "影分身" };
+
+/**
+ * 召唤影分身(「影分身」技能的实体落点)。
+ * 分身**刻意不进 RulesState.players**:发球轮转(mates[serveIdx % length])、计分名单、
+ * game-root 的 R.players[0]=真人假设都不许被第三名球员污染 —— 它是挂在宿主身上的
+ * 独立 Player,由 core/shadow.ts 用 AI.think 出输入、走本模块 update/tryHit 全套机器。
+ * 放在本模块而不是 skills.ts,是因为 create() 工厂在这里,而 skills 不许反向 import player。
+ */
+export function spawnShadowClone(host: PlayerEntity): void {
+  if (host.shadowClone) return; // 已在场:同分第二次 activate 已被 shadowCast 闸住,这里再拦一道
+  const SH = C.skills.shadow;
+  const c = create(host.side, {
+    isAI: true,
+    aiDiff: SH.cloneDiff,
+    theme: SHADOW_THEME,
+    label: "影分身",
+    hideTag: true, // 分身不挂名牌:场上多一块名牌会与宿主名牌混淆
+    homeX: host.side === "left" ? CO.netX - 200 : CO.netX + 200,
+  });
+  c.idx = -1;        // 不占名单索引:R.players[idx] 按位索引永远不该摸到分身(applyShot 事件归因已改用 isAI)
+  c.skill = undefined; // 分身不吃技能:AI 决策链(AI.think 的技能分支)与 Pl.update 的 activate 都被这一行封死
+  c.x = host.x - host.facing * SH.spawnPushBack; // 从宿主影子里"拔出来":出生在宿主身后半步
+  c.px = c.x;
+  c.y = CO.groundY;
+  c.py = c.y;
+  c.facing = host.facing;
+  host.shadowClone = {
+    entity: c,
+    hits: 0,
+    spawnT: SH.spawnFrames, // 成影演出帧(隔帧闪烁):期间不接球,来球归玩家
+    despawnT: 0,            // 消散演出帧:>0 期间不再起拍,演完整个状态清空
+    seed: (Math.random() * 1e9) | 0,
+  };
+}
+
 /**
  * 击球合法半场判定:
  * 严格规则要求球在击球方本侧半场,但羽毛球实战中球头探过球网垂直面或网顶正上方即可击打。
@@ -110,18 +148,61 @@ function depthOf(aim: string | number | null | undefined): number {
   return (C.aimDepth as Record<string, number>)[aim ?? ""] ?? C.aimDepth.mid;
 }
 
+/**
+ * 滑动手势对瞄准两轴的覆盖(深浅 + 高低),纯函数。
+ * 为什么抽出来:实打那一拍(update 每步覆盖 p.swingAim)与球种预告徽标(previewKind)必须
+ * 用同一份算术,否则就是本仓库反复踩过的「徽标一套判定、实球另一套」。预告现在也走这里,
+ * 于是自动击打开起来后徽标报的就是「下一次代拍会往哪儿打」,而不是上一拍的旧落点。
+ * 语义与抽出来之前逐字相同:两轴独立提交、可组合;0 / null = 不覆盖(保留起拍那个值)。
+ */
+export function aimOverride(
+  aim: string | number,
+  loft: number,
+  swipe: number | null | undefined,
+  swipeY: number | null | undefined,
+): { aim: string | number; loft: number } {
+  let a = aim;
+  if (swipe != null) {
+    if (swipe > 0) a = "deep";
+    else if (swipe < 0) a = "near";
+    // swipe === 0 → 不覆盖,保留 startSwing 的 mid(由物理自动决定球种)
+  }
+  let l = loft;
+  if (swipeY != null) {
+    if (swipeY > 0) l = 1;
+    else if (swipeY < 0) l = -1;
+    // 同上:没滑过纵轴就不覆盖,弧线由物理自动决定
+  }
+  return { aim: a, loft: l };
+}
+
+/**
+ * 「自动击打」的每球限次读数(纯读,不改状态)。
+ * 来球身份用 Ball.shot:rules.applyShot 每记击球换一个新对象、beginPoint 清成 null,
+ * 天然就是"这一发来球"的令牌 ⇒ 玩家自己抢一拍、球又回来,计的是新账。
+ */
+function autoTryBudget(p: PlayerEntity, ball: Ball): boolean {
+  const used = ball.shot === p.autoTryRef ? (p.autoTries ?? 0) : 0;
+  return used < C.autoHit.maxTriesPerBall;
+}
+
 function startSwing(p: PlayerEntity, ball: Ball | null, aim?: string | number | null): void {
   p.swingT = 0;
   p.swingHit = false;
   p.swingQ = 0;
   p.swingBest = null;   // 峰值追踪记账清零:新一拍从空账开始
   p.swingAim = aim ?? "mid";
+  p.swingLoft = 0;      // 纵向弧线意图同步清零:组合瞄准的两轴都以起拍为界重新提交
   p.swingStyle = ball && CO.groundY - ball.y > 95 ? "over" : "under";
   p.swingRadius = Physics.reachRadius(ball);
   p.racketPrev = Physics.racketHead(p, 0, p.swingRadius);
   // 发球起拍标记:起拍时球还握在手上 = 这一拍是发球。每次起拍覆盖,无需清理;
   // 渲染层据此走发球专属的出发姿势与远臂松球轨迹(纯视觉,不参与判定)
   p.serveSwing = !!(ball && ball.held && ball.owner === p);
+  // 来路标记逐拍重定:只有 auto-hit 那条分支会在起手后当场置回 true。
+  // 放在这里(而不是各调用点各自写)是为了"没人写就是手动" —— 漏标一处的后果是把玩家的
+  // 早/晚教学条一起吞掉,而那正是最不该被吞的一拍。
+  p.swingAuto = false;
 }
 
 // 命中窗口内的位置 → 质量 0..1(窗口正中 = 甜蜜点)
@@ -154,6 +235,11 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
         if (inp.onLunge) inp.onLunge(p);
         inp.targetX = undefined; // 跨步冲量接管,清空当帧定点避免与跨步初速度竞争
       }
+      if (p.skill.id === "shadow") {
+        // 影分身实体落点:skills.activate 只记账(shadowCast),create() 工厂在本模块,
+        // 所以召唤在这里完成 —— AI 状态由 core/shadow.ts 首次驱动时懒初始化(避免 player→ai 成环)
+        spawnShadowClone(p);
+      }
     }
   }
 
@@ -164,6 +250,8 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
 
   const LG = C.lunge;
   const SM = C.skills.smash;
+  const RG = C.skills.rage;
+  const AH = C.autoHit;
   if (p.lungeT >= 0) {
     p.lungeT++;
     // 跨步中:vx 在触发帧已锁定(含跑速+爆发),这里只推进帧数与判定区扩大
@@ -187,6 +275,10 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // 每帧两减:4 秒附魔变 2 秒、3.5 秒冷却变 1.75 秒 —— 与 lungeShotT 从前那个 bug 同一形状,
   // 判据 tools/smash-check.ts 的 ⑬。
   if ((p.smashAutoT ?? 0) > 0) p.smashAutoT = (p.smashAutoT ?? 0) - 1;
+  // 怒气重击的「代出一拍」窗:同一条规矩,只在这里减一次。
+  // armed 窗本身是 buffT —— 递减处仍是 Skills.update(上面),这里**不**再写一行:
+  // 那正是 smashAutoT 注释里那个「每帧两减」的形状,4 秒会悄悄变 2 秒。
+  if ((p.rageAutoT ?? 0) > 0) p.rageAutoT = (p.rageAutoT ?? 0) - 1;
 
   // ---------- 水平:加速度 + 摩擦 ----------
   // 模式优先级:
@@ -384,6 +476,10 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 两扇窗一起清:重击的附魔不清(那一拍照旧必定暴扣,只是不再由系统代按)。
     p.lungeAutoT = 0;
     p.smashAutoT = 0;
+    // 怒气的 armed 窗(buffT)同样**不清** —— 玩家自己挥那一拍,怒气照样该砸进去。
+    // 把 buffT 一起清了就变成「我按了技能、又自己挥了一拍,结果怒气没了」,
+    // 那是资源制下最坏的一种吞:静默扣掉一整局攒的东西(反例 armedClearedByManual,判据 rage-check ⑫)。
+    p.rageAutoT = 0;
   } else if ((p.lungeAutoT ?? 0) > 0 && !p.isAI && C.lunge.autoReturn && ball && Player.autoSwingDue(p, ball)) {
     // 跨步自动回球:窗口内替玩家按这一拍,起手帧与时机环收满那一帧同源(见 autoSwingDue)。
     // 走 startSwing → tryHit 的**真实**峰值追踪,不碰 flashStrikeT 那条必中分支 ——
@@ -404,14 +500,52 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 走位误差照样决定这一拍能不能碰到球 —— 代劳的是时机,不是判定。
     p.smashAutoT = 0;
     startSwing(p, ball, SM.autoAim);
+  } else if ((p.rageAutoT ?? 0) > 0 && !p.isAI && RG.autoReturn && p.skill
+    && p.skill.id === "rage" && p.skill.buffT > 0 && ball && Player.autoSwingDue(p, ball, "rage")) {
+    // 怒气重击一键化(2026-10-04):按下之后到点替玩家把这一拍轰出去 —— 与跨步/重击**共用同一条**
+    // autoSwingDue 择帧尺子(够不着/界外/将死/隔网/自家球一律不起手),只是门控数值各取一份 config。
+    // 三条一键化永不并存(一场只有一个 skill.id,canActivate 互斥),这个次序只是把同一把尺子
+    // 写成同一条链;新增第四条判据之前先问:能不能复用这三条。
+    // 起手**当场清窗**(与 smashAutoT 同侧,与 lungeAutoT 相反):它不兼判定区开关。
+    // 不加必中:不碰 flashStrikeT,强度由 modifyShot 在真打时按怒气比例兑现 —— 代劳的是时机,不是判定。
+    p.rageAutoT = 0;
+    startSwing(p, ball, RG.autoAim);
+  } else if (AutoHit.on && !p.isAI && ball
+    && (p.flashHoldT ?? 0) <= 0 && !ball.magnetPull
+    && autoTryBudget(p, ball) && Player.autoSwingDue(p, ball, "auto")) {
+    // 自动击打(辅助模式,2026-10-05):玩家不再惦记击球键,系统替他把每一拍打出去。
+    // 排在整条链**最后**是有意的:三条一键化各自带着承诺(跨步的判定区尾段、重击的附魔、
+    // 怒气的资源结算),它们永远优先于这条通用代劳;而它们上面那个手动分支更早 ——
+    // 玩家一按击打键就当场起拍,自动这一支整条被 else-if 跳过 ⇒ 手动优先不需要新代码。
+    //
+    // AutoHit.on 排第一合取项:关掉时这条分支连 autoSwingDue 都不调用、一个字段都不写,
+    // "关掉就是今天的逐帧行为"于是是可证的而不是靠读代码相信的(判据 auto-hit-check ⑥
+    // 把 Player.autoSwingDue 换成计数壳,断言零调用)。autoTryBudget 排在择帧之前:先查便宜的门槛。
+    //
+    // 两个"技能已经欠着一拍"的状态必须先让路,理由与上面那个手动分支的 flashHoldT 闸同源:
+    //   · flashHoldT > 0:闪现折跃后悬空蓄力,那一拍由技能状态机在蓄力结束时发出 ——
+    //     自动再起一次拍就是两个人抢同一条时间线,人还定在半空,球自然打不到;
+    //   · ball.magnetPull 非空:引力吸球正把球按在牵引轨迹上,rules 到位后 forced 回击那一拍
+    //     (q=1.0)是技能承诺,自动在这里起拍会跟它抢,抢到的还是一记质量更低的球。
+    // 三个不许碰的东西,碰一个就把这套机制做成作弊:
+    //   · 不写 p.lungeAutoT —— 那字段兼着 strikeZone 的判定区尾段倍率(白送手长);
+    //   · 不写 p.flashStrikeT —— 那是必中支,用户口径"借时机不借判定";
+    //   · 不压 sweet/perfect —— 代劳的是帧,质量该多少是多少(用户明确选了"不打折")。
+    // 起手给的是字符串 "mid"(与真人点按同一条路:pad.buildIntent 也是 "mid"),落点/弧线的
+    // 玩家意图由下面 aimOverride 在**同一帧**覆盖上来 ⇒ 「击球键变纯瞄准键」零新增代码。
+    startSwing(p, ball, AH.autoAim);
+    p.swingAuto = true;                       // 来路:这一拍是系统起的(玩家抢的那拍不会被打标)
+    p.autoTryRef = ball.shot;
+    p.autoTries = (p.autoTries ?? 0) + 1;     // 每球限次:没有窗可清,只能自己数(见 C.autoHit.maxTriesPerBall)
+    inp.onAutoSwing && inp.onAutoSwing(p, ball);  // 表现层读数(场边飘「自动」):只在真起手的这一帧
   }
-  // 滑动手势覆盖落点:startSwing 设的初值是 mid,挥拍期间手指横滑提交方向后,
-  // 实时覆盖 p.swingAim。tryHit → buildShot 读的就是这里的最终值。
-  // 键盘路径在 press 时就定好了 ±1,这一步等价于立即覆盖(保持一致)。
-  if (p.swingT >= 0 && inp.swingSwipe != null) {
-    if (inp.swingSwipe > 0) p.swingAim = "deep";
-    else if (inp.swingSwipe < 0) p.swingAim = "near";
-    // swingSwipe === 0 → 不覆盖,保留 startSwing 的 mid(由物理自动决定球种)
+  // 滑动手势覆盖落点与弧线:startSwing 设的初值在这里被玩家的实际意图盖掉。
+  // 触屏那两个字段是**粘住不丢**的(pad.buildIntent 每步输出,只有 resetPadHolds 清),
+  // 所以自动那一拍继承的就是玩家最后一次滑动的方向;键盘路径在 press 时已定好 ±1,等价于立即覆盖。
+  if (p.swingT >= 0) {
+    const o = aimOverride(p.swingAim, p.swingLoft, inp.swingSwipe, inp.swingSwipeY);
+    p.swingAim = o.aim;
+    p.swingLoft = o.loft;
   }
   if (p.swingBuf > 0) p.swingBuf--;
   if (p.recoverT > 0) p.recoverT--;
@@ -480,7 +614,7 @@ function ballInZone(p: ZoneProbe, ball: Ball): number | null {
   return d <= z.r ? clamp(d / z.r, 0, 1) : null;
 }
 
-// ---------- 一键自动回球:替玩家按那一拍(跨步 2026-10-04 / 重击同日)----------
+// ---------- 一键自动回球:替玩家按那一拍(跨步 2026-10-04 / 重击同日 / 全局自动 2026-10-05)----------
 const autoPtsBuf: FuturePt[] = [];
 
 /** 一帧前瞻的三份账(全部按「从现在数第几帧」计,0 = 此刻) */
@@ -510,10 +644,13 @@ function ballFuture(p: PlayerEntity, ball: Ball, horizon: number): BallFuture {
 }
 
 /**
- * 代劳那一拍的来源。两条一键化(跨步 / 重击)共用**同一把择帧尺子**,只有四个门控数值各取
- * 一份 config —— 分开两套逻辑迟早一边修好、另一边还在按早按晚。
+ * 代劳那一拍的来源。三条一键化(跨步 / 重击 / 怒气)+ 全局「自动击打」共用**同一把择帧尺子**,
+ * 只有四个门控数值各取一份 config —— 分开四套逻辑迟早一边修好、另一边还在按早按晚。
+ * 每加一个 src 都要去 rage-check ⑭ / smash-check ⑯ / auto-hit-check ⑨ 那条「四个门控数逐字相同」
+ * 的判据看一眼:那四条数字一旦分叉,这条共用就不再是真的共用。
+ * "auto" 与前三者的区别只在**没有 autoWindow**:它逐帧轮询,限次由 player 自己数(见 C.autoHit)。
  */
-export type AutoSwingSrc = "lunge" | "smash";
+export type AutoSwingSrc = "lunge" | "smash" | "rage" | "auto";
 
 /**
  * 「就是现在」判据:起手帧与时机环收满那一帧**同源** —— game-root.updateSwingCue 拿
@@ -528,7 +665,10 @@ function autoSwingDue(p: PlayerEntity, ball: Ball | null, src: AutoSwingSrc = "l
   if (!ball || !ball.live || ball.held || ball.flying) return false;   // flying = 得分后球飞回手里
   if (ball.lastHitter === p.side) return false;                        // 自己刚打出去的那一拍
   if (p.hitLock > 0) return false;                                     // 双重击球锁还没解
-  const LG = src === "smash" ? C.skills.smash : C.lunge;
+  // 四份门控数值、一把尺子。这里的三元分支必须只读那四个 auto* 键 —— 四条一键化的判据
+  // 一旦分叉,「共用」就成了假话,而它不会崩、只会让某个来源替玩家按早按晚。
+  const LG = src === "smash" ? C.skills.smash : src === "rage" ? C.skills.rage
+    : src === "auto" ? C.autoHit : C.lunge;
   const z = strikeZone(p, Math.hypot(ball.vx || 0, ball.vy || 0));
   const fc = flightFramesToClosest(ball, z.x, z.y, z.r, LG.autoHorizon);
   if (fc === null || fc > PRESS_LEAD_FRAMES) return false;
@@ -661,6 +801,18 @@ function settle(p: PlayerEntity, ball: Ball, best: SwingBestShot): ShotResult {
   ball.px = best.bpx; ball.py = best.bpy;
   ball.x = best.bx; ball.y = best.by;
   const shot = buildShot(p, ball, { q, sweet, perfect, dEdge, heat: hot ? heatBefore : 0, lungeShot, jumpSmash });
+  // 怒气重击:攒怒气。放这里而不是放 modifyShot,有三个理由,每个都对应一种"不会崩的坏法":
+  // ① 本函数每记**真实接触**恰好走一次(上面 stats.hits++ 就是同一把尺子);而 modifyShot
+  //    被球种预告(player.previewKind)每个真实帧最多跑 10 次 —— 增益写那儿等于按帧速自灌。
+  // ② 发球不经这里(rules.ts 的发球直接 buildShot),所以发球不涨怒气。这是设计后果,
+  //    不是漏写:用户口径「在击打过程去积攒」。一整局约 6 记发球若都算,白送 30 点(近半管)。
+  // ③ 只喂**物理档**那两个局部量(sweet/perfect 来自 qRaw),不喂 shot.sweet/perfect ——
+  //    后者被技能钩子抬到顶档了。喂错就等于「满怒那一拍自己给自己充能」,与上面
+  //    stats.sweets 那条「别把 buff 折进统计」是同一条规矩。判据 rage-check ②⑤。
+  // 释放那一拍整口不攒(skillKind === "rage"):怒气已在 modifyShot 里清零,再补一笔就读成"没清干净"。
+  if (shot.skillKind !== "rage") {
+    Skills.gainRage(p, { sweet, perfect, smash: shot.kind === "smash" });
+  }
   // 球体接触瞬间形变:按档位设压扁比
   ball.sqPrev = ball.sq;
   ball.sq = (shot.kind === "smash")
@@ -683,6 +835,10 @@ function settle(p: PlayerEntity, ball: Ball, best: SwingBestShot): ShotResult {
       shot.timingHint = shot.timingGrade < 0 ? "early" : "late";
     }
   }
+  // 来路标记:这一拍是「自动击打」替玩家起的 ⇒ 表现层把早/晚教学闭嘴。
+  // 上面那两行照写不省:它们是数据(auto-hit-check ⑦ 拿 q/早晚做对照),不是演出;
+  // 抑制只发生在读侧(game-root),所以玩家自己点回去的那拍、以及三条技能一键化照常用。
+  if (p.swingAuto) shot.autoHit = true;
   if (shot.kind === "smash") {
     p.smashGlow = 10;
   }
@@ -711,15 +867,22 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   // 的技能永远拿不到顶档反馈(晚按 9 帧的附魔拍实测 q=0.30、8 次同参 8 个落点)。
   // 钩子只读球员状态 + opt.lungeShot/opt.q,不依赖误差计算,前置安全。
   const sm = Skills.modifyShot(p, opt);
+  // 瞄准读数从哪儿来:实打读球员身上的 p.swingAim / p.swingLoft(由 update 的 aimOverride
+  // 每步覆盖);球种预告可以把「还没起拍的玩家意图」(击球键上粘住的那次滑动)当 hint 传进来,
+  // 于是自动击打开起来后徽标报的是**下一拍会往哪儿打**,而不是上一拍的旧落点。
+  // 两条都过同一个 aimOverride,分叉不了;不给 hint 时逐字等于旧行为(实打路径零改动)。
+  const swingAim = opt.aimHint ? opt.aimHint.aim : p.swingAim;
+  const swingLoft = opt.aimHint ? opt.aimHint.loft : p.swingLoft;
   const q = opt.q ?? 0.5, sweet = !!opt.sweet, perfect = !!opt.perfect, dEdge = opt.dEdge ?? 0;
   const dir = p.side === "left" ? 1 : -1;
   const h = CO.groundY - ball.y;
-  const rawAim = opt.forced ? opt.forced.depth : depthOf(p.swingAim);
+  const rawAim = opt.forced ? opt.forced.depth : depthOf(swingAim);
   // 网前高球自适应扑推:
   // 当击球点在网前近网处(离网 <= 35px)且高出网顶(y <= netTopY - 15),若玩家未明确指定打深球(默认 mid 档),
   // 意图倾向于前场扑杀/下切推压(depth=0.32),打出干脆利落的前场扑球,避免反解成后场慢平高球。
+  // 纵向手势(swingLoft ≠ 0)是明确的弧线意图,优先于自动扑推:上滑在网前照样挑高过渡。
   const isNetHigh = Math.abs(ball.x - CO.netX) <= 35 && ball.y <= CO.netTopY - 15;
-  const aim = (isNetHigh && p.swingAim === "mid" && !opt.forced) ? 0.32 : rawAim;
+  const aim = (isNetHigh && swingAim === "mid" && !opt.forced && swingLoft === 0) ? 0.32 : rawAim;
 
   let err = C.aimErr.base + dEdge * C.aimErr.edge;
   if (Math.abs(p.vx) > 2.4) err += C.aimErr.moving;
@@ -748,6 +911,15 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     powerDeg += C.jumpSmash.powerDeg;
   }
   let loft = clamp(Physics.loftFor(depth, h, q) - powerDeg, C.shot.loftMinDeg, C.shot.loftMaxDeg);
+  // 纵向手势(击球键上滑/下滑)的弧线意图:两轴组合瞄准的「高低」维度。
+  // 与跳杀的压平分支互为镜像(一个下托地板、一个压低天花板)。发球(forced)有自己的
+  // 弧线编排(serve.loftDelta),不吃手势;跳杀/必杀压平排在其后 —— 空中那一拍永远是
+  // 扣杀,上滑不能把跳杀改成挑高。压平过不了网由 safeAngle 兜底抬回,不会自杀下网。
+  if (!opt.forced && swingLoft > 0) {
+    loft = Math.max(loft, C.shot.loftUpMinDeg);
+  } else if (!opt.forced && swingLoft < 0) {
+    loft = Math.min(loft, C.shot.loftDownMaxDeg);
+  }
   if (jm) {
     loft = Math.min(loft, C.jumpSmash.maxLoftDeg);
   }
@@ -773,8 +945,12 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     lungeShot,
     jumpSmash: jm,
     // 瞄准档位只在字符串瞄准(真人路径 mid/deep/near)时有意义;AI 直接给数值深度,不上报
-    aim: typeof p.swingAim === "string" ? p.swingAim : undefined,
+    aim: typeof swingAim === "string" ? swingAim : undefined,
     skillKind: sm.skillKind,
+    // 「怒气重击」兑现那一刻的怒气比例快照。怒气在下面 modifyShot 里已经清零,
+    // 表现层(game-root 排空事件时)再读 p.rage 恒为 0 ⇒ 四档演出全被打成最低档。
+    // 判据 rage-check ③:这一栏不上报,分档就只在核心层生效、玩家看不见。
+    rageRatio: sm.rageRatio,
     // 三星判据用的出手瞬间状态:空中占比 / 极滑滑行(极滑关 frictionMul<0.5 且速度够快)
     airborne: !p.onGround,
     sliding: (activePlayerModifier?.frictionMul ?? 1) < 0.5 && Math.abs(p.vx) >= C.star.slideSpeed,
@@ -789,18 +965,29 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
  * **preview: true 是这条通道的安全带**:buildShot 里的技能钩子会消耗 buff,而本函数
  * 每个真实帧(按 ≤10 帧节流)跑一次。旧写法没有它 —— 按下重击后的第一记预告就把附魔
  * 清零,玩家看到「按了没反应、下一拍还是普通球」还白付冷却(判据 tools/smash-check.ts)。
+ *
+ * `pending`(击球键上粘住的那次滑动)走 aimOverride 折成 aimHint 传进同一条解算:
+ * 没起拍时 p.swingAim 停在上一拍的旧值,不传就会一直报上一拍的落点。手动模式下这条
+ * 修正同样成立(滑了就立刻看到),而实打路径不经过这里 ⇒ 弹道一个数都不动。
  */
-function previewKind(p: PlayerEntity, ball: Ball): ShotResult["kind"] {
-  const isNear = typeof p.swingAim === "string" ? p.swingAim === "near" : false;
+function previewKind(p: PlayerEntity, ball: Ball, pending?: {
+  swipe: number | null | undefined; swipeY: number | null | undefined;
+}): ShotResult["kind"] {
+  const hint = pending
+    ? aimOverride(p.swingAim, p.swingLoft, pending.swipe, pending.swipeY)
+    : undefined;
+  const aim = hint ? hint.aim : p.swingAim;
+  const isNear = typeof aim === "string" ? aim === "near" : false;
   if (!p.onGround && (CO.groundY - ball.y) >= C.jumpSmash.minHeight) {
     if (isNear) return "slash";
     return "smash";
   }
   const q = 1 - C.sweet.coreRatio;
-  return buildShot(p, ball, { q, sweet: true, dEdge: 0, heat: 0, preview: true }).kind;
+  return buildShot(p, ball, { q, sweet: true, dEdge: 0, heat: 0, preview: true, aimHint: hint }).kind;
 }
 
 // `autoSwingDue`/`ballFuture` 挂上导出面不是巧合:上面的 update 走的是 `Player.autoSwingDue(...)`
 // 这一条对象调用,tools/lunge-check.ts 的 --selftest 才能把它换成反例(与 Skills.modifyShot
 // 被 player.ts 按对象调用同一个道理 —— 直接闭包调用是换不掉的,那套反例就没牙齿)。
-export const Player = { create, update, tryHit, buildShot, previewKind, depthOf, strikeZone, ballInZone, autoSwingDue, ballFuture, setPlayerModifier, getPlayerModifier };
+// `aimOverride` 一起挂上:auto-hit-check 要拿它单验「预告与实打同一份算术」。
+export const Player = { create, update, tryHit, buildShot, previewKind, depthOf, aimOverride, strikeZone, ballInZone, autoSwingDue, ballFuture, setPlayerModifier, getPlayerModifier };

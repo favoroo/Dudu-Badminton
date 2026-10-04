@@ -27,7 +27,8 @@
 // ============================================================
 import { makeChecker } from "./harness";
 import {
-  CD, CD_TOP, cdAlpha, cdArcs, cdRingR, cdText, makeCdGate, skillAccent,
+  CD, CD_TOP, cdAlpha, cdArcs, cdRingR, cdText, makeCdGate, skillAccent, blockedTapeVertices,
+  CH, chargeArcs, chargeRingR, chargeFullR, chargeText, drawCharge, type CdPen,
 } from "../assets/scripts/input/pad-cd";
 import { CFG } from "../assets/scripts/core/config";
 import { PAD_BASE, PAD_LIMIT } from "../assets/scripts/core/settings";
@@ -261,7 +262,15 @@ console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 
   ok(g0.step(0.5) === false, "sync 把基准对齐到刚画上屏的值,同值喂入不触发重画");
   ok(g0.step(0.5 + CD.stepTol * 2) === true, "累计变化跨过阈值的那一下必须触发重画");
 
-  for (const sk of CFG.skills.list) {
+  // 这段节奏只对**冷却款**成立。充能款(怒气重击)的 cooldownFrames 是 20 帧防连点,
+  // 键面根本不画这条扫掠 —— touchpad.paint 里 drawCooldown 与 drawCharge 是互斥分支。
+  // 把它一起卷进「整段冷却必须重画 ≥30 次」只会得到一条假红(rage 数学上最多 21 次),
+  // 而下一个看到红的人多半去把 rage 的 cooldownFrames 调大 —— 那才是真把假冷却装回键面。
+  const cdSkills = CFG.skills.list.filter((sk) => sk.kind !== "charge");
+  ok(cdSkills.length === CFG.skills.list.length - 1,
+    `冷却款 ${cdSkills.length} 款 + 充能款 1 款 = 全表 ${CFG.skills.list.length}(这段判据的覆盖面自己要对账)`);
+
+  for (const sk of cdSkills) {
     const maxCd = sk.cooldownFrames;
     const gate = makeCdGate();
     let repaints = 0;
@@ -280,11 +289,191 @@ console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 
     ok(repaints >= 30,
       `${sk.id}: 整段冷却重画 ${repaints} 次 ≥ 30(扫掠是连续的,不是几大格)`);
   }
+
+  // ---------- 充能层的节奏:大跳而不是逐帧下行 ----------
+  // 怒气的喂法是"每次命中涨 perHit×系数"(5 / 9 / 10 / 14 点,即 5%~14%),中间几十帧一动不动。
+  // 判据要保证的是:① 每一次命中都跨过阈值 ⇒ 环一定前进(不许冻在旧值,那是"打了球环不动");
+  // ② 释放归零那一下也一定重画(整管清空是这条键最重要的一次变化);
+  // ③ 一帧之内什么都不涨时不许白白重画(重画整键不便宜,见 frame-cost-check)。
+  {
+    const RG = CFG.skills.rage;
+    const tol = CH.stepTol;
+    ok(tol > 0 && tol <= 0.02, `充能环阈值 ${tol}(太大就跳格、太小就每帧重画)`);
+    const gains = [RG.perHit, RG.perHit * RG.sweetMul, RG.perHit * RG.smashMul, RG.perHit * RG.bothMul];
+    for (const g of gains) {
+      const gate = makeCdGate();
+      const step = g / RG.max;
+      ok(gate.step(step), `一记 +${g} 点(${(step * 100).toFixed(0)}%)必须跨过阈值 ${tol}`);
+    }
+    // 攒满全程:每一次命中都重画一次,一次都不许漏
+    const gate = makeCdGate();
+    let rage = 0, drawn = 0, hits = 0;
+    while (rage < RG.max) {
+      rage = Math.min(rage + RG.perHit, RG.max); hits++;
+      const ratio = rage / RG.max;
+      // 命中之间几十帧静止:那些帧喂同一个值,不该重画(第③条)
+      if (gate.step(ratio)) drawn++;
+      ok(gate.step(ratio) === false, `同一比例第 ${hits} 次喂入不重复重画(静止帧不烧笔)`);
+      for (let idle = 0; idle < 20; idle++) {
+        if (gate.step(ratio)) drawn++;   // 空转 20 帧:一次都不该加
+      }
+    }
+    ok(drawn === hits, `蓄满 ${hits} 拍 ⇒ 环前进 ${drawn} 次,一一相等(漏一次就是"打了球环不动")`);
+    // 释放归零:整管清空那一下必须重画
+    ok(gate.step(0), "释放归零(100% → 0%)跨过阈值,键面立刻清空而不是留着满环骗人");
+  }
+}
+
+// ---------- ⑦ 技能受阻态(门槛未满足)内嵌封条与原因文字几何与排版断言 ----------
+{
+  const rLo = PAD_LIMIT.rMin * CFG.padSkin.scaleMin;
+  const rHi = Math.max(PAD_BASE.lunge.r, PAD_LIMIT.rMax) * CFG.padSkin.scaleMax;
+  const nameLH = Math.round(CFG.padSkin.labelSize * 1.22);
+  let vertexOut = "";
+  let gapMin = Infinity;
+  let textOverflow = "";
+  const allReasons = Object.values(CFG.skills.blockText);
+
+  for (let r = rLo; r <= rHi; r += 0.5) {
+    const pts = blockedTapeVertices(r);
+    // 1. 封条四个顶点必须全部内嵌在按键圆内,并留有安全边距
+    for (let i = 0; i < pts.length; i++) {
+      const d = Math.hypot(pts[i].x, pts[i].y);
+      if (d > r - 2) {
+        vertexOut = vertexOut || `r=${r.toFixed(1)} 顶点${i}距离=${d.toFixed(1)} > ${r - 2}`;
+      }
+    }
+    // 2. 封条底边与底部键名顶边必须留出安全垂直间隔(不叠字)
+    const tapeBottom = pts[0].y; // 左下/右下顶点 y
+    const nameTop = -r * 0.62 + nameLH / 2;
+    gapMin = Math.min(gapMin, tapeBottom - nameTop);
+
+    // 3. 所有阻断原因文字在字号缩放后横向必须能容纳在封条有效宽度内
+    const fs = Math.max(7, Math.round(r * 0.26));
+    const tapeW = r * (CD.tapeW ?? 1.44);
+    const availW = tapeW - r * (CD.tapeSkewK ?? 0.07); // 扣除动感斜切内缩
+    for (const txt of allReasons) {
+      const tw = textW(txt, fs);
+      if (tw > availW) {
+        textOverflow = textOverflow || `r=${r.toFixed(1)} 字号=${fs}「${txt}」宽=${tw.toFixed(1)} > 容纳宽=${availW.toFixed(1)}`;
+      }
+    }
+  }
+
+  ok(!vertexOut, `受阻封条四个顶点在全半径区间(r=${rLo.toFixed(1)}..${rHi.toFixed(1)})严格落在键圆内侧${vertexOut ? ` → ${vertexOut}` : ""}`);
+  ok(gapMin >= 1, `封条底边与技能名顶边留有充裕间隙(最窄 ${gapMin.toFixed(1)}px ≥ 1px)`);
+  ok(!textOverflow, `全阻断原因文本(含「球没过来」等 ${allReasons.length} 句)横向完全嵌在封条内${textOverflow ? ` → ${textOverflow}` : ""}`);
+
+  // 4. 文字颜色在封条底板上的对比度
+  const tapeLum = lum(rgbOf(CD.tapeBg ?? "#080b12"));
+  const textLum = lum(rgbOf(CD.hintColor ?? "#f8fafc"));
+  const contrast = (textLum + 0.05) / (tapeLum + 0.05);
+  ok(contrast >= 7.0, `受阻文字在封条墨底上的对比度达到 ${contrast.toFixed(1)}:1 (≥ 7.0:1 保证亮场下极佳可读性)`);
+}
+
+// ---------- ⑧ 蓄能环(充能款技能:怒气重击)----------
+// 这一整段是新增件专用的判据,但钉的是三条**旧**规矩有没有在新代码里复发:
+// 补集角序(坑 8)、透明度下限(用户原话「透明度调低之后冷却都看不太清了」)、排版不撞键名。
+{
+  const TAU = Math.PI * 2;
+  // (a) 补集规矩:每一段的"实际跨度"必须等于"名义跨度",一段都不许多画出来。
+  const RATIOS = [0, 0.01, 0.05, 0.12, 0.34, 0.5, 0.66, 0.67, 0.99, 1];
+  let spanBad = "";
+  for (const v of RATIOS) {
+    const a = chargeArcs(v);
+    // 排成递减序是硬要求(a1 < a0),否则 cc 画的是补集
+    const decreasing = a.track1 < a.track0 && (v <= 0 || a.fill1 < a.fill0) && a.head1 <= a.head0;
+    if (!decreasing) spanBad = spanBad || `r=${v}:角度不是递减序`;
+    const track = ccSpan(a.track0, a.track1);
+    const fill = ccSpan(a.fill0, a.fill1);
+    const head = ccSpan(a.head0, a.head1);
+    if (Math.abs(track - TAU) > 1e-9) spanBad = spanBad || `r=${v}:底槽实际 ${track.toFixed(3)} ≠ 整圈`;
+    if (Math.abs(fill - v * TAU) > 1e-9) spanBad = spanBad || `r=${v}:填充实际 ${(fill / TAU * 360).toFixed(1)}° ≠ 名义 ${(v * 360).toFixed(1)}°`;
+    if (head > v * TAU + 1e-9) spanBad = spanBad || `r=${v}:亮头 ${head.toFixed(3)} 越过已充那一段`;
+    if (fill > TAU + 1e-9) spanBad = spanBad || `r=${v}:填充超出一圈`;
+  }
+  ok(spanBad === "", `蓄能环角度全程走补集规矩(底槽整圈 / 填充 = ratio×360° / 亮头不越界)${spanBad ? ` → ${spanBad}` : ""}`);
+  // 单调:充得越多、弧越长 —— 这条断了就是"越打越少"那种读起来像坏了的 bug
+  let prev = -1, monoBad = "";
+  for (const v of RATIOS) {
+    const s = ccSpan(chargeArcs(v).fill0, chargeArcs(v).fill1);
+    if (s < prev - 1e-9) monoBad = monoBad || `r=${v} 比上一档短`;
+    prev = s;
+  }
+  ok(monoBad === "", `填充弧随充能单调不减${monoBad ? ` → ${monoBad}` : ""}`);
+
+  // (b) 环必须整条在键圆里,最小档也不例外(与冷却环同一条判据)
+  const rLo = PAD_LIMIT.rMin * CFG.padSkin.scaleMin;
+  const rHi = Math.max(PAD_BASE.lunge.r, PAD_LIMIT.rMax) * CFG.padSkin.scaleMax;
+  let out = "";
+  for (let r = rLo; r <= rHi; r += 0.5) {
+    if (chargeRingR(r) + CH.ringW / 2 >= r) out = out || `ring r=${r.toFixed(1)}`;
+    if (chargeFullR(r) + CH.fullRingW / 2 >= r) out = out || `full r=${r.toFixed(1)}`;
+  }
+  ok(out === "", `蓄能环与满怒外环都在键圆内侧(最小档 r=${rLo.toFixed(1)})${out ? ` → ${out}` : ""}`);
+
+  // (c) 浓度下限:透明度滑杆拉到底,环与百分比仍然读得出来(①②那两条判据的充能版)
+  let keepMin = 1;
+  for (const a of alphas()) keepMin = Math.min(keepMin, cdAlpha(a));
+  ok(keepMin >= CD.keep, `充能环的有效浓度全程 ≥ ${CD.keep}(滑杆最低 ${PAD_LIMIT.alphaMin} 时仍有 ${keepMin.toFixed(3)})`);
+  const darkLum = lum(over(rgbOf(CH.head), CH.trackA * cdAlpha(PAD_LIMIT.alphaMin), BG));
+  const readyLum = lum(over(rgbOf(CFG.padSkin.idleFill), CFG.padSkin.idleFillA * PAD_LIMIT.alphaMin, BG));
+  ok(Math.abs(darkLum - readyLum) > 0.02, `最低滑杆下底槽与就绪态亮度差 ${Math.abs(darkLum - readyLum).toFixed(3)} > 0.02(读得出"在充能")`);
+
+  // (d) 读数内容:空槽不印 0%、满槽印 100%、单调不降
+  ok(chargeText(0) === "", "空槽不印「0%」(环本来就没有,留个字反而像坏了还在报数)");
+  ok(chargeText(1) === "100%", `满槽印「${chargeText(1)}」(不是 1、不是 99%)`);
+  let txtPrev = -1, txtBad = "";
+  for (const v of RATIOS) {
+    const num = Number((chargeText(v) || "0").replace("%", ""));
+    if (num < txtPrev - 1e-9) txtBad = txtBad || `r=${v}:读数倒退`;
+    txtPrev = num;
+  }
+  ok(txtBad === "", `百分比单调不降${txtBad ? ` → ${txtBad}` : ""}`);
+
+  // (e) 排版:百分比比倒计时宽("100%" 4 字 vs "3.5" 3 字),所以字号另收一档(pctK)
+  const nameLH = Math.round(CFG.padSkin.labelSize * 1.22);
+  let gapMin = Infinity, fitMin = Infinity, overRound = "";
+  for (let r = rLo; r <= rHi; r += 0.5) {
+    const fs = Math.max(9, Math.round(r * CH.pctK));          // 与 touchpad.sizeCdLabel(rec.r, CH.pctK) 同式
+    const bottom = CD.numY * r - fs * 1.1 / 2;                 // 圆心沿用 numY,只换字号
+    const nameTop = -r * 0.62 + nameLH / 2;
+    gapMin = Math.min(gapMin, bottom - nameTop);
+    if (CD.numY * r + fs * 1.1 / 2 > r - 2) overRound = overRound || `r=${r.toFixed(1)}`;
+    fitMin = Math.min(fitMin, (1.6 * r) / textW("100%", fs));
+  }
+  ok(gapMin >= 1, `百分比底边与键名标签顶边全程留缝 >= 1px(最窄 ${gapMin.toFixed(1)}px @ r=${rLo.toFixed(1)})`);
+  ok(fitMin >= 1, `「100%」放得进 1.6r 的弦(最小档余量 ${((fitMin - 1) * 100).toFixed(0)}%)`);
+  ok(!overRound, `百分比不出键圆${overRound ? ` → ${overRound}` : ""}`);
+  ok(CH.pctK <= CD.numK, `充能字号系数 ${CH.pctK} <= 倒计时 ${CD.numK}(那句更宽,必须收着摆)`);
+  // 键心读数与受阻封条**同住一个腰位**(numY === hintY)⇒ 同屏只能有一个有字。
+  // 冷却款是天然满足的(受阻那一下 cd 已走完 ⇒ cdText 空串),充能款不是:
+  // armed 的 240 帧里怒气还挂在管上,chargeText 是非空的"100%",不互斥就糊成"1重击中%"
+  // (出图肉眼判抓到的真实现场)。这条判据钉的是"那个几何耦合仍然存在",
+  // 让字的行为在 touchpad.syncCdLabel(它读 skillBlock),两边一缺一多都会红。
+  ok(CD.numY === (CD.hintY ?? 0.08), `读数腰位 numY ${CD.numY} == 封条腰位 hintY ${CD.hintY}(同位 ⇒ 必须互斥让字)`);
+  ok(chargeText(1) !== "" && chargeText(0.5) !== "", "充能款受阻时读数本身是非空的(所以互斥只能靠调用方)");
+  ok(cdText(0) === "", "冷却款走完时读数自然为空 ⇒ 旧技能从来不会撞,这条改动不影响它们");
+
+  // (f) 笔数预算:满怒那一帧最多 4 笔(这条键在彩带/礼花之外还挂着图标与呼吸,帧成本要数得过来)
+  const strokes = (ratio: number): number => {
+    let n = 0;
+    const pen: CdPen = {
+      fillColor: null, strokeColor: null, lineWidth: 0,
+      moveTo() {}, lineTo() {}, close() {},
+      arc() {}, fill() { n++; }, stroke() { n++; },
+    };
+    drawCharge(pen, () => null, 30, ratio, "rage", 1);
+    return n;
+  };
+  ok(strokes(0.5) === 3, `半管 3 笔(底槽 + 填充 + 亮头),实测 ${strokes(0.5)}`);
+  ok(strokes(1) === 4, `满怒 4 笔(多一圈外环),实测 ${strokes(1)}`);
+  ok(strokes(0) === 0, "空槽一笔不画(不留一个孤零零的底槽圈,那会被读成坏了)");
 }
 
 // ---------- selftest:修好之前的真实写法必须被报警 ----------
 if (process.argv.includes("--selftest")) {
-  console.log("\nselftest:拿旧写法当反例(浓度线性跟随滑杆 / 22 号字写死在圆心 / 弧度排成递增被引擎绕成补集 / 门控基准每帧覆盖)");
+  console.log("\nselftest:拿旧写法当反例(浓度线性跟随滑杆 / 22 号字写死在圆心 / 弧度排成递增被引擎绕成补集 / 门控基准每帧覆盖 / 文字外挂在键圆外)");
   const S = alphas();
   /** 旧判据:冷却层就是「再乘一次滑杆」 */
   const legacyAlpha = (A: number): number => A;
@@ -367,6 +556,37 @@ if (process.argv.includes("--selftest")) {
     ok(legacy.repaints < 30,
       `${sk.id}: 旧门控整段冷却只重画 ${legacy.repaints} 次(< 30)—— ⑥的第三条也拦`);
   }
+
+  /** 旧写法反例:原因文字挂在键上方 r * 1.42 处,完全超出键圆外 */
+  const legacyHintY = 1.42;
+  const legacyDist = rMin * legacyHintY;
+  ok(legacyDist > rMin, `旧写法@r=${rMin.toFixed(1)}:原因文字距离中心 ${legacyDist.toFixed(1)}px 远超出键圆(${rMin.toFixed(1)}px)—— ⑦必须拦下`);
+
+  // ---------- 蓄能环的两条反例:同一类病在新代码上复发 ----------
+  /** 反例 1:角度排成递增序(a1 > a0)。cc 会把 da 绕进 (-2π,0],于是画出来的是**补集**:
+   *  充了 20% 键上暗着 80%,读起来就是"这管是反的"。⑧(a) 的第一条判据正是这个形状。 */
+  const ascendingFill0 = CD_TOP;
+  const ascendingFill1 = CD_TOP + 0.2 * Math.PI * 2;
+  const ascActual = ccSpan(ascendingFill0, ascendingFill1);
+  const ascNominal = ascendingFill1 - ascendingFill0;
+  ok(Math.abs(ascActual - ascNominal) > 1,
+    `递增角序反例:名义 ${(ascNominal / 6.283 * 360).toFixed(0)}° 实际画出 ${(ascActual / 6.283 * 360).toFixed(0)}°(补集)—— ⑧(a) 拦得住`);
+  // 现写法必须没有这个毛病(同一条判据在正向样本上放行,否则判据是摆设)
+  ok(Math.abs(ccSpan(chargeArcs(0.2).fill0, chargeArcs(0.2).fill1) - 0.2 * Math.PI * 2) < 1e-9,
+    "现写法的 20% 填充实际就是 72°,不是它的补集");
+
+  /** 反例 2:浓度直接乘滑杆原值(旧冷却就是这么被透明度抹掉的)。
+   *  滑杆最低 0.2 时环只剩 0.19 浓度,合成到亮场上与就绪态差不到 0.02 亮度 ⇒ 看不见。 */
+  const linearA = PAD_LIMIT.alphaMin * CH.ringA;
+  const flooredA = cdAlpha(PAD_LIMIT.alphaMin) * CH.ringA;
+  const lumLinear = lum(over(rgbOf(CFG.skills.list.find((s) => s.id === "rage")!.accent), linearA, BG));
+  const lumFloored = lum(over(rgbOf(CFG.skills.list.find((s) => s.id === "rage")!.accent), flooredA, BG));
+  const idle = lum(over(rgbOf(CFG.padSkin.idleFill), CFG.padSkin.idleFillA * PAD_LIMIT.alphaMin, BG));
+  ok(Math.abs(lumLinear - idle) < Math.abs(lumFloored - idle),
+    `线性浓度反例:与就绪态亮度差 ${Math.abs(lumLinear - idle).toFixed(3)},留下限后 ${Math.abs(lumFloored - idle).toFixed(3)} —— ⑧(c) 拦得住`);
+  ok(Math.abs(lumFloored - idle) > 0.02, "现写法在最低滑杆下仍读得出来(差 > 0.02)");
+  const liveDist = rMin * (CD.hintY ?? 0.08);
+  ok(liveDist < rMin * 0.5, `现在的内嵌文字中心距离仅 ${liveDist.toFixed(1)}px,居中内嵌在按键圆内`);
 }
 
 console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);

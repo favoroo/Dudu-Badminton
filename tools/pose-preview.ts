@@ -53,7 +53,7 @@ function mkPlayer(ov: Partial<Player> = {}): Player {
     sq: 1, sqPrev: 1, recoverT: 0,
     runPhase: 0, runAmt: 0, runStep: 0, blinkSeed: 0,
     swingT: -1, swingStyle: "over", swingHit: false,
-    swingQ: 0, swingBuf: 0, swingBufAim: null, swingAim: "mid",
+    swingQ: 0, swingBuf: 0, swingBufAim: null, swingAim: "mid", swingLoft: 0,
     swingRadius: 52,
     racket: { x: 0, y: 0, ang: 0 }, racketPrev: { x: 0, y: 0 },
     hitLock: 0, contactFlash: 0, speedMul: 1, aiAimErr: 0,

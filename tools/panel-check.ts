@@ -29,7 +29,7 @@ import {
 import { DRILLS, RARITY_META } from "../assets/scripts/core/config";
 import type { DrillDef } from "../assets/scripts/core/types";
 import { halftoneCount } from "../assets/scripts/ui/p5-shapes";
-import { aboutLayout, box, boxesOverlap, doneBox, SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
+import { aboutLayout, assistCopyLines, assistLayout, assistTextOverflow, box, boxOverflow, boxesOverlap, doneBox, SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
 import { campaignOverflow, campaignOverlaps, CMP } from "../assets/scripts/ui/campaign-layout";
 import { DRILL, drillOverflow, drillOverlaps, drillTouch } from "../assets/scripts/ui/drill-layout";
 import { SHOP, shopOverflow, shopOverlaps, shopTouch, TOAST, TOAST_FG, toastLane } from "../assets/scripts/ui/shop-shelf";
@@ -138,12 +138,13 @@ function halftoneSpecs(): Array<[string, number, number, number?]> {
 }
 
 function touchItems(): Array<[string, number]> {
-  const K = controlLayout(), M = mediaLayout(), A = aboutLayout();
+  const K = controlLayout(), M = mediaLayout(), S = assistLayout(), A = aboutLayout();
   return [
     ["tab", SET.tab.h],
     ...K.modes.map((b, i) => [`移动方式第 ${i} 档`, b.h] as [string, number]),
     ...K.actions.map((b, i) => [`操控动作键#${i}`, b.h] as [string, number]),
     ...K.tiers.map((t, i) => [`手感滑杆第 ${i} 行`, t.slider.h] as [string, number]),
+    ["辅助页开关", S.toggle.h],
     ...M.toggles.map((r, i) => [`开关第 ${i} 行(${r.label})`, r.toggle.h] as [string, number]),
     ...M.hints.map((b, i) => [`右列开关#${i}`, b.h] as [string, number]),
     ["关于·检查更新按钮", A.checkBtn.h],
@@ -235,10 +236,22 @@ if (selftest) {
         .filter((c) => boxesOverlap(c, d))
         .map((c) => `tab 右缘 ${c.right} 压进完成左缘 ${d.left}`);
     })()],
+    // 「自动击打」开关硬塞进操控页:那一页竖排零余量 —— 手感第二行 -176、行高 44 ⇒ 底 -198,
+    // 红线 -201。第三行要落在 -226(底 -248),当场溢出 47px。这就是它另起一页的原因,
+    // 把这笔账冻成反例,免得下一个人又去操控页里挤一行。
+    ["把第 3 行手感/辅助硬塞进操控页(y=-226)", [
+      boxOverflow(box(-201, 300, -226, SET.rowH)) ?? "",
+    ].filter(Boolean)],
+    // 辅助页三行说明用 Label.Overflow.CLAMP 摆:格子没出内容区,但字从中间静默截掉 ——
+    // 读的人只会看到半句话。判据量的是字宽,不是格子。
+    ["辅助页说明行超长(CLAMP 静默截字)", assistTextOverflow([
+      ["生效行", "生效:对练 · 闯关 · 无限练习 · 训练场与新手教学不代打 · 本地双打与网络对战同样不代打 · 训练与教学也不代打"],
+    ])],
   ];
   for (const [nm, msgs] of cases) {
     ok(msgs.length > 0, `反例 ${nm}:应被拦下,实得 ${msgs.length} 条${msgs.length ? ` —— ${msgs[0]}` : ""}`);
   }
+  ok(assistTextOverflow(assistCopyLines()).length === 0, "正例:辅助页三行说明都在自己那格里,不被 CLAMP 截");
   // 反向:正确写法不该被咬
   ok(checkCopy('const e = "继续闯关 · 第 3 关「烈日刺目」"; const f = "开";', "good").length === 0,
     "正例:纯中文文案不被文案闸误咬");

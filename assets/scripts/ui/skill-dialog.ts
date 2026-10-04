@@ -23,7 +23,7 @@ import {
   makeChip, retainedDraw, ROLE, SLANT, slamIn, skewOf, slantPath,
 } from "./ui-arcade";
 import {
-  layoutSkillPlate, SK, SK_HINT_LINE, skillCardX, skillCd,
+  layoutSkillPlate, SK, SK_HINT_LINE, skillCardX, skillMeter,
   type PlateItem, type PlateRole, type SkillLike,
 } from "./skill-layout";
 
@@ -128,8 +128,8 @@ export class SkillDialog {
       const name = kit.label(node, item.shortName, SK.nameSize, item.accent);
       name.node.setPosition(0, SK.nameY, 0);
 
-      // CD 时间(颜色不再写死某一款技能的 accent)
-      const cdText = kit.label(node, skillCd(item), SK.cdSize, ARCADE.dim);
+      // 可用性读数(冷却款=CD 秒数,充能款=蓄满拍数;见 skill-layout.skillMeter)
+      const cdText = kit.label(node, skillMeter(item), SK.cdSize, ARCADE.dim);
       cdText.node.setPosition(0, SK.cdY, 0);
 
       // 底部操作状态按钮 —— 必须最后 add,才排在 hit 之上、抢得到这一格的触摸

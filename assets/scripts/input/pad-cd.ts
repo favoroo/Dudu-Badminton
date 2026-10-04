@@ -207,3 +207,168 @@ export function drawBlockedSlash(pen: CdPen, color: CdColor, r: number, padAlpha
   pen.lineTo(inset, inset);
   pen.stroke();
 }
+
+/**
+ * 受阻封条四个顶点的坐标(按顺时针:[左下, 右下, 右上, 左上])
+ * 供 touchpad 绘制与 pad-cd-check 几何安全断言共用
+ */
+export function blockedTapeVertices(r: number): { x: number; y: number }[] {
+  const w = r * (CD.tapeW ?? 1.44);
+  const h = r * (CD.tapeH ?? 0.42);
+  const hw = w * 0.5;
+  const hh = h * 0.5;
+  const cy = r * (CD.hintY ?? 0.08);
+  const skew = r * (CD.tapeSkewK ?? 0.07);
+  return [
+    { x: -hw - skew, y: cy - hh },
+    { x: hw - skew, y: cy - hh },
+    { x: hw + skew, y: cy + hh },
+    { x: -hw + skew, y: cy + hh },
+  ];
+}
+
+/**
+ * 画「受阻态(门槛未满足)」的 P5 动感斜切封条底衬:
+ * 居中内嵌在按键腰部(y = r * hintY,与冷却倒计时数字同高度重心)。
+ * 封条底色为高浓度墨黑(抗亮场沙色穿透),带精致暗粉灰描边与向左动感斜切,
+ * 将原本游离在外面的「球没过来」等提示彻底内嵌融合进按键,保持极佳的 P5 街机质感。
+ */
+export function drawBlockedTape(pen: CdPen, color: CdColor, r: number, padAlpha: number): void {
+  const A = cdAlpha(padAlpha);
+  const pts = blockedTapeVertices(r);
+  const tracePath = (): void => {
+    pen.moveTo(pts[0].x, pts[0].y);
+    pen.lineTo(pts[1].x, pts[1].y);
+    pen.lineTo(pts[2].x, pts[2].y);
+    pen.lineTo(pts[3].x, pts[3].y);
+    pen.close();
+  };
+
+  // 1. 墨黑底衬填充(遮挡背后的斜杠与暗化图标,保证内嵌文字极高辨识度)
+  pen.fillColor = color(CD.tapeBg ?? "#080b12", (CD.tapeBgA ?? 0.92) * A);
+  tracePath();
+  pen.fill();
+
+  // 2. 细精致暗粉灰外框描边(P5 街机质感)
+  pen.strokeColor = color(CD.tapeEdge ?? "#5a454a", (CD.tapeEdgeA ?? 0.85) * A);
+  pen.lineWidth = CD.tapeEdgeW ?? 1.2;
+  tracePath();
+  pen.stroke();
+}
+
+// ============================================================
+// 「蓄能环」读数 —— kind: "charge" 的技能(当前 = 怒气重击)用。
+//
+// 为什么不复用上面那套冷却函数:cdRatio 的语义是「还剩多久能用」,而三处行为焊死在它上面
+// (键体变灰并藏图标、键心印秒数、就绪脉冲要求 cdRatio<=0)。蓄能是它的**反向量**
+// (越多越好、永远不该让键变灰),把怒气塞进 cdRatio 就会得到"怒气越满键越暗"这种荒谬读数。
+// 所以这里是兄弟函数,共用的是**规矩**而不是实现:
+//   ① 角度一律排成「终点 < 起点」的递减序(见上面 cdArcs 的警告与 AGENTS.md 坑 8)
+//      —— cc 的 Graphics.arc 在 counterclockwise=false 时把 da 规范进 (-2π, 0],
+//      传 a1 > a0 画不出那一段、画的是它的补集。症状是"充了 20% 却暗了 80%"。
+//   ② 所有 alpha 一律过 cdAlpha(padAlpha) —— 透明度滑杆拉到底也不许把读数抹掉
+//      (用户原话「透明度调低之后冷却都看不太清了」,同一款病不许在新增件上复发)。
+// 分层照旧:零 cc 依赖(只 import config 与 utils),所以几何能在 node 下断言
+// (tools/pad-cd-check.ts 的 charge 段),真机画的与断言吃的是同一份代码。
+// ============================================================
+
+/** 蓄能环参数(config.ts padSkin.cd.charge) */
+export const CH = CD.charge ?? {
+  // 兜底只在配置缺键时生效(老档/半截配置),正常路径读的是 config 里那一份。
+  // 数值与 config 保持同源抄写 —— 加了 charge 段请顺手删掉这里的对应项。
+  ringW: 5.5, ringA: 0.95, trackA: 0.25,
+  head: "#ffffff", headA: 1, headW: 6.5, headSpan: 0.5,
+  fullRingW: 2.2, fullRingA: 0.9,
+  pctK: 0.42, pctY: 0.08, stepTol: 0.008,
+};
+
+/**
+ * 蓄能环各段角度(全部递减序,理由见本节头注 ①)。
+ * 与 CdArcs 不同的是这里三段都是"弧"不是"扇形"(底槽/填充/亮头都描边不填充),
+ * 因为充能是"进度"而不是"惩罚",实底扇形会把它读成冷却那张脸。
+ */
+export interface ChargeArcs {
+  /** 满环底槽:整圈(唯一一处 da 恰为 -2π 的用法,引擎画得出完整一圈) */
+  track0: number; track1: number;
+  /** 已充能填充:从 12 点顺时针扫过 ratio 那一圈 */
+  fill0: number; fill1: number;
+  /** 前沿亮头:骑在填充终点上的一小段(向"已充"那一侧收,不越过 12 点) */
+  head0: number; head1: number;
+}
+
+export function chargeArcs(ratio: number): ChargeArcs {
+  const v = clamp(ratio, 0, 1);
+  const full = Math.PI * 2;
+  const tip = CD_TOP - v * full;                 // 填充前沿 = 已充到的那一点
+  return {
+    track0: CD_TOP, track1: CD_TOP - full,
+    fill0: CD_TOP, fill1: tip,
+    // 亮头从"前沿往回 CH.headSpan"扫到前沿:fill0 一侧不收过头(不越过 12 点)。
+    head0: Math.min(tip + CH.headSpan, CD_TOP), head1: tip,
+  };
+}
+
+/** 蓄能环中心半径:与冷却环同一条内收式,环线整条落在键圆内侧、不啃描边 */
+export function chargeRingR(r: number): number {
+  return r - CH.ringW / 2 - 0.5;
+}
+
+/** 满怒外环半径:贴描边内侧,与 isFlashReady 那圈双白环同一族读法 */
+export function chargeFullR(r: number): number {
+  return Math.max(r - CH.ringW - CH.fullRingW / 2 - 1, 1);
+}
+
+/**
+ * 怒气百分比读数。0 充能**不印 "0%"** —— 空槽时环本来就没有,留一个字在键心
+ * 反而像"坏了但还在报数"(同 cdText 不印 0.0 的那条理由:读数不许撒谎)。
+ */
+export function chargeText(ratio: number): string {
+  const v = clamp(ratio, 0, 1);
+  if (v <= 0) return "";
+  const pct = Math.round(v * 100);
+  return pct <= 0 ? "" : `${pct}%`;
+}
+
+/**
+ * 画蓄能环:底槽满环 + 技能色已充弧 + 前沿白亮头 (+ 满怒那一圈外环)。
+ * 调用方只在 kind==="charge" 时调,且负责把 lineCap/lineJoin 设成 ROUND。
+ * 一笔四画封顶(帧成本:这条键在 pad-cd-check 的笔数预算里按 ≤4 钉)。
+ */
+export function drawCharge(pen: CdPen, color: CdColor, r: number, ratio: number, skillId: string, padAlpha: number): void {
+  const v = clamp(ratio, 0, 1);
+  if (v <= 0) return;
+  const A = cdAlpha(padAlpha);
+  const arcs = chargeArcs(v);
+  const ringR = chargeRingR(r);
+  const accent = skillAccent(skillId);
+
+  // 1. 满环底槽:没有它玩家只看得见"有多少",看不见"离满还差多少"
+  pen.strokeColor = color(CH.head, CH.trackA * A);
+  pen.lineWidth = CH.ringW;
+  pen.arc(0, 0, ringR, arcs.track0, arcs.track1, false);
+  pen.stroke();
+
+  // 2. 已充能填充:技能专属色,顺时针从 12 点长出去
+  pen.strokeColor = color(accent, CH.ringA * A);
+  pen.lineWidth = CH.ringW;
+  pen.arc(0, 0, ringR, arcs.fill0, arcs.fill1, false);
+  pen.stroke();
+
+  // 3. 前沿白亮头:静态截图里也看得出"充到这儿了"(与冷却的前沿亮点同一条设计动机)
+  if (arcs.head1 < arcs.head0 - 1e-6) {
+    pen.strokeColor = color(CH.head, CH.headA * A);
+    pen.lineWidth = CH.headW;
+    pen.arc(0, 0, ringR, arcs.head0, arcs.head1, false);
+    pen.stroke();
+  }
+
+  // 4. 满怒外环:满了就要在键上一眼分明(它同时是 syncReadyPulse 呼吸的那一层底)
+  if (v >= 1) {
+    pen.strokeColor = color(accent, CH.fullRingA * A);
+    pen.lineWidth = CH.fullRingW;
+    pen.arc(0, 0, chargeFullR(r), arcs.track0, arcs.track1, false);
+    pen.stroke();
+  }
+}
+
+

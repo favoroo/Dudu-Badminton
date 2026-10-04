@@ -49,7 +49,8 @@ import { sectionTitle, solidTab, type TabHandle } from "./ui-shell";
 import type { Slider, Toggle } from "./widgets";
 import { stripAt, stripLayout } from "./editor-strip";
 import {
-  aboutLayout, controlLayout, donePos, hapticTestRow, mediaLayout, SET, SETTINGS_TABS,
+  aboutLayout, ASSIST_COPY, ASSIST_COPY_SIZE, assistLayout, controlLayout, donePos,
+  hapticTestRow, mediaLayout, SET, SETTINGS_TABS,
   strengthRow, tabBoxes, type SettingsTab,
 } from "./settings-layout";
 import { newPad } from "../input/pad";
@@ -74,6 +75,8 @@ const ROLE_SCREEN: Role = "star";
 const ROLE_FEEL: Role = "drill";
 /** 关于页的小节色带:纸白面 —— 这一页不推销任何东西,给个中性色,别跟红/黄/绿抢 */
 const ROLE_ABOUT: Role = "record";
+/** 辅助页色带:绿 —— 与操控页的「手感」同族(都在改玩法,不是改声音改画面) */
+const ROLE_ASSIST: Role = "drill";
 /** 衬纸后面那张错位副衬:整页用主红,与首页 hero 同色同源 */
 const BAND_HEX = ROLE.primary.face;
 
@@ -88,7 +91,7 @@ const MODES: Array<{ mode: MoveMode; label: string; tip: string }> = [
 
 /** tab → 页节点名:切页时按这个建,别再用三目串拼(加一页就漏一处) */
 const PAGE_NAME: Record<SettingsTab, string> = {
-  control: "page-control", media: "page-media", about: "page-about",
+  control: "page-control", assist: "page-assist", media: "page-media", about: "page-about",
 };
 
 /** 时间戳 → 「10-02 14:35」:状态行要说清"什么时候查的",年份没必要 */
@@ -281,6 +284,7 @@ export class SettingsPanel extends Component {
     page.setParent(this.card!);
     this.page = page;
     if (this.tab === "control") this.buildControlPage(page);
+    else if (this.tab === "assist") this.buildAssistPage(page);
     else if (this.tab === "media") this.buildMediaPage(page);
     else this.buildAboutPage(page);
     this.repaint();
@@ -372,6 +376,45 @@ export class SettingsPanel extends Component {
       () => this.kit.toast(`移速「${this.gaitCaption()}」· 已生效`));
     this.gaitValueLabel = this.txt(page, this.gaitCaption(), 13, P.text,
       K.tiers[1].caption.left, K.tiers[1].y, wOf(K.tiers[1].caption));
+  }
+
+  /**
+   * 辅助页:一颗「自动击打」开关 + 三行说明。
+   *
+   * 为什么不塞进操控页:那一页竖排已经零余量 —— 手感第二行行心 -176、滑杆高 44 ⇒ 底边 -198,
+   * 而版式红线是 -(ph/2 + cardY) = -201,再排一行要放到 -226,当场溢出 47px。
+   *
+   * 为什么三行说明一行都不能省:这个开关打开后人物会"自己挥拍"。看不见的机制会被读成坏掉的
+   * 按键(现场先例:震动没开、冷却看不清,用户说的都是"没有反应"),而"它为什么不替我捞那个
+   * 明显能到的球"确实有一个正确答案(那球要出界,让它落地才是对的)—— 不写出来就没人猜得到。
+   * 文案是数据:三行字住在 settings-layout 的 ASSIST_COPY 里,由 panel-check 量宽 ——
+   * 这里用 Overflow.CLAMP 摆字,长了会静默截,不量就等于没写。
+   */
+  private buildAssistPage(page: Node): void {
+    const P = this.kit.pal;
+    const S = assistLayout();
+    const wOf = (b: { left: number; right: number }): number => b.right - b.left;
+    const cOf = (b: { left: number; right: number }): number => b.left + (b.right - b.left) / 2;
+
+    this.band(page, "辅助", ROLE_ASSIST, S.section);
+
+    const t = this.kit.toggle(page, "自动击打", wOf(S.toggle), {
+      get: () => Settings.v.autoHit,
+      set: (v: boolean) => {
+        this.kit.sfx.play("ui");
+        Settings.setPart({ autoHit: v });
+        // 即时生效(它不改任何已在飞的弹道,只是"下一拍由谁起手")—— 与移速同一口径,
+        // 不像球速要等下一球。关掉不必清什么残留:代拍窗每帧重算,没有跨帧状态。
+        this.kit.toast(v ? ASSIST_COPY.toastOn : ASSIST_COPY.toastOff);
+      },
+    });
+    t.node.setPosition(cOf(S.toggle), S.toggle.cy, 0);
+    this.toggles.push(t);
+
+    this.txt(page, ASSIST_COPY.scope, ASSIST_COPY_SIZE, P.dim, S.scope.left, S.scope.cy, wOf(S.scope));
+    this.txt(page, ASSIST_COPY.tip, ASSIST_COPY_SIZE, P.text, S.tip.left, S.tip.cy, wOf(S.tip));
+    this.txt(page, ASSIST_COPY.landing, ASSIST_COPY_SIZE, P.dim,
+      S.landingHint.left, S.landingHint.cy, wOf(S.landingHint));
   }
 
   /** 声音画面页:左子列「声音与震动」,右子列「画面」,中线 x=0 分界 */

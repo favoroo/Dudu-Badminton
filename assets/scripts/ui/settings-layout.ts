@@ -47,15 +47,17 @@ export function donePos(): { x: number; y: number } {
   return { x: SET.pw / 2 - 98, y: SET.doneBtn.y };
 }
 
-export type SettingsTab = "control" | "media" | "about";
+export type SettingsTab = "control" | "assist" | "media" | "about";
 
 /**
  * 三页 tab 的唯一真话:key 给面板切页用,label 给排版和闸门量宽用。
  * 原来这张表写在 settings-panel 里(要 import cc 的文件),panel-check 就量不到
  * 「再加一页会不会挤出内容区」—— 挪到零 cc 这边,加一页漏一处宽度就会当场红。
+ * 「辅助」排在第二格(开设置一次左扫就到):它改的是玩法本身,不该藏在第三页。
  */
 export const SETTINGS_TABS: Array<{ key: SettingsTab; label: string }> = [
   { key: "control", label: "操控" },
+  { key: "assist", label: "辅助" },
   { key: "media", label: "声音画面" },
   { key: "about", label: "关于" },
 ];
@@ -229,6 +231,87 @@ export function controlLayout(): ControlLayout {
   };
 }
 
+// ---------- 辅助页 ----------
+
+export interface AssistLayout {
+  /** 小节色带「辅助」 */
+  section: Box;
+  /** 那一行的开关 */
+  toggle: Box;
+  /** 「生效范围」一行:哪些模式代打、哪些不代打 */
+  scope: Box;
+  /** 一句话说清"哪些还是你的":发球与瞄准 */
+  tip: Box;
+  /** 为什么会"看着该打却不打":界外球不替捞 + 落点预测圈 */
+  landingHint: Box;
+}
+
+/** 辅助页的开关标签(也喂给 settingsOverflow 量宽 —— 四个汉字已是上限,加长先改 TOG_W) */
+export const ASSIST_TOGGLE_LABELS = ["自动击打"];
+
+/** 辅助页说明行的字号:与「画面」列那几行同规格(13),面板与判据共用这一个数 */
+export const ASSIST_COPY_SIZE = 13;
+
+/**
+ * 辅助页文案的唯一真话 —— 面板照它摆字,判据照它量宽。
+ * 为什么把句子放进零 cc 的版式模块:`txt()` 用的是 Label.Overflow.CLAMP,句子长了**不报错、
+ * 不出格、直接从中间静默截掉**,而这三行恰恰是"别把代打当成按键坏了"的唯一解释。
+ * 写在这里,copyTargets() 扫的就是真话本身,量宽也量的是真话。
+ */
+export const ASSIST_COPY = {
+  /** 生效范围:说清哪儿不代打,比只说哪儿代打有用 */
+  scope: "生效:对练 · 闯关 · 无限练习 · 训练场与新手教学不代打",
+  /** 哪些还是你的:发球与瞄准 */
+  tip: "人物自动把每一拍打出去,你只管走位和放技能 · 发球仍需你按",
+  /** 为什么会"看着该打却不打":界外球不替捞 + 去哪看答案 */
+  landing: "会出界的球不替你捞 · 开「落点预测圈」看得明白",
+  toastOn: "自动击打已开 · 发球和瞄准还是你的",
+  toastOff: "自动击打已关 · 每一拍自己按",
+};
+
+/**
+ * 辅助页:一颗开关 + 三行说明。
+ * 为什么要单独一页 —— 操控页竖排**已经零余量**:tier[1] 行心 -176、滑杆高 44 ⇒ 底边 -198,
+ * 而 boxOverflow 的红线是 -(ph/2 + cardY) = -201,再塞一行(-226)当场溢出 47px。
+ * 那三行说明也不是装饰:这个开关会让人觉得"人物疯了/按键坏了",不写清"发球仍归你、
+ * 界外球不替捞",第一次遇到就会以为游戏出了 bug(看不见的状态会被读成坏掉)。
+ */
+export function assistLayout(): AssistLayout {
+  return {
+    // 色带行心与「声音画面」页那两列同一条算术(rowTop + rowPitch),别再手写一个"看着差不多"的数
+    section: box(SET.colX, 150, SET.rowTop + SET.rowPitch, SET.sectionH),
+    toggle: box(SET.colX, TOG_W, rowY(0), SET.rowH),
+    scope: box(SET.colX, 600, rowY(1), 18),
+    tip: box(SET.colX, 600, rowY(2), 18),
+    landingHint: box(SET.colX, 600, rowY(3), 18),
+  };
+}
+
+/**
+ * 辅助页三行说明的量宽判据(纯函数,`--selftest` 要能喂一份超长文案进来咬)。
+ * 为什么单独一条:`txt()` 用 Label.Overflow.CLAMP 摆这些句子 —— 长了**不报错、不出格、
+ * 直接从中间静默截掉**,而这三行恰恰是"别把代打当按键坏了"的唯一解释。
+ * 只靠 boxOverflow 量不到,因为格子本身没出内容区,溢出的是**字**。
+ */
+export function assistTextOverflow(lines: Array<[string, string]>): string[] {
+  const S = assistLayout();
+  const cells: Box[] = [S.scope, S.tip, S.landingHint];
+  const out: string[] = [];
+  lines.forEach(([nm, s], i) => {
+    const b = cells[i];
+    if (!b) { out.push(`辅助页说明行「${nm}」多出一格没有对应位置`); return; }
+    const w = textW(s, ASSIST_COPY_SIZE);
+    const bw = b.right - b.left;
+    if (w > bw) out.push(`辅助页${nm}实测 ${w.toFixed(0)}px > 格宽 ${bw}px(CLAMP 会静默截字)`);
+  });
+  return out;
+}
+
+/** 辅助页三行说明按版面格子的配对(面板与判据共用这一张表,不各写一遍) */
+export function assistCopyLines(): Array<[string, string]> {
+  return [["生效行", ASSIST_COPY.scope], ["说明行", ASSIST_COPY.tip], ["界外行", ASSIST_COPY.landing]];
+}
+
 // ---------- 关于页 ----------
 
 export interface AboutLayout {
@@ -291,7 +374,7 @@ export function boxOverflow(b: Box): string | null {
 /** 一行里所有块的两两重叠 + 跨子列碰撞(面板与 check 共用同一判据) */
 export function settingsOverlaps(): string[] {
   const out: string[] = [];
-  const M = mediaLayout(), K = controlLayout(), A = aboutLayout();
+  const M = mediaLayout(), K = controlLayout(), S = assistLayout(), A = aboutLayout();
   const rows: Array<[string, Box[]]> = [
     // 左列整列一起查:开关、音量、强度三件、试震与状态 —— 它们同在一列的不同行上,
     // 分行查会漏掉「强度滑杆伸进上一行开关的盒子」这类跨行咬合。
@@ -304,6 +387,7 @@ export function settingsOverlaps(): string[] {
     ["操控·移动方式", K.modes],
     ["操控·动作键", K.actions],
     ["操控·手感行", K.tiers.flatMap((t) => [t.name, t.slider, t.caption])],
+    ["辅助页", [S.section, S.toggle, S.scope, S.tip, S.landingHint]],
     ["关于", [A.section, A.verName, A.verValue, A.checkBtn, A.siteBtn, A.status, A.hint, A.tutBtn]],
   ];
   for (const [nm, bs] of rows) {
@@ -328,6 +412,7 @@ export function settingsOverlaps(): string[] {
   if (boxesOverlap(M.sectionLeft, M.toggles[0].toggle)) out.push("左小节标题压住首行开关");
   if (boxesOverlap(K.sectionMove, K.modes[0])) out.push("「移动方式」标题压住三选一");
   if (boxesOverlap(K.sectionFeel, K.tiers[0].slider)) out.push("「手感」标题压住球速滑杆");
+  if (boxesOverlap(S.section, S.toggle)) out.push("「自动击打」标题压住开关");
   // tab 栏压在「完成」上:这一条就是那次事故 —— 两页时整组居中刚好擦过右上角,
   // 加第三页 tab 右缘 276 顶进完成的 207,竖向上再叠 12px,屏幕上看着就是「完成」缺了个角。
   const done = doneBox();
@@ -338,9 +423,9 @@ export function settingsOverlaps(): string[] {
 }
 
 /** 溢出 + 文案宽度:开关标签必须容得下「震动反馈」,每块控件必须在内容区内 */
-export function settingsOverflow(labels: string[] = ["音效", "音乐", "震动反馈"]): string[] {
+export function settingsOverflow(labels: string[] = [...TOGGLE_LABELS, ...ASSIST_TOGGLE_LABELS]): string[] {
   const out: string[] = [];
-  const M = mediaLayout(), K = controlLayout(), A = aboutLayout();
+  const M = mediaLayout(), K = controlLayout(), S = assistLayout(), A = aboutLayout();
   const all: Array<[string, Box]> = [
     ...M.toggles.flatMap((r, i): Array<[string, Box]> => r.vol
       ? [[`左列开关#${i}`, r.toggle], [`音量滑杆#${i}`, r.vol]]
@@ -350,6 +435,10 @@ export function settingsOverflow(labels: string[] = ["音效", "音乐", "震动
     ["强度档名", M.strength.caption],
     ["试震按钮", M.test.btn],
     ["马达状态", M.test.status],
+    ["辅助开关", S.toggle],
+    ["辅助生效行", S.scope],
+    ["辅助说明", S.tip],
+    ["辅助界外提示", S.landingHint],
     ...K.tiers.flatMap((t, i): Array<[string, Box]> => [
       [`手感标签#${i}`, t.name], [`手感滑杆#${i}`, t.slider], [`手感档名#${i}`, t.caption],
     ]),
@@ -369,6 +458,8 @@ export function settingsOverflow(labels: string[] = ["音效", "音乐", "震动
     const w = textW(s, 15);
     if (w > avail) out.push(`开关标签「${s}」${w.toFixed(0)}px > 可用 ${avail}px`);
   }
+  // 辅助页三行说明:格子没出内容区不代表字没溢出(CLAMP 静默截字),所以量的是字。
+  for (const m of assistTextOverflow(assistCopyLines())) out.push(m);
   // tab 栏:整组要落在内容区里,每格的字要放得下(斜切会吃掉两端,各留 12)
   const groupW = tabRowWidth();
   if (groupW > SET.right - SET.colX) out.push(`tab 栏整组宽 ${groupW} > 内容宽 ${SET.right - SET.colX}`);

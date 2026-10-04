@@ -47,6 +47,7 @@ export function resetPoint(p: Player): void {
   p.flashStrikeT = 0;
   p.flashFrom = null;
   p.focusT = 0;
+  p.focusHit = false;
   // 每分开始时重置冷却至就绪, 让每回合开局都可施展策略
   p.skill.cd = 0;
   p.lungeCd = 0;
@@ -54,21 +55,95 @@ export function resetPoint(p: Player): void {
   p.lungeShotT = 0;
   p.lungeAutoT = 0;   // 每分开新局不许留残窗:否则上一分没花掉的待发窗会给这一分的来球凭空补一拍
   p.smashAutoT = 0;   // 同一条规矩管重击的"代出一拍"窗(2026-10-04 一键化):残窗 = 凭空多打一拍
+  p.rageAutoT = 0;    // 怒气重击的代拍窗同理:残窗跨分会让下一分的第一拍被系统替玩家轰出去。
+                      // **怒气本身不清**(p.rage):用户口径「只有释放才归零」,攒是整局的事。
+                      // buffT 上面已经归零(armed 窗跨分没有意义),所以这里只收代劳、不收资源。
+  // 影分身随每分清场:召唤标记归零(每分限召一次的闸重开),在场的分身就地散去 ——
+  // 分身是"这一分里的协防",跨分残留会让下一分开局平白多一个幽灵队友
+  p.shadowCast = false;
+  p.shadowClone = undefined;
 }
 
 /**
- * 这一位球员的冷却是否「推迟到兑现那一拍才付」。
+ * 这款技能的键面走「蓄能环 + 百分比」还是「冷却倒计时」。**判据只有这一份**,
+ * pad-cd / touchpad / game-root / skill-layout 全调它,不许在调用点各写一遍 id 比较
+ * —— 多一款充能技能时那些散落的 `=== "rage"` 会一个个漏。
  *
- * 只有百分百重击(真人)走这条路:按下技能 = 上弦,附魔挂着的时候既没位移也没出球,
- * 罚它 3.5 秒冷却等于把"我按了但它没打出去"的账算在玩家头上(用户 2026-10-04 点名:
- * 「如果挥空不会冷却」)。其余四个技能是瞬发/状态类,那一下本身就是代价,照旧按下即付。
+ * 为什么不看 cd 长度自动判:cooldownFrames 小不等于"资源制"(影分身 60 帧、跨步 48 帧
+ * 都很短,但它们的门槛确实是冷却)。资源制是一条设计声明,所以进表(SkillDef.kind)。
+ */
+export function isChargeSkill(id: SkillId): boolean {
+  return defOf(id).kind === "charge";
+}
+
+/** 怒气存量 → 0..1 比例(唯一换算处:键面、分档演出、卡片文案全读它,不各自除 max) */
+export function rageRatioOf(p: Player): number {
+  const max = C.skills.rage.max;
+  if (!(max > 0)) return 0;
+  return clamp((p?.rage ?? 0) / max, 0, 1);
+}
+
+/**
+ * 比例 → 档位下标(0 微怒 / 1 升温 / 2 沸腾 / 3 怒极),吃 C.skills.rage.tierAt。
+ *
+ * 【坑】必须**从高档往低档找**,返回第一个够得着的界。反过来从小往大找会永远落在第一档
+ * —— 满怒读成 0 档,四档演出全被打成最低档,而它不崩、不报错,只是"攒了一整局结果毫无区别"。
+ * (烟测现场抓到过这一条,rage-check ③ 把它钉住:档位必须随 ratio 单调不降。)
+ * 用 >= 比较:tierAt 末档恒为 1 ⇒ 满怒必落最后一档,不会出现"100% 却是第二档"的边角。
+ */
+export function rageTierOf(ratio: number): number {
+  const RG = C.skills.rage;
+  const tiers = RG.tierAt;
+  const r = clamp(ratio, 0, 1);
+  // 返回值再钳一次到演出表的最后一个下标:tierAt 与 tiers[] 等长是配置自洽判据(rage-check ⑱)
+  // 该管的事,但这里越界会让表现层拿到 undefined 然后在 C 里炸,而这条路径只在改数值时才走到。
+  const last = Math.min(tiers.length, RG.tiers.length) - 1;
+  for (let i = tiers.length - 1; i >= 0; i--) {
+    if (r >= tiers[i]) return Math.min(i, last);
+  }
+  return 0;
+}
+
+/**
+ * 攒怒气:一记真实命中进来,按「物理档」给这一拍算该涨多少,返回实际增量(已含上限钳制)。
+ *
+ * 为什么这个函数住在 skills 而调用点在 player.settle:分档判据是技能知识,该住逻辑层;
+ * 而"每一拍"这个事件只有 player 的结算路径知道(依赖方向 types←config←skills←player,
+ * skills 不能反向 import player,所以由 player 报事实、skills 定数值)。
+ *
+ * 三条要命的口径,都有反例盯着(rage-check ②⑤⑥):
+ * ① **只吃物理档**:sweet/perfect 必须是 player.ts 里从 qRaw 算出来的那两个局部量,
+ *    不能读 shot.sweet/perfect —— 后者被技能钩子抬到顶档了。读错就等于"满怒那一拍自己
+ *    给自己充能",与 player.ts:684-687「别把 buff 折进统计」是同一条规矩。
+ * ② 释放那一拍整口不攒:调用方按 skillKind !== "rage" 挡掉(免费回血)。
+ * ③ 没装这款技能一律不涨:资源不该在看不见的地方积累,换装回来也不该白得一管。
+ */
+export function gainRage(p: Player, f: { sweet: boolean; perfect: boolean; smash: boolean }): number {
+  if (!p || !p.skill || p.skill.id !== "rage") return 0;
+  const RG = C.skills.rage;
+  const hot = f.sweet || f.perfect;
+  // 合并系数而非叠乘:bothMul 若不做成单独一档,1.8×2.0=3.6 ⇒ 一拍 18 点,六拍打穿上限
+  const mul = hot && f.smash ? RG.bothMul : hot ? RG.sweetMul : f.smash ? RG.smashMul : 1;
+  const gain = Math.round(RG.perHit * mul);
+  p.rage = Math.min((p.rage ?? 0) + gain, RG.max);
+  return gain;
+}
+
+/**
+ * 这一位球员的冷却是否「推迟开启」。
+ *
+ * ① 百分百重击(真人): 按下只上弦, 真正扣出去那一拍才付 (挥空不罚冷却)。
+ * ② 时空减速(真人): 技能效果完全结束后才进入冷却 (生效期间键面显示"领域中", 结束后正式倒计时)。
  *
  * 不给 AI 开:它的技能循环强度归 diffs.* 那根旋钮管,放宽冷却等于偷偷改难度 —— 而
  * serve-check / ai-check 的真人替身从不按技能键,那两把尺子量不到这条,只能在这里钉死。
  * activate 与 modifyShot 两端共用这一个判据,别在调用点各写一份条件(写漏一侧就是白嫖)。
  */
 export function defersCooldownToConsume(p: Player): boolean {
-  return !!p && !p.isAI && !!p.skill && p.skill.id === "smash" && C.skills.smash.cdOnConsume;
+  return !!p && !p.isAI && !!p.skill && (
+    (p.skill.id === "smash" && C.skills.smash.cdOnConsume) ||
+    (p.skill.id === "focus")
+  );
 }
 
 /** 当前局势下是否满足激活门槛 (供 UI 按钮点亮/置灰与 AI 决策使用) */
@@ -92,6 +167,17 @@ export function canActivate(p: Player, ball: Ball): boolean {
       // 2026-10-04 起真人这边 cd 在"扣出去"那一拍才付,所以拦人的门槛是 buffT 而不是冷却:
       // 附魔挂着的时候再按一次没有意义(那一拍已经在等着兑现),按键因此仍置灰 = "附魔中"。
       return s.buffT <= 0;
+
+    case "rage": {
+      // 怒气重击:**任何怒气档位都放得出去**(用户口径「怒气够一点就能放」,强度按档位走),
+      // 所以门槛只有两条:① 已有一发释放挂着没兑现(buffT,与重击用附魔拦人同一条)
+      //                  ② 怒气至少攒满一拍(rageMinRelease)
+      // 第②条堵的是资源制最坏的漏洞:0 怒气也能放 ⇒ 每 20 帧白嫖一记 +speedMin 的球,
+      // 不崩不报错、只会安静地变强。cd(20 帧)不是门槛、也别拿它当门槛 ——
+      // resetPoint 每分把它清零,它只挡同一帧连点(与影分身同一条先例)。
+      if (s.buffT > 0) return false;
+      return (p.rage ?? 0) >= C.skills.rage.rageMinRelease;
+    }
 
     case "flash": {
       // 闪现扣杀:
@@ -121,6 +207,12 @@ export function canActivate(p: Player, ball: Ball): boolean {
       if (!ball || !ball.live || ball.held || ball.flying) return false;
       return s.buffT <= 0;
 
+    case "shadow":
+      // 影分身: 本分没召过、场上没有分身、球不在得分飞回动画里。
+      // 刻意比别的技能宽:发球蓄力中(ball.held)也允许先召 —— "先布防再发球"是正当策略;
+      // 真闸是每分一次(shadowCast)+ 分身在场(shadowClone)两条,与球况无关。
+      return !p.shadowCast && !p.shadowClone && !!ball && !ball.flying;
+
     default:
       return true;
   }
@@ -134,7 +226,13 @@ export function canActivate(p: Player, ball: Ball): boolean {
 export function skillBlockReason(p: Player, ball: Ball | null): string | null {
   if (!p || !p.skill) return null;
   const s = p.skill;
-  if (s.cd > 0) return null;
+  // 冷却中不报门槛(键面正在倒计时,那是另一种、更该先看见的理由)。
+  // **但充能款例外**:它的键面从来不画倒计时(20 帧、0.33 秒,画不出也读不出),
+  // 于是 cd>0 时若不落到下面的分支,就会出现"按下毫无反应、一个字都不说"——
+  // 而这款真正该被读出来的状态永远是 armed(重击中)或怒气未聚二者之一。
+  // 核过的可达性:按下即武装 buffT=240,而 cd 只有 20 帧,所以 cd>0 且 buffT<=0 只可能
+  // 发生在"按下后 20 帧内就兑现了"(此时 rage 必为 0 ⇒ 报「怒气未聚」为真),不会撒谎。
+  if (s.cd > 0 && !isChargeSkill(s.id)) return null;
   if (canActivate(p, ball as Ball)) return null;
   const T = C.skills.blockText as Record<string, string>;
   switch (s.id) {
@@ -145,6 +243,13 @@ export function skillBlockReason(p: Player, ball: Ball | null): string | null {
       return null;
     case "smash":
       return T.buffing;
+    case "rage": {
+      // 两态分明:"重击中"是等下一拍兑现(过一会儿自己就好),"怒气未聚"是这一分还没打够
+      // (得先去接球) —— 让玩家知道该等帧数还是该改打法,别混成一句"不能用"。
+      // 顺序照 canActivate:armed 优先,否则满怒按下去的那 240 帧会读成"怒气未聚"。
+      if (s.buffT > 0) return T.rageArmed;
+      return T.rageLow;
+    }
     case "flash": {
       if (!ball || !ball.live || ball.held || ball.flying) return T.notIncoming;
       if (ball.lastHitter === p.side) return T.notIncoming;
@@ -160,6 +265,11 @@ export function skillBlockReason(p: Player, ball: Ball | null): string | null {
       return T.pulling;
     case "focus":
       return T.focusing;
+    case "shadow":
+      // 两态:分身还在场上(含消散演出)→ "在场";已消散但本分召过 → "已召唤"。
+      // 在场优先 —— 它才是"为什么现在不能召"的直观原因。
+      if (p.shadowClone) return T.shadowActive;
+      return T.shadowUsed;
     default:
       return null;
   }
@@ -228,6 +338,29 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
       return true;
     }
 
+    case "rage": {
+      // 怒气重击:按下 = 把"当前攒下的这一坨怒气"挂成下一拍兑现的承诺。
+      //
+      // 与重击的**唯一**结构差别:重击的强度是固定的(附魔那一拍永远顶档暴扣),
+      // 这里的强度按按下那一刻的怒气比例缩放 —— 所以怒气**在这里不清零**,
+      // 清零在真正扣出去那一拍(modifyShot)。差别看着小,后果相反:
+      // 在这儿清 = 玩家攒了一整局、按下去却回了一记空手球(反例 rageClearedAtPress)。
+      //
+      // armed 窗落进 s.buffT(与重击附魔同一个字段位、同一处递减:Skills.update),
+      // 不另起计时器 —— 计时器多一处就多一处「两处各减一次」的风险(lungeShotT 真栽过)。
+      const RG = C.skills.rage;
+      p.skill.buffT = RG.releaseWindow;
+      // 代拍窗**只给真人**(与 lungeAutoT / smashAutoT 完全同一条口径):AI 也装 rage、
+      // 也会自己按这个键(ai.ts),给它开就等于白送一记"永远踩在最佳帧"的暴扣,
+      // 而它的准头归 diffs.* 那根旋钮管 —— serve-check / ai-check 的真人替身从不按技能键,
+      // 那两把尺子量不到这条,只能在这里钉死。
+      p.rageAutoT = (!p.isAI && RG.autoReturn) ? Math.min(RG.autoWindow, RG.releaseWindow) : 0;
+      p.smashGlow = 30;          // 复用重击那记拍面高亮:读作"这一拍带着怒气",不新加一层视觉状态
+      p.face = "fierce";
+      p.faceT = 30;
+      return true;
+    }
+
     case "flash": {
       // 闪现扣杀:原地留一道雷光残影,瞬间折跃到「球下方的高点」,悬空举拍 → 时停放行 → 必定劈扣。
       // 站位不再是拍脑袋的「球后方 28px / 球上方 15px」,而是拿判定区圆心(Physics.strikeOffset,
@@ -291,9 +424,20 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
     }
 
     case "focus": {
-      // 时空减速: 开启 1.5 秒子弹时间
+      // 时空减速: 开启子弹时间, 接球后强力反击并脱离领域
       p.skill.buffT = C.skills.focus.duration;
       p.focusT = C.skills.focus.duration;
+      p.focusHit = false;
+      return true;
+    }
+
+    case "shadow": {
+      // 影分身: 只做"本分已召唤"的记账与按键反馈,分身实体不在这里建 ——
+      // create() 工厂在 player.ts,而 skills 不能反向 import player(依赖方向:types←config←skills←player)。
+      // 真正的召唤在 player.update 的技能成功分支里调 spawnShadowClone(host) 完成。
+      p.shadowCast = true; // 每分限召一次的闸:resetPoint 才放开
+      p.face = "happy";
+      p.faceT = 36;
       return true;
     }
   }
@@ -318,8 +462,16 @@ export function update(p: Player, ball: Ball): void {
   // 闪现折跃特效衰减
   if (p.flashT && p.flashT > 0) p.flashT--;
   if ((p.flashT ?? 0) <= 0) p.flashFrom = null;   // 残影画完就收掉起点,不留脏数据
-  // 时空减速衰减
+  // 时空减速衰减与冷却触发
+  const prevFocus = p.focusT ?? 0;
   if (p.focusT && p.focusT > 0) p.focusT--;
+  // 时空领域效果刚刚自然结束(接球缓释到期或超时到期): 正式启动冷却倒计时
+  if (prevFocus > 0 && (p.focusT ?? 0) <= 0 && s.id === "focus") {
+    p.focusHit = false;
+    if (s.cd <= 0) {
+      s.cd = s.maxCd > 0 ? s.maxCd : defOf("focus").cooldownFrames;
+    }
+  }
 
   // ---------- 闪现折跃状态机:悬空蓄力 → 起拍(保底窗口同步开) → 随挥落地 ----------
   // 起拍不在 activate() 里直接设,是因为那一下要和「时停」对上:主循环在折跃当帧定格若干帧
@@ -356,10 +508,11 @@ export function update(p: Player, ball: Ball): void {
 /**
  * 击球修正钩子: 在 player.tryHit / buildShot 中注入技能加成
  *
- * **副作用契约**:本函数会消耗技能状态(附魔 / 必中窗 / 吸球回击 / 重击的冷却与待发窗),
- * 因此只能挂在真正出手的那一次上。球种预告(player.previewKind)与实打共用同一条 buildShot
+ * **副作用契约**:本函数会消耗技能状态(附魔 / 必中窗 / 吸球回击 / 重击的冷却与待发窗 /
+ * **怒气的整局存量**),因此只能挂在真正出手的那一次上。球种预告(player.previewKind)与实打共用同一条 buildShot
  * 通道,靠 opt.preview 区分:加成与质量改写照旧计算(徽标才不撒谎),
  * 下面几处「消耗」一律加 `!preview` 闸。漏一处就是"按了没反应"—— 判据 tools/smash-check.ts。
+ * 怒气那一处漏了的后果更安静:预告每帧都在跑,存量会被无声抽干(rage-check ①)。
  *
  * **质量改写只给真人**(`applyQuality`):q/sweet/perfect 那三个回写会一路决定
  * 误差归零 + perfectBoost + perfect.powerDeg,等于把这一拍从"按得一般"抬成"顶档"。
@@ -373,6 +526,10 @@ export function modifyShot(p: Player, opt: HitOpt): {
   powerDeg: number;
   forceSmash: boolean;
   skillKind?: SkillId;
+  /** 「怒气重击」兑现那一刻的怒气比例(0..1)。其余技能恒 undefined。
+   *  只带比例、不带档位:档位由 rageTierOf 现推,两个数迟早分叉。
+   *  为什么要把已经清零的量抄进结果:见 types.ts 的 ShotResult.rageRatio。 */
+  rageRatio?: number;
 } {
   const preview = !!opt.preview;   // 预告通道:只算不花
   const applyQuality = !!p && !p.isAI;   // 顶档改写只给真人:AI 的强度归 diffs 管
@@ -380,6 +537,7 @@ export function modifyShot(p: Player, opt: HitOpt): {
   let powerDeg = 0;
   let forceSmash = false;
   let skillKind: SkillId | undefined = undefined;
+  let rageRatio: number | undefined = undefined;
 
   if (!p || !p.skill) {
     return { speedBoost, powerDeg, forceSmash };
@@ -449,16 +607,71 @@ export function modifyShot(p: Player, opt: HitOpt): {
     skillKind = "magnet";
   }
 
-  // 5. 时空领域反击:领域持续期内击球,初速与压弧各加一档。
-  //    全局时间膨胀对「相对局势」是恒等变换(球/AI/计时器同比例变慢),
-  //    只补跑位拿不到分;这里把「从容反击」兑现成实际更凶的回球。
+  // 5. 时空领域反击: 领域持续期内击球, 赋予顶档甜区品质、初速大幅加成与压弧下压。
+  //    接完一个球过一会就可以结束: 真正击球(!preview)时将领域时间收缩至 postHitFrames (缓释收尾),
+  //    出球破空特写后自然脱离领域并进入冷却。
   if (p.skill.id === "focus" && ((p.focusT ?? 0) > 0 || p.skill.buffT > 0)) {
+    if (applyQuality) {
+      opt.sweet = true;
+      opt.perfect = true;
+      opt.q = Math.max(opt.q ?? 0, 0.98);
+    }
     speedBoost += C.skills.focus.speedBoost;
     powerDeg += C.skills.focus.powerDeg;
     skillKind = "focus";
+
+    if (!preview && !p.focusHit) {
+      p.focusHit = true;
+      const postHit = C.skills.focus.postHitFrames ?? 22;
+      p.focusT = Math.min(p.focusT ?? postHit, postHit);
+      p.skill.buffT = Math.min(p.skill.buffT, postHit);
+    }
   }
 
-  return { speedBoost, powerDeg, forceSmash, skillKind };
+  // 6. 怒气重击:armed 窗内的那一拍把攒下的怒气全数砸出去,强度按怒气比例分档。
+  //
+  //    与重击(#2)的分工是刻意的:重击 = 固定顶档暴扣(有冷却),怒气重击 = 强度换档位
+  //    (没有冷却,资源就是门槛)。两者永不并存(一场只有一个 skill.id),所以这里不与 #2 抢。
+  //
+  //    **只有满怒那一档**才吃 forceSmash + 顶档质量改写(用户口径「怒气够一点就能放、
+  //    攒得越足越狠」)。把 forceSmash 挪到 ratio>=1 之外 = 分档被抹平,这款立刻退化成
+  //    一个更弱版本的 smash(反例 alwaysForceSmash,判据 rage-check ③)。
+  //    顶档改写挂在 applyQuality = !p.isAI 上 —— 与 smash/flash/focus 同一条口径:
+  //    q/sweet/perfect 那三个回写会一路决定误差归零 + perfectBoost + perfect.powerDeg,
+  //    等于把"按得一般"抬成"顶档",AI 的准头归 diffs.* 管,不许在这儿白送。
+  //
+  //    怒气是**整局唯一的清零点**,而且只在真扣出去那一拍清:
+  //    - 预告通道(preview)一口都不吃 —— 那是每个真实帧最多 10 次的通道,漏一处就是
+  //      "攒了一整局、按下去怒气凭空蒸发"(判据 rage-check ①,与 smash-check 同一条病)。
+  //    - 挥空 / armed 窗自己走完 / 跨分都不扣一分(资源制下罚它等于白罚:那一拍本就没兑现)。
+  if (p.skill.id === "rage" && p.skill.buffT > 0) {
+    const RG = C.skills.rage;
+    const ratio = rageRatioOf(p);                 // 读**清零之前**的怒气:这就是这一拍的强度
+    speedBoost += RG.speedMin + (RG.speedMax - RG.speedMin) * ratio;
+    powerDeg += RG.powerMin + (RG.powerMax - RG.powerMin) * ratio;
+    rageRatio = ratio;
+    if (ratio >= 1) {
+      if (applyQuality) {
+        opt.sweet = true;
+        opt.perfect = true;
+        opt.q = 1.0;
+      }
+      forceSmash = true;                          // buildShot 那边夹 loft≤10 并钉 kind="smash"
+    }
+    if (!preview) {
+      p.rage = 0;                                 // 整局唯一清零点
+      p.rageAutoT = 0;                            // 代拍窗一并收掉,不留"收招后凭空补第二下"
+      // armed 窗**必须一起关掉**(烟测抓到的一次施放吃掉多拍):留着它,下一拍仍然满足
+      // `buffT > 0` 这条门,于是刚攒够一拍的怒气会被同一个承诺再兑现一次 —— 玩家看到的是
+      // "按一次、连响两下"。与重击收 buffT 同口径:承诺兑现了就该收回。
+      // 注意「手动优先」那条(player.ts 的手动分支)清的是代劳窗、**不清这里**,
+      // 因为玩家自己挥的那一拍正是这个承诺要兑现的对象。
+      p.skill.buffT = 0;
+    }
+    skillKind = "rage";
+  }
+
+  return { speedBoost, powerDeg, forceSmash, skillKind, rageRatio };
 }
 
 export const Skills = {
@@ -473,4 +686,9 @@ export const Skills = {
   update,
   modifyShot,
   magnetAimPoint,
+  // 怒气重击的四件套:判据只住这里,UI 与演出都读它们(散在各处比 id 会漏)
+  isChargeSkill,
+  rageRatioOf,
+  rageTierOf,
+  gainRage,
 };

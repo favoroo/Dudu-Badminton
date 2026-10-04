@@ -9,9 +9,11 @@ import { CFG } from "./config";
 import { approach, rand } from "./utils";
 import { Physics } from "./physics";
 import { Pace } from "./pace";
+import { AutoHit } from "./auto-hit";
 import { Player as Pl } from "./player";
 import { AI } from "./ai";
 import { Skills } from "./skills";
+import { Shadow } from "./shadow";
 import { Ball, DiffKey, GameEvent, Player, PlayerInput, TeamSide } from "./types";
 import { CampaignManager, StageDef, StarFacts, aiReliefFor, evaluateStars, tuneAiTier } from "./campaign";
 
@@ -228,6 +230,9 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   R.lastFacts = undefined;
 
   R.mode = mode;
+  // 自动击打的模式门控与 R.mode 同源(训练场/教学/本地对战不代打)。全仓只有这里和
+  // startCampaign 两处写 R.mode,所以任何调 newMatch 的回归工具自动拿到正确门控。
+  AutoHit.onMatch(mode);
   R.diff = diff || "normal";
   const dbl = mode === "2v2";
   const n = dbl ? 2 : 1;
@@ -295,6 +300,7 @@ function startCampaign(stage: StageDef): void {
   Pl.setPlayerModifier(stage.modifiers.player || null);
 
   R.mode = "campaign";
+  AutoHit.onMatch("campaign");   // 与上面 newMatch 同一处规矩:门控跟着模式走
   R.diff = stage.aiDiff;
   R.humans = 1;
   R.players = [];
@@ -445,8 +451,18 @@ function applyShot(ball: Ball, shot: ShotLike): void {
     vx: shot.vx, vy: shot.vy, heat: shot.hitter.heat, lungeShot: !!shot.lungeShot,
     aim: shot.aim ?? null,
     skillKind: shot.skillKind || null,
+    // 「怒气重击」的档位快照(只有那一拍非空)。为什么不在消费端读 hitter.rage:
+    // 怒气在兑现当帧就归零了,事件排空时读到的永远是 0 —— 四档演出会全打成最低档。
+    rageRatio: shot.rageRatio ?? null,
     jumpSmash: !!shot.jumpSmash,
     timingGrade: shot.timingGrade,
+    // 这一拍是不是「自动击打」替玩家起的手:表现层只有早/晚时机教学读它(机器按的帧恒是
+    // 时机环教人的那一帧,再教就是噪声)。质量/档位/怒气**一律不看来路** —— 代劳的是时机不是判定。
+    autoHit: !!shot.autoHit,
+    // 击球者是不是 AI:以前消费端用 R.players[hitterIdx] 反查,但影分身(idx=-1)
+    // 不在名单里,反查得到 undefined 会被误判成真人(触发人类侧赞美/震动)——
+    // 归因必须由出球者自己申报,不许按位反推。
+    isAI: shot.hitter.isAI,
   });
 }
 
@@ -496,6 +512,11 @@ function step(inputs: PlayerInput[]): void {
     Pl.update(p, inp, ball);
   }
   separate();
+  // 影分身驱动:挂在实名球员推进之后 —— 分身不进 R.players(发球轮转/计分名单不许被
+  // 第三名球员污染),由 shadow 模块用 AI.think 出输入、走同一套 Pl.update 机器。
+  // 位置在所有早退分支(ball.flying / held / magnetPull / POINT)之前:演出与站位
+  // 照常推进,但分身起拍只在下面 RALLY 的命中段补位。
+  Shadow.updateClones(R.players, ball, R.state);
 
   // 得分后球从落点飞入手中:ease-out 插值,期间不可释放/不可击打
   if (ball.flying) {
@@ -641,10 +662,20 @@ function step(inputs: PlayerInput[]): void {
     if (ball.netted) emit("let", { side: ball.lastHitter });   // 擦网过网
   }
 
-  // 挥拍命中:同一队每回合只能击球一次(由 tryHit 内的 lastHitter 判定保证)
+  // 挥拍命中:同一队每回合只能击球一次(由 tryHit 内的 lastHitter 判定保证)。
+  // 实名球员优先,全落空时影分身补位 —— 玩家(或队友)够得着就永远是人打,
+  // 分身只兜"没人接"的那一拍;命中记账(满 3 次消散)在 noteHit 里做。
+  let applied = false;
   for (const p of R.players) {
     const shot = Pl.tryHit(p, ball);
-    if (shot) { applyShot(ball, shot); break; }
+    if (shot) { applyShot(ball, shot); applied = true; break; }
+  }
+  if (!applied) {
+    const ch = Shadow.tryCloneHit(R.players, ball);
+    if (ch) {
+      applyShot(ball, ch.shot);
+      Shadow.noteHit(ch.host);
+    }
   }
 
   // 边线外飞出画面

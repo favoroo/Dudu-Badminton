@@ -55,10 +55,13 @@ export interface Pad {
    * - swingSwipe:  已提交方向:0=未提交(mid,物理自动决定),1=右滑(deep),-1=左滑(near)
    *   触屏在 TOUCH_MOVE 里提交;键盘路径(swingFar/swingNear)在 press 时即定 ±1。
    *   松手时不清零 —— 命中前一直保留,给 player.ts 在 tryHit 前读取。
+   * - swingSwipeY: 纵轴,与 swingSwipe 独立可组合:0=未提交(弧线物理自动决定),
+   *   1=上滑(挑高),-1=下滑(平抽)。提交/保留/清零时机与 swingSwipe 完全同构。
    */
   swingPressed: boolean;
   swingHeld: boolean;
   swingSwipe: number;
+  swingSwipeY: number;
 }
 
 export function newPad(): Pad {
@@ -66,7 +69,7 @@ export function newPad(): Pad {
     left: false, right: false, moveAxis: 0, targetX: undefined, jump: false,
     jumpPressed: false, jumpSteps: 0, jumpTail: 0,
     lungePressed: false, lungeDir: 0, lastDir: 0,
-    swingPressed: false, swingHeld: false, swingSwipe: 0,
+    swingPressed: false, swingHeld: false, swingSwipe: 0, swingSwipeY: 0,
   };
 }
 
@@ -82,7 +85,7 @@ export function clearEdges(pad: Pad): void {
 }
 
 /** 按下(边沿 + 状态),由各输入源调用 */
-export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "swing" | "swingFar" | "swingNear"): void {
+export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "swing" | "swingFar" | "swingNear" | "swingUp" | "swingDown"): void {
   switch (action) {
     case "left": pad.left = true; pad.lastDir = -1; break;
     case "right": pad.right = true; pad.lastDir = 1; break;
@@ -102,12 +105,19 @@ export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "s
     }
     // 触屏击球键:按下即挥拍,方向暂定 mid(swingSwipe=0),后续 TOUCH_MOVE 提交
     case "swing":
-      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 0; break;
+      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 0; pad.swingSwipeY = 0; break;
     // 键盘专用:J = 深球(swingSwipe=1),K = 短球(swingSwipe=-1),即按即定
     case "swingFar":
-      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 1; break;
+      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 1; pad.swingSwipeY = 0; break;
     case "swingNear":
-      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = -1; break;
+      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = -1; pad.swingSwipeY = 0; break;
+    // 键盘专用:U = 上滑挑高,I = 下滑平抽(swingSwipeY=±1)。与 J/K 同构:每个键都是
+    // 一个完整意图,按下即重置另一轴 —— 键盘没有「按住中改向」的手势过程,不清就会把
+    // 上一拍的纵轴意图泄漏进这一拍;触屏的组合瞄准(上+右等)是手势专属,键盘不提供。
+    case "swingUp":
+      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 0; pad.swingSwipeY = 1; break;
+    case "swingDown":
+      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 0; pad.swingSwipeY = -1; break;
   }
 }
 
@@ -206,6 +216,7 @@ export function resetPadHolds(pad: Pad): void {
   pad.swingPressed = false;
   pad.swingHeld = false;
   pad.swingSwipe = 0;
+  pad.swingSwipeY = 0;
 }
 
 /** 老仓库 humanIntent 的等价物:把 Pad 翻成 PlayerInput(含反馈钩子) */
@@ -223,13 +234,15 @@ export function buildIntent(pad: Pad, hooks: Partial<PlayerInput>): PlayerInput 
     lungeDir: pad.lungeDir,
     // 击球:按下边沿触发,初始 depth=mid;滑动方向在挥拍期间由 player.ts 读取 swingSwipe 覆盖。
     // swingSwipe 持续输出(不依赖边沿),保证挥拍中提交的方向能到达 buildShot。
+    // swingSwipeY 同构:纵轴弧线意图(挑高/平抽),持续输出。
     swingAim: pad.swingPressed ? "mid" : null,
     swingSwipe: pad.swingSwipe,
+    swingSwipeY: pad.swingSwipeY,
     ...hooks,
   };
 }
 
 export const emptyIntent = (): PlayerInput => ({
   left: false, right: false, moveAxis: 0, targetX: undefined, jumpPressed: false, jumpHeld: false,
-  swingAim: null, swingSwipe: 0, lungePressed: false, lungeDir: 0,
+  swingAim: null, swingSwipe: 0, swingSwipeY: 0, lungePressed: false, lungeDir: 0,
 });

@@ -12,13 +12,16 @@
 //   · 输出的每一项自带 left / x / cy / lines / lineH,渲染层只管照摆,不再量、不再折;
 //   · 板高由内容**算出**需求(stackH),与 SK.plateH 比对,所以「不溢出、不压字、
 //     切换技能时面板尺寸不变」是排版性质,不是对某一句文案的假设。
-// 5 个技能全组合在 node 下回归:tools/skill-check.ts。
+// 6 个技能全组合在 node 下回归:tools/skill-check.ts。
 //
 // ⚠ 版式常量放这儿、不放 core/config.ts:仓库的实际分工是「游戏数值进 CFG,视觉
 // token 跟着消费者走」(ARCADE / PAL / TOUCH_MIN / BRIEF / STRIP_* 都在各自模块里)。
 // CFG.skills.list 里的 desc·cooldownFrames·unlockLevel·accent 是**内容**,一个都不许动。
 // ============================================================
 import { textW, wrapText, type Measure } from "../core/text-metrics";
+// 充能款技能的卡片要印「蓄满要几拍」—— 那是 config 里的**内容数值**(上限/每拍增益),
+// 不是版式 token,所以照铁律 3 从 CFG 读,不在这里抄一份数字(抄了就等于允许它和实机分叉)。
+import { CFG } from "../core/config";
 
 /** 与 ui-arcade.skewOf 同式(本模块零 cc 不能 import;改斜切角两边一起看) */
 function shearOf(h: number, deg: number): number {
@@ -36,15 +39,22 @@ export const SK = {
 
   titleY: 182, subY: 156, hintY: 132, hintSize: 12,
 
-  /** 卡片:瘦成「标签 + 名字 + CD + 装备」,说明整条搬进详情板 */
-  cardW: 118, cardH: 126, cardPitch: 128, cardsY: 47,
+  /** 卡片:瘦成「标签 + 名字 + CD + 装备」,说明整条搬进详情板。
+   *  0.0.25 起 6 款技能:118/128 是按 5 张横排定的,6 张总半宽 384 直接出 700 面板 ——
+   *  收瘦到 104/112(间距 8、装备键 96),6 张总半宽 337 重新进得来。
+   *  0.0.26 起 7 款(怒气重击):同一手收瘦,104/112 → 88/96(间距仍 8、装备键 80),
+   *  7 张总半宽 skillCardX(6,7) + 44 + 5 = 288 + 49 = 337 —— 与 6 张那一轮**同一个数**。
+   *  面板宽度**不动**(700):设计分辨率是 FIXED_HEIGHT,4:3 平板的可视宽度会掉到 ~720,
+   *  把面板加宽到 800 在这种屏上直接出画。加第八款时这条路就到头了 ——
+   *  那时该改成两行 4+3 栅格,而不是继续把卡压到 88 以下(名字两字 + 装备键已经贴边)。 */
+  cardW: 88, cardH: 126, cardPitch: 96, cardsY: 47,
   /** drawMenuCard 的厚底边探出卡外这么多;竖排判据要连着它一起量 */
   cardEdge: 4,
   chipY: 48, chipSize: 9,
   nameY: 22, nameSize: 17,
   cdY: 2, cdSize: 10,
   /** 44 = TOUCH_MIN,uiButton 会把高度抬到这儿;写 28 是自欺欺人,见 skill-check */
-  btnW: 100, btnH: 44, btnY: -34,
+  btnW: 80, btnH: 44, btnY: -34,
 
   /** 详情板 */
   plateW: 652, plateH: 104, plateY: -84, platePad: 14,
@@ -70,6 +80,8 @@ export interface SkillLike {
   unlockLevel: number;
   cooldownFrames: number;
   accent: string;
+  /** 键面读数种类(与 core/types 的 SkillDef.kind 同义;"charge" = 资源制,卡片不印 CD) */
+  kind?: "cd" | "charge";
 }
 
 export type PlateRole = "name" | "cd" | "status" | "desc";
@@ -122,6 +134,30 @@ export function skillCd(def: SkillLike): string {
   return `CD ${skillCdSec(def).toFixed(1)}s`;
 }
 
+/**
+ * 蓄满要几拍:把「这款技能的门槛是一整局的积累」翻译成玩家能规划的次数。
+ * 两个数都说 —— 只印最好那个(每拍又准又杀)就是在骗人,只印最坏那个又白丢了
+ * "打得好就攒得快"这层正反馈。上下界直接从 config 的增益算,不在这里抄数字。
+ */
+export function skillFillShots(def: SkillLike): string {
+  const RG = CFG.skills.rage;
+  const best = Math.ceil(RG.max / (RG.perHit * RG.bothMul));
+  const worst = Math.ceil(RG.max / RG.perHit);
+  return `蓄满 ${best}~${worst} 拍`;
+}
+
+/**
+ * 卡片与详情板的那一行读数:冷却款印 CD,充能款印「蓄满几拍」。
+ *
+ * 为什么不能照旧印 CD:怒气重击的 cooldownFrames 是 20 帧(只防同帧连点,不是门槛),
+ * 印出来是「CD 0.3s」—— 玩家会以为它 0.3 秒就能再放一次,而真相是要打十几拍。
+ * 一款把门槛写在资源上的技能却报一个假冷却,和"看不见怒气"是同一类 bug。
+ * 判据在 def.kind(skill-dialog 从 Skills.allSkills() 直接带过来),不散在各处比 id。
+ */
+export function skillMeter(def: SkillLike): string {
+  return def.kind === "charge" ? skillFillShots(def) : skillCd(def);
+}
+
 /** 详情板右上角那一格状态:三态只留一条文案,不再拆成「CD + Lv」两块(那正是压字来路) */
 export function skillStatus(def: SkillLike, unlocked: boolean, equipped: boolean): string {
   if (!unlocked) return `未解锁 · Lv.${def.unlockLevel}`;
@@ -157,8 +193,11 @@ export function layoutSkillPlate(
   const nameW = measure(def.name, SK.headSize);
   const statusText = skillStatus(def, unlocked, equipped);
   const statusW = measure(statusText, SK.metaSize);
-  const cdText = skillCd(def);
-  const cdW = measure(cdText, SK.metaSize);
+  // 项的 key/role 仍叫 "cd":它是「这一格读数是技能可用性」这个**版式位置**的名字,
+  // 不是秒数的名字(skill-dialog 的 plateLbl[role] 映射按它取键)。内容换成了蓄满拍数,
+  // 位置与对齐算法一个字都不动 —— 换文案不换几何,才不会有第六处再抄一遍摆位。
+  const meterTxt = skillMeter(def);
+  const cdW = measure(meterTxt, SK.metaSize);
   const headCy = SK.plateH / 2 - SK.platePad - SK.headH / 2;
 
   const lines = wrapText(def.desc, SK.descSize, availW, measure);
@@ -180,7 +219,7 @@ export function layoutSkillPlate(
       w: statusW, left: innerR - statusW, x: innerR, cy: headCy, align: 2,
     },
     {
-      key: "cd", role: "cd", lines: [cdText], size: SK.metaSize, lineH: SK.metaH, h: SK.metaH,
+      key: "cd", role: "cd", lines: [meterTxt], size: SK.metaSize, lineH: SK.metaH, h: SK.metaH,
       w: cdW, left: innerR - statusW - SK.metaGap - cdW, x: innerR - statusW - SK.metaGap, cy: headCy, align: 2,
     },
     {

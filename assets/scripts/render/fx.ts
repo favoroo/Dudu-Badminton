@@ -19,6 +19,7 @@ import { drawCrossMark, drawSpikeRing, drawTaper, fillSpikes, SPIKE_VERTS } from
 
 const C = CFG;
 const CO = C.court;
+const CF = C.fx.confetti;   // 礼花数值全在 config 的 fx.confetti 段(引用稳定,逐字段现读:回归/selftest 改值得在这里生效)
 const PI = Math.PI;
 const { sin, cos, atan2, hypot } = Math;
 
@@ -154,6 +155,39 @@ const cflf  = new Int32Array(MAX_CF);
 const cfmx  = new Int32Array(MAX_CF);
 const cfcol = new Uint8Array(MAX_CF);
 let cfN = 0;
+
+/**
+ * 把第 i 片纸屑的 4 个角点(相对中心的偏移,世界坐标)写进调用方给的 8 元缓冲:
+ * x0,y0,x1,y1,x2,y2,x3,y3。**零分配是 API 契约** —— 旧写法在绘制循环里每片 new 两个
+ * 数组(80 片 = 每帧 160 个临时对象),正是本工程治过的那类周期性 GC 尖峰
+ * (见 palette.ts 的 withAlpha 记忆化)。几何与旧式逐项同构(角点 (±hw,±hh) 旋转),
+ * 只多了一道 flipK 的翻面收宽;对照判据在 tools/confetti-check。
+ */
+export function writeConfettiQuad(i: number, out: Float32Array): void {
+  const cosR = cos(cfrot[i]), sinR = sin(cfrot[i]);
+  // 翻面:纸片侧对镜头时把宽收掉(读作一闪一闪的纸,而不是 80 个旋转矩形),不加笔数
+  const hw = cfw[i] * 0.5 * (CF.flipK + (1 - CF.flipK) * Math.abs(cosR));
+  const hh = cfh[i] * 0.5;
+  out[0] = -hw * cosR + hh * sinR; out[1] = -hw * sinR - hh * cosR;
+  out[2] =  hw * cosR + hh * sinR; out[3] =  hw * sinR - hh * cosR;
+  out[4] =  hw * cosR - hh * sinR; out[5] =  hw * sinR + hh * cosR;
+  out[6] = -hw * cosR - hh * sinR; out[7] = -hw * sinR + hh * cosR;
+}
+
+/** 彩带角点的模块级复用缓冲(绘制只读它;别在循环里 new) */
+const cfQuad = new Float32Array(8);
+
+/**
+ * 只给回归工具读的第 i 片纸屑快照,写进调用方缓冲:
+ * [x, y, vx, vy, rot, life, w, h]。越界返回 false。同样零分配 —— 判据要能逐帧问
+ * "它到底走了没有",而不必直接碰内部池数组。
+ */
+export function readConfetti(i: number, out: Float32Array): boolean {
+  if (i < 0 || i >= cfN || out.length < 8) return false;
+  out[0] = cfx[i]; out[1] = cfy[i]; out[2] = cfvx[i]; out[3] = cfvy[i];
+  out[4] = cfrot[i]; out[5] = cflf[i]; out[6] = cfw[i]; out[7] = cfh[i];
+  return true;
+}
 
 // ================================================================
 // 羽毛池
@@ -424,6 +458,55 @@ export class FXSystem {
     this._sparkle(x, y, COL_TEAL, 30, 20);
   }
 
+  /** 时空爆裂冲击波:专属强力击球特效(青白时空裂隙斩切 + 双层激波环 + 30 颗时空星芒) */
+  chronoBurst(x: number, y: number, angle = 0): void {
+    // 2 颗时空核心星芒 (青/白)
+    this._sparkle(x, y, COL_WHITE, 26, 16);
+    this._sparkle(x, y, COL_CYAN,  36, 20);
+
+    // 2 道青白激波扩散环 (内白外青)
+    this._ring(x, y, 6, 68, 18, 3.2, COL_WHITE, false, false);
+    this._ring(x, y, 12, 115, 24, 2.4, COL_CYAN, false, false);
+
+    // 3 组时空裂隙爆散粒子 (青/白/深青)
+    this._burst(x, y, 16, COL_CYAN, 10, 26);
+    this._burst(x, y, 14, COL_WHITE, 12, 22);
+    this._burst(x, y, 10, COL_TEAL, 8, 20);
+
+    // 14 条顺着出球方向的时空撕裂定向划线 (超高速破空感)
+    for (let i = 0; i < 14; i++) {
+      const a = angle + (i / 14 - 0.5) * 0.75;
+      const spd = rand(14, 24);
+      const col = i % 2 === 0 ? COL_CYAN : COL_WHITE;
+      this._particle(x, y, cos(a) * spd, sin(a) * spd,
+        0.02, 0.98, 14, 14, 2.4, 0, 0, col, SH_STREAK);
+    }
+  }
+
+  /**
+   * 影分身召唤:墨紫尖刺星芒 + 锯齿烟环 + 撕纸碎片 + 上扬墨尘(2026-10-04 影分身)。
+   * 打击=尖刺、场控=平滑圆 —— 召唤是"凝形"不是场控,全走 P5 锯齿语汇,拒绝光滑圆圈。
+   */
+  shadowSummon(x: number, y: number): void {
+    // 双层爆裂锯齿烟环(内紫外暗白):从脚下扩散,读作"影子被撕开"
+    this._ring(x, y, 4, 56, 16, 2.6, COL_PURPLE, false, true);
+    this._ring(x, y, 2, 92, 22, 1.8, COL_WHITE, false, true);
+    // 凝形星芒两颗:紫为主,白为衬
+    this._sparkle(x, y, COL_PURPLE, 30, 18);
+    this._sparkle(x, y - 26, COL_WHITE, 16, 12);
+    // 墨紫碎片全向爆散(撕纸语汇)+ 贴地上半扇墨尘(影子被扬起)
+    this._burst(x, y, 14, COL_PURPLE, 6, 22);
+    this._burst(x, y, 8, COL_WHITE, 8, 16);
+    this._dust(x, y, 10, COL_PURPLE, 4.5);
+  }
+
+  /** 影分身消散:锯齿环收束 + 墨粒上飘(配合 world 层的剪影残影一起读) */
+  shadowDissolve(x: number, y: number): void {
+    this._ring(x, y, 40, 8, 16, 2.2, COL_PURPLE, false, true);
+    this._burst(x, y - 18, 10, COL_PURPLE, 3.2, 20);
+    this._dust(x, y, 6, COL_WHITE, 2.6);
+  }
+
   /** 羽毛飘落:count 片白羽从 (x,y) 散落,重力+风阻+湍流 */
   feather(fx: number, fy: number, count = 5): void {
     for (let i = 0; i < count; i++) {
@@ -442,24 +525,44 @@ export class FXSystem {
     }
   }
 
-  /** 彩带喷射:五色纸屑从 (x,y) 向世界上方喷射,重力下落 */
-  confetti(cx: number, cy: number): void {
+  /**
+   * 彩带喷射:`count` 片五色纸屑从 (x,y) 喷出,先升后落。
+   * inward:+1 向右斜喷 / -1 向左 / 0 直上 —— 由 confettiVolley 按喷口给。
+   *
+   * 旧写法是"一口居中 + g=0.02 无阻力",两处都是死的:喷口在 (480, groundY-120)
+   * 正落在结算卡(560×490 居中)背后,而那条重力按 260 帧寿命积分连零都过不去,
+   * 纸屑全程往上飞、早就出屏 ——「重力下落」那句注释在撒谎。数值见 config 注释。
+   */
+  confetti(cx: number, cy: number, count = CF.count, inward = 0): void {
     const colors = [COL_GOLD, COL_RED, COL_CBLUE, COL_WHITE, COL_CGREEN];
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < count; i++) {
       if (cfN >= MAX_CF) return;
       const idx = cfN;
-      cfx[idx]   = cx + rand(-60, 60);
-      cfy[idx]   = cy + rand(-20, 20);
-      cfvx[idx]  = rand(-3, 3);
-      cfvy[idx]  = rand(-8, -3);   // 负值 = 世界坐标向上
+      cfx[idx]   = cx + rand(-CF.spread, CF.spread);
+      cfy[idx]   = cy + rand(-10, 10);
+      cfvx[idx]  = inward * CF.inward + rand(-CF.vxJit, CF.vxJit);
+      cfvy[idx]  = -rand(CF.vyUp[0], CF.vyUp[1]);   // 负值 = 世界坐标向上
       cfrot[idx] = rand(0, TAU);
-      cfvr[idx]  = rand(-0.2, 0.2);
-      cfw[idx]   = rand(4, 9);
-      cfh[idx]   = rand(6, 14);
-      cflf[idx]  = 260;
-      cfmx[idx]  = 260;
+      cfvr[idx]  = rand(-CF.spin, CF.spin);
+      cfw[idx]   = rand(CF.w[0], CF.w[1]);
+      cfh[idx]   = rand(CF.h[0], CF.h[1]);
+      cflf[idx]  = CF.life;
+      cfmx[idx]  = CF.life;
       cfcol[idx] = colors[i % 5];
       cfN++;
+    }
+  }
+
+  /**
+   * 胜利礼花:两口贴地斜喷,喷口固定摆在结算卡**外侧**那两条看得见的边带里
+   * (CFG.fx.confetti.nozzles)。调用点只该说一句"打一发",几何与弹道都在 config+fx。
+   */
+  confettiVolley(): void {
+    const W = C.world.w;
+    const cy = CO.groundY - CF.nozzleY;
+    for (let k = 0; k < CF.nozzles.length; k++) {
+      const nx = CF.nozzles[k] * W;
+      this.confetti(nx, cy, CF.count, nx < W / 2 ? 1 : -1);
     }
   }
 
@@ -476,10 +579,21 @@ export class FXSystem {
     this._stepMarks();
   }
 
+  /**
+   * 还在放东西吗 —— 庆祝段的收场判据(core/celebration.ts 吃 world.presentationBusy(),
+   * 那边把本方法连同飘字/残影一起算)。池子里每一格都有有限寿命,所以这一定翻得回来。
+   */
+  busy(): boolean {
+    return pN > 0 || rN > 0 || swN > 0 || slN > 0 || cfN > 0 || ftN > 0 || mkN > 0;
+  }
+
+  /** 彩带池当前片数(只给回归工具读,别拿它做逻辑) */
+  confettiCount(): number { return cfN; }
+
   // ==============================================================
   // draw — 渲染全部特效(后到前)
   // ==============================================================
-  /** 彩带层的重绘节奏(独立 cg 传入时:隔帧重绘,见 draw 内注释) */
+  /** 彩带层的重绘节奏(独立 cg 传入时按 layerEvery 重绘,见 draw 内注释) */
   private cfFrame = 0;
   private cfDirty = false;
   draw(g: Graphics, vp: Viewport, cg?: Graphics): void {
@@ -488,14 +602,15 @@ export class FXSystem {
     this._drawRings(g, vp);
     this._drawParticles(g, vp);
     this._drawSpeedLines(g, vp);
-    // 彩带独占一层(可选参数):200 片 × 260 帧寿命的庆祝雨如果跟着动态层每帧
-    // 全量重描,得分后 4 秒里每帧都是 200 笔 fill。独立 Graphics 隔帧重绘、
-    // 隔帧内容原地保留(与球场三层同一手法),峰值帧省 ~100 笔;飘落是慢速
-    // 运动,30fps 无感。没传 cg(预览工具单 g)时照旧画进 g。
+    // 彩带独占一层(可选参数):这一层重画多少笔 = 池里还剩几片(一口 40,两口 80,
+    // 上限 MAX_CF=200),而它只在终局庆祝那 ~2 秒活着,所以节奏进 config 由
+    // fx.confetti.layerEvery 说死:上升段最快 ~13px/帧,隔帧(30fps)会抽成跳格,
+    // 默认 1 = 每个渲染帧都重描。没传 cg(预览工具单 g)时画进 g、不管节奏。
+    const every = CF.layerEvery > 0 ? CF.layerEvery : 1;
     if (cg) {
       this.cfFrame++;
       if (cfN > 0) {
-        if (this.cfFrame % 2 === 0 || !this.cfDirty) {
+        if (this.cfFrame % every === 0 || !this.cfDirty) {
           cg.clear();
           this._drawConfetti(cg, vp);
           this.cfDirty = true;
@@ -751,13 +866,20 @@ export class FXSystem {
   }
 
   private _stepConfetti(): void {
+    const W = C.world.w;
+    const floor = CO.groundY - CF.floorPad;   // 纸屑落到地面线就收:地上堆一层方块读作 bug
     for (let i = cfN - 1; i >= 0; i--) {
+      // 纸片模型:重力往下拽 → 两轴各乘一道空气阻力 → 横向再吃一拍 sin(rot) 的翻飘。
+      // flutter 必须在 drag **之前**加,否则低阻力下每帧累加会飘出屏(旧版就是没有阻力)。
+      cfvy[i] = (cfvy[i] + CF.grav) * CF.drag;
+      cfvx[i] = (cfvx[i] + sin(cfrot[i]) * CF.flutter) * CF.drag;
       cfx[i] += cfvx[i];
       cfy[i] += cfvy[i];
-      cfvy[i] += 0.02;           // 重力
       cfrot[i] += cfvr[i];
       cflf[i]--;
-      if (cflf[i] <= 0 || cfy[i] > C.world.h + 20) {
+      // 四种收场:寿命到 / 落地 / 飘出左右边 / 掉出屏底。全部是有限事件 ——
+      // core/celebration.ts 的 celebrate 档就靠"cfN 一定归零"把渲染降频还回去。
+      if (cflf[i] <= 0 || cfy[i] >= floor || cfx[i] < -20 || cfx[i] > W + 20) {
         this._popConfetti(i);
       }
     }
@@ -1080,34 +1202,18 @@ export class FXSystem {
   }
 
   // ---------- 彩带 ----------
+  /** 角点算法在模块级 writeConfettiQuad(零分配契约 + 判据同源,见那里的注释) */
   private _drawConfetti(g: Graphics, vp: Viewport): void {
     for (let i = 0; i < cfN; i++) {
       const a = Math.min(1, cflf[i] / 60);
-      const w = cfw[i], h = cfh[i];
-      const hw = w * 0.5, hh = h * 0.5;
-      const cosR = cos(cfrot[i]);
-      const sinR = sin(cfrot[i]);
+      if (a <= 0.004) continue;                       // 尾段淡到看不见就别占笔数
+      writeConfettiQuad(i, cfQuad);
       const cx = cfx[i], cy = cfy[i];
-
-      // 4 角旋转后的世界坐标
-      const corners_x = [
-        -hw * cosR - (-hh) * sinR,
-         hw * cosR - (-hh) * sinR,
-         hw * cosR - ( hh) * sinR,
-        -hw * cosR - ( hh) * sinR,
-      ];
-      const corners_y = [
-        -hw * sinR + (-hh) * cosR,
-         hw * sinR + (-hh) * cosR,
-         hw * sinR + ( hh) * cosR,
-        -hw * sinR + ( hh) * cosR,
-      ];
-
       g.fillColor = withAlpha(CLUT[cfcol[i]], a);
-      g.moveTo(vp.x(cx + corners_x[0]), vp.y(cy + corners_y[0]));
-      g.lineTo(vp.x(cx + corners_x[1]), vp.y(cy + corners_y[1]));
-      g.lineTo(vp.x(cx + corners_x[2]), vp.y(cy + corners_y[2]));
-      g.lineTo(vp.x(cx + corners_x[3]), vp.y(cy + corners_y[3]));
+      g.moveTo(vp.x(cx + cfQuad[0]), vp.y(cy + cfQuad[1]));
+      g.lineTo(vp.x(cx + cfQuad[2]), vp.y(cy + cfQuad[3]));
+      g.lineTo(vp.x(cx + cfQuad[4]), vp.y(cy + cfQuad[5]));
+      g.lineTo(vp.x(cx + cfQuad[6]), vp.y(cy + cfQuad[7]));
       g.close();
       g.fill();
     }

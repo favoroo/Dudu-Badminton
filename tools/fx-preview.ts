@@ -23,9 +23,9 @@
 // ============================================================
 
 // 顺序即语义:cc-stub 必须排在 render 模块之前(它在模块求值时打 Module._load 补丁)
-import { installCc, Graphics as StubGraphics, StubOp, opsToSvg } from "./cc-stub";
+import { installCc, Graphics as StubGraphics, Color as StubColor, StubOp, opsToSvg } from "./cc-stub";
 import { drawShuttle, Viewport } from "../assets/scripts/render/sprites";
-import { FXSystem } from "../assets/scripts/render/fx";
+import { FXSystem, readConfetti } from "../assets/scripts/render/fx";
 import { Ribbon } from "../assets/scripts/render/ribbon";
 import {
   advanceShuttle, makeShuttleMotion, shuttleImpact,
@@ -408,6 +408,39 @@ const p5Sheet: { name: string; svg: string }[] = [];
   check("smash 锯齿环笔画", strokes > 0 && badCoords(gg.ops) === 0, `第 0 帧 ${strokes} 道 stroke`);
 }
 
+// ---------- E 胜利礼花:一口齐射取 0/12/30/60/100/143 帧,叠上结算卡占位框 ----------
+// 为什么要把卡片框画进验收图:礼花的坏法不是"画不出来",是"画在看不见的地方"——
+// 旧写法一口居中打在结算卡(560×490 居中)背后,肉眼什么都看不到还自认为生效了。
+// 判据在 tools/confetti-check,这里只负责让眼睛确认"升起来、散开、落回地板"。
+const confettiSheet: { name: string; svg: string }[] = [];
+{
+  const CARD_W = 560, CARD_H = 490;   // ui/settle-panel.ts 的 CW/CH
+  const fxc = new FXSystem();
+  fxc.confettiVolley();
+  const FRAMES = [0, 12, 30, 60, 100, 143];
+  let walked = 0, badAtBirth = 0, emptyBy = -1;
+  for (const target of FRAMES) {
+    while (walked < target) { fxc.step(1 / 60); walked++; }
+    if (target === 0) {
+      const buf = new Float32Array(8);
+      for (let i = 0; i < fxc.confettiCount(); i++) {
+        if (!readConfetti(i, buf)) break;
+        if (buf[0] < 0 || buf[0] > C.world.w || buf[1] < 0 || buf[1] > C.court.groundY) badAtBirth++;
+      }
+    }
+    if (emptyBy < 0 && fxc.confettiCount() === 0) emptyBy = target;
+    const cg = new StubGraphics();
+    cg.strokeColor = new StubColor("#8fa3c8");
+    cg.lineWidth = 2;
+    cg.rect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H);
+    cg.stroke();
+    fxc.draw(asGfx(cg), VP);          // 不传 cg:彩带直接画进这张图的同一层
+    confettiSheet.push({ name: `第 ${target} 帧(${fxc.confettiCount()} 片)`, svg: svg(cg.ops, `confetti f=${target}`) });
+  }
+  check("礼花出生全在屏内", badAtBirth === 0, `越界 ${badAtBirth} 片`);
+  check("礼花在寿命内收场", fxc.confettiCount() === 0, `第 ${walked} 帧池内 ${fxc.confettiCount()} 片(收场帧 ${emptyBy})`);
+}
+
 // ---------- 汇总 ----------
 console.log(`特效预览 —— 输出目录 ${OUT}/`);
 console.log(rows.join("\n"));
@@ -433,6 +466,8 @@ pre{white-space:pre-wrap}</style>
 <div class="grid">${impactSheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}</div>
 <h2>D P5 构件:落点准星 / 飘字底板 / 斩劈 cut-in(P5 化新增形状的验收图)</h2>
 <div class="grid">${p5Sheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}</div>
+<h2>E 胜利礼花:一口齐射的第 0/12/30/60/100/143 帧(灰框 = 结算卡 560×490 占位,纸屑必须打在它外侧)</h2>
+<div class="grid">${confettiSheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}</div>
 `;
 fs.writeFileSync(`${OUT}/index.html`, html);
 // 单独一张"球体特写"页:整页太长时截图会被缩小,验收羽毛分片要看这一张
@@ -462,5 +497,13 @@ fs.writeFileSync(`${OUT}/trails.html`, `<!doctype html><meta charset="utf-8"><ti
 <h2>丝带:扣杀 / 高远 / 放网 / 火热 —— 每 22 帧叠画一次(1:1,不裁边)</h2>
 ${trailSheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}
 `);
-console.log(`预览页: ${OUT}/index.html  (单页: closeups.html / trails.html / impacts.html)`);
+fs.writeFileSync(`${OUT}/confetti.html`, `<!doctype html><meta charset="utf-8"><title>confetti</title>
+<style>body{background:#0b0e15;color:#dfe6f3;font:13px/1.6 ui-monospace,Menlo,monospace;margin:18px}
+.c{background:#161b26;border:1px solid #2a3242;border-radius:8px;padding:6px;margin-bottom:12px}
+.c b{display:block;margin-bottom:4px}
+.c svg{width:960px;height:auto}</style>
+<h2>胜利礼花:一口齐射的第 0/12/30/60/100/143 帧(灰框 = 结算卡 560×490 占位)</h2>
+${confettiSheet.map((s) => `<div class="c"><b>${s.name}</b>${s.svg}</div>`).join("")}
+`);
+console.log(`预览页: ${OUT}/index.html  (单页: closeups.html / trails.html / impacts.html / confetti.html)`);
 process.exit(fails === 0 ? 0 : 1);

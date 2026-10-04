@@ -198,6 +198,8 @@ export class WorldView {
   private ballView = {} as Ball & { sqR?: number };
   /** drawPlayer 的入参副本:同 ballView 手法(旧版每帧每人 spread 一个完整 Player) */
   private playerView = {} as Player;
+  /** 影分身绘制副本:同一手法(影分身是挂在宿主身上的独立 Player,见 core/shadow.ts) */
+  private cloneView = {} as Player;
   /** 帧内持久数组:绘制排序(旧版每帧 slice()+sort() 出新数组) */
   private readonly drawOrder: Player[] = [];
   private swingArcs: SwingArcGhost[] = [];
@@ -398,6 +400,24 @@ export class WorldView {
     courtRenderer.consumeStaticDirty();
   }
 
+  /**
+   * 表现层还有没有东西要放 —— 终局庆祝段(core/celebration.ts)的收场判据。
+   *
+   * 为什么需要这一问:frozen 态从前把「世界模拟」和「表现层时钟」一起关了,于是
+   * 胜利那 68 片礼花出生后一帧没走、最后一拍的火花/丝带/飘字也全定格在结算卡背后
+   * (用户现场:「胜利时的这个礼花效果会有点卡顿」)。主循环现在按档位分开:模拟仍停,
+   * 但只要这里还说"有东西在放",表现层时钟就继续走。池子/飘字/残影全是有限寿命,
+   * 所以这一问必然翻回 false,省电那条降频一定还得回来 —— 不需要额外计时器。
+   */
+  presentationBusy(): boolean {
+    return this.fx.busy()
+      || this.floats.length > 0
+      || this.swingArcs.length > 0
+      || this.lungeGhosts.length > 0
+      || this.flashGhosts.length > 0
+      || this.ballChronoGhosts.length > 0;
+  }
+
   // ---------- rules.setTrailHook 的落点 ----------
   /**
    * 老实现在这里往 trail 数组塞一个圆点;现在改成**只打档位戳** ——
@@ -447,6 +467,13 @@ export class WorldView {
   slowmo(frames: number, fac: number): void {
     this.slowT = Math.max(this.slowT, frames);
     this.slowFac = fac || 0.34;
+  }
+
+  /** 将慢动作剩余帧截断为至多 maxFrames(如时空领域接球后的缓释收尾) */
+  clampSlowmo(maxFrames: number): void {
+    if (this.slowT > maxFrames) {
+      this.slowT = maxFrames;
+    }
   }
 
   /** 主循环每帧取时间缩放(慢动作 <1,平时 1) */
@@ -787,16 +814,16 @@ export class WorldView {
           lungeDirRel: p.lungeDir ? p.lungeDir * p.facing : 1,
           color: "#38bdf8",
         });
-      } else if (p.focusT && p.focusT > 0 && Math.abs(p.vx) > 2.5 && (p.focusT % 3 === 0)) {
+      } else if (p.focusT && p.focusT > 0 && Math.abs(p.vx) > 1.2 && (p.focusT % 2 === 0)) {
         this.lungeGhosts.push({
           x: p.x,
           y: p.y,
           facing: p.facing,
-          life: 12,
-          maxLife: 12,
-          lungeLegExt: 0.5,
+          life: 14,
+          maxLife: 14,
+          lungeLegExt: 0.6,
           lungeDirRel: p.vx > 0 ? p.facing : -p.facing,
-          color: "#06b6d4",
+          color: "#00f0ff",
         });
       }
     }
@@ -823,6 +850,10 @@ export class WorldView {
     for (const fg of this.flashGhosts) {
       drawFlashGhost(g, this.vp, fg);
     }
+
+    // 影分身(「影分身」技能):画在实名球员**下层** —— 影子垫底,真身压前。
+    // 成影/消散两段演出与剩余次数 pips 都在这里读 p.shadowClone 的纯状态(渲染只读不算)。
+    this.drawShadowClones(g, players, ball, animT, alpha);
 
     // 插值:120Hz 屏也不见阶梯;离网远的先画,近网压前(与老 render 同序)
     // order/playerView 全部持久复用,不再每帧 slice/sort/spread 出垃圾
@@ -874,14 +905,14 @@ export class WorldView {
 
     // 绘制羽毛球慢动作时空残影
     for (const bg of this.ballChronoGhosts) {
-      const bA = (bg.life / bg.maxLife) * 0.42;
+      const bA = (bg.life / bg.maxLife) * 0.48;
       const dbx = this.vp.x(bg.x), dby = this.vp.y(bg.y);
-      g.fillColor = withAlpha(pal("#06b6d4"), bA * 0.7);
-      g.ellipse(dbx, dby, 7.5, 7.5);
+      g.fillColor = withAlpha(pal("#00f0ff"), bA * 0.75);
+      g.ellipse(dbx, dby, 6.5, 6.5);
       g.fill();
-      g.strokeColor = withAlpha(pal("#ffffff"), bA * 0.85);
-      g.lineWidth = 1.2;
-      g.ellipse(dbx, dby, 9.5, 9.5);
+      g.strokeColor = withAlpha(pal("#ffffff"), bA * 0.9);
+      g.lineWidth = 1.4;
+      g.ellipse(dbx, dby, 9.0, 9.0);
       g.stroke();
     }
 
@@ -1249,6 +1280,58 @@ export class WorldView {
       this.floatSys(ball.x, ball.y - 30, "电浆加速!", "#00f0ff", 18, 34);
       M.laser = 1;
     } else if (!boosted && M.laser === 1) M.laser = 0;
+  }
+
+  // ==============================================================
+  // 影分身渲染(「影分身」技能,2026-10-04)。全部只读 p.shadowClone 的纯状态
+  // (逻辑帧由 core/shadow.ts 推进),这里只画不算:
+  //   · 成影期(spawnT):隔帧闪烁 —— 经典分身演出,出生那几帧"还没凝实"
+  //   · 消散期(despawnT):隔帧闪烁 + 逐帧上飘,首帧边缘触发一次墨紫收束环
+  //   · 在场:本体走 drawPlayer(纯黑剪影无面之影,零头饰发带),
+  //     头顶剩余次数斜切 pips(接一球熄一枚,清爽无飘墨)
+  // ==============================================================
+  private drawShadowClones(g: Graphics, players: Player[], ball: Ball | null, animT: number, alpha: number): void {
+    const SHC = C.skills.shadow;
+    for (const host of players) {
+      const sc = host.shadowClone;
+      if (!sc) continue;
+      const c = sc.entity;
+      // 消散首帧:一次墨紫收束环 + 墨粒(边缘触发;updateClones 已把满值递减过 1)
+      if (sc.despawnT === SHC.despawnFrames - 1) {
+        this.fx.shadowDissolve(c.x, C.court.groundY - 14);
+      }
+      // 成影/消散期隔帧闪烁:只画偶数帧
+      if ((sc.spawnT > 0 || sc.despawnT > 0) && this.frameT % 2 === 1) continue;
+      // 消散上飘:进度把人往上抬(世界 y 向下,减 y = 升),读作"化烟而去"
+      const rise = sc.despawnT > 0 ? (1 - sc.despawnT / SHC.despawnFrames) * 26 : 0;
+      const cv = this.cloneView;
+      Object.assign(cv, c);
+      cv.x = lerp(c.px, c.x, alpha);
+      cv.y = lerp(c.py, c.y, alpha) - rise;
+      drawPlayer(g, this.vp, cv, animT, alpha, ball);
+      // 在场常态:头顶保留剩余 pips 指示(两段演出期不画)
+      if (sc.spawnT <= 0 && sc.despawnT <= 0) {
+        this.drawClonePips(g, cv, SHC.maxHits - sc.hits);
+      }
+    }
+  }
+
+  /** 影分身头顶剩余次数:斜切小片 pips,接一球熄一枚 —— 平行四边形,P5 拒绝光滑圆点 */
+  private drawClonePips(g: Graphics, cv: Player, remaining: number): void {
+    const total = C.skills.shadow.maxHits;
+    const cy = this.vp.y(cv.y - C.player.h - 16);
+    for (let i = 0; i < total; i++) {
+      const px = this.vp.x(cv.x) + (i - (total - 1) / 2) * 12;
+      const on = i < remaining;
+      g.fillColor = on ? withAlpha("#8b5cf6", 0.95) : withAlpha("#392f52", 0.5);
+      const w = 5, h = 10, k = 3;
+      g.moveTo(px - w / 2 + k, cy - h / 2);
+      g.lineTo(px + w / 2 + k, cy - h / 2);
+      g.lineTo(px + w / 2 - k, cy + h / 2);
+      g.lineTo(px - w / 2 - k, cy + h / 2);
+      g.close();
+      g.fill();
+    }
   }
 
   /**

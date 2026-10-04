@@ -74,7 +74,11 @@ import {
 } from "../core/settings";
 import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
-import { cdAlpha, cdText, drawCooldown, drawBlockedSlash, makeCdGate, skillAccent, type CdGate } from "./pad-cd";
+import { cdAlpha, cdText, drawCooldown, drawBlockedSlash, drawBlockedTape, makeCdGate, skillAccent, chargeText, drawCharge, CH, type CdGate } from "./pad-cd";
+// 判据唯一真话在 core/skills(哪款技能走充能读数 / 怒气比例怎么算),这里只照它执行。
+// 不在 touchpad 里写 `skillId === "rage"`:那样多一款充能技能就会有一处漏一处。
+import { isChargeSkill } from "../core/skills";
+import type { SkillId } from "../core/types";
 import { applyFont } from "../game/fonts";
 
 /** 有按下/抬起两种状态的键;跨步键是纯边沿语义,抬起不动它。
@@ -87,6 +91,9 @@ const RELEASE_ACTIONS: PadAction[] = ["left", "right", "jump", "swing"];
  *  数值搬到 config.touchAim.commitPx:同样的量要在 node 侧断言(见 reach-check 第④段),
  *  而这个文件 import cc,编译不进 tools/tsconfig.json —— 留在原地就永远测不到。 */
 const SWIPE_THRESHOLD = CFG.touchAim.commitPx;
+/** 纵向手势阈值(像素):比横轴紧一档 —— 纵向曾是有意无语义区(防纯纵向晃动误触),
+ *  给了语义(上滑挑高/下滑平抽)后仍要压住点按时的上下漂移。见 config.touchAim.commitPxY。 */
+const SWIPE_THRESHOLD_Y = CFG.touchAim.commitPxY;
 
 /**
  * 每一簇的建键顺序(照改造前的书写序,别顺手改成 PAD_ACTIONS 的顺序):
@@ -146,6 +153,8 @@ interface BtnRec {
   flashOp: UIOpacity;
   /** 滑动手势方向(仅 swing 键用):0=未提交, 1=右滑(deep), -1=左滑(near)。paint 时据此画方向色弧与切图标 */
   swipeDir: number;
+  /** 纵向手势(仅 swing 键用):0=未提交, 1=上滑(挑高), -1=下滑(平抽)。与 swipeDir 两轴独立、可组合 */
+  swipeDirY: number;
   /** 键名文字的透明度节点(仅 swing/lunge 有):apply 里随 padAlpha 同步,不参与 paint 重画 */
   labelOp: UIOpacity | null;
   /** 键名文本组件引用(用于动态更新技能名称) */
@@ -159,9 +168,21 @@ interface BtnRec {
   cdGate?: CdGate;
   /** 技能剩余冷却秒数(与 cdRatio 同源,给键心读数用) */
   cdSec?: number;
+  /**
+   * 充能比例 0..1(仅 kind==="charge" 的技能喂,当前 = 怒气重击)。
+   * 与 cdRatio 是**两个反向的量**:cd 越大越不能用、充能越大越能用,所以它绝不许
+   * 借用 cdRatio(那会立刻得到"怒气越满键越暗"),也不许借用 cdGate(见 chargeGate 注)。
+   */
+  chargeRatio?: number;
+  /**
+   * 充能环的重画门控。**必须是独立一个 gate**,不能复用 cdGate:
+   * 一个 gate 只能记一个基准,两层共用就会互相顶掉基准 —— 谁后画,另一层从此冻住
+   * (cd 那层的同类事故见 pad-cd.makeCdGate 的头注:「阴影只能 1/3 地消失」)。
+   */
+  chargeGate?: CdGate;
   /** 技能是否满足当前局势释放条件 (不满足置灰, 满足点亮) */
   skillReady?: boolean;
-  /** 技能专属类型 (lunge / smash / flash / magnet / focus) */
+  /** 技能专属类型 (lunge / smash / flash / magnet / focus / shadow / rage) */
   skillId?: string;
   /** 球种预告徽标(仅 swing 键):game-root 每帧喂 previewKind 的结果,空串隐藏 */
   badgeComp?: Label | null;
@@ -247,12 +268,20 @@ function paint(rec: BtnRec, edit: boolean): void {
   };
   g.clear();
   const isLunge = rec.action === "lunge";
-  const cooling = isLunge && (rec.cdRatio ?? 0) > 0;
+  // 充能款(kind==="charge"):键面读的是"攒了多少",不是"还剩几秒"。
+  // 它**永远不该吃 cooling 那张脸** —— cooling 会把键压成暗底 + 藏图标 + 印秒数,
+  // 而"怒气越满键越暗"是把奖励画成惩罚。判据只在 core/skills.isChargeSkill 一份。
+  const isCharge = isLunge && isChargeSkill((rec.skillId ?? "lunge") as SkillId);
+  const cooling = isLunge && !isCharge && (rec.cdRatio ?? 0) > 0;
   const isSkillDisabled = isLunge && (rec.skillReady === false || cooling);
   // 冷却走完但仍不放 = 门槛未满足(人在空中/挥拍中/球没过来),键面画一道斜切灰杠。
   // 视觉上必须与冷却扇形区分:「等 CD 会自己好」vs「得改站位」,这是两个决策。
   const isBlocked = isLunge && !cooling && rec.skillReady === false && !!rec.skillBlock;
   const isFlashReady = isLunge && rec.skillId === "flash" && rec.skillReady && !cooling;
+  // 满怒 = 充能款自己的"就绪发亮"态。与 isFlashReady **分开两个变量、共用同一套画法**
+  // (双白环 + 图标提亮):两态的成因不同(一个是 CD 走完 + 球够高,一个是攒满资源),
+  // 合并成一个变量将来就拆不开,而拆不开迟早演变成"给闪现也开一管怒气"这种事故。
+  const isRageFull = isCharge && (rec.chargeRatio ?? 0) >= 1 && rec.skillReady === true;
   // 冷却读数的浓度:滑杆压到最低时也留得下对比(算法与理由见 input/pad-cd.ts)
   const Acd = cdAlpha(A);
 
@@ -263,17 +292,20 @@ function paint(rec: BtnRec, edit: boolean): void {
     baseEdge = skinColor(S.cd.edge, S.cd.edgeA * Acd);
   } else if (isFlashReady) {
     baseEdge = skinColor(CFG.colors.accent, 0.98 * A);
+  } else if (isRageFull) {
+    // 描边用技能专属色(色即功能:一眼知道"这是怒气那根管满了"),白环交给下面那层
+    baseEdge = skinColor(skillAccent(rec.skillId ?? "lunge"), 0.98 * A);
   }
 
   g.fillColor = baseFill;
   g.strokeColor = baseEdge;
-  g.lineWidth = (rec.pressed || isFlashReady) ? 4 : 3;
+  g.lineWidth = (rec.pressed || isFlashReady || isRageFull) ? 4 : 3;
   g.circle(0, 0, rec.r);
   g.fill();
   g.stroke();
 
-  // 闪现扣杀可触发点亮状态: 双重高光环
-  if (isFlashReady) {
+  // 就绪态的双重高光环:闪现可触发 / 怒气满槽,同一个视觉语汇("这一下按得出去,而且值得按")
+  if (isFlashReady || isRageFull) {
     g.strokeColor = skinColor("#ffffff", 0.8 * A);
     g.lineWidth = 1.8;
     g.circle(0, 0, rec.r - 3);
@@ -285,6 +317,13 @@ function paint(rec: BtnRec, edit: boolean): void {
     g.lineCap = Graphics.LineCap.ROUND;
     g.lineJoin = Graphics.LineJoin.ROUND;
     drawCooldown(g, skinColor, rec.r, rec.cdRatio ?? 0, rec.skillId ?? "lunge", A);
+  }
+  // 蓄能环:与冷却层同一条内收几何、同一套补集规矩,但**它是进度不是惩罚** ——
+  // 所以充能款永远不吃上面那个 cooling 分支(见本节头注)。笔画在 pad-cd.ts,node 侧同源断言。
+  if (isCharge) {
+    g.lineCap = Graphics.LineCap.ROUND;
+    g.lineJoin = Graphics.LineJoin.ROUND;
+    drawCharge(g, skinColor, rec.r, rec.chargeRatio ?? 0, rec.skillId ?? "lunge", A);
   }
   // 门槛未满足(非冷却):斜切灰杠,同一笔画源在 pad-cd.ts,node 侧可断言
   if (isBlocked) {
@@ -301,10 +340,16 @@ function paint(rec: BtnRec, edit: boolean): void {
   }
 
   let iconCol = mix(rec.pressed ? S.downIcon : S.icon, (rec.pressed ? S.downIconA : S.iconA) * A, glow * 0.7);
-  if (isSkillDisabled) {
+  if (isBlocked) {
+    // 受阻时背后的图标作为低对比水印(watermarkA),避免线条与封条抢夺视觉
+    iconCol = skinColor(S.cd.lockedIcon, (CFG.padSkin.cd.watermarkA ?? 0.18) * Acd);
+  } else if (isSkillDisabled) {
     iconCol = skinColor(S.cd.lockedIcon, S.cd.lockedIconA * Acd);
   } else if (isFlashReady) {
     iconCol = skinColor("#ffe14d", 0.98 * A);
+  } else if (isRageFull) {
+    // 满怒的图标提亮吃技能色(与描边同色 ⇒ "这管满了"这件事只有一个颜色在说)
+    iconCol = skinColor(skillAccent(rec.skillId ?? "lunge"), 0.98 * A);
   }
 
   // 图标跟随按下/选中/技能态变色;冷却中让位给键心的剩余秒数(键名标签还在,不会认错键)
@@ -312,6 +357,34 @@ function paint(rec: BtnRec, edit: boolean): void {
     drawIcon(g, rec.action, rec.r, iconCol,
       rec.action === "swing" ? rec.swipeDir : 0, rec.skillId);
   }
+
+  // 门槛未满足:P5 动感斜切封条底衬盖在水印图标与斜杠上方,保证中央干净平整
+  if (isBlocked) {
+    g.lineCap = Graphics.LineCap.ROUND;
+    g.lineJoin = Graphics.LineJoin.ROUND;
+    drawBlockedTape(g, skinColor, rec.r, A);
+  }
+  // 纵向手势的常驻提示(仅 swing 键):键缘 12 点/6 点方向的两枚小箭头,比左右大箭头
+  // 淡一档 —— 横轴是教学在先的主手势;提交哪一档,那一档提亮到满(方向色弧同时在键缘亮起)。
+  // 画在键缘而不是图标旁:键内下方是键名标签「击球」(0.62r 处),放不下第四枚箭头。
+  if (rec.action === "swing") {
+    const tickW = Math.max(4, rec.r * 0.11);
+    const tickLen = Math.max(5, rec.r * 0.14);
+    const upA = rec.swipeDirY > 0 ? 0.95 : 0.45;
+    const dnA = rec.swipeDirY < 0 ? 0.95 : 0.45;
+    g.lineWidth = 3;
+    g.strokeColor = skinColor(CFG.colors.sweet.lob, A * upA);
+    g.moveTo(-tickW, rec.r - 2 - tickLen);
+    g.lineTo(0, rec.r - 2);
+    g.lineTo(tickW, rec.r - 2 - tickLen);
+    g.stroke();
+    g.strokeColor = skinColor(CFG.colors.sweet.drive, A * dnA);
+    g.moveTo(-tickW, -(rec.r - 2 - tickLen));
+    g.lineTo(0, -(rec.r - 2));
+    g.lineTo(tickW, -(rec.r - 2 - tickLen));
+    g.stroke();
+  }
+
   // 滑动手势反馈(仅 swing 键):已提交方向时画一道方向色弧
   if (rec.action === "swing" && rec.swipeDir !== 0) {
     const hex = rec.swipeDir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan;
@@ -320,6 +393,16 @@ function paint(rec: BtnRec, edit: boolean): void {
     const a0 = rec.swipeDir > 0 ? -0.9 : Math.PI - 0.9;
     const a1 = rec.swipeDir > 0 ? 0.9 : Math.PI + 0.9;
     g.arc(0, 0, rec.r - 4, a0, a1, false);
+    g.stroke();
+  }
+  // 纵向手势的方向弧:与横轴同一套画法,圆心角分别对准 12 点(+π/2,挑高)与 6 点(-π/2,平抽);
+  // UI 本地 y 向上,两轴同时提交时两道弧并存(上+右 = 一眼读出「挑高到后场」)
+  if (rec.action === "swing" && rec.swipeDirY !== 0) {
+    const hex = rec.swipeDirY > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive;
+    g.strokeColor = skinColor(hex, 0.9 * A);
+    g.lineWidth = 5;
+    const c = rec.swipeDirY > 0 ? Math.PI / 2 : -Math.PI / 2;
+    g.arc(0, 0, rec.r - 4, c - 0.9, c + 0.9, false);
     g.stroke();
   }
 
@@ -688,6 +771,72 @@ function drawIcon(g: Graphics, action: PadAction, r: number, color: Color, varia
         g.fill();
         break;
       }
+      if (sId === "shadow") {
+        // 影分身(2026-10-04): 一实一虚两个人形残影 + 中间一道斜切缝。
+        // 实心人形在前(宿主),细线人形在后上方偏移(分身,还没凝实)——
+        // 一眼读出"从本体分出一个影子";斜切缝是全站 P5 斩劈语汇,不画光滑重叠圈。
+        const s = r * 0.40;
+        // 虚影(后方):细描边,读作"影子"
+        g.lineWidth = 2.5;
+        const gx = -s * 0.58, gy = s * 0.24;
+        g.circle(gx, gy + s * 0.86, s * 0.2);
+        g.stroke();
+        g.moveTo(gx, gy + s * 0.62);
+        g.lineTo(gx, gy + s * 0.06);
+        g.stroke();
+        g.moveTo(gx, gy + s * 0.06);
+        g.lineTo(gx - s * 0.42, gy - s * 0.48);
+        g.moveTo(gx, gy + s * 0.06);
+        g.lineTo(gx + s * 0.42, gy - s * 0.48);
+        g.stroke();
+        // 斜切缝:虚实分界
+        g.lineWidth = 3;
+        g.moveTo(-s * 0.1, s * 0.98);
+        g.lineTo(-s * 0.42, -s * 0.3);
+        g.stroke();
+        // 实心(前方):宿主本体
+        g.lineWidth = 5;
+        g.circle(s * 0.32, s * 0.58, s * 0.22);
+        g.fill();
+        g.moveTo(s * 0.32, s * 0.32);
+        g.lineTo(s * 0.32, -s * 0.22);
+        g.stroke();
+        g.moveTo(s * 0.32, -s * 0.22);
+        g.lineTo(s * 0.06, -s * 0.82);
+        g.moveTo(s * 0.32, -s * 0.22);
+        g.lineTo(s * 0.58, -s * 0.82);
+        g.stroke();
+        break;
+      }
+      if (sId === "rage") {
+        // 怒气重击(2026-10-04):一柱**带锯齿的斗气火苗** + 底部一道压梁 + 一粒余烬。
+        // 语汇照全站 P5 规矩:打击类 = 尖刺/锯齿,不画光滑火苗轮廓(那是引力/时空那一族的圆),
+        // 也不照抄重击那把剑 —— 两款都是"轰一拍",但这款的卖点是被打断之后还能攒回来,
+        // 形状要读得出"从下往上长起来的东西",所以火苗的尖全朝上(+y,UI 本地 y 向上)。
+        const s = r * 0.42;
+        // 主苗:实心,带两个锯齿边(出生定形的几何,不逐帧 rand —— 见 AGENTS.md P5 那条)
+        g.lineWidth = 3;
+        g.moveTo(-s * 0.3, -s * 0.34);
+        g.lineTo(-s * 0.16, s * 0.16);
+        g.lineTo(-s * 0.3, s * 0.2);      // 左锯齿
+        g.lineTo(-s * 0.02, s * 0.52);
+        g.lineTo(-s * 0.14, s * 0.62);    // 上锯齿
+        g.lineTo(s * 0.1, s * 1.0);       // 顶尖
+        g.lineTo(s * 0.16, s * 0.5);
+        g.lineTo(s * 0.34, s * 0.6);      // 右锯齿
+        g.lineTo(s * 0.3, -s * 0.34);
+        g.close();
+        g.fill();
+        // 压梁:读作"攒在底下的那口气",也给火苗一个落脚的底座
+        g.lineWidth = 4.5;
+        g.moveTo(-s * 0.62, -s * 0.5);
+        g.lineTo(s * 0.62, -s * 0.5);
+        g.stroke();
+        // 余烬:偏左一粒,破掉对称(全站尖刺件都带一颗偏心点,见 p5kit 星芒)
+        g.circle(-s * 0.52, s * 0.34, s * 0.13);
+        g.fill();
+        break;
+      }
 
       // 默认强力跨步: 正面大开立的人形剪影 + 两侧速度线
       const s = r * 0.42;
@@ -836,13 +985,17 @@ export interface TouchPadHandle {
    * cdSec = 剩余冷却秒数(与 cdRatio 同源,由 game-root 从 s.cd 换算),画在键心当倒计时。
    * blockReason = cd 走完但门槛未满足时的可读原因(skills.skillBlockReason 判定),
    * 键上方常驻显示;null = 完全就绪或冷却中。
+   * chargeRatio = 充能比例 0..1,**只有 kind==="charge" 的技能(怒气重击)会被读**:
+   * 它画在环上、印在键心,与 cdRatio 各走一条通道(两者语义相反,不许互相顶替)。
+   * 参数放最后且带默认值 ⇒ 现有六个技能的调用点一行都不用改。
    */
-  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null): void;
+  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number): void;
   /**
    * 球种预告徽标(击球键上方):game-root 每帧喂 Player.previewKind 的结果;
    * null = 无来球,隐藏。
    */
-  setShotPreview(kind: string | null): void;
+  /** 球种预告徽标(击球键上方):传 null 隐藏。`auto` = 自动击打开着,徽标后面缀「· 自动」 */
+  setShotPreview(kind: string | null, auto?: boolean): void;
   /** 当前生效的移动方式(便于面板判断要不要显示摇杆的 chip) */
   readonly moveMode: MoveMode;
   /** 清触摸 claim 与按下的视觉状态(层被隐藏时 TOUCH_END 送不到,必须主动清) */
@@ -861,15 +1014,18 @@ function toClusterLocal(cluster: Node, e: EventTouch): Vec3 {
 }
 
 /**
- * 键心倒计时的尺寸:字号 = numK × 半径(跟图标一样随半径缩放,而不是写死一个像素值),
+ * 键心读数的尺寸:字号 = sizeK × 半径(跟图标一样随半径缩放,而不是写死一个像素值),
  * 圆心抬到 numY × 半径 —— 让开贴在键圆底部那行键名,两个读数不许叠在一起
  * (这条几何在 tools/pad-cd-check.ts 里当断言④钉住,半径取到最小档时最容易撞)。
  * 建层时摆一次、apply() 改半径后再摆一次,共用同一个算式。
+ *
+ * sizeK 可覆写:充能款印的是「100%」这种 4 字宽,比倒计时"3.5"宽得多,
+ * 照 numK 摆会在最小半径档啃到键名标签 —— 所以它用 padSkin.cd.charge.pctK(收一档)。
  */
-function sizeCdLabel(comp: Label | null, r: number): void {
+function sizeCdLabel(comp: Label | null, r: number, sizeK?: number): void {
   if (!comp) return;
   const K = CFG.padSkin.cd;
-  const fs = Math.max(9, Math.round(r * K.numK));
+  const fs = Math.max(9, Math.round(r * (sizeK ?? K.numK)));
   comp.fontSize = fs;
   comp.lineHeight = Math.round(fs * 1.1);
   comp.node.setPosition(0, r * K.numY);
@@ -980,28 +1136,31 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     badgeComp = bl;
   }
 
-  // 技能门槛原因(仅技能键):cd 走完但局势不放时,键上方给可读原因
-  // (「挥拍中」「球不够高」…判据在 skills.skillBlockReason,文案在 config.skills.blockText)
+  // 技能门槛原因(仅技能键):cd 走完但局势不放时,内嵌在键内 P5 动感斜切封条上
+  // (「球没过来」「挥拍中」「球不够高」…判据在 skills.skillBlockReason,文案在 config.skills.blockText)
   let hintOp: UIOpacity | null = null;
   let hintComp: Label | null = null;
   if (action === "lunge") {
     const CDK = CFG.padSkin.cd;
     const hn = new Node(`hint-${action}`);
     hn.layer = Layers.Enum.UI_2D;
-    hn.addComponent(UITransform).setContentSize(140, CDK.hintSize * 1.5);
+    const tapeW = r * (CDK.tapeW ?? 1.44);
+    const tapeH = r * (CDK.tapeH ?? 0.42);
+    hn.addComponent(UITransform).setContentSize(tapeW, tapeH);
     const hb = hn.addComponent(Label);
     hb.string = "";
-    hb.fontSize = CDK.hintSize;
-    hb.lineHeight = Math.round(CDK.hintSize * 1.15);
+    const fs = Math.max(7, Math.round(r * 0.26));
+    hb.fontSize = fs;
+    hb.lineHeight = Math.round(fs * 1.15);
     hb.horizontalAlign = 1;
     hb.verticalAlign = 1;
     hb.isBold = true;
     hb.enableOutline = true;
-    hb.outlineColor = skinColor(CFG.padSkin.cd.numOutlineColor, 1);
-    hb.outlineWidth = 2;
-    hb.color = skinColor(CDK.hintColor, CDK.hintA);
-    applyFont(hb, false);
-    hn.setPosition(0, r * CDK.hintDyK);
+    hb.outlineColor = skinColor(CDK.hintOutline ?? "#05070c", 1);
+    hb.outlineWidth = CDK.hintOutlineW ?? 2;
+    hb.color = skinColor(CDK.hintColor ?? "#f8fafc", CDK.hintA ?? 0.98);
+    applyFont(hb, true);
+    hn.setPosition(0, r * (CDK.hintY ?? 0.08));
     hintOp = hn.addComponent(UIOpacity);
     hintOp.opacity = 0;
     hn.setParent(node);
@@ -1010,9 +1169,11 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
 
   const rec: BtnRec = {
     action, node, ut, g, cluster, r, pressed: false, selected: false, glow: 0,
-    flash, flashG, flashOp, swipeDir: 0, labelOp, labelComp, cdOp, cdComp,
+    flash, flashG, flashOp, swipeDir: 0, swipeDirY: 0, labelOp, labelComp, cdOp, cdComp,
     badgeComp, badgeOp, hintComp, hintOp,
     cdRatio: 0, cdGate: makeCdGate(), cdSec: 0, skillReady: true, skillId: "lunge", skillBlock: null, readyPulsing: false,
+    // 充能层自带一个 gate:与 cdGate 各记各的基准,两层互不顶掉(见 BtnRec.chargeGate 注)
+    chargeRatio: 0, chargeGate: makeCdGate(),
   };
   paint(rec, !!opts.edit);
 
@@ -1376,8 +1537,8 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
 
     const down = (rec: BtnRec): void => {
       // 技能按钮处于 CD 中或不满足释放门槛时拒绝触发:
-      // 静默轻震曾是老写法 —— 玩家只觉得「按了没反应」。现在抖动 + 红环 + 键上方
-      // 本来就常驻着原因文字(skillBlock),按错也知道为什么。
+      // 静默轻震曾是老写法 —— 玩家只觉得「按了没反应」。现在抖动 + 红环 + 键内封条微弹,
+      // 按错时因果清晰、反馈强烈。
       if (rec.action === "lunge") {
         if ((rec.cdRatio ?? 0) > 0 || rec.skillReady === false) {
           Tween.stopAllByTarget(rec.node);
@@ -1386,12 +1547,19 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
             .to(0.05, { position: v3(rec.node.position.x - 4, rec.node.position.y, 0) })
             .to(0.06, { position: v3(rec.node.position.x, rec.node.position.y, 0) })
             .start();
+          if (rec.hintComp?.node && rec.skillBlock) {
+            Tween.stopAllByTarget(rec.hintComp.node);
+            tween(rec.hintComp.node)
+              .to(0.06, { scale: v3(1.18, 1.18, 1) })
+              .to(0.12, { scale: v3(1, 1, 1) })
+              .start();
+          }
           triggerFlash(rec, CFG.padSkin.cd.rejectFlash);
           return;
         }
       }
       rec.pressed = true;
-      if (rec.action === "swing") rec.swipeDir = 0;  // 新按下重置手势
+      if (rec.action === "swing") { rec.swipeDir = 0; rec.swipeDirY = 0; }  // 新按下重置手势(两轴)
       paint(rec, false);
       Tween.stopAllByTarget(rec.node);
       rec.node.setScale(CFG.padSkin.pressScale, CFG.padSkin.pressScale, 1);
@@ -1400,7 +1568,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
     const upOf = (rec: BtnRec): void => {
       rec.pressed = false;
-      if (rec.action === "swing") rec.swipeDir = 0;  // 松手清视觉反馈
+      if (rec.action === "swing") { rec.swipeDir = 0; rec.swipeDirY = 0; }  // 松手清视觉反馈(pad 上的提交值保留给命中消费)
       paint(rec, false);
       Tween.stopAllByTarget(rec.node);
       // 两段:先 0.9 → 1.06 再回到 1.0,过冲幅度可控、比单调 backOut 更"实"
@@ -1412,26 +1580,40 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
 
     /**
-     * 击球键滑动手势跟踪:手指从按下点位移超过 SWIPE_THRESHOLD 即提交方向。
-     * 触发用总位移 hypot(dx,dy)(斜滑也算),但横向分量仍需占主导(≥ 阈值一半),
-     * 避免纯纵向晃动误触;方向由 X 符号决定。右滑 → deep(1),左滑 → near(-1)。
-     * 提交后写入 pad.swingSwipe,player.ts 在命中前读取。同时更新 rec.swipeDir
-     * 触发方向色弧视觉反馈。
+     * 击球键滑动手势跟踪:手指从按下点位移超过阈值即提交方向,横纵两轴独立判定、可组合。
+     * 横轴:总位移 hypot(dx,dy) ≥ commitPx(斜滑也算),横向分量需 ≥ 阈值一半(防纯纵向
+     * 晃动误触),方向由 X 符号决定,右滑 → deep(1),左滑 → near(-1)。
+     * 纵轴:纵向分量 ≥ commitPxY(比横轴紧一档,纵向曾是有意无语义区),上滑 → 挑高(1),
+     * 下滑 → 平抽(-1)。两轴分别写入 pad.swingSwipe / pad.swingSwipeY,player.ts 在命中前
+     * 读取;同一轴反向滑过阈值即改写(与横滑的「中途反悔」同构),斜上右滑一个动作即可
+     * 组合出「挑高到后场」。同时更新 rec.swipeDir / rec.swipeDirY 触发方向色弧视觉反馈。
      */
     const trackSwingSwipe = (rec: BtnRec, sx: number, sy: number, e: EventTouch): void => {
       const u = e.getUILocation();
       const dx = u.x - sx;
       const dy = u.y - sy;
       if (Math.hypot(dx, dy) < SWIPE_THRESHOLD) return;       // 位移不足:仍是 mid
-      if (Math.abs(dx) < SWIPE_THRESHOLD * 0.5) return;        // 横向分量过小:纯纵向无方向语义
-      const dir = dx > 0 ? 1 : -1;
-      if (rec.swipeDir === dir) return;   // 已提交同方向,不重复刷
-      rec.swipeDir = dir;
-      pad.swingSwipe = dir;
-      paint(rec, false);
-      // 方向色冲击环:提交哪档就用哪档的颜色闪一圈 —— 配合图标切换,把「这一拍是重是轻」
-      // 在拇指底下说清楚,不等命中才知道。色值与中性图标的滑动箭头同源。
-      triggerFlash(rec, dir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan);
+      if (Math.abs(dx) >= SWIPE_THRESHOLD * 0.5) {
+        const dir = dx > 0 ? 1 : -1;
+        if (rec.swipeDir !== dir) {                            // 已提交同方向,不重复刷
+          rec.swipeDir = dir;
+          pad.swingSwipe = dir;
+          paint(rec, false);
+          // 方向色冲击环:提交哪档就用哪档的颜色闪一圈 —— 配合图标切换,把「这一拍是重是轻」
+          // 在拇指底下说清楚,不等命中才知道。色值与中性图标的滑动箭头同源。
+          triggerFlash(rec, dir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan);
+        }
+      }
+      if (Math.abs(dy) >= SWIPE_THRESHOLD_Y) {
+        const dir = dy > 0 ? 1 : -1;
+        if (rec.swipeDirY !== dir) {
+          rec.swipeDirY = dir;
+          pad.swingSwipeY = dir;
+          paint(rec, false);
+          // 纵轴方向色:挑高绿/平抽蓝(与 shotBadge 徽标同源,徽标会同步预告真实球种)
+          triggerFlash(rec, dir > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive);
+        }
+      }
     };
 
     /**
@@ -1698,19 +1880,46 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       rec.labelOp.opacity = Math.round(CFG.padSkin.labelA * Settings.padAlpha * 255);
     }
     syncCdLabel(rec);
+    syncHintLabel(rec);
   };
 
   /**
-   * 键心倒计时:内容与透明度。
-   * 内容由 setSkillState 每帧喂(它才知道还剩几秒),透明度在这里跟随滑杆 ——
-   * 但走 cdAlpha,不是滑杆原值:玩家调淡的是按键,不是「这个技能还在冷却」这条信息。
+   * 键心读数:内容与透明度。**同一个 Label 节点、两条内容**——
+   * 冷却款印「还剩几秒」,充能款印「攒了多少%」。不另开第二个节点:
+   * 那两个读数永远互斥(一款技能只走一条通道),叠两个节点就多一个要同步透明度、
+   * 要在几何判据里防撞的物件,而 pad-cd-check ④ 钉的是"这一个读数不撞键名标签"。
+   * 透明度走 cdAlpha,不是滑杆原值:玩家调淡的是按键,不是「这颗键现在什么状态」这条信息。
    */
   const syncCdLabel = (rec: BtnRec): void => {
     if (!rec.cdComp || !rec.cdOp) return;
-    sizeCdLabel(rec.cdComp, rec.r);
-    const txt = cdText(rec.cdSec ?? 0);
+    const charge = isChargeSkill((rec.skillId ?? "lunge") as SkillId);
+    sizeCdLabel(rec.cdComp, rec.r, charge ? CH.pctK : undefined);
+    // 封条占着同一个腰位(numY === hintY),所以**封条在的时候键心必须让字**。
+    // 冷却款从来不会撞,因为受阻那一下 cdSec 本来就是 0 → cdText 空串;
+    // 充能款不一样:armed 那 240 帧里怒气还挂在管上(那一拍没打出去),读数是非空的"100%",
+    // 于是"100%"与「重击中」直接糊成"1重击中%"(出图肉眼判抓到的现场)。
+    const txt = rec.skillBlock ? ""
+      : (charge ? chargeText(rec.chargeRatio ?? 0) : cdText(rec.cdSec ?? 0));
     if (rec.cdComp.string !== txt) rec.cdComp.string = txt;
     rec.cdOp.opacity = Math.round((txt ? CFG.padSkin.cd.numA * cdAlpha(Settings.padAlpha) : 0) * 255);
+  };
+
+  /**
+   * 技能门槛受阻提示文字(内嵌封条):字号随半径自适应、居中偏上对齐腰部、
+   * 透明度跟随 cdAlpha(状态信息保留下限,亮场与低滑杆下均清晰可读)。
+   */
+  const syncHintLabel = (rec: BtnRec): void => {
+    if (!rec.hintComp || !rec.hintOp) return;
+    const CDK = CFG.padSkin.cd;
+    const fs = Math.max(7, Math.round(rec.r * 0.26));
+    rec.hintComp.fontSize = fs;
+    rec.hintComp.lineHeight = Math.round(fs * 1.15);
+    rec.hintComp.node.setPosition(0, rec.r * (CDK.hintY ?? 0.08));
+    const txt = rec.skillBlock ?? "";
+    if (rec.hintComp.string !== txt) rec.hintComp.string = txt;
+    rec.hintOp.opacity = txt
+      ? Math.round((CDK.hintA ?? 0.98) * cdAlpha(Settings.padAlpha) * 255)
+      : 0;
   };
 
   const apply = (): void => {
@@ -1831,9 +2040,15 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
    * 用循环 tween 而不是逐帧重画 —— setSkillState 每帧都会进来,重画一整键太浪费;
    * triggerFlash/triggerGlow 与它共用 flash 子节点,会先打断置 readyPulsing=false,
    * 下一帧这里发现状态仍是就绪就重新起呼吸。
+   *
+   * 「就绪」在两条通道下定义不同,必须分流:冷却款 = 倒计时走完;充能款 = **攒满**。
+   * 照旧用 cdRatio<=0 判充能款的话,空槽那根管会在"随时能按但没怒气"时无限呼吸,
+   * 而按下去只得到一句「怒气未聚」—— 那正是本文件存在要防的"读数撒谎"(见 pad-cd.ts 头注)。
    */
   const syncReadyPulse = (rec: BtnRec): void => {
-    const on = rec.action === "lunge" && (rec.cdRatio ?? 0) <= 0
+    const charge = isChargeSkill((rec.skillId ?? "lunge") as SkillId);
+    const metered = charge ? (rec.chargeRatio ?? 0) >= 1 : (rec.cdRatio ?? 0) <= 0;
+    const on = rec.action === "lunge" && metered
       && rec.skillReady === true && !rec.skillBlock;
     if (on === !!rec.readyPulsing) return;
     rec.readyPulsing = on;
@@ -1855,46 +2070,51 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     }
   };
 
-  const setSkillState = (cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec = 0, blockReason?: string | null): void => {
+  const setSkillState = (cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec = 0, blockReason?: string | null, chargeRatio = 0): void => {
     for (const rec of recs) {
       if (rec.action !== "lunge") continue;
       const block = blockReason ?? null;
       // 比例项走 gate:基准是「上一次画上屏的值」。直接比 rec.cdRatio 的旧写法基准每帧被
       // 覆盖,阈值退化成相邻帧增量(= 1/maxCd),长 CD 的扫掠会整段冻结(见 pad-cd.makeCdGate)
+      // 充能层用它**自己那一个** gate:一个 gate 只记得住一个基准,共用就会互相顶掉。
       const changed = (rec.cdGate?.step(cdRatio) ?? true)
+        || (rec.chargeGate?.step(chargeRatio) ?? true)
         || rec.skillReady !== ready
         || rec.skillId !== skillId
         || rec.skillBlock !== block;
       rec.cdRatio = cdRatio;
       rec.cdSec = cdSec;
+      rec.chargeRatio = chargeRatio;
       rec.skillReady = ready;
       rec.skillId = skillId;
       rec.skillBlock = block;
       if (skillName && rec.labelComp && rec.labelComp.string !== skillName) {
         rec.labelComp.string = skillName;
       }
-      // 门槛原因文字:cd 走完但局势不放时键上方常驻;其余情况清空
-      if (rec.hintComp && rec.hintOp) {
-        const txt = block ?? "";
-        if (rec.hintComp.string !== txt) rec.hintComp.string = txt;
-        rec.hintOp.opacity = txt
-          ? Math.round(CFG.padSkin.cd.hintA * Math.max(Settings.padAlpha, 0.5) * 255)
-          : 0;
-      }
       syncCdLabel(rec);
+      syncHintLabel(rec);
       syncReadyPulse(rec);
       if (changed) {
         paint(rec, !!opts.edit);
+        // 画过屏就把两条 gate 的基准对齐到刚上屏的值(CdGate.sync 的契约,见 pad-cd.ts)。
+        // 这一句在充能层是新加的,在冷却层是补上的:changed 也可能只由 skillReady/skillBlock
+        // 触发(那几条不跨过 stepTol),此时整键其实已经重画、扫掠也按当前 ratio 画过了,
+        // 基准却还停在旧值 ⇒ 下一帧又会因为"累计变化"白白重画一次。
+        rec.chargeGate?.sync(chargeRatio);
+        rec.cdGate?.sync(cdRatio);
       }
     }
   };
 
-  /** 球种预告徽标(击球键上方):传 null 隐藏。game-root 每帧喂 previewKind 的结果 */
-  const setShotPreview = (kind: string | null): void => {
+  /** 球种预告徽标(击球键上方):传 null 隐藏。game-root 每帧喂 previewKind 的结果。
+   *  `auto` = 自动击打开着:同一个 Label 后面缀「· 自动」当模式读数(零新节点、零新增绘制)。
+   *  不覆盖球种色 —— 覆盖就把「这一拍是什么球」的读数洗成一片红,那两个字的任务只是说"这拍不是你按的"。 */
+  const setShotPreview = (kind: string | null, auto?: boolean): void => {
+    const suffix = auto ? CFG.shotBadge.autoSuffix.text : "";
     for (const rec of recs) {
       if (rec.action !== "swing" || !rec.badgeComp || !rec.badgeOp) continue;
       const def = kind ? (CFG.shotBadge.kinds as Record<string, { text: string; color: string }>)[kind] : undefined;
-      const txt = def ? def.text : "";
+      const txt = def ? def.text + suffix : "";
       if (rec.badgeComp.string !== txt) {
         rec.badgeComp.string = txt;
         if (def) rec.badgeComp.color = skinColor(def.color, 1);
@@ -1923,8 +2143,9 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       claims.clear();
       for (const rec of recs) {
         const hadGlow = rec.glow > 0;
-        const hadSwipe = rec.swipeDir !== 0;   // 滑动档位也是视觉态:层被藏起来时一并清,
+        const hadSwipe = rec.swipeDir !== 0 || rec.swipeDirY !== 0; // 滑动档位也是视觉态:层被藏起来时一并清,
         rec.swipeDir = 0;                      // 否则再亮出来会残留上一次的深/浅图标
+        rec.swipeDirY = 0;
         if (!rec.pressed && !hadGlow && !hadSwipe && rec.node.scale.x === 1) continue;
         rec.pressed = false;
         rec.glow = 0;
@@ -2016,13 +2237,13 @@ class TouchPadController {
     this.handle?.setSwingGlow(level);
   }
 
-  /** 设置技能按键运行时状态 (CD、就绪、技能名、剩余秒);未挂载时静默忽略 */
-  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null): void {
-    this.handle?.setSkillState(cdRatio, ready, skillId, skillName, cdSec, blockReason);
+  /** 设置技能按键运行时状态 (CD、就绪、技能名、剩余秒、充能比例);未挂载时静默忽略 */
+  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number): void {
+    this.handle?.setSkillState(cdRatio, ready, skillId, skillName, cdSec, blockReason, chargeRatio);
   }
 
-  setShotPreview(kind: string | null): void {
-    this.handle?.setShotPreview(kind);
+  setShotPreview(kind: string | null, auto?: boolean): void {
+    this.handle?.setShotPreview(kind, auto);
   }
 }
 
