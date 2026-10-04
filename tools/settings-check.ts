@@ -244,26 +244,54 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   ok(near(st.v.slider.dx, 0) && near(st.v.slider.r, SLIDER_BASE.r), "resetPad 滑轨本体也回默认");
 }
 
-// ---------- ⑩ moveMode 新老档一律默认 slider(0.0.24 滑轨升为默认,用户指令) ----------
+// ---------- ⑩ moveMode:老档必须真的被迁到 slider(0.0.24 滑轨升为默认,用户指令) ----------
 
 {
-  // 老档:raw 里带 pad 但没有 moveMode → 一并迁到 slider(新手引导按滑轨教);
-  // 用户想回摇杆/按键,设置页随时可切,迁移只动默认值不锁选择
+  // 现场:用户升级后进游戏还是「左右按键」。0.0.24 那条迁移只认「档里没有 moveMode 键」,
+  // 而旧版本任何一次落盘都会把当时代的默认值写进档里(buttons 模式的老玩家尤其如此),
+  // 于是升级等于没升。现在按版本号补一刀:v<4 一律吃滑轨默认,选择权留给之后。
   const old = sanitize({ pad: { left: { dx: 10, dy: 0, r: 44 } } });
   ok(old.moveMode === "slider", "老档(有 pad 无 moveMode)也迁到 slider,统一按滑轨教");
   // 新装机:raw = null → sanitize 走 fresh 的 slider
   const newInstall = sanitize(null);
   ok(newInstall.moveMode === "slider", "新装机默认 slider,直接体验新玩法");
-  // 显式存过 moveMode 的档,照实读回
-  const explicit = sanitize({ moveMode: "joystick", pad: { left: { dx: 10, dy: 0, r: 44 } } });
-  ok(explicit.moveMode === "joystick", "显式存的 moveMode 优先于默认(选了摇杆的不被打断)");
-  const explicitBtn = sanitize({ moveMode: "buttons" });
-  ok(explicitBtn.moveMode === "buttons", "显式存 buttons 也照读");
-  const explicitSld = sanitize({ moveMode: "slider" });
-  ok(explicitSld.moveMode === "slider", "显式存 slider 也照读");
+  ok(newInstall.v === 4, "默认档版本号 v=4(迁移靠它认「这次是升级不是选择」)");
+
+  // 显式存过值、但档还是 v<4 的老玩家:这就是那个「一进游戏就是按键」的档,必须被迁走
+  const legacyBtn = sanitize({ v: 3, moveMode: "buttons", pad: { left: { dx: 10, dy: 0, r: 44 } } });
+  ok(legacyBtn.moveMode === "slider", "v=3 存着 buttons 的老档 → 强制滑轨(旧写法会原样读回 = 空转)");
+  const legacyJoy = sanitize({ v: 3, moveMode: "joystick" });
+  ok(legacyJoy.moveMode === "slider", "v=3 存着 joystick 的老档 → 同样只迁一次,默认档已换人");
+  const legacyJunk = sanitize({ v: 3, moveMode: "nonsense" });
+  ok(legacyJunk.moveMode === "slider", "v=3 且值认不出 → 落默认 slider");
+  // 老档的 pad 偏移不能被这次迁移顺带重置(基准没变,只是默认移动方式变了)
+  ok(legacyBtn.pad.left.dx === 10, "v=3→4 的移动方式迁移不动用户摆好的键位偏移");
+
+  // v=4 起,存什么读什么 —— 用户在设置页选摇杆/按键,不该每次冷启动被盖回滑轨
+  const explicit = sanitize({ v: 4, moveMode: "joystick", pad: { left: { dx: 10, dy: 0, r: 44 } } });
+  ok(explicit.moveMode === "joystick", "v=4 显式存的 moveMode 优先于默认(选了摇杆的不被打断)");
+  const explicitBtn = sanitize({ v: 4, moveMode: "buttons" });
+  ok(explicitBtn.moveMode === "buttons", "v=4 显式存 buttons 也照读(迁移只认一次)");
+  const explicitSld = sanitize({ v: 4, moveMode: "slider" });
+  ok(explicitSld.moveMode === "slider", "v=4 显式存 slider 也照读");
   // 垃圾值 → 回默认(新老档都落 slider)
-  const junk = sanitize({ moveMode: "nonsense" });
+  const junk = sanitize({ v: 4, moveMode: "nonsense" });
   ok(junk.moveMode === "slider", "moveMode 收到垃圾值 → 走默认 slider");
+
+  // 落盘闭环:迁移后的第一次写盘要带上 v=4,否则下次冷启动又迁一遍
+  {
+    const kv = freshKV();
+    kv.m.set("dd02.settings", JSON.stringify({ v: 3, moveMode: "buttons" }));
+    const st = new SettingsStore();
+    st.init();
+    ok(st.v.moveMode === "slider", "升级后读老档 → 移动方式是滑轨");
+    st.setPart({ moveMode: "joystick" });        // 用户当场选回摇杆
+    const saved = JSON.parse(kv.m.get("dd02.settings")!);
+    ok(saved.v === 4 && saved.moveMode === "joystick", "选择随 flush 写入 v=4 档");
+    const st2 = new SettingsStore();
+    st2.init();
+    ok(st2.v.moveMode === "joystick", "重开之后仍是用户选的摇杆,不会被默认盖回去");
+  }
 }
 
 // ---------- ⑪ 摇杆与滑轨本体字段:消毒与夹取 ----------

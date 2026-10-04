@@ -131,8 +131,8 @@ export function drawSliderFace(g: Graphics, dl: SliderDL): void {
   paintP5(g, dl.knob);
 }
 
-/** 由尺寸与取值直接出滑杆列表:调用方不必自己算 t */
-export { sliderDL } from "./p5-shapes";
+/** 由尺寸与取值直接出滑杆/进度条列表:调用方不必自己算 t */
+export { progressDL, sliderDL } from "./p5-shapes";
 
 /**
  * 网点层。**返回点数**,让调用方与 panel-check 的红线对上 ——

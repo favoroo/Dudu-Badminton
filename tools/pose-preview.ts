@@ -195,7 +195,10 @@ function handDisc(ops: StubOp[], arm: Arm): number | null {
   for (const o of ops) {
     if (o.kind === "stroke") { if (++strokesSeen > 2) break; continue; }
     const pts = opPoints(o);
-    if (pts.length < 20) continue;                 // 影子(单个 ellipse)不算手盘
+    // 下限 = sprites.ts segsFor 的最小段数(8):圆盘采样自 segsFor 自适应段数后,
+    // 小圆(手盘 r≈3.3)只有 9 个点,旧的「<20 跳过」会把真手盘滤成棍子。
+    // 影子本来就靠下面的质心距离排除(影子在脚下,不在 hand 位置),这里只挡退化路径。
+    if (pts.length < 8) continue;
     const c = { x: 0, y: 0 };
     for (const q of pts) { c.x += q.x / pts.length; c.y += q.y / pts.length; }
     if (Math.hypot(c.x - arm.hd.x, c.y - arm.hd.y) > 1.5) continue;

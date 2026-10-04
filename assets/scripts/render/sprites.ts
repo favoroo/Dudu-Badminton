@@ -32,6 +32,7 @@ import {
   runFoot, airFoot, lungeFoot, standFoot, swingFootLift,
 } from "./poses";
 import { ShuttleMotion, shuttleWobble, TIER_FIRE, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "./shuttle-motion";
+import { drawFootSigil } from "./aura";
 
 const LineCap = Graphics.LineCap;
 const LineJoin = Graphics.LineJoin;
@@ -179,10 +180,21 @@ function sweepDelta(a0: number, a1: number, ccw: boolean): number {
  *  顶点量比旧值 36 少 45% —— 人物一帧要画十几处圆弧,这里是被 GC 与顶点重传放大的热点 */
 const CIRCLE_SEGS = 20;
 
+/** 整圈采样段数随半径自适应:大轮廓(r≥12)维持 CIRCLE_SEGS 不变,小件按比例减段 ——
+ *  眼睛 2px、嘴巴 3px 这些也照拿 20 段是被顶点重传放大的浪费。下限 8 段
+ *  (8 段在 r=8 时弦降 ~0.77px,仍不可辨);拍框高光弧等按索引映射角度的调用
+ *  仍直接用 CIRCLE_SEGS,不经过这里,免得点数与角度错位。 */
+function segsFor(r: number): number {
+  const ar = r < 0 ? -r : r;
+  if (ar >= 12) return CIRCLE_SEGS;
+  const s = Math.ceil(ar * 1.4) + 4;
+  return s < 8 ? 8 : s;
+}
+
 /** 局部圆弧按 canvas 语义采样成折线(角度在局部 canvas 约定里解释,方向视觉与原版一致) */
 function arcPts(f: Frame, cx: number, cy: number, r: number, a0: number, a1: number, ccw: boolean): Pt[] {
   const d = sweepDelta(a0, a1, ccw);
-  const steps = Math.max(2, Math.ceil((Math.abs(d) / TAU) * CIRCLE_SEGS));
+  const steps = Math.max(2, Math.ceil((Math.abs(d) / TAU) * segsFor(r)));
   const pts = pooledPts();
   for (let i = 0; i <= steps; i++) {
     const th = a0 + (d * i) / steps;
@@ -193,9 +205,10 @@ function arcPts(f: Frame, cx: number, cy: number, r: number, a0: number, a1: num
 
 /** 一般椭圆参数采样(带旋转/非均匀缩放的椭圆 cc ellipse 画不了,统一折线) */
 function ellipsePts(f: Frame, cx: number, cy: number, rx: number, ry: number): Pt[] {
+  const segs = segsFor(rx > ry ? rx : ry);
   const pts = pooledPts();
-  for (let i = 0; i < CIRCLE_SEGS; i++) {
-    const t = (i / CIRCLE_SEGS) * TAU;
+  for (let i = 0; i < segs; i++) {
+    const t = (i / segs) * TAU;
     pts.push(f.pt(cx + rx * Math.cos(t), cy + ry * Math.sin(t)));
   }
   return pts;
@@ -266,13 +279,8 @@ const DEFAULT_THEME: Theme = {
 // 设计字段本体在 types.SkinDef / config.SKINS;这里只是它们落到笔画的颜色与尺寸
 const HAIR_LINE = "rgba(10,13,24,0.55)";
 
-// 脚下光环(传说人物专属):主环/副环两色 + 三颗环绕光点
-const AURA_COLORS: Record<string, { a: string; b: string }> = {
-  gold: { a: "#ffd24d", b: "#fff3c4" },
-  neon: { a: "#3dffa8", b: "#a5ffe0" },
-  flame: { a: "#ff6a1f", b: "#ffd24d" },
-  ice: { a: "#7ecbff", b: "#eaffff" },
-};
+// 脚下光环(传说人物专属)的配色与画法已迁往 render/aura.ts —— 那里六层一笔一画
+// 都排好了,数值在 config.fx.aura;这里只在画身体之前调用一次 drawFootSigil。
 
 // 挥拍弧光专属风格(设计款球拍):主色/副光色对;rainbow 不在表里,走 hueColor 随时间变相
 const SWING_FX_COLORS: Record<string, { a: string; b: string }> = {
@@ -621,29 +629,17 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   g.ellipse(vp.x(x), vp.y(groundY + 3), W * 0.62 * (1 - air * 0.3) * vsx, 5 * (1 - air * 0.35) * vsy);
   g.fill();
 
-  // 传说人物脚下光环:双环呼吸 + 三颗环绕光点(升空时不画,避免悬空光环)
-  if (ps?.aura && !air) {
-    const ac = AURA_COLORS[ps.aura] || AURA_COLORS.gold;
-    const vs = Math.sqrt(vsx * vsy) || 1;
-    const pulse = 1 + Math.sin(t * 0.085) * 0.09;
-    const rx0 = W * 0.95 * pulse, ry0 = 8.5 * pulse;
-    g.strokeColor = withAlpha(pal(ac.a), 0.34);
-    g.lineWidth = 2.2 * vs;
-    g.ellipse(vp.x(x), vp.y(groundY + 2), rx0 * vsx, ry0 * vsy);
-    g.stroke();
-    g.strokeColor = withAlpha(pal(ac.b), 0.22);
-    g.lineWidth = 1.2 * vs;
-    g.ellipse(vp.x(x), vp.y(groundY + 2), rx0 * 1.28 * vsx, ry0 * 1.3 * vsy);
-    g.stroke();
-    for (let i = 0; i < 3; i++) {
-      const oa = t * 0.055 + (i * TAU) / 3;
-      const ox = x + Math.cos(oa) * rx0 * 1.12;                       // 环绕椭圆长轴
-      const oy = groundY + 2 + Math.sin(oa) * ry0 * 1.12;
-      const rise = 6 + Math.sin(t * 0.05 + i * 2.1) * 4;              // 光点小幅漂浮(世界 y 向上为负)
-      g.fillColor = withAlpha(pal(i === 1 ? ac.b : ac.a), 0.8);
-      g.circle(vp.x(ox), vp.y(oy - rise), 1.6 * vs);
-      g.fill();
-    }
+  // 传说人物脚下法阵(溢光/齿环/断环/符文/星尘/升尘):画法与数值都在 render/aura.ts。
+  // 排在身体之前 ⇒ 永远压在脚后跟底下,升尘飘到腿后被身体挡住,不需要裁剪。
+  // 离地按 air×liftFade 淡出(旧写法是 !air 一刀切:跳起那帧整圈凭空消失)
+  if (ps?.aura) {
+    drawFootSigil(g, {
+      cx: vp.x(x), cy: vp.y(groundY + 2),
+      rx: W * C.fx.aura.radiusK,
+      kx: vsx, ky: vsy,
+      t, key: ps.aura,
+      vis: 1 - air * C.fx.aura.liftFade,
+    });
   }
 
   // 唯一的坐标系:脚底原点 + facing 镜像 + squash。躯干/腿/双臂/头同场绘制,

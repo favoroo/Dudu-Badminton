@@ -14,7 +14,10 @@ import type { StageDef } from "../core/campaign";
 import type { ObjectiveResult } from "../core/campaign-hud";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide, retainedDraw, ROLE, slantPath, skewOf, textW } from "./ui-arcade";
+import {
+  ARCADE, cancelFade, drawMenuCard, drawSectionBand, drawSlantShadow, fadeOutHide, inkFor, paintP5,
+  progressDL, retainedDraw, ROLE, SLANT, slantPath, skewOf, textW,
+} from "./ui-arcade";
 import { clearKids } from "./ui-shell";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
@@ -165,7 +168,7 @@ export class SettlePanel {
     this.bonusLine = kit.label(this.card, "", 12, P.dim);
     this.bonusLine.node.setPosition(0, -56, 0);
 
-    // 经验条:Lv 左标 + 底槽 + 填充(填充逐帧重绘)
+    // 经验条:Lv 左标 + 底槽 + 填充(填充逐帧重绘)。底槽 = 凹陷槽,与滑杆轨道同件
     this.lvLabel = kit.label(this.card, "", 14, P.text);
     this.lvLabel.node.setPosition(-CW / 2 + 44, -82, 0);
     this.barWrap = new Node("exp-bar");
@@ -174,12 +177,7 @@ export class SettlePanel {
     this.barBg = this.barWrap.addComponent(Graphics);
     // 2p 友谊赛不发奖励时整条会 active=false,再显示就得重画(原生侧 onDisable 清渲染数据)
     retainedDraw(this.barBg, () => {
-      this.barBg.fillColor = col(P.panelLight, 0.85);
-      this.barBg.strokeColor = col(P.line, 0.2);
-      this.barBg.lineWidth = 2;
-      this.barBg.roundRect(-BAR_W / 2, -7, BAR_W, 14, 7);
-      this.barBg.fill();
-      this.barBg.stroke();
+      paintP5(this.barBg, progressDL(BAR_W, 14, 0, P.accent).track);
     });
     const fillN = new Node("fill");
     fillN.layer = this.card.layer;
@@ -304,7 +302,7 @@ export class SettlePanel {
         cell.addComponent(UITransform).setContentSize(CELL_W, CELL_H);
         const g = cell.addComponent(Graphics);
         // 格子按「这一局有没有这条数据」逐个开关(见下面 cell.active),底块得能重放
-        retainedDraw(g, () => drawMenuCard(g, CELL_W, CELL_H, 9, { edge: 0, bar: 0, alpha: 0.6 }));
+        retainedDraw(g, () => drawMenuCard(g, CELL_W, CELL_H, 9, { edge: 0, bar: 0, alpha: 0.6, slant: SLANT.block }));
         this.kit.label(cell, "", 20, P.text).node.setPosition(0, 8, 0);   // 大数
         this.kit.label(cell, "", 12, P.dim).node.setPosition(0, -13, 0);  // 标签
         cell.setParent(this.statLayer);
@@ -367,15 +365,11 @@ export class SettlePanel {
     const w = Math.min(CW - 60, textW(b.title, 13) + 34);
     const g = this.badgeBg;
     g.clear();
-    g.fillColor = col("#ffffff", 0.1);
-    g.roundRect(-w / 2, -13, w, 26, 13);
-    g.fill();
-    g.strokeColor = col(b.color, 0.75);
-    g.lineWidth = 1.5;
-    g.roundRect(-w / 2, -13, w, 26, 13);
-    g.stroke();
+    // 荣誉称号 = 斜切色带印章(与闯关大厅状态胶囊同件),不再画圆角胶囊
+    drawSectionBand(g, w, 26, b.color);
     this.titleBadge.string = b.title;
-    this.titleBadge.color = col(b.color);
+    // 面从半透明描边换成了实底徽章色,字色按面色亮度重算,不然白字印黄底读不出
+    this.titleBadge.color = col(inkFor(b.color));
   }
 
   show(p: SettlePayload): void {
@@ -552,14 +546,13 @@ export class SettlePanel {
     g.clear();
     const r = Math.max(0, Math.min(1, ratio));
     if (r <= 0.02) return;
-    // 半径 7 > 高 14 的一半会画崩,短段时收窄成胶囊
-    const w = Math.max(14, BAR_W * r);
-    g.fillColor = col(this.kit.pal.accent);
-    g.roundRect(-BAR_W / 2, -7, w, 14, 7);
-    g.fill();
-    // 亮头(老 .exp-bar i 的 linear-gradient 提亮)
+    // 与旧胶囊同款:再空也露 14 宽的斜切头(progressDL 内部对过窄填充不画)
+    const t = Math.max(r, 14 / BAR_W);
+    paintP5(g, progressDL(BAR_W, 14, t, this.kit.pal.accent).fill);
+    // 亮头(老 .exp-bar i 的 linear-gradient 提亮):同斜率斜切条,贴着填充顶缘
+    const w = Math.max(14, BAR_W * t);
     g.fillColor = col("#fff0a0", 0.9);
-    g.roundRect(-BAR_W / 2, 3, w, 4, 2);
+    slantPath(g, w, 4, skewOf(4, SLANT.block), -BAR_W / 2 + w / 2, 5);
     g.fill();
   }
 

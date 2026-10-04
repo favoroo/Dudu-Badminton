@@ -24,7 +24,7 @@ import * as TutorialAnim from "../render/tutorial-anim";
 import type { Callout } from "../render/tutorial-anim";
 import {
   ac, drawBevelSlot, drawP5Block, drawPosterPlate, drawSectionBand, drawStarGlyph,
-  fadeOutHide, inkFor, mkLabel as uiMkLabel, retainedDraw, ROLE, SLANT, slamIn, uiIconButton,
+  fadeOutHide, inkFor, mkLabel as uiMkLabel, retainedDraw, ROLE, SLANT, slamIn, skewOf, slantPath, uiIconButton,
 } from "./ui-arcade";
 import type { UiKit } from "./ui-manager";
 import { C } from "./p5-tokens";
@@ -328,15 +328,16 @@ export class TutorialPanel extends Component {
 
     const node = uinode("banner", layer, W, H);
     node.setPosition(0, TUT.bannerY, 0);
-    // 横幅底:墨面实底 + 青色 keyline;**只在这里**挂 BlockInputEvents
+    // 横幅底:墨面实底 + 青色 keyline,斜切平行四边形(与对局内 DEUCE 横幅同语汇);**只在这里**挂 BlockInputEvents
     const g = node.addComponent(Graphics);
     retainedDraw(g, () => {
+      const skew = skewOf(H, SLANT.block);
       g.fillColor = ac(C.ink, 0.92);
-      g.roundRect(-W / 2, -H / 2, W, H, 10);
+      slantPath(g, W, H, skew);
       g.fill();
       g.strokeColor = ac(ROLE.info.face, 0.9);
       g.lineWidth = 2;
-      g.roundRect(-W / 2, -H / 2, W, H, 10);
+      slantPath(g, W, H, skew);
       g.stroke();
     });
     node.addComponent(BlockInputEvents);

@@ -29,6 +29,7 @@ import { clearKids, solidTab, type TabHandle } from "./ui-shell";
 import {
   SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, SHOP,
   shopContent, shopStats, shopTabs, shopTopBar, thumbCenterY, thumbHeight,
+  TOAST, TOAST_FG, toastWidth,
 } from "./shop-shelf";
 import type { ScrollMotion } from "./shop-shelf";
 
@@ -274,9 +275,9 @@ export class CareerPanel extends Component {
   // ---------- 公开接口 ----------
 
   /** 构建并显示面板 */
-  show(parent: Node, onClose: () => void) {
+  show(parent: Node, onClose: () => void, initialKind?: SkinKind | "stats") {
     this._onCloseCb = onClose;
-    this._kind = "player";
+    this._kind = initialKind ?? "player";
     this._sel = 0;
     this._buildAll(parent);
     this._refresh();
@@ -336,6 +337,11 @@ export class CareerPanel extends Component {
     if (this._kind === "player" || this._kind === "racket") {
       this._elapsed += dt;
       if (this._elapsed > 2.2) this._elapsed -= 2.2;
+      // 另一条不回卷的时钟:专给 drawPlayer 的 animT(待机呼吸/眨眼/脚下法阵的自转)。
+      // 从前这里恒传 0 —— 于是「2200ms 循环」编排完挥拍,人物却像一尊蜡像,传说皮肤
+      // 那圈法阵更是一动不动。_elapsed 要回卷重放挥拍,拿它当自转时钟会让法阵每 2.2s
+      // 猛地拧回去一次,所以另起一条只累加的。
+      this._clock += dt;
       this._drawLivePreview();
     }
 
@@ -344,6 +350,8 @@ export class CareerPanel extends Component {
       this._toastTimer -= dt;
       if (this._toastTimer <= 0 && this._toastOpacity) {
         this._toastOpacity.opacity = 0;
+        // 提示带走了,同一车道的底部提示行回到原位(换球页那句「换球后全场生效」)
+        if (this._hintLabel) this._hintLabel.string = this._hintWanted;
       }
     }
   }
@@ -359,6 +367,8 @@ export class CareerPanel extends Component {
   private _kind: SkinKind | "stats" = "player";
   private _sel = 0;
   private _elapsed = 0;
+  /** 不回卷的累加时钟 → drawPlayer 的 animT(帧);_elapsed 负责挥拍编排,这条负责自转 */
+  private _clock = 0;
   private _toastTimer = 0;
 
   // 缓存的 UI 元素
@@ -368,6 +378,8 @@ export class CareerPanel extends Component {
   private _expFill: Graphics | null = null;
   private _coinsLabel: Label | null = null;
   private _hintLabel: Label | null = null;
+  /** 底部提示行**该写什么**:与提示带共用一条车道,提示带在屏的 1.7s 里先让位 */
+  private _hintWanted = "";
   private _previewGfx: Graphics | null = null;
   private _previewName: Label | null = null;
   private _actNode: Node | null = null;
@@ -443,17 +455,21 @@ export class CareerPanel extends Component {
     this._buildHint(panel);
 
     // Toast:底块和文字各占一个子节点 —— 一个节点只能挂一个 renderable
-    this._toastNode = mkNode("toast", this.root, 400, 36);
-    this._toastNode.setPosition(0, -PH / 2 + 20, 0);
-    this._toastG = mkNode("toast-plate", this._toastNode, 400, 36).addComponent(Graphics);
-    this._toastLabel = mkNode("toast-label", this._toastNode, 400, 36).addComponent(Label);
+    // 位置/尺寸/面色/字色全取自 shop-shelf.TOAST(与 panel-check 的判据同源)。
+    // 挂在 root 上而不是 panel 上,但要换算到同一坐标系:panel 在 root 下移 SHOP.panelY。
+    this._toastNode = mkNode("toast", this.root, TOAST.minW, TOAST.h);
+    this._toastNode.setPosition(0, TOAST.cy + SHOP.panelY, 0);
+    this._toastG = mkNode("toast-plate", this._toastNode, TOAST.minW, TOAST.h).addComponent(Graphics);
+    this._toastLabel = mkNode("toast-label", this._toastNode, TOAST.minW, TOAST.h).addComponent(Label);
     applyFont(this._toastLabel, false);
     this._toastLabel.string = "";
-    this._toastLabel.fontSize = 16;
-    this._toastLabel.lineHeight = 22;
+    this._toastLabel.fontSize = TOAST.size;
+    this._toastLabel.lineHeight = TOAST.size + 5;
     this._toastLabel.horizontalAlign = 1;
     this._toastLabel.verticalAlign = 1;
-    this._toastLabel.color = COL.gold;
+    // ★ 字色必须由面色经 inkFor 推:旧写法是 COL.gold,而 COL.gold == C.acid == 面色,
+    //   同色相叠(实测 1.00:1)→ 真机上那是一条纯黄块,一个字都读不出来。
+    this._toastLabel.color = ac(TOAST_FG);
     this._toastOpacity = this._toastNode.addComponent(UIOpacity);
     this._toastOpacity.opacity = 0;
   }
@@ -590,9 +606,11 @@ export class CareerPanel extends Component {
   }
 
   // ----- 底部提示 -----
+  // 与提示带共用一条车道、同一个线位:提示带在屏的 1.7s 里这行让位,
+  // 淡出后回到**同一行**(从前一个 -PH/2+18、一个 -PH/2+20,两条字互相压着)
   private _buildHint(panel: Node) {
     this._hintLabel = mkLabel(panel, "hint", "", 13, COL.dimGray, {
-      y: -PH / 2 + 18, w: PW - 40, align: 1,
+      y: TOAST.cy, w: PW - 40, align: 1,
     });
   }
 
@@ -687,10 +705,10 @@ export class CareerPanel extends Component {
     const f = clamp(this._scrollY / this._maxScroll, 0, 1);
     const cy = thumbCenterY(trackH, thumbH, f);
     g.fillColor = BAR_TRACK_COLOR;
-    g.roundRect(-BAR_W / 2, -trackH / 2, BAR_W, trackH, BAR_W / 2);
+    g.rect(-BAR_W / 2, -trackH / 2, BAR_W, trackH);
     g.fill();
     g.fillColor = BAR_THUMB_COLOR;
-    g.roundRect(-BAR_W / 2, cy - thumbH / 2, BAR_W, thumbH, BAR_W / 2);
+    g.rect(-BAR_W / 2, cy - thumbH / 2, BAR_W, thumbH);
     g.fill();
   }
 
@@ -1159,7 +1177,7 @@ export class CareerPanel extends Component {
       y: bob,
     });
 
-    drawPlayer(g, vp, player, 0, 1, null);
+    drawPlayer(g, vp, player, Math.round(this._clock * 60), 1, null);
     if (this._previewName) {
       const rn = CFG.rarity[s.rarity ?? "common"].name;
       this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;
@@ -1173,15 +1191,16 @@ export class CareerPanel extends Component {
     this._toastLabel.string = text;
     // 「金币不足,还差 xx」这类长短句都从这一条道走,底块跟着文案收放
     if (this._toastG) {
-      const w = Math.min(PW - 40, Math.max(200, textW(text, 16) + 48));
+      const w = toastWidth(textW(text, TOAST.size));
       const g = this._toastG;
-      g.node.getComponent(UITransform)!.setContentSize(w, 36);
+      g.node.getComponent(UITransform)!.setContentSize(w, TOAST.h);
       g.clear();
-      // toast 也走大色块:整面荧光黄 + 墨黑字,与「装备上身」那颗键同一张脸。
-      // 旧写法是 drawMenuCard(深底 + 4px 左色条 + 手拍的 "#ffe14d")—— 同一块黄在
-      // 一个文件里两种长相、两个出处,正是本轮收口的对象。
-      drawP5Block(g, w, 36, ROLE.star.face, SLANT.band);
+      // 整面荧光黄 + 墨黑字,与「装备上身」那颗键同一张脸(面色与字色成对来自 TOAST,
+      // 不再一个走 ROLE.star.face、另一个抄 COL.gold —— 那两支笔是同一支,字就没了)。
+      drawP5Block(g, w, TOAST.h, TOAST.face, SLANT.band);
     }
+    // 同一车道的底部提示行让位,淡出时再摆回去(否则两行字叠在一条带上)
+    if (this._hintLabel) this._hintLabel.string = "";
     this._toastOpacity.opacity = 255;
     this._toastTimer = 1.7; // 1.7秒后淡出
   }
@@ -1221,15 +1240,17 @@ export class CareerPanel extends Component {
       if (this._previewArea) this._previewArea.active = false;
       this._buildStatsPage();
       if (this._statsNode) this._statsNode.active = true;
-      this._hintLabel.string = "";   // 履历页全是数据,不需要一句口号压在下头
+      this._hintWanted = "";   // 履历页全是数据,不需要一句口号压在下头
     } else {
       if (this._statsNode) this._statsNode.active = false;
       if (this._previewArea) this._previewArea.active = true;
       this._buildGrid();
       this._updateAction();
       // 只留一条真有信息量的:换球是全场生效的,其余标签页看名字就懂
-      this._hintLabel.string = this._kind === "shuttle" ? "换球后全场生效" : "";
+      this._hintWanted = this._kind === "shuttle" ? "换球后全场生效" : "";
     }
+    // 提示带在屏上的那 1.7s 里,这一行先让位 —— 两者共用面板底部那一条车道
+    this._hintLabel.string = this._toastTimer > 0 ? "" : this._hintWanted;
 
     // 预览
     this._elapsed = 0;

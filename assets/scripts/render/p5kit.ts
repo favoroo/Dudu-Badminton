@@ -173,6 +173,19 @@ const PLATE_SKEW_DEG = 8;
 const PLATE_INK = "#07070d";
 
 /**
+ * star 底板的星芒(彩色 10 芒 + 白芯点缀):外径按板高推导(直径 = 板高 × scale,
+ * 默认 1.3)而不是旧版的 0.55×板宽 —— 宽板旧外径 ~255px 是行高的 5 倍,尖刺横扫
+ * 上下两三行盖住别的牌子(用户现场)。内径/白芯沿用旧版比例。
+ * 实机把星芒画在 world 的共享底衬层(drawFloatPlate 传 noStar 跳过),
+ * 这里保留绘制供预览工具与兜底。
+ */
+export function drawFloatStar(g: Graphics, h: number, color: Color, rot = 0, dim = 1, scale = 1.3): void {
+  const rOut = (h * scale) / 2;
+  drawStarburst(g, 0, 0, rOut, rOut * (0.6 / 1.1), 10, color, 0.92 * dim, rot);
+  drawStarburst(g, 0, 0, rOut * 0.273, rOut * 0.136, 8, pal_("ffffff"), 0.12 * dim, rot + Math.PI / 10);
+}
+
+/**
  * 飘字底板(位置由 game 层挂到场边锚点,这里只管画得清楚):
  *  slant = 斜切墨黑实底 + 档位色描边 + 硬投影 + 顶缘内衬线(漫画对话框的地基);
  *  star  = 档位色尖刺光芒环绕 + 墨黑斜切实底衬字 + 白芯低强度点缀。
@@ -184,6 +197,8 @@ const PLATE_INK = "#07070d";
 export function drawFloatPlate(
   g: Graphics, w: number, h: number, style: FloatPlateStyle,
   color: Color, rot = 0, dim = 1,
+  opts?: { /** 跳过星芒(实机由 world.floatStarG 底衬层统一画,压在所有牌子下) */
+    noStar?: boolean },
 ): void {
   // 斜切平行四边形路径(dx/dy = 整体偏移,供硬投影复用;UI 本地 y 向上,阴影朝下 = -y)
   const slantTrace = (bw: number, bh: number, dx = 0, dy = 0): void => {
@@ -214,9 +229,8 @@ export function drawFloatPlate(
     g.lineTo(w / 2 - s - 7, h / 2 - 4);
     g.stroke();
   } else if (style === "star") {
-    const r = w / 2;
-    // 档位色尖刺光芒:只当「光环」探出牌外,不再当底
-    drawStarburst(g, 0, 0, r * 1.1, r * 0.6, 10, color, 0.92 * dim, rot);
+    // 档位色尖刺光芒:只当「光环」探出牌外,不再当底(实机默认挪到底衬层,见 noStar)
+    if (!opts?.noStar) drawFloatStar(g, h, color, rot, dim);
     // 墨黑斜切实底衬字:文字全程坐在黑底上
     const bw = w * 0.94, bh = h * 1.04;
     g.fillColor = withAlpha(pal_(PLATE_INK), 0.95 * dim);
@@ -226,8 +240,6 @@ export function drawFloatPlate(
     g.lineWidth = 1.5;
     slantTrace(bw, bh);
     g.stroke();
-    // 白芯低强度点缀(黑底上一粒微光,保留原语义)
-    drawStarburst(g, 0, 0, r * 0.3, r * 0.15, 8, pal_("ffffff"), 0.12 * dim, rot + Math.PI / 10);
   }
 }
 

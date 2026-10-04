@@ -523,16 +523,30 @@ function drawMove(g: Graphics, rig: TutRig, st: Stage): void {
   p.runAmt = moving ? 1 : 0; p.vx = moving ? 2 : 0;
   p.facing = 1; p.sq = 1; p.swingT = -1; p.recoverT = 0;
 
-  // 实操判定圈:与 hud-overlay 的 tutorialGuides 同形同色(青→进圈变金),教和练一个视觉
+  // 实操判定圈:与 hud-overlay 的 tutorialGuides 同形同色(青→进圈变金),教和练一个视觉。
+  // 底层填充 + 粗描边 + 四向刻度,与实机同一套加浓(亮沙地上细描边看不见)。
   const T = C.tutorial;
   const cx = st.vp.x(T.moveTargetX), cy = st.gy - 2;
   const inZone = Math.abs(m.px - T.moveTargetX) <= T.moveEps;
   const pulse = 0.5 + 0.5 * Math.sin(rig.t * 0.2);
   const col = m.dwell ? INK.gold : INK.cyan;
-  g.strokeColor = withAlpha(pal(col), Math.min(1, (inZone || m.dwell ? 0.85 : 0.6) + 0.25 * pulse));
-  g.lineWidth = inZone || m.dwell ? 2.6 : 1.8;
-  g.ellipse(cx, cy, T.moveEps * st.s, T.moveEps * 0.32 * st.s);
+  const strong = inZone || m.dwell;
+  const rx = T.moveEps * st.s, ry = T.moveEps * 0.32 * st.s;
+  g.fillColor = withAlpha(pal(col), (strong ? 0.36 : 0.24) + 0.10 * pulse);
+  g.ellipse(cx, cy, rx, ry);
+  g.fill();
+  g.strokeColor = withAlpha(pal(col), Math.min(1, (strong ? 0.98 : 0.9) + 0.06 * pulse));
+  g.lineWidth = strong ? 3.4 : 2.8;
+  g.ellipse(cx, cy, rx, ry);
   g.stroke();
+  g.lineWidth = 2.0 * st.s;
+  const tick = 5 * st.s;
+  g.moveTo(cx - rx - tick, cy); g.lineTo(cx - rx + tick, cy);
+  g.moveTo(cx + rx - tick, cy); g.lineTo(cx + rx + tick, cy);
+  g.moveTo(cx, cy - ry - tick); g.lineTo(cx, cy - ry + tick);
+  g.moveTo(cx, cy + ry - tick); g.lineTo(cx, cy + ry + tick);
+  g.stroke();
+  g.lineWidth = 1.8 * st.s;
   g.circle(cx, cy, 4 * st.s);
   g.stroke();
 

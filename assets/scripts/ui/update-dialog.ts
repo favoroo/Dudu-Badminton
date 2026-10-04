@@ -19,16 +19,18 @@
 // 卡片高度跟着内容伸缩;内容超过可视高度时日志框开 Mask 裁切 + 拖动滚动。
 // 于是「溢出」在结构上不再可能发生:要么框变高,要么内容可滚动,没有第三种。
 // ============================================================
-import { Button, Color, EventTouch, Graphics, Label, Mask, Node, sys, UITransform, Vec2 } from "cc";
+import { Button, Color, EventTouch, Graphics, Label, Mask, Node, sys, UIOpacity, UITransform, Vec2 } from "cc";
 import { col } from "./ui-manager";
 import type { UiKit } from "./ui-manager";
-import { cancelFade, drawArcadePanel, drawChevron, drawHardShadow, fadeOutHide, retainedDraw, ROLE, slamIn, textW } from "./ui-arcade";
+import {
+  cancelFade, drawBevelSlot, drawChevron, drawPosterPlate, fadeOutHide, paintP5, progressDL,
+  retainedDraw, ROLE, SLANT, slamIn, textW,
+} from "./ui-arcade";
 import { buildNotes, fitNotesBox, NOTE, NOTE_BOX } from "./release-notes";
 import type { NoteLine } from "./release-notes";
 import { browserDownloadUrl, DownloadProgress, UpdateInfo, UpdateService } from "../game/update-service";
 
-/** 进度条轨道几何(与 ui-arcade 面板宽度配套) */
-const TRACK_X = -190;
+/** 进度条轨道几何(与 ui-arcade 面板宽度配套);轨道与填充都以节点中心对称 */
 const TRACK_W = 380;
 const TRACK_H = 14;
 
@@ -53,7 +55,7 @@ const BTN_X = [-150, 0, 150];
 /** 日志框可视高区间(与折行同一把尺,见 release-notes.NOTE_BOX) */
 const BOX_MIN_H = NOTE_BOX.minH;
 const BOX_W = NOTE.boxW;
-/** 裁切窗比框再缩一点,圆角里不贴字 */
+/** 裁切窗比框再缩一点,斜切框缘里不贴字 */
 const VIEW_INSET = 5;
 
 /** 小节标记条 / 列表圆点的落点 */
@@ -97,6 +99,8 @@ export class UpdateDialog {
   private sizeLineShown = true;
   private progressNode: Node;
   private progressFill: Graphics;
+  /** 呼吸条靠它调 alpha(填充的显示列表是固定不透明度,不能逐帧改色) */
+  private progressFillOp: UIOpacity;
   private progressLabel: Label;
   private progressSub: Label;
   private updateBtn: Node;
@@ -179,18 +183,13 @@ export class UpdateDialog {
     this.progressNode.layer = this.root.layer;
     this.progressNode.setParent(this.card.node);
 
-    // 进度条底框
+    // 进度条底框:凹陷槽(与设置页滑杆轨道同一件,斜切 block 档)
     const progBg = new Node("progress-bg");
     progBg.layer = this.root.layer;
     const bgG = progBg.addComponent(Graphics);
     // progressNode 会在「待下载 / 下载中」之间整块开关,底框得能重放(见 ui-arcade.retainedDraw)
     retainedDraw(bgG, () => {
-      bgG.fillColor = col(P.panelLight, 0.9);
-      bgG.strokeColor = col(P.line, 0.3);
-      bgG.lineWidth = 1;
-      bgG.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
-      bgG.fill();
-      bgG.stroke();
+      paintP5(bgG, progressDL(TRACK_W, TRACK_H, 0, P.cyan).track);
     });
     progBg.setParent(this.progressNode);
 
@@ -198,6 +197,7 @@ export class UpdateDialog {
     const progFillNode = new Node("progress-fill");
     progFillNode.layer = this.root.layer;
     this.progressFill = progFillNode.addComponent(Graphics);
+    this.progressFillOp = progFillNode.addComponent(UIOpacity);
     progFillNode.setParent(this.progressNode);
 
     // 进度主文字(百分比 / 已下载量)
@@ -250,30 +250,20 @@ export class UpdateDialog {
 
   // ---------- 排版 ----------
 
-  /** 卡片底:与 kit.panel(uiPanel)同构,只是高度每次重算 */
+  /** 卡片底:斜切衬纸,与 kit.panel(uiPanel)的默认画法同一配方,只是高度每次重算 */
   private paintCard(h: number): void {
     const g = this.card;
     this.card.node.getComponent(UITransform)!.setContentSize(CARD_W, h);
     g.clear();
-    drawHardShadow(g, CARD_W, h, 16, 6, 6, 0.45);
-    drawArcadePanel(g, CARD_W, h, 16, 0.93);
+    drawPosterPlate(g, CARD_W, h, { bandHex: ROLE.primary.face });
   }
 
-  /** 更新日志底框重绘 */
+  /** 更新日志底框重绘:凹陷槽(嵌在衬纸里的「挖进去」的内容井,不再走圆角渐变) */
   private paintNotesBox(h: number): void {
-    const P = this.kit.pal;
     const g = this.notesBoxG;
     this.notesBoxNode.getComponent(UITransform)!.setContentSize(BOX_W, h);
     g.clear();
-    drawHardShadow(g, BOX_W, h, 8, 6, 6, 0.45);
-    drawArcadePanel(g, BOX_W, h, 8, 0.93);
-    g.fillColor = col(P.panelLight, 0.6);
-    g.roundRect(-BOX_W / 2, -h / 2, BOX_W, h, 8);
-    g.fill();
-    g.strokeColor = col(P.line, 0.15);
-    g.lineWidth = 1;
-    g.roundRect(-BOX_W / 2, -h / 2, BOX_W, h, 8);
-    g.stroke();
+    drawBevelSlot(g, BOX_W, h, SLANT.block);
   }
 
   /** 清空内容层(每次 show 重建 Label:更新说明一轮对话最多看几次,不值得做对象池) */
@@ -294,7 +284,7 @@ export class UpdateDialog {
     const g = this.contentG;
     if (isHead) {
       g.fillColor = col(P.accent, 0.9);
-      g.roundRect(-BOX_W / 2 + NOTE.padX, cy - 6, MARK_W, 12, MARK_W / 2);
+      g.rect(-BOX_W / 2 + NOTE.padX, cy - 6, MARK_W, 12);
       g.fill();
     } else if (line.kind === "item") {
       g.fillColor = col(P.dim, 0.9);
@@ -409,10 +399,10 @@ export class UpdateDialog {
 
     if (p.determinate) {
       const pct = Math.max(0, Math.min(100, p.percent));
-      const fillW = Math.max(TRACK_H, (TRACK_W * pct) / 100);
-      g.fillColor = col(P.cyan, 0.95);
-      g.roundRect(TRACK_X, -TRACK_H / 2, fillW, TRACK_H, TRACK_H / 2);
-      g.fill();
+      // 与旧胶囊同款:再空也露一颗 14 宽的斜切头(progressDL 内部对过窄填充不画)
+      const t = Math.max(pct / 100, TRACK_H / TRACK_W);
+      this.progressFillOp.opacity = 255;
+      paintP5(g, progressDL(TRACK_W, TRACK_H, t, P.cyan).fill);
 
       const done = p.state === "done";
       this.progressLabel.string = done
@@ -431,11 +421,10 @@ export class UpdateDialog {
     }
 
     // —— 不确定态:拿不到字节,只证明"还在下" ——
-    // 呼吸条:1.2s 一个来回,靠 alpha 变化表示活着,不假装百分比
+    // 呼吸条:1.2s 一个来回,靠填充节点的透明度表示活着,不假装百分比
     const pulse = 0.45 + 0.35 * Math.abs(Math.sin((p.elapsedMs / 1200) * Math.PI));
-    g.fillColor = col(P.cyan, pulse);
-    g.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
-    g.fill();
+    this.progressFillOp.opacity = Math.round(255 * pulse);
+    paintP5(g, progressDL(TRACK_W, TRACK_H, 1, P.cyan).fill);
 
     const secs = Math.max(0, Math.round(p.elapsedMs / 1000));
     const totalText = p.total > 0 ? ` / ${fmtSize(p.total)}` : "";
@@ -584,9 +573,8 @@ export class UpdateDialog {
       this.progressLabel.string = "下载完成，正在调起安装...";
       this.progressSub.string = `安装包已存到: ${filePath.split("/").pop() || filePath}`;
       this.progressFill.clear();
-      this.progressFill.fillColor = col(this.kit.pal.cyan, 0.95);
-      this.progressFill.roundRect(TRACK_X, -TRACK_H / 2, TRACK_W, TRACK_H, TRACK_H / 2);
-      this.progressFill.fill();
+      this.progressFillOp.opacity = 255;
+      paintP5(this.progressFill, progressDL(TRACK_W, TRACK_H, 1, this.kit.pal.cyan).fill);
       this.resetActions("重新安装");
       this.kit.toast("下载完成，正在安装...");
 

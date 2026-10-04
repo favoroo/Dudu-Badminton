@@ -23,6 +23,7 @@
 | 改球速/接球难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `pace` 段,生效逻辑在 [pace.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/pace.ts)(时间膨胀:重力 ×s²、速度类 ×s、阻力不动);玩家开关在设置页「球速」滑杆(存 `Settings.paceTier`,下一球起生效);量化诊断 `tools/reach-check.ts` |
 | 改人物移速 | 档位表在 `config.ts` 的 `gait` 段,生效逻辑在 [gait.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/gait.ts);**只乘真人的 accel+vmax**(AI 走 `diffs.speed`,两层不叠),跨步冲量/跳跃/摩擦不参与;**即时生效**(不等下一球);设置页「移速」滑杆(存 `Settings.gaitTier`),组合矩阵见 `tools/reach-check.ts` §5 |
 | 改角色姿势/外观 | [sprites.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/sprites.ts) |
+| 改传说皮肤「脚下法阵」(溢光/齿环/断环/符文/星尘/升尘六层) | 画法 [aura.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/aura.ts)(零状态,只画不算),数值与配色表全在 `config.ts` 的 `fx.aura` 段;调用点只有一处:sprites.ts `drawPlayer` 画身体之前。**别再画光滑椭圆环** —— 与全站 P5 语汇相反。验收 `node .tools-build/tools/aura-preview.js`(+`--selftest` 七份反例必须被拦下)、出图 `.tools-build/aura-preview/aura-sigil.html` 与 `aura-people.html`(headless Chrome 光栅化肉眼判) |
 | 改击打/轨迹/球体特效 | 数值全在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `fx` 段;丝带 [ribbon.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/ribbon.ts) + 球体运动学 [shuttle-motion.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/shuttle-motion.ts) + 粒子 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts) + 缓动 [easing.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/easing.ts);出图验收 `node .tools-build/tools/fx-preview.js` |
 | 改手机震动(触觉) | 强度表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `haptic` 段(键名与 `fx` 六档同源,强度=时长×振幅两维);判据与排队在 [haptic.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/haptic.ts)(零 cc:`shotKey`/`plan`/`HapticGate`),平台出口在 [haptics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/haptics.ts)(Android 反射 `AppActivity.vibrate(ms,amp)` / 微信 `wx.vibrateShort` / Web `navigator.vibrate`,失败不静默 —— `hapticStatus()` 给设置页读数);Java 桥与能力探测在 `native/engine/android/app/src/com/cocos/game/AppActivity.java`;档位「轻/标准/强」在设置页声音画面 tab(存 `Settings.hapticLevel`),验收 `node .tools-build/tools/haptic-check.js`(+`--selftest`)。**改 Java 侧必须重打 APK 才生效**。**Android 12+ 不带 `VibrationAttributes` 的 `vibrate()` 会被系统归到 `TOUCH` 档,而这一档跟着「设置 → 声音与振动 → 触摸振动」总闸走 —— 总闸关了系统就把整段震动静默丢掉(不抛异常、Java 仍返回 true,JS 侧怎么探都是健康的),所以 API 31+ 一律显式声明 `USAGE_PHYSICAL_EMULATION`;真机取证看 `adb shell dumpsys vibrator_manager` 的 `Recent vibrations`(按 usage 分组,`finished` / `ignored_*` 一眼分明)**。**波形形状(包络/厂商预置)这一层做过又被撤了**(2026-10-02:真机 A/B 用户表示分辨不出、不要改手感,只保留恒幅 one-shot;线性马达的"嗡嗡"是已知取舍)—— 别再往 `HapticSeg` 里加 steps/preset,那套东西的坑与实证记在 CHANGELOG 与记忆里 |
 | 改 P5 视觉构件(尖刺环/星芒/斜切/飘字底板/斩劈 cut-in) | render 层 [p5kit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/p5kit.ts),UI 层 [ui-arcade.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-arcade.ts);规范见下方「开发规范」P5 条 |
@@ -259,16 +260,39 @@ node .tools-build/tools/panel-preview.js --out .tools-build/panel-preview   # �
 #     羽片拆片、滞后角追踪各有一条断言兜着 —— 特效改坏了先在 node 里出图看,别上真机猜)
 node .tools-build/tools/fx-preview.js --out .tools-build/fx-preview   # 单页: closeups / trails / impacts
 
-# 7.6 场边飘字「车道分配」回归(exit 0;用户现场:「同时触发多个特殊击打(跳杀+重击
-#     附魔),左侧的标签会重叠」。旧错行只数条数且 Math.min(n,2) 封顶两行 —— 一拍最多
-#     同帧出生四条场边字(档位+技能+跳杀+热手),第 3、4 条叠回同一点。分配逻辑在
-#     render/float-lane.ts(零 cc 纯函数:接着同侧最低占位下沿往下排,夹在地面线上方),
-#     world.floatSpawn 只喂记录。断言:最坏四条两两不叠、混合尺寸按前行实际占位算行距、
-#     左右侧互不干扰、非成员(头顶起手字)与已隐藏字不占行、旧字浮过锚点后新字回锚点行。
-#     改 float-lane.ts / world.floatSpawn 堆叠段 / config floatLaneGap·floatSide 都要跑。
-#     --selftest 喂旧算法(计数 + min(n,2) + size*1.9),等字号第 3、4 条叠回同一点必须被拦)
+# 7.6 场边飘字「车道整层重排」回归(exit 0;两代叠字现场:0.0.23 之前旧错行只数条数
+#     且 Math.min(n,2) 封顶两行,一拍同帧四条场边字(档位+技能+跳杀+热手)的第 3、4 条
+#     叠回同一点;0.0.24 的 nextLaneY 排满后 Math.min(sy,maxCenter) 把超限字全部硬夹到
+#     同一个 y,且行只朝下长永不回收 —— 用户:「标签一多还是会有重叠」。0.0.25 起是
+#     「每步整层重排 + 容量驱逐」纯函数 render/float-lane.ts 的 layoutLanes(同侧按出生序
+#     从锚点向下堆,底沿要探过地面线就驱逐 remain 最小者、其余回填上移),world.relayoutFloats
+#     每步消费(目标行位 + 同侧共享列上浮偏移,行距锁死;星芒画在 floatStarG 共享底衬层,
+#     永远压在所有牌子下)。断言:八连驱逐到容量内存活者两两不叠、混合尺寸按前行实际
+#     占位算行距、左右侧互不干扰、非成员与已驱逐不占行、满员驱逐回填、孤字不驱逐。
+#     改 float-lane.ts / world.ts relayoutFloats·floatSpawn·星芒底衬层 / p5kit drawFloatStar /
+#     config floatLaneGap·floatSide·floatStarScale·floatColumnRise* 都要跑。
+#     --selftest 喂两代旧算法(min(n,2) 封顶、0.0.24 触底夹取),必须都被拦下)
 node .tools-build/tools/float-lane-check.js
-node .tools-build/tools/float-lane-check.js --selftest   # 反例(旧错行算法)必须被报警
+node .tools-build/tools/float-lane-check.js --selftest   # 反例(两代旧算法)必须被报警
+
+# 7.7 传说皮肤「脚下法阵」出图 + 几何断言(exit 0;用户现场:「传说皮肤人物底下一层
+#     光圈太简陋了」—— 旧画法是**两个光滑椭圆环 + 三颗圆点**,与全站 P5 语汇「拒绝光滑
+#     圆圈」正相反,而且商店预览给 drawPlayer 传的 animT 恒为 0,那圈东西在店里一动不动。
+#     现在六层(溢光/齿环/断环/符文/星尘/升尘),画法在 render/aura.ts、数值在 fx.aura。
+#     断言九条:坐标有限、同帧重画逐字节一致(逐帧零 rand)、包络不宽过人物不高过小腿、
+#     地面层全按 flat 压扁(没有哪层是正圆)、每帧笔画 ≤16、alpha ≤0.95 不糊场、
+#     vis 真的在等比缩放每一笔、vis=0 一笔不画、卡片缩略图不画升尘、齿环与外断环反向对转。
+#     改 fx.aura 任一值、改 aura.ts、或动 drawPlayer 的法阵分支都要跑;
+#     --selftest 喂七份改坏的反例(溢光糊场/外环撑爆/升尘长到 90px/LOD 关掉/两圈同向/
+#     扁率 0.9/星尘撒 40 颗),必须全被拦下)
+node .tools-build/tools/aura-preview.js
+node .tools-build/tools/aura-preview.js --selftest
+# 肉眼判两张(一页 3400px 缩到屏幕上看不出细节,所以拆成两页单独截):
+#   aura-sigil.html  四种配色 × 六帧,暗场/亮场并排 —— 判「有没有糊成泥坑」
+#   aura-people.html 整人 1:1 与 2.4× —— 判「法阵压不压得住、有没有糊到腿」
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu \
+  --screenshot=.tools-build/aura-preview/sigil.png --window-size=1520,600 \
+  --hide-scrollbars "file://$PWD/.tools-build/aura-preview/aura-sigil.html"
 
 # 8. 全量类型检查(零错误)
 npx tsc -p tools/tsconfig.check.json

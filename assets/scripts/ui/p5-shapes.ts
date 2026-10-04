@@ -341,6 +341,21 @@ export function sliderDL(w: number, trackH: number, t: number, accent: string, t
   return out;
 }
 
+/** 进度条:轨道 + 填充(与滑杆同源,但没有旋钮与刻度) */
+export interface ProgressDL {
+  track: Paint[];
+  fill: Paint[];
+}
+
+/**
+ * 进度条整支(下载进度/经验条)。t 是 0..1 的归一化值。
+ * 旋钮是「可以拖」的记号,进度条不可拖,所以不画 —— 只留凹槽轨道与同斜率填充。
+ */
+export function progressDL(w: number, h: number, t: number, accent: string): ProgressDL {
+  const dl = sliderDL(w, h, t, accent, 0);
+  return { track: dl.track, fill: dl.fill };
+}
+
 /** 斜切旋钮:墨底垫一层 + 实色面 + 顶缘高光(替代那颗白圆) */
 export function knobDL(s: number, faceHex: string, cx = 0, cy = 0, slantDeg = SLANT.band): Paint[] {
   const skew = skewOf(s, slantDeg);

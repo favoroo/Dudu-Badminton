@@ -1,5 +1,5 @@
 // ============================================================
-// 画布内世界提示:落点预测圈、时机环(球上收缩环+甜区圈)、量化时机条、
+// 画布内世界提示:落点预测圈、时机环(球上收缩环)、量化时机条、
 // 热手火苗刻度、训练头顶时机条、赛点霓虹旗标。
 // 自老版 canvas 工程 src/render/hud.js 逐行移植 —— 比分/发球权等 DOM 层信息
 // 在 ui/hud.ts,这里只画「长在球场上」的东西。
@@ -45,6 +45,11 @@ function txt(parent: Node, name: string, size: number): Label {
 
 export class HudOverlay {
   private g: Graphics;
+  /** 落点提示的独立缓存层(兄弟节点,序在主 hud 之前 → 压在时机环/旗标底下,与旧单层次序一致)。
+   *  落点整块只随积分帧(每 2 帧/换拍)变化,重画进这里,主 g 每帧只剩小件 */
+  private lg: Graphics;
+  /** 落点缓存层当前是否有内容(球消失/开关关闭时清一次,不逐帧 clear) */
+  private landingShown = false;
   private vp: Viewport;
   /** 赛点横幅的内容缓存(raw label → 拼好的展示串;label 不变不重拼) */
   private mpLastRaw = "";
@@ -75,12 +80,19 @@ export class HudOverlay {
   private pathShot: Ball["shot"] | null = null;
   // ---------- 时机环状态(game-root.updateSwingCue 每帧喂;null = 无来球不画)----------
   // progress: 收缩进度 0..1(1 = 收满贴球);locked: fc ≤ 最佳按拍帧的白闪档
-  private ring: { zx: number; zy: number; zr: number; progress: number; locked: boolean } | null = null;
+  private ring: { progress: number; locked: boolean } | null = null;
   // ---------- 量化时机条(真人每拍命中后短暂显示;grade 带符号,-=早 +=晚)----------
   private timingBars: { x: number; y: number; grade: number; life: number; max: number }[] = [];
 
   constructor(parent: Node, vp: Viewport) {
     this.vp = vp;
+    // 落点缓存层:兄弟节点且创建序在主 hud 之前 —— Cocos 2D 按兄弟序渲染,
+    // 这与旧版「落点块先画、其余提示压其上」的次序逐件对齐
+    const ln = new Node("hud-landing");
+    ln.layer = Layers.Enum.UI_2D;
+    ln.addComponent(UITransform);
+    ln.setParent(parent);
+    this.lg = ln.addComponent(Graphics);
     const n = new Node("hud-overlay");
     n.layer = Layers.Enum.UI_2D;
     n.addComponent(UITransform);
@@ -115,8 +127,18 @@ export class HudOverlay {
       if (t % 2 === 0 || this.pathShot !== b.shot) {
         this.integrateOnce(b.x, b.y, b.vx, b.vy);
         this.pathShot = b.shot;
+        // 整块落点提示(对照十字/虚线/列光/光斑/准星环/主圈)重画进独立缓存层:
+        // 落点位置与各档透明度全由积分帧的真值决定,隔帧根本不会变,不必重描。
+        // 脉冲准星环也一并 30fps 采样(收缩周期 ~50 帧的慢脉动,无感) ——
+        // 换来主 g 每帧只剩时机环/旗标这些小件。
+        this.lg.clear();
+        this.landingMarker(R, t);
+        this.landingShown = true;
       }
-      this.landingMarker(R, t);
+    } else if (this.landingShown) {
+      // 球落地/被接住/开关关掉:缓存层清一次即可,不逐帧空 clear
+      this.lg.clear();
+      this.landingShown = false;
     }
 
     // ---------- 训练场:把引导页那根时机条搬到球员头顶 + 目标落点与迎击位 ----------
@@ -136,7 +158,7 @@ export class HudOverlay {
     // ---------- 力竭斩劈(game-root 触发,这里只管播) ----------
     this.exhaustDraw();
 
-    // ---------- 时机环(球上收缩环 + 判定区甜区圈;game-root 喂了状态才画)----------
+    // ---------- 时机环(球上收缩环;game-root 喂了状态才画)----------
     // 与落点圈共用「落点预测圈」开关:都是操作引导,设置里关掉就一起收
     if (b && b.live && !b.held && this.ring && Settings.hintLanding) {
       this.timingRingDraw(b);
@@ -148,7 +170,7 @@ export class HudOverlay {
   }
 
   /** game-root.updateSwingCue 每帧喂时机环状态;null = 无来球 */
-  setTimingRing(s: { zx: number; zy: number; zr: number; progress: number; locked: boolean } | null): void {
+  setTimingRing(s: { progress: number; locked: boolean } | null): void {
     this.ring = s;
   }
 
@@ -158,23 +180,14 @@ export class HudOverlay {
     if (this.timingBars.length > 4) this.timingBars.shift();
   }
 
-  // ---------- 时机环:甜区圈(该把人带到哪)+ 球上收缩环(该什么时候按)----------
-  // 判定区心在脚下、球在空中,两处各画各的,玩家视角里「圈套着球收进来 = 按拍」。
+  // ---------- 时机环:球上收缩环(该什么时候按)----------
+  // 判定区随人走、圈不出新信息,用户拍板去掉;按拍预告全靠球上这只收缩环:
+  // 玩家视角里「圈套着球收进来 = 按拍」,收满白闪 =「就是现在」。
   private timingRingDraw(b: NonNullable<typeof Rules.R.ball>): void {
     const s = this.ring!;
     const TR = C.timingRing;
     const g = this.g;
-    // ① 甜区圈:判定区心,金描边 + 淡金填充;随收缩进度提亮(越近越要盯)
-    // 移除原有的实心黑底填充(withAlpha("#000000", 0.3)),浅色球场上不再呈现突兀黑圈
-    const zx = this.vp.x(s.zx);
-    const zy = this.vp.y(s.zy);
-    g.fillColor = withAlpha(pal("#ffe14d"), TR.zoneFillA * (0.6 + 0.4 * s.progress));
-    g.strokeColor = withAlpha(pal("#ffe14d"), TR.zoneA * (0.35 + 0.65 * s.progress));
-    g.lineWidth = 1.8;
-    g.circle(zx, zy, s.zr);
-    g.fill();
-    g.stroke();
-    // ② 球上收缩环:从 fromMul×球半径收到贴球;收满(fc ≤ lead)换白闪 =「就是现在」
+    // 球上收缩环:从 fromMul×球半径收到贴球;收满(fc ≤ lead)换白闪 =「就是现在」
     const cx = this.vp.x(b.x);
     const cy = this.vp.y(b.y);
     const br = C.shuttle.radius;
@@ -267,7 +280,7 @@ export class HudOverlay {
   //     提示再亮反而是在教人失误。
   private landingMarker(R: typeof Rules.R, t: number): void {
     const L = C.landing;
-    const g = this.g;
+    const g = this.lg;   // 画进落点缓存层(见 draw() 的落点块),不再逐帧重描主 g
     const b = R.ball;
     if (!b || !b.shot) return;
     // ⚠ 落点取自真弧(truth 口径),不再读 b.shot.landX。
@@ -414,7 +427,7 @@ export class HudOverlay {
 
   private landingPath(dim: number): void {
     const L = C.landing;
-    const g = this.g;
+    const g = this.lg;
     const n = this.pathN;
     if (n < 2) return;
     const fade = L.pathFade;
@@ -542,12 +555,27 @@ export class HudOverlay {
     // 完成前的呼吸感:站进圈里时(门控累计过半)提亮,玩家能读出「就差停稳这一下」
     const inZone = Tutorial.dwellProgress() > 0.35;
     const col = inZone ? "#ffe14d" : "#00f0ff";
-    const a = (inZone ? 0.85 : 0.6) + 0.25 * pulse;
-    this.g.strokeColor = withAlpha(pal(col), Math.min(1, a));
-    this.g.lineWidth = inZone ? 2.6 : 1.8;
-    this.g.ellipse(cx, gy - 2, T.moveEps, T.moveEps * 0.32);
+    // 亮沙地上一条细描边会整个溶掉(用户现场「都看不到」):底层先铺同色低α填充
+    // 把圈的形状立起来,再叠高α粗描边 + 四向刻度,「钉在这里」的靶一眼可读。
+    // 同一形状画两遍(fill 后 stroke),与 cc-stub 预览语义对齐(见 AGENTS 坑 8)。
+    const rx = T.moveEps, ry = T.moveEps * 0.32;
+    this.g.fillColor = withAlpha(pal(col), (inZone ? 0.36 : 0.24) + 0.10 * pulse);
+    this.g.ellipse(cx, gy - 2, rx, ry);
+    this.g.fill();
+    this.g.strokeColor = withAlpha(pal(col), Math.min(1, (inZone ? 0.98 : 0.9) + 0.06 * pulse));
+    this.g.lineWidth = inZone ? 3.4 : 2.8;
+    this.g.ellipse(cx, gy - 2, rx, ry);
+    this.g.stroke();
+    // 四向刻度:外环上下左右各一截短线,穿环而出
+    this.g.lineWidth = 2.0;
+    const tick = 5;
+    this.g.moveTo(cx - rx - tick, gy - 2); this.g.lineTo(cx - rx + tick, gy - 2);
+    this.g.moveTo(cx + rx - tick, gy - 2); this.g.lineTo(cx + rx + tick, gy - 2);
+    this.g.moveTo(cx, gy - 2 - ry - tick); this.g.lineTo(cx, gy - 2 - ry + tick);
+    this.g.moveTo(cx, gy - 2 + ry - tick); this.g.lineTo(cx, gy - 2 + ry + tick);
     this.g.stroke();
     // 圈心小准星
+    this.g.lineWidth = 1.8;
     this.g.circle(cx, gy - 2, 4);
     this.g.stroke();
   }

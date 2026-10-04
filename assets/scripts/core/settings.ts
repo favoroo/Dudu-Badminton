@@ -71,6 +71,7 @@ export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swing", "swin
  *                 没摇杆可推,跳跃退回左簇那个实体键(PAD_BASE.jump)。
  * 默认 slider(0.0.24 起,用户指令:滑轨升为默认操作方式,新手引导也按滑轨教);
  * 老档 sanitize 时一并切到 slider(可在设置页切回,不打断谁都不如让新手第一眼学会)。
+ * v=4 才真正生效:见 sanitize 的 moveMode 迁移段与 tools/settings-check.ts ⑩。
  */
 export type MoveMode = "joystick" | "buttons" | "slider";
 
@@ -147,7 +148,7 @@ export interface GameSettings {
   // 按钮整体透明度(0.2~1.0,1.0 = 完全不透明)—— 全局一条,不逐键独立
   padAlpha: number;
   pad: Record<PadAction, PadBtn>;
-  /** 触屏移动方式:滑轨 or 摇杆 or 左右按键。默认 slider(新手引导按滑轨教),老档 sanitize 一并迁到 slider */
+  /** 触屏移动方式:滑轨 or 摇杆 or 左右按键。默认 slider(新手引导按滑轨教);v<4 的老档在 sanitize 里强制迁到 slider 一次 */
   moveMode: MoveMode;
   /**
    * 球速档位 id(取值 = CFG.pace.tiers[*].id,不存索引也不存系数:插档不会让老存档指错)。
@@ -175,7 +176,10 @@ function fresh(): GameSettings {
     // v=2:「跳」从右簇键改成摇杆上推代跳,键位退化为 buttons 模式回退并搬到左簇。
     // v=3:默认布局整体重排(跳居中到左右键上方、右簇击球/跨步上下对调),
     //     旧偏移由 sanitize 全量重置(新装机走 fresh 的默认位,不触发)。
-    v: 3,
+    // v=4:移动方式默认升为滑轨,并把「老档一并迁到 slider」做成真会触发的一次
+    //     (v<4 强制 slider)。上一版只处理了「档里没 moveMode 这个键」的情况,
+    //     而任何一次落盘都会把当时代的默认值写进档里,那条迁移对真实老档等于空转。
+    v: 4,
     sfxOn: true, sfxVol: 0.8,
     bgmOn: true, bgmVol: 0.6,
     hintLanding: true, hintShake: true, hintFloat: true,
@@ -254,6 +258,11 @@ export function sanitize(raw: unknown): GameSettings {
   // 0.0.24 起一并迁到 slider(用户指令:滑轨升为默认操作方式,新手引导也按滑轨教);
   // 想回摇杆/按键,设置页「操控」随时可切 —— 迁移只动默认值,不锁选择。
   s.moveMode = moveModeOf(r.moveMode, "slider");
+  // v<4:0.0.24 那条迁移其实空转过一版。旧版本(any setPart/setPad 的 flush)会把
+  // **当时代的默认值**原样写进档里 —— 老档于是都带着一条显式的 "buttons"/"joystick",
+  // 而它只认「缺字段」,于是升级后老玩家照样一进来就是左右按键。这里按版本号补一刀:
+  // v<4 一律吃滑轨默认(认不出值的档也一样),用户之后的选择随 flush 写入 v=4,不再被盖。
+  if (typeof r.v !== "number" || r.v < 4) s.moveMode = "slider";
   const joy = r.joystick as Partial<PadBtn> | null | undefined;
   if (joy && typeof joy === "object") {
     s.joystick = {

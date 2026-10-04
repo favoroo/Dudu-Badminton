@@ -10,6 +10,10 @@
 //   ④ emoji 与桌面键名 —— 原生 Android 没有彩色 emoji 字体(🔒 会变方框,
 //      makeCoinIcon 的注释就是为此而生),而「[K / 左键]」这类文案在手机上是无效指令。
 //
+// 2026-10-04 起 ① 还管**面板自己画出来的动态块**:商店底部那条提示带的色对与落位
+// (旧写法字色与面色是同一支 #ffe14d、位置还压住货架末行 —— 用户截图「提示都看不清」)。
+// 判据住在 shop-shelf.TOAST / toastLane(),与面板取的是同一份数据。
+//
 // 与同目录其它 check 一样:判据写成吃数据的纯函数,正题喂真实布局,
 // --selftest 喂**改动前的真实旧写法** —— 反例必须变红,否则这套断言没牙齿。
 //
@@ -28,7 +32,7 @@ import { halftoneCount } from "../assets/scripts/ui/p5-shapes";
 import { aboutLayout, box, boxesOverlap, doneBox, SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
 import { campaignOverflow, campaignOverlaps, CMP } from "../assets/scripts/ui/campaign-layout";
 import { DRILL, drillOverflow, drillOverlaps, drillTouch } from "../assets/scripts/ui/drill-layout";
-import { SHOP, shopOverflow, shopOverlaps, shopTouch } from "../assets/scripts/ui/shop-shelf";
+import { SHOP, shopOverflow, shopOverlaps, shopTouch, TOAST, TOAST_FG, toastLane } from "../assets/scripts/ui/shop-shelf";
 
 function findRoot(): string {
   let dir = __dirname;
@@ -117,6 +121,9 @@ function rolePairs(): Array<[string, string, string]> {
     ["未选中态正文", C.navy2, C.dim],
     ["锁定态正文", C.navy, C.dimDeep],
     ["衬纸上的正文", C.ink, C.paper],
+    // 商店底部提示带:面色与字色成对来自 shop-shelf.TOAST(旧字色 = COL.gold = 同一支
+    // C.acid,1.00:1,真机上整条提示是一个纯黄块 —— 用户截图里「都看不清」)
+    [`商店提示带(${TOAST.face})`, TOAST.face, TOAST_FG],
   ];
 }
 
@@ -212,6 +219,13 @@ if (selftest) {
     ["旧训练场键提示写进 DRILLS.cue", checkDrillCopy([{ ...DRILLS[0], cue: "起跳后按 [K / 左键]" }])],
     // 分步讲解缺句:定格到那一步就是一片空白(旧版根本没有逐关文案)
     ["DRILLS 缺 demoSteps", checkDrillCopy([{ ...DRILLS[1], demoSteps: undefined }])],
+    // 商店旧 toast:底块 ROLE.star.face(#ffe14d)+ 字 COL.gold(同一支 C.acid)——
+    // 同色相叠 1.00:1,不崩不报错,只是那条提示在真机上是一个没有字的黄块
+    ["旧商店 toast(荧光黄面 + 荧光黄字,实测 1.00:1)",
+      checkContrast([["旧 toast", ROLE.star.face, C.acid]])],
+    // 商店旧 toast 的落位:挂 root 手拍 -PH/2+20 → 面板局部 -205、高 36,
+    // 顶边 -187 压进货架窗(窗底 -208)21px,盖掉末行下半截
+    ["旧商店 toast 落位(压货架末行 21px)", toastLane(-205, 36)],
     // 设置页旧 tab 栏:整组居中 + 写死 176 宽。两页时最右格右缘 182 刚好擦过「完成」左缘 207,
     // 加第三页(关于)就排到 276 —— 用户截图里「完成」缺了个角。判据必须认得这一撞。
     ["旧设置 tab 栏(居中 176 宽 × 3 格 撞右上角「完成」)", (() => {
@@ -239,7 +253,14 @@ if (selftest) {
 
 const c1 = checkContrast(rolePairs());
 for (const m of c1) ok(false, `对比度 ${m}`);
-ok(c1.length === 0, `角色/稀有度面色与字色对比全部 ≥ ${CONTRAST_FLOOR}(${Object.keys(ROLE).length + Object.keys(RARITY_META).length} 个面 + 3 组暗面正文)`);
+ok(c1.length === 0, `面色与字色对比全部 ≥ ${CONTRAST_FLOOR}(${Object.keys(ROLE).length + Object.keys(RARITY_META).length} 个角色/稀有度面 + 3 组暗面正文 + 1 条商店提示带)`);
+
+// 商店底部提示带:必须待在「面板下缘 ↔ 货架窗底」那一条车道里。
+// 旧写法挂在 root 上手拍 -PH/2+20(= 面板局部 -205)、高 36 → 往上压进货架末行 21px,
+// 把最后一格金币行盖掉一半;而它和底部提示行还各占一个 y,两条字叠在一起。
+const tl = toastLane();
+for (const m of tl) ok(false, `提示带 ${m}`);
+ok(tl.length === 0, "商店提示带:整条在底部车道内,不压货架末行、不出面板下缘");
 
 const c2 = checkHalftone(halftoneSpecs());
 for (const m of c2) ok(false, `网点 ${m}`);

@@ -99,12 +99,28 @@ export class MainMenu {
     this.lvLabel = kit.label(lvNode, "Lv.1", 18, "#fff5f2", { disp: true });
     lvNode.setPosition(58, 0, 0);
     lvNode.setParent(leftCluster);
+    const lvBtn = lvNode.addComponent(Button);
+    lvBtn.transition = Button.Transition.SCALE;
+    lvBtn.zoomScale = 0.94;
+    lvBtn.target = lvNode;
+    lvNode.on(Button.EventType.CLICK, () => {
+      kit.sfx.play("ui");
+      kit.openCareer("stats");
+    });
 
     // 金币牌贴在 Lv 牌右侧(用户指令:左等级右金币),错位 6px 延续级联感
     const coinBadge = cornerChip(leftCluster, "coin", 140, 186, 6, "#16161f", ARCADE.line);
     makeCoinIcon(coinBadge, -46, 0, 9);   // Graphics 金币(替代 🪙 emoji,原生平台无彩色 emoji 字体)
     this.coinLabel = kit.label(coinBadge, "0", 16, P.accent, { disp: true });
     this.coinLabel.node.setPosition(12, 0, 0);
+    const coinBtn = coinBadge.addComponent(Button);
+    coinBtn.transition = Button.Transition.SCALE;
+    coinBtn.zoomScale = 0.94;
+    coinBtn.target = coinBadge;
+    coinBadge.on(Button.EventType.CLICK, () => {
+      kit.sfx.play("ui");
+      kit.openCareer("player");
+    });
 
     // 右上级联容器:锚点 (1, 0.5) —— 子块坐标从右缘往左排,宽屏自动贴角
     const rightCluster = new Node("right-cluster");

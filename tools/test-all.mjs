@@ -32,6 +32,9 @@ const CHECKS = [
   "smash-check",
   "campaign-check",
   "haptic-check",
+  // 场边飘字「车道整层重排」:两代叠字现场(0.0.23 的 min(n,2) 封顶、0.0.24 的
+  // 触底夹取)都坏在「不崩、只是安静地叠成一坨」—— 0.0.24 落地时漏登了这张表
+  "float-lane-check",
   "env-check",
   // 第 1 关的风:出图 + 断言「画在不在玩家看得见的地方」——
   // 上一版风丝漏了 vp 换算,动画做了却整片飘出屏幕,这条钉子必须常驻
@@ -50,6 +53,14 @@ const CHECKS = [
   // BGM 结构闸门:内存重渲断言 stem 同长同相/峰值/RMS 基线/循环接缝/声道数
   // (烘焙脚本 tools/bake-bgm.ts 是 BGM 唯一事实源,改动音色/乐谱必须过这道)
   "bgm-check",
+  // 传说皮肤脚下法阵:出图 + 九何判据(包络/扁率/预算/淡出/LOD/对转)。
+  // 这一屏崩不了、也不报错,坏只会坏成「还是很难看」或「某层没跟地面透视对齐」,
+  // 不登记进这张表就等于没人跑。
+  "aura-preview",
+  // 每帧渲染成本护栏:headless 跑一段真对局,按真实分频节奏计 fill/stroke,
+  // 钉住稳态/峰值预算 —— 分频被回退、装饰件被挪回每帧重绘、采样段数被调大,
+  // 都不会崩、只会让中低端机安静变卡,靠这道闸拦住
+  "frame-cost-check",
 ];
 
 /** 带反例的 check:--selftest 必须也绿(规则脚本最怕悄悄全绿) */
@@ -58,6 +69,7 @@ const SELFTESTS = [
   "smash-check",
   "campaign-check",
   "haptic-check",
+  "float-lane-check",
   "env-check",
   "strip-check",
   "brief-check",
@@ -69,6 +81,8 @@ const SELFTESTS = [
   "drill-diagram-check",
   "panel-check",
   "stamina-check",
+  "aura-preview",
+  "frame-cost-check",
 ];
 
 let failed = 0;

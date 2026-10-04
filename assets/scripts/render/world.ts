@@ -24,7 +24,7 @@ import { Ribbon } from "./ribbon";
 import { advanceShuttle, makeShuttleMotion, shuttleImpact } from "./shuttle-motion";
 import { easeOutBack, fadePow } from "./easing";
 import { drawFloatPlate, FloatPlateStyle, measureTextW } from "./p5kit";
-import { nextLaneY } from "./float-lane";
+import { layoutLanes, type LaneMember } from "./float-lane";
 import { applyFont } from "../game/fonts";
 
 const C = CFG;
@@ -107,6 +107,12 @@ const STAMINA_BG = new Color(10, 14, 24, 180);
 const ZONE_GRID = new Color(255, 30, 60, 42);
 const ZONE_HATCH = new Color(255, 60, 80, 150);
 const ZONE_EDGE = new Color(255, 40, 60, 220);
+/** 闯关环境特效(screen-fx 层)的常量色:沙尘滤镜/飞沙/EMP 条纹/闪光灯,帧循环里不再 new Color */
+const FX_SAND_FILTER = new Color(220, 160, 60, 38);
+const FX_SAND_STREAK = new Color(245, 205, 115, 140);
+const FX_EMP_TINT = new Color(0, 240, 255, 34);
+const FX_EMP_STREAK = new Color(255, 0, 128, 120);
+const FX_FLASH_WHITE = new Color(255, 255, 255, 60);
 
 /** 绘制排序比较器:离网远的先画,近网压前(模块级,别在帧循环里新建闭包) */
 function byNetDist(a: Player, b: Player): number {
@@ -131,12 +137,18 @@ interface FloatText {
   plateG: Graphics;
   /** 当前底板样式;none = 裸字(系统信息/轻量提示防刷屏) */
   plate: FloatPlateStyle;
-  /** 出生点世界 x:场边底板字靠它记边,同侧后到的字向下错行不叠成一块 */
+  /** 出生点世界 x:场边底板字靠它记边,同侧堆叠按它分组 */
   wx: number;
-  /** 出生点世界 y(错行后的最终行位):同侧后到的字接着本字占位盒的下沿往下排 */
+  /** 目标行位(世界 y,整层重排每步更新):节点 y 向「目标 + 同侧列上浮偏移」缓动 */
   wy: number;
   /** 车道占位盒高(板高 size*1.7);0 = 非堆叠成员(头顶起手字/系统字不占行) */
   laneH: number;
+  /** 场边堆叠成员(带板字 + 挂场边锚点的无板字):y 由每步整层重排接管 */
+  laneMember: boolean;
+  /** 已被容量驱逐:就地快速淡出,不再占行、不再参与堆叠(render/float-lane.ts) */
+  condemned: boolean;
+  /** star 底板的自转相位(spawn 时随机;星芒画在共享底衬层,倾角要在这里补) */
+  starRot: number;
   opacity: UIOpacity;
   life: number;
   maxLife: number;
@@ -166,10 +178,17 @@ export class WorldView {
   private courtSlowGfx!: Graphics; // 球场慢速层:LED 跑马/荧光棒,每 3 渲染帧
   private courtDynGfx!: Graphics;  // 球场动态层:球网/光束/微尘,每帧
   private g: Graphics;
+  /** 彩带独占层(得分庆祝雨隔帧重绘,见 fx.draw 与构造函数注释) */
+  private confettiGfx!: Graphics;
   private vp: Viewport;
   private floatLayer: Node;
+  /** 星芒底衬层:所有 star 底板的尖刺集中画在这块共享画布上(floatLayer 第 0 个
+   *  孩子)—— 尖刺外溢允许跨行,但永远压在每一块牌子/文字下面,不会再盖字 */
+  private floatStarG!: Graphics;
   private floats: FloatText[] = [];
   private floatPool: FloatText[] = [];
+  /** 同侧堆叠列的共享上浮偏移([0]=左场边,[1]=右场边):有成员逐步累积、封顶,列空归零 */
+  private floatRise: [number, number] = [0, 0];
   /** 飞行轨迹:按距离采样的锥形丝带(取代老 fx.js 的"每点叠同心圆") */
   private ribbon = new Ribbon();
   /** 球体运动学外观(滞后角/翻滚/裙摆颤动)—— 只住渲染层,不回写 ball */
@@ -222,6 +241,13 @@ export class WorldView {
   private mechSeen = { iai: -1, zone: -1, exhausted: -1, laser: -1, focus: -1, zen: -1 };
   /** 上面那组底数属于哪一关的哪一分:换关或换分都重打底数,免得跨局误报 */
   private mechStage = "";
+  /** 换关检测用原值(先比组件再拼串:模板串每帧一造也是稳定的 GC 粮) */
+  private mechStageRef: StageDef | null | undefined;
+  private mechPointNo = -1;
+  /** relayoutFloats 的跨步复用缓冲(每模拟步跑,见函数内注释) */
+  private laneMembersBuf: LaneMember[] = [];
+  private laneWhoBuf: FloatText[] = [];
+  private laneMemberPool: LaneMember[] = [];
   private decoyBall: { x: number; y: number; vx: number; vy: number; t: number } | null = null;
   private lastDecoyOwner: unknown = null;
 
@@ -272,6 +298,15 @@ export class WorldView {
     dyn.setParent(this.root);
     this.g = dyn.addComponent(Graphics);
 
+    // 彩带独占层:得分庆祝雨(200 片 × 260 帧)隔帧重绘、隔帧原地保留,
+    // 峰值帧省 ~100 笔 fill(fx.draw 内部管节奏);飘落是慢速运动,30fps 无感。
+    // 挂在 dyn 之上、HUD 之下,与旧「画在 dyn 末尾、飘字之下」的叠序一致。
+    const cf = new Node("fx-confetti");
+    cf.layer = Layers.Enum.UI_2D;
+    cf.addComponent(UITransform);
+    cf.setParent(this.root);
+    this.confettiGfx = cf.addComponent(Graphics);
+
     // 画布内世界提示层(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
     this.hudOverlay = new HudOverlay(this.root, this.vp);
 
@@ -280,6 +315,15 @@ export class WorldView {
     this.floatLayer.layer = Layers.Enum.UI_2D;
     this.floatLayer.addComponent(UITransform);
     this.floatLayer.setParent(this.root);
+    // 星芒底衬层:钉在 floatLayer 第 0 层 —— 在所有飘字节点之下、球场之上。
+    // 旧版星芒画在各自的底板节点里,池化复用不换兄弟序,后生的星芒会盖住
+    // 先生的牌子(用户截图现场:下面的「必杀重扣」被上面的黄芒压住)
+    const starGNode = new Node("floatStars");
+    starGNode.layer = Layers.Enum.UI_2D;
+    starGNode.addComponent(UITransform);
+    this.floatStarG = starGNode.addComponent(Graphics);
+    starGNode.setParent(this.floatLayer);
+    starGNode.setSiblingIndex(0);
 
     // 屏幕特效层:白闪/氛围暗角(老 FX.drawTop)。挂在 world root 之外(不随镜头缩放)、
     // UIManager 面板之下(AFTER_SCENE_LAUNCH 才装,节点序天然在本层之后)
@@ -457,33 +501,30 @@ export class WorldView {
       applyFont(label, true);
       labelNode.setParent(node);
       node.setParent(this.floatLayer);
-      item = { node, label, plateG, plate: "none", wx: 0, wy: 0, laneH: 0, opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
+      item = { node, label, plateG, plate: "none", wx: 0, wy: 0, laneH: 0, laneMember: false, condemned: false, starRot: 0, opacity, life: 0, maxLife: 0, vy: -1, age: 0 };
     }
+    // 池化复用的节点不换兄弟序 —— 后生的牌子可能画在先生的下面(用户截图现场:
+    // 下面的「必杀重扣」被上面的星芒压住)。每次 spawn 重挂到 floatLayer 顶层;
+    // 星芒底衬层钉在第 0 层,不受影响。
+    item.node.setParent(this.floatLayer);
     item.life = life;
     item.maxLife = life;
     item.age = 0;
     item.vy = vy || -1;
     item.sys = sys;
-    // 场边字同侧堆叠:接着同侧最低占位下沿往下排(render/float-lane.ts 的 nextLaneY)。
-    // 旧写法数条数且 Math.min(n,2) 封顶两行 —— 跳杀+附魔一拍同帧四条场边字
-    // (档位+技能+跳杀+热手),第 3、4 条会叠回同一点。堆叠成员 = 带底板的字
-    // + 挂在场边锚点的无板字(「好球」);头顶「重击附魔!」这类非锚点无板字
-    // 保持不参与(config.smashCastFloat 的刻意设计,那条锚点留给命中档)。
-    // 占位高用板高 size*1.7;star 星芒外径是装饰外溢允许交叠,保证的是文字不叠。
+    // 场边字同侧堆叠:目标行位交给每步整层重排(render/float-lane.ts 的
+    // layoutLanes:锚点向下堆 + 容量驱逐,超员砍 remain 最小的、其余回填上移)。
+    // 这里只记成员身份并入列;新字由下面的 relayout 定位后「出生即位」,
+    // 既有成员的目标行位不因新成员改变(新字永远排在最下),只有到期/驱逐
+    // 才会缓动回填。堆叠成员 = 带底板的字 + 挂在场边锚点的无板字(「好球」);
+    // 头顶「重击附魔!」这类非锚点无板字保持不参与(config.smashCastFloat
+    // 的刻意设计,那条锚点留给命中档)。
     const sideAnchorY = C.fx.floatSide.y;
     const laneMember = plate !== "none" || wy === sideAnchorY;
-    let sy = wy;
-    if (laneMember) {
-      const records = this.floats.map((o) => ({ active: o.node.active, wx: o.wx, wy: o.wy, laneH: o.laneH }));
-      sy = nextLaneY(records, {
-        wx, netX: C.court.netX, anchorY: sideAnchorY, boxH: size * 1.7,
-        gap: C.fx.floatLaneGap ?? 8, maxCenter: C.court.groundY - size * 0.6,
-      });
-    }
     item.wx = wx;
-    item.wy = sy;
+    item.laneMember = laneMember;
+    item.condemned = false;
     item.laneH = laneMember ? size * 1.7 : 0;
-    item.node.setPosition(this.vp.x(wx), this.vp.y(sy), 0);
     item.node.setScale(1, 1, 0);
     item.label.string = text;
     item.label.fontSize = size;
@@ -501,12 +542,22 @@ export class WorldView {
       const pad = (plate === "star" ? 44 : 24) * (C.fx.floatPlatePadScale ?? 1);
       const w = measureTextW(text, size) + pad;
       const h = size * 1.7;
+      item.starRot = rand(-0.05, 0.05);
       item.plateG.clear();
-      drawFloatPlate(item.plateG, w, h, plate, pal(color), rand(-0.05, 0.05), C.fx.floatPlateDim ?? 1);
+      // 星芒挪到共享底衬层(floatStarG)统一画,底板这里跳过 —— 星芒外溢
+      // 只跨行做背景,永远压不到任何牌子/文字
+      drawFloatPlate(item.plateG, w, h, plate, pal(color), item.starRot, C.fx.floatPlateDim ?? 1, { noStar: true });
       item.node.angle = rand(-3, 3);
     }
     item.node.active = true;
     this.floats.push(item);
+    if (laneMember) {
+      this.relayoutFloats();
+      item.node.setPosition(this.vp.x(wx), this.vp.y(item.wy + this.floatRise[wx < C.court.netX ? 0 : 1]), 0);
+    } else {
+      item.wy = wy;
+      item.node.setPosition(this.vp.x(wx), this.vp.y(wy), 0);
+    }
   }
 
   /** 清空当前所有飘字(换局/重新发球/重置时调用) */
@@ -518,6 +569,76 @@ export class WorldView {
       this.floatPool.push(f);
     }
     this.floats.length = 0;
+    this.floatRise[0] = 0;
+    this.floatRise[1] = 0;
+    this.floatStarG.clear();
+  }
+
+  /**
+   * 场边堆叠列每模拟步整层重排(render/float-lane.ts layoutLanes 的消费方):
+   * 目标行位 = 锚点向下堆,堆不下驱逐 remain 最小的成员、其余回填上移。
+   * 成员 y 向「目标行位 + 同侧列上浮偏移」指数缓动 —— 行距 = 目标行位差,
+   * 被算术锁死;旧版各字按剩余寿命各自上浮,后出生的升得快,8px 行距
+   * 约 0.3s 就被追平(用户现场「标签一多还是叠」的帮凶之一)。
+   * 被驱逐者就地快速淡出(砍寿命走既有 fade 曲线),不再占行。
+   */
+  private relayoutFloats(): void {
+    const FF = C.fx;
+    const netX = C.court.netX;
+    // ① 列上浮偏移:同侧有活成员就逐步累积(封顶),列空归零(没人看见归零)
+    for (let side = 0; side < 2; side++) {
+      let n = 0;
+      for (let i = 0; i < this.floats.length; i++) {
+        const f = this.floats[i];
+        if (f.laneMember && !f.condemned && (f.wx < netX ? 0 : 1) === side) n++;
+      }
+      this.floatRise[side] = n > 0
+        ? Math.min(this.floatRise[side] + (FF.floatColumnRiseSpeed ?? 0.55), FF.floatColumnRiseMax ?? 30)
+        : 0;
+    }
+    // ② 整层重排:目标行位 + 容量驱逐。
+    //    members/who 数组与成员对象全部跨步复用 —— 这里每模拟步都跑,每步
+    //    new 出的小对象 × 成员数 × 60Hz 是稳定的 GC 粮(旧写法每步 push 一个字面量)。
+    //    layoutLanes 是纯函数、不保留引用,复用安全;who 与 members 同序 push,
+    //    下标对应关系与旧写法一致。
+    const members = this.laneMembersBuf;
+    const who = this.laneWhoBuf;
+    members.length = 0;
+    who.length = 0;
+    for (let i = 0; i < this.floats.length; i++) {
+      const f = this.floats[i];
+      if (!f.laneMember) continue;
+      let m = this.laneMemberPool[i];
+      if (!m) {
+        m = { wx: 0, laneH: 0, remain: 0, condemned: false };
+        this.laneMemberPool[i] = m;
+      }
+      m.wx = f.wx;
+      m.laneH = f.laneH;
+      m.remain = f.maxLife > 0 ? f.life / f.maxLife : 0;
+      m.condemned = f.condemned;
+      members.push(m);
+      who.push(f);
+    }
+    if (who.length === 0) return;
+    const layout = layoutLanes(members, {
+      netX, anchorY: FF.floatSide.y, gap: FF.floatLaneGap ?? 8, maxBottom: C.court.groundY,
+    });
+    // ③ 应用:驱逐者砍寿命;存活者向目标缓动(指数、无过冲、保序,不会中途交叉)
+    for (let i = 0; i < who.length; i++) {
+      const f = who[i];
+      if (layout.evict[i]) {
+        f.condemned = true;
+        f.life = Math.min(f.life, 12);
+        continue;
+      }
+      const ty = layout.targets[i];
+      if (ty === null) continue;
+      f.wy = ty;
+      const goal = this.vp.y(ty + this.floatRise[f.wx < netX ? 0 : 1]);
+      const pos = f.node.position;
+      f.node.setPosition(pos.x, pos.y + (goal - pos.y) * 0.25, 0);
+    }
   }
 
   /**
@@ -575,6 +696,9 @@ export class WorldView {
       }
     }
     this.floats.length = alive;
+    // 堆叠列整层重排(hitstop 里也照走 —— 飘字反馈要可读,与上面的寿命递减同口径):
+    // 到期/驱逐留下的空位由下面各行缓动回填,行距恒为目标行位差
+    this.relayoutFloats();
 
     // 推进球场动态(海浪、观众微动、落花、晃网)
     courtRenderer.step(dt);
@@ -627,8 +751,14 @@ export class WorldView {
       this.courtSlowGfx.clear();
       courtRenderer.drawSlowTo(this.courtSlowGfx, this.vp, rallyCount);
     }
-    this.courtDynGfx.clear();
-    courtRenderer.drawDynTo(this.courtDynGfx, this.vp, rallyCount);
+    // 动态层降频到 30fps:这层内容全是慢速装饰 —— 灯晕以 sin(t*0.018) 脉动(周期约 350 帧)、
+    // 微尘漂移、常驻慢波的球网、赛点 tint,隔帧重绘肉眼无感(微尘/闪光灯的推进节奏画在
+    // drawXxxDyn 里,随重绘走,慢一半无影响)。唯一例外是晃网:受击那几下振幅还在,
+    // 强制每帧重绘保证晃动 60fps 不断帧。静态层/观众批次/慢速层节奏不动。
+    if (this.frameT % 2 === 0 || courtRenderer.shakeAmp > 0.003) {
+      this.courtDynGfx.clear();
+      courtRenderer.drawDynTo(this.courtDynGfx, this.vp, rallyCount);
+    }
 
     const stage = Rules.R.mode === "campaign" ? Rules.R.activeStage : null;
     // 这一关是不是"软沙地":判据只看关卡表声明的移动惩罚,不在渲染里写字面量
@@ -825,18 +955,18 @@ export class WorldView {
         const dbx = this.vp.x(this.decoyBall.x);
         const dby = this.vp.y(this.decoyBall.y);
         const decoyA = Math.min(1, this.decoyBall.t / 18) * 0.72;
-        g.fillColor = new Color(190, 60, 255, Math.round(decoyA * 255));
+        g.fillColor = withAlpha("#be3cff", decoyA);            // withAlpha 分桶记忆化,不再每帧 new
         g.ellipse(dbx, dby, 6.5, 6.5);
         g.fill();
-        g.strokeColor = new Color(240, 160, 255, Math.round(decoyA * 220));
+        g.strokeColor = withAlpha("#f0a0ff", decoyA * (220 / 255));
         g.lineWidth = 1.5;
         g.ellipse(dbx, dby, 9, 9);
         g.stroke();
       }
     }
 
-    // 绘制粒子与打击特效(冲击波/火花/羽毛/彩带等)
-    this.fx.draw(g, this.vp);
+    // 绘制粒子与打击特效(冲击波/火花/羽毛/彩带等);彩带走独立层隔帧重绘
+    this.fx.draw(g, this.vp, this.confettiGfx);
 
     // 挥拍弧光残影(老 fx.js swingArcs):画在粒子之上,当帧弧光的余晖
     for (const sa of this.swingArcs) {
@@ -859,25 +989,50 @@ export class WorldView {
       this.floats.length = alive;
     }
 
-    // 飘字:弹入 → 减速上浮 → 曲线淡出(老实现是匀速上升 + 只在最后 35% 线性淡,
-    // 字像被"贴"上去又"抽"走的,没有任何存在感)
-    // vy 沿用世界系约定(负 = 世界坐标向上);飘字是 UI 节点,y 向上 ——
-    // 所以上浮要取负号。旧写法 pos.y + vy*rise 实际一直在缓慢下沉,把堆叠
-    // 行距随时间吃掉(先出生的行朝后出生的行靠)
+    // 飘字:弹入 → 曲线淡出。堆叠成员的 y 已由 stepFx 的整层重排接管
+    // (目标行位 + 同侧列上浮偏移,行距锁死),这里不再各自上浮 ——
+    // 旧版各字按剩余寿命决定上升速率,后出生的比先出生的快,行距随时间被吃掉。
+    // 非成员(头顶字/系统字)保持旧「减速上浮」:vy 沿用世界系约定(负 = 世界
+    // 坐标向上);飘字是 UI 节点 y 向上,所以上浮取负号(旧 pos.y + vy*rise
+    // 曾一直在缓慢下沉,教训见 git 历史)。
     const FF = C.fx;
     const popFrames = FF.floatPopFrames || 6;
     const fadeK = FF.floatFadeK ?? 0.5;
     for (let i = 0; i < this.floats.length; i++) {
       const f = this.floats[i];
-      const pos = f.node.position;
       const remain = Math.max(0, f.life / f.maxLife);
-      const rise = 0.35 + 0.65 * Math.pow(remain, FF.floatRiseEase || 1.8);
-      f.node.setPosition(pos.x, pos.y - f.vy * rise, 0);
+      if (!f.laneMember) {
+        const pos = f.node.position;
+        const rise = 0.35 + 0.65 * Math.pow(remain, FF.floatRiseEase || 1.8);
+        f.node.setPosition(pos.x, pos.y - f.vy * rise, 0);
+      }
       const p = Math.min(1, f.age / popFrames);
       const sc = 0.55 + 0.45 * easeOutBack(p, FF.floatPopBack || 1.7);
       f.node.setScale(sc, sc, 1);
       const a = p * (remain < fadeK ? fadePow(remain / fadeK, 0.75) : 1);
       f.opacity.opacity = Math.round(255 * clamp(a, 0, 1));
+    }
+
+    // 星芒底衬层:所有 star 底板的尖刺集中画在这一块共享画布上
+    // (floatLayer 第 0 层),永远压在每一块牌子/文字下面 —— 尖刺外溢跨行
+    // 只是背景装饰,不再盖字(旧版画在各自节点里,池化复用不换兄弟序,
+    // 后生的星芒会盖住先生的牌子)。随成员的位置/缩放/透明度/倾角联动,
+    // ≤ 几颗 10 芒星,每帧重画开销可忽略;成员消失下一次重画自然清掉。
+    const sg = this.floatStarG;
+    sg.clear();
+    const starScale = FF.floatStarScale ?? 1.3;
+    const starDim = FF.floatPlateDim ?? 1;
+    for (let i = 0; i < this.floats.length; i++) {
+      const f = this.floats[i];
+      if (f.plate !== "star") continue;
+      const pos = f.node.position;
+      const sc = f.node.scale.x;
+      const a = (f.opacity.opacity / 255) * starDim;
+      if (a <= 0.01) continue;
+      const rOut = (f.laneH * starScale) / 2;
+      const tilt = f.starRot + f.node.angle * Math.PI / 180;
+      drawStarburst(sg, pos.x, pos.y, rOut * sc, rOut * (0.6 / 1.1) * sc, 10, f.label.color, 0.92 * a, tilt);
+      drawStarburst(sg, pos.x, pos.y, rOut * 0.273 * sc, rOut * 0.136 * sc, 8, pal("#ffffff"), 0.12 * a, tilt + Math.PI / 10);
     }
 
     // 屏幕特效(白闪/氛围暗角):屏幕空间,画在 world 之上、UI 面板之下
@@ -1037,9 +1192,11 @@ export class WorldView {
     if (!me) return;
     const M = this.mechSeen;
     // 换关(或重开本关)先把底数清空:否则上一关攒下的计数会在这一关第一帧被当成"刚刚发生"
-    const key = `${stage.id}:${Rules.R.pointNo}`;
-    if (key !== this.mechStage) {
-      this.mechStage = key;
+    // (先比 stage 引用与 pointNo 原值,变了才拼一次 key 串,不再每帧 new 一个模板串)
+    if (stage !== this.mechStageRef || Rules.R.pointNo !== this.mechPointNo) {
+      this.mechStageRef = stage;
+      this.mechPointNo = Rules.R.pointNo;
+      this.mechStage = `${stage.id}:${Rules.R.pointNo}`;
       M.iai = me.stats.iaiStrikes; M.zone = me.stats.zonePenalties;
       M.exhausted = me.isExhausted ? 1 : 0; M.laser = ball.laserBoosted ? 1 : 0;
       M.focus = (me.focusT ?? 0) > 0 ? 1 : 0; M.zen = Math.round((me.zenMeter ?? 0) * 100);
@@ -1226,13 +1383,13 @@ export class WorldView {
       //    受推的方向各说各话,玩家读出的是"动画在随机动"。现在吃同一个 windAt:
       //    关卡没给 windX 时退化成原来的右行(不为不存在的机制凭空造方向)。
       if (env!.sandstorm) {
-        g.fillColor = new Color(220, 160, 60, 38);
+        g.fillColor = FX_SAND_FILTER;
         g.rect(-1600, -1000, 3200, 2000);
         g.fill();
 
         const sw = Physics.windAt(Physics.envPhase());
         const sgn = sw === 0 ? 1 : Math.sign(sw);
-        g.strokeColor = new Color(245, 205, 115, 140);
+        g.strokeColor = FX_SAND_STREAK;
         g.lineWidth = 1.8;
         for (const sp of this.sandstormParticles) {
           sp.x += sp.spd * sgn;
@@ -1282,10 +1439,10 @@ export class WorldView {
       if (empActive) {
         const glitchT = t % 160;
         if (glitchT > 138) {
-          g.fillColor = new Color(0, 240, 255, 34);
+          g.fillColor = FX_EMP_TINT;
           g.rect(-1600, -1000, 3200, 2000);
           g.fill();
-          g.strokeColor = new Color(255, 0, 128, 120);
+          g.strokeColor = FX_EMP_STREAK;
           g.lineWidth = 3;
           for (let y = -360; y < 360; y += 42) {
             const shiftX = Math.sin(y + t) * 25;
@@ -1298,7 +1455,7 @@ export class WorldView {
       // 5. 看台闪光灯爆闪
       if (flashActive) {
         if (Math.sin(t * 0.42) > 0.86) {
-          g.fillColor = new Color(255, 255, 255, 60);
+          g.fillColor = FX_FLASH_WHITE;
           g.ellipse(cx + Math.sin(t * 1.3) * 220, cy - 60, 150, 85);
           g.fill();
         }

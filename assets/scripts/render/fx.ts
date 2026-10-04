@@ -479,13 +479,34 @@ export class FXSystem {
   // ==============================================================
   // draw — 渲染全部特效(后到前)
   // ==============================================================
-  draw(g: Graphics, vp: Viewport): void {
+  /** 彩带层的重绘节奏(独立 cg 传入时:隔帧重绘,见 draw 内注释) */
+  private cfFrame = 0;
+  private cfDirty = false;
+  draw(g: Graphics, vp: Viewport, cg?: Graphics): void {
     this._drawMarks(g, vp);
     this._drawShockwaves(g, vp);
     this._drawRings(g, vp);
     this._drawParticles(g, vp);
     this._drawSpeedLines(g, vp);
-    this._drawConfetti(g, vp);
+    // 彩带独占一层(可选参数):200 片 × 260 帧寿命的庆祝雨如果跟着动态层每帧
+    // 全量重描,得分后 4 秒里每帧都是 200 笔 fill。独立 Graphics 隔帧重绘、
+    // 隔帧内容原地保留(与球场三层同一手法),峰值帧省 ~100 笔;飘落是慢速
+    // 运动,30fps 无感。没传 cg(预览工具单 g)时照旧画进 g。
+    if (cg) {
+      this.cfFrame++;
+      if (cfN > 0) {
+        if (this.cfFrame % 2 === 0 || !this.cfDirty) {
+          cg.clear();
+          this._drawConfetti(cg, vp);
+          this.cfDirty = true;
+        }
+      } else if (this.cfDirty) {
+        cg.clear();
+        this.cfDirty = false;
+      }
+    } else {
+      this._drawConfetti(g, vp);
+    }
     this._drawFeathers(g, vp);
   }
 

@@ -19,8 +19,8 @@ import { Career } from "../core/career";
 import { SkillId } from "../core/types";
 import type { UiKit } from "./ui-manager";
 import {
-  ac, ARCADE, cancelFade, drawHardShadow, drawMenuCard, drawSlantShadow, fadeOutHide,
-  makeChip, retainedDraw, ROLE, slamIn, skewOf, slantPath,
+  ac, ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide,
+  makeChip, retainedDraw, ROLE, SLANT, slamIn, skewOf, slantPath,
 } from "./ui-arcade";
 import {
   layoutSkillPlate, SK, SK_HINT_LINE, skillCardX, skillCd,
@@ -253,8 +253,9 @@ export class SkillDialog {
       const lit = isEquipped || isSelected;
 
       sc.g.clear();
-      drawHardShadow(sc.g, SK.cardW, SK.cardH, 10, 3, 5, 0.45);
+      drawSlantShadow(sc.g, SK.cardW, SK.cardH, skewOf(SK.cardH, SLANT.block), 3, 5, 0.45);
       drawMenuCard(sc.g, SK.cardW, SK.cardH, 10, {
+        slant: SLANT.block,
         accent: lit ? sc.accent : isUnlocked ? ARCADE.dimDeep : ARCADE.line,
         tint: isSelected ? 0.18 : isEquipped ? 0.14 : 0.06,
         bar: lit ? 4 : 2,

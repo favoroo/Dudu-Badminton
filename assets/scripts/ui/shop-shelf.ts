@@ -141,7 +141,7 @@ export function advanceScroll(m: ScrollMotion, maxScroll: number, dt: number): S
 //
 // 零 cc:只有数字与字符串。
 // ============================================================
-import { TOUCH } from "./p5-tokens";
+import { inkFor, ROLE, TOUCH } from "./p5-tokens";
 
 export const SHOP = {
   pw: 880, ph: 470,
@@ -234,6 +234,57 @@ export function shopStats(gridH: number): SBox[] {
     const col = i % cols, row = Math.floor(i / cols);
     return sbox(-totalW / 2 + col * (cw + gap), cw, top - row * (ch + gap) - ch / 2, ch);
   });
+}
+
+// ============================================================
+// 底部提示带(toast)—— 「已装备「活力橙」」「金币不足 · 还差 12」那一条
+//
+// 为什么搬进来:这块反馈的**面色与字色原来分两处写**,而且撞成了同一个颜色 ——
+// 底块走 ROLE.star.face(荧光黄 #ffe14d),Label 却抄 COL.gold,而 COL.gold 就是
+// 同一支 C.acid。同色相叠 = 1.00:1,用户真机截图里那是一条纯黄色块、一个字都读不出来
+// (「底下这个提示都看不清」)。这类坏不会崩、只会安静地看不见,所以成对同源 +
+// 让 panel-check 拿 CONTRAST_FLOOR 核一次,才不会再分家。
+//
+// 车道:面板下缘与货架窗底之间那 27px,和底部提示行(「换球后全场生效」)同一条 ——
+// 塞不下两条,提示带出现时提示行让位(见 career-panel 的 _hintWanted)。
+// 旧写法挂在 root 上手拍 -PH/2+20,整条带子往上压进货架末行 21px,
+// 把「樱花粉」那格的金币行盖掉一半 —— 盖字这件事同样进判据(toastLane)。
+// ============================================================
+
+export const TOAST = {
+  /** 带心(面板局部坐标;节点挂在 root 上要再加 SHOP.panelY)。
+   *  h=22 / cy=-220 是这条 27px 车道(-208 窗底 ↔ -235 面板下缘)里唯一两头都留口气的解:
+   *  上留 1px 不贴卡片、下留 4px 不出面板。drawP5Block 自带的墨影会往下多伸 8px,
+   *  压在近黑的衬纸板上看不出来,所以判据只管**面**的几何。 */
+  cy: -220, h: 22, size: 15,
+  minW: 200, maxW: SHOP.pw - 40, padX: 48,
+  face: ROLE.star.face,
+} as const;
+
+/** 字色由面色推,不给第二支笔 */
+export const TOAST_FG: string = inkFor(TOAST.face);
+
+/** 底块跟着文案收放:长短句都从这一条道走。textPx 由调用方按同一字号量出来 */
+export function toastWidth(textPx: number): number {
+  return Math.min(TOAST.maxW, Math.max(TOAST.minW, textPx + TOAST.padX));
+}
+
+/** 提示带的盒子(水平居中于面板;career-panel 摆节点、panel-preview 出图都取这一个) */
+export function toastBox(w: number): SBox {
+  return sbox(-w / 2, w, TOAST.cy, TOAST.h);
+}
+
+/** 提示带的车道判据:不压货架末行、不出面板下缘、车道本身还装得下它。
+ *  cy/h 带默认参是为了让 --selftest 能把**旧写法**(root 手拍 -PH/2+20、高 36)喂进来咬。 */
+export function toastLane(cy: number = TOAST.cy, h: number = TOAST.h, gridH: number = SHELF.h): string[] {
+  const out: string[] = [];
+  const b = sbox(-TOAST.minW / 2, TOAST.minW, cy, h);
+  const gridBottom = shopContent(gridH).grid.cy - gridH / 2;
+  const panelBottom = -SHOP.ph / 2;
+  if (sTop(b) > gridBottom + 0.5) out.push(`提示带顶边 ${sTop(b).toFixed(1)} 压进货架窗(窗底 ${gridBottom})`);
+  if (sBottom(b) < panelBottom + 2) out.push(`提示带底边 ${sBottom(b).toFixed(1)} 越出面板下缘 ${panelBottom}`);
+  if (gridBottom - panelBottom < h + 2) out.push(`底部车道只有 ${gridBottom - panelBottom}px,放不下 ${h} 高的提示带`);
+  return out;
 }
 
 const hit = (a: SBox, b: SBox): boolean =>

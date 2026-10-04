@@ -29,7 +29,7 @@ import { Career } from "../core/career";
 import { Drill } from "../core/drill";
 import { Tutorial } from "../core/tutorial";
 import { UpdateService } from "../game/update-service";
-import type { DiffKey, SkillId } from "../core/types";
+import type { DiffKey, SkillId, SkinKind } from "../core/types";
 import type { DrillResult } from "../core/drill";
 import type { SettleResult } from "../core/career";
 import { Sfx } from "../game/sfx";
@@ -367,7 +367,7 @@ export interface UiKit {
   quitToMenu(): void;
   /** 无限练习手动收局:按当前比分判胜负并走正常结算(仅暂停页在 endless 模式露出) */
   endEndless(): void;
-  openCareer(): void;
+  openCareer(initialKind?: SkinKind | "stats"): void;
   openDrills(): void;
   /** 新手操作教学(滑轨):首启自动弹一次;重看入口在训练场列表页与设置「关于」页 */
   openTutorial(): void;
@@ -817,8 +817,8 @@ export class UIManager extends Component {
     const g = this.toastNode.getComponent(Graphics)!;
     this.toastNode.getComponent(UITransform)!.setContentSize(w, 42);
     g.clear();
-    drawHardShadow(g, w, 42, 9, 4, 4, 0.5);
-    drawMenuCard(g, w, 42, 9, { accent: ARCADE.acid, tint: 0.05, bar: 5, edge: 4, alpha: 0.95 });
+    drawSlantShadow(g, w, 42, skewOf(42, SLANT.button), 4, 4, 0.5);
+    drawMenuCard(g, w, 42, 9, { accent: ARCADE.acid, tint: 0.05, bar: 5, edge: 4, alpha: 0.95, slant: SLANT.button });
     this.toastLabel!.string = msg;
     this.toastNode.active = true;
     // 每次报之前抬到最上层:toast 只建一次,而设置 / 商店这些面板是随开随建的晚到兄弟 ——
@@ -847,14 +847,14 @@ export class UIManager extends Component {
    *   2) 退场必须在 showIn 回调里调 `panel.hide()` 而不是把根节点丢给 screenSwap 了事 ——
    *      hide() 里还注销着键盘监听、复位动画状态、销毁整树,漏了就是「第二次打开失灵」。
    */
-  private openCareer(): void {
+  private openCareer(initialKind?: SkinKind | "stats"): void {
     if (!this.careerPanel) {
       this.careerPanel = this.node.addComponent(CareerPanel);
     }
     const panel = this.careerPanel;
     screenSwap(this.node, this.menu.root, () => panel.show(this.node, () => {
       screenSwap(this.node, null, () => { panel.hide(); this.menu.show(); });
-    }));
+    }, initialKind));
   }
 
   /**
@@ -997,7 +997,7 @@ export class UIManager extends Component {
         this.sfx.play("ui");
         Rules.endEndless();               // OVER 态由状态轮询接结算页,这里只管收局
       },
-      openCareer: () => this.openCareer(),
+      openCareer: (initialKind) => this.openCareer(initialKind),
       openDrills: () => this.openDrills(),
       openTutorial: () => this.openTutorial(),
       openCampaign: () => this.openCampaign(),

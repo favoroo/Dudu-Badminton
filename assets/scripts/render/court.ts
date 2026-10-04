@@ -193,7 +193,7 @@ function fillVerticalGradient(
     const gr = Math.round(lerp(c1.color.g, c2.color.g, localT));
     const b = Math.round(lerp(c1.color.b, c2.color.b, localT));
     const a = Math.round(lerp(c1.color.a, c2.color.a, localT));
-    g.fillColor = new Color(r, gr, b, a);
+    g.fillColor = colRgba(r, gr, b, a / 255);   // 记忆化取色,不再每行 new Color
     g.rect(vp.x(wx), vp.y(curBot), w, curBot - curTop);
     g.fill();
   }
@@ -219,7 +219,7 @@ function fillConcentricGlow(
     const gr = Math.round(lerp(centerCol.g, outerCol.g, t));
     const b = Math.round(lerp(centerCol.b, outerCol.b, t));
     const a = Math.round(lerp(centerCol.a, outerCol.a, t * t));
-    g.fillColor = new Color(r, gr, b, a);
+    g.fillColor = colRgba(r, gr, b, a / 255);   // 记忆化取色,灯晕每帧十几个 new Color 是 GC 粮
     g.ellipse(vp.x(cx), vp.y(cy), rx, ry);
     g.fill();
   }

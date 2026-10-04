@@ -64,7 +64,7 @@ export class GameRoot extends Component {
   private swingCueFcFrame = -99;
   private swingCueFc: number | null = null;
   /** 时机环入参复用对象(setTimingRing 只存引用、draw 时读字段,复用安全) */
-  private cueRing = { zx: 0, zy: 0, zr: 0, progress: 0, locked: false };
+  private cueRing = { progress: 0, locked: false };
 
   onLoad(): void {
     // 存储后端与设置读盘:必须排在任何 load() 之前。
@@ -213,8 +213,13 @@ export class GameRoot extends Component {
     // 全部冻住,面板底下没有会动的游戏对象 —— 每帧全量重绘(动态层+球员+HUD,
     // 一帧 500+ 次 fill/stroke)纯烧电发热。每 4 渲染帧画一次(60Hz 锁帧下 ≈15fps):
     // 呼吸/海浪这类纯装饰慢下来无感;UI 面板的弹出/淡出是引擎 tween 驱动,不受影响。
-    // BGM 与触摸在上方已各自跑完,不跟着降频。回到对局态立即恢复满帧。
-    if (!(C.frozen as string[]).includes(R.state) || this.frameT % 4 === 0) {
+    // hitstop 定格(stopFrames>0)同理:世界时钟冻住、镜头/震屏/粒子全部停摆,
+    // 画面与上一帧逐像素相同,每 2 帧画一次完全无感 —— 而定格恰逢击球特效的笔数峰值,
+    // 砍掉这几帧全量重绘正是「重扣那一下掉帧」的主战场。回到正常对局立即恢复满帧。
+    // BGM 与触摸在上方已各自跑完,不跟着降频。
+    if (!(C.frozen as string[]).includes(R.state)
+      ? this.stopFrames <= 0 || this.frameT % 2 === 0
+      : this.frameT % 4 === 0) {
       this.world.render(R.players, R.ball, Math.min(1, this.acc / step), animT, Career.skinOf("shuttle"), R.rally);
       // 画布内世界提示(落点圈/训练时机条/拍数徽标/赛点旗标,老 hud.js)
       this.world.hudOverlay.draw(R, this.world.frameT);
@@ -292,9 +297,9 @@ export class GameRoot extends Component {
     } else if (fc > pressAt + 8) {
       this.swingCueArmed = true;
     }
-    // 时机环喂给渲染层:收缩环长在球上(按拍预告的球上版),甜区圈画在判定区心
+    // 时机环喂给渲染层:收缩环长在球上(按拍预告的球上版);判定区随人走、
+    // 甜区圈不出新信息,用户拍板去掉,不再画
     const TR = C.timingRing;
-    this.cueRing.zx = z.x; this.cueRing.zy = z.y; this.cueRing.zr = z.r;
     this.cueRing.progress = clamp(1 - (fc - pressAt) / TR.spanFrames, 0, 1);
     this.cueRing.locked = fc <= pressAt;
     this.world.hudOverlay.setTimingRing(this.cueRing);
@@ -314,6 +319,8 @@ export class GameRoot extends Component {
   // ---------- 输入 → 意图(与老 buildInputs 同构) ----------
   /** 输入事件钩子:一次性构造、整个生命周期复用(旧版每模拟步新建 7 个闭包,纯 GC 粮) */
   private inputHooks: Partial<PlayerInput> | null = null;
+  /** buildInputs 的返回数组,跨模拟步复用(intents 对象本身每步新建,见函数内注释) */
+  private inputBuf: PlayerInput[] = [];
   private buildInputs(): PlayerInput[] {
     const R = Rules.R;
     if (!this.inputHooks) {
@@ -338,17 +345,24 @@ export class GameRoot extends Component {
       };
     }
     const hooks = this.inputHooks;
-    return R.players.map((p) => {
+    // 外层数组跨步复用(60 次/秒的 map 新数组是纯 GC 粮);intent 对象本身仍每步
+    // 新建 —— rules.step 会把对象存进 p.lastInp 留给下一步读,复用对象会串步。
+    const buf = this.inputBuf;
+    buf.length = 0;
+    for (const p of R.players) {
       // 训练场/新手教学的右半边不是对手,是喂球机:走同一条 inputs 通道(一拍一落是结构必然)
       if (R.mode === "drill" && p.side === "right") {
-        return { ...emptyIntent(), ...hooks, ...Drill.feederInput(p, R) };
+        buf.push({ ...emptyIntent(), ...hooks, ...Drill.feederInput(p, R) });
+        continue;
       }
       if (R.mode === "tutorial" && p.side === "right") {
-        return { ...emptyIntent(), ...hooks, ...Tutorial.feederInput(p, R) };
+        buf.push({ ...emptyIntent(), ...hooks, ...Tutorial.feederInput(p, R) });
+        continue;
       }
-      if (p.isAI) return { ...AI.think(p, R.ball as Ball, R.state), ...hooks };
-      return buildIntent(this.pad, hooks);   // 阶段 2:左队 0 号真人用 P1 键位/虚拟按键
-    });
+      if (p.isAI) buf.push({ ...AI.think(p, R.ball as Ball, R.state), ...hooks });
+      else buf.push(buildIntent(this.pad, hooks));   // 阶段 2:左队 0 号真人用 P1 键位/虚拟按键
+    }
+    return buf;
   }
 
   // ---------- 技能起手演出 ----------

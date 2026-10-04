@@ -28,13 +28,14 @@ import type { CardOpts } from "../assets/scripts/ui/p5-shapes";
 import { Graphics as StubGraphics, opsToSvg } from "./cc-stub";
 import { C, ROLE, SLANT, inkFor } from "../assets/scripts/ui/p5-tokens";
 import { RARITY_META } from "../assets/scripts/core/config";
+import { textW } from "../assets/scripts/core/text-metrics";
 import { APP_VERSION_NAME } from "../assets/scripts/core/version";
 import { SET, aboutLayout, controlLayout, donePos, mediaLayout, SETTINGS_TABS, tabBoxes } from "../assets/scripts/ui/settings-layout";
 import {
   cardRow, cardRows, CMP, resumeRow as cmpResume, tabRow as campTabRow,
 } from "../assets/scripts/ui/campaign-layout";
 import { cardBoxes as drillCardBoxes, DRILL } from "../assets/scripts/ui/drill-layout";
-import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopTabs, shopTopBar } from "../assets/scripts/ui/shop-shelf";
+import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopTabs, shopTopBar, TOAST, toastBox, toastWidth } from "../assets/scripts/ui/shop-shelf";
 import {
   drawBevelSlot, drawHalftone, drawIconBtn, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
   drawSliderFace, drawStarGlyph, drawToggleFace, sliderDL,
@@ -358,6 +359,13 @@ function panelsSheet(): string {
       out.push(txt(c.X(bx + cwid / 2), c.Y(by - 42), owned[i] ? "已拥有" : "Lv.8 解锁", 11, owned[i] ? C.good : C.dim));
     });
     out.push(block(c, K.action, ROLE.star.face, "装备上身", 16, SLANT.button));
+    // 底部提示带:与面板同一批数(shop-shelf.TOAST / toastWidth),字色由 block() 走
+    // inkFor(面色)。旧写法是 Label 自己抄 COL.gold = 同一支 #ffe14d,整条黄到读不出字
+    // —— 这一格就是用户那张截图的对照。
+    {
+      const msg = "已装备「活力橙」";
+      out.push(block(c, toastBox(toastWidth(textW(msg, TOAST.size))), TOAST.face, msg, TOAST.size, SLANT.band));
+    }
   }
   return out.join("\n");
 }

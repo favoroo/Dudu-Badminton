@@ -15,7 +15,7 @@ import { BlockInputEvents, Button, Color, Component, Font, Graphics, Label, Laye
 import { CFG } from "../core/config";
 import { textW } from "../core/text-metrics";
 import { applyFont, getBodyFont, getDisplayFont, onBodyFont, onDisplayFont } from "../game/fonts";
-import { C, ROLE, TOUCH, inkFor, isBright } from "./p5-tokens";
+import { C, ROLE, SLANT, TOUCH, inkFor, isBright } from "./p5-tokens";
 
 export { applyFont, getBodyFont, getDisplayFont, onBodyFont, onDisplayFont };
 
@@ -39,7 +39,7 @@ export {
   paintP5,
 } from "./p5-paint";
 export type { BadgeKind, CardOpts, HalftoneOpts, IconBtnOpts, PlateOpts, SliderDL } from "./p5-shapes";
-export { bandDL, blockDL, cardDL, halftoneCount, plateDL, slotDL, sliderDL, styleOf, toggleDL } from "./p5-shapes";
+export { bandDL, blockDL, cardDL, halftoneCount, plateDL, progressDL, slotDL, sliderDL, styleOf, toggleDL } from "./p5-shapes";
 export { ROLE, SLANT, HALFTONE, INK_TEXT, inkFor, isBright, contrast } from "./p5-tokens";
 export type { Role } from "./p5-tokens";
 
@@ -935,8 +935,8 @@ export function drawChip(g: Graphics, w: number, h: number, bg = ARCADE.acid, r 
   g.fill();
 }
 
-/** 标签 chip:底块 + 深色小字(用于 SOLO / EASY / 赛点等);slantDeg>0 切成斜切小片 */
-export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid, fg = "#0a0e1c", slantDeg = 0): Node {
+/** 标签 chip:底块 + 深色小字(用于 SOLO / EASY / 赛点等);默认斜切小片,圆角片是旧语汇 */
+export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid, fg = "#0a0e1c", slantDeg = SLANT.band): Node {
   const n = new Node("chip");
   n.layer = parent.layer;
   n.addComponent(UITransform);
