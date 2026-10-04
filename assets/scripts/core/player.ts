@@ -4,7 +4,7 @@
 // ============================================================
 import { CFG } from "./config";
 import { clamp, lerp, approach, sweptHit } from "./utils";
-import { Physics } from "./physics";
+import { Physics, FuturePt, flightFramesToClosest } from "./physics";
 import { Gait } from "./gait";
 import { Skills } from "./skills";
 import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShotResult, SwingBestShot } from "./types";
@@ -72,6 +72,7 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     lungeDir: 0,                    // 跨步方向(1=右,-1=左)
     lungeCd: 0,                     // 跨步冷却:>0 不许再跨,移动照常
     lungeShotT: 0,                  // 跨步后特殊击球窗口倒计时(>0=窗口内)
+    lungeAutoT: 0,                  // 跨步自动回球待发窗剩余帧(>0=系统替玩家按这一拍)
     skill: Skills.initSkillState((opts.skill && opts.skill.id) || "lunge"),
     flashT: 0,
     focusT: 0,
@@ -164,6 +165,11 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   if (p.lungeShotT > 0) {
     p.lungeShotT--;
   }
+  // 自动回球待发窗:与上面同一条规矩 —— 计时器只在这里递减一次。
+  // 【坑】lungeShotT 曾被这里的旧孪生行(文件末尾那批衰减里)多减一次,于是配置 60 帧
+  // (= 1 秒,与技能文案"1 秒内激活强力暴击"同源)实际只有 30 帧。修回诚实值之后
+  // 若实测过强,降 CFG.lunge.shotWindow 这个数值,别把重复递减留着当削弱手段。
+  if ((p.lungeAutoT ?? 0) > 0) p.lungeAutoT = (p.lungeAutoT ?? 0) - 1;
 
   // ---------- 水平:加速度 + 摩擦 ----------
   // 模式优先级:
@@ -356,6 +362,17 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 闪现悬空期不接受手动起拍:那一拍由技能状态机在蓄力结束时发出。
     // 允许的话就是两次挥拍抢同一条时间线,人还悬在半空,球自然打不到。
     startSwing(p, ball, p.swingBufAim); p.swingBuf = 0;
+    // 玩家自己按了击打 = 这一拍归他瞄(落点用他滑的方向),跨步欠的那一拍当场撤销承诺。
+    // 排在上面的手动分支之后正是为了这件事:自动那拍永远不跟手动那拍抢。
+    p.lungeAutoT = 0;
+  } else if ((p.lungeAutoT ?? 0) > 0 && !p.isAI && C.lunge.autoReturn && ball && Player.autoSwingDue(p, ball)) {
+    // 跨步自动回球:窗口内替玩家按这一拍,起手帧与时机环收满那一帧同源(见 autoSwingDue)。
+    // 走 startSwing → tryHit 的**真实**峰值追踪,不碰 flashStrikeT 那条必中分支 ——
+    // 用户拍板"不加必中":走位误差、贴墙夹取照样把这拍做坏,只是不用再惦记第二次点击。
+    // 起手**不**清 lungeAutoT:它是判定区尾段的开关,清掉会把尾段从正在进行的挥拍里抽走,
+    // 那一拍反而够不着刚才自己判成"该打"的球。不重复出拍由 p.swingT < 0(整条 else-if 链)
+    // 与 ball.lastHitter(打完就是自家球)两头钉死。
+    startSwing(p, ball, LG.autoAim);
   }
   // 滑动手势覆盖落点:startSwing 设的初值是 mid,挥拍期间手指横滑提交方向后,
   // 实时覆盖 p.swingAim。tryHit → buildShot 读的就是这里的最终值。
@@ -372,7 +389,6 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   if (p.smashGlow > 0) p.smashGlow--;
   if (p.sweetGlow > 0) p.sweetGlow--;
   if (p.perfectGlow > 0) p.perfectGlow--;
-  if (p.lungeShotT > 0) p.lungeShotT--;
   if ((p.faceT ?? 0) > 0) p.faceT = (p.faceT as number) - 1;
 
   p.racketPrev = p.racket;
@@ -396,6 +412,8 @@ export interface ZoneProbe {
   zoneScale?: number;
   lungeT?: number;
   lungeDir?: number;
+  /** 跨步自动回球待发窗剩余帧(只真人有;AI 的残缺探针不带 ⇒ `?? 0` 兜底,漏一处就是白给 CPU 手长) */
+  lungeAutoT?: number;
 }
 
 function strikeZone(p: ZoneProbe, speed: number) {
@@ -403,7 +421,13 @@ function strikeZone(p: ZoneProbe, speed: number) {
   const fast = clamp(((speed || 0) - C.swing.zoneFullSpeed) / C.swing.zoneTightenSpan, 0, 1);
   // 跨步救球:判定区扩大,延伸方向由跨步方向决定(缺省为面向方向)
   const isLunging = (p.lungeT ?? -1) >= 0;
-  const lungeMul = isLunging ? C.lunge.reachMul : 1;
+  // 冲量那 6 帧吃满倍率;之后的「自动回球待发窗」吃一个较小的尾段 —— 球真正被打到通常在
+  // 冲量结束之后(最佳按拍帧 ≈ 起手后第 9 帧),尾段一点不给,跨步"手变长"这个卖点就从来没
+  // 作用在真正那一拍上(这是旧行为,不是疏忽:旧口径下玩家自己按,早过了就认了)。
+  // 尾段只放大半径、**不改延伸方向**(仍是 facing):向后跨步时 lungeDir 与 facing 相反,
+  // 让它撑满整窗会把身前的球判成"太靠背后"而拒接 —— 那是把机制做成副作用。
+  const lungeMul = isLunging ? C.lunge.reachMul
+    : ((p.lungeAutoT ?? 0) > 0 && C.lunge.autoReturn ? C.lunge.reachTailMul : 1);
   const reachDir = isLunging ? (p.lungeDir || p.facing) : p.facing;
   const extraReach = activePlayerModifier?.reachMul ?? 1;
   const off = Physics.strikeOffset(rad, reachDir, lungeMul);
@@ -423,6 +447,72 @@ function ballInZone(p: ZoneProbe, ball: Ball): number | null {
   if (dx < -z.r * 0.34) return null;                       // 太靠背后,够不着
   const d = Math.hypot(dx, dy);
   return d <= z.r ? clamp(d / z.r, 0, 1) : null;
+}
+
+// ---------- 跨步自动回球:替玩家按那一拍(2026-10-04) ----------
+const autoPtsBuf: FuturePt[] = [];
+
+/** 一帧前瞻的三份账(全部按「从现在数第几帧」计,0 = 此刻) */
+interface BallFuture {
+  /** 球进入自己半场那一帧(-1 = 前瞻窗口内一直不在自己半场) */
+  cross: number;
+  /** 落地那一帧(horizon+1 = 窗口内不落地) */
+  land: number;
+  /** 落地横向位置(与 rules 的出界判据同一条:x ∈ [CO.left, CO.right] 才算界内) */
+  landX: number;
+}
+
+/**
+ * 按真实积分往前看这条弧(含风与阻尼),一次扫描同时供"过没过网 / 会不会出界 / 来不来得及"三条判据。
+ * 为什么必须往前看:来球多数还在网的另一侧(网前抢点尤其如此),而 tryHit 判的是**接触那一帧**
+ * 球过没过网 —— 按下当帧就用 inOwnCourt 卡,等于给自动多加一条手动没有的限制。
+ */
+function ballFuture(p: PlayerEntity, ball: Ball, horizon: number): BallFuture {
+  const pts = Physics.futureInto(ball, horizon, autoPtsBuf);
+  const out: BallFuture = { cross: inOwnCourt(p, ball.x) ? 0 : -1, land: horizon + 1, landX: ball.x };
+  for (let i = 0; i < pts.length; i++) {
+    const f = i + 1;
+    if (out.cross < 0 && inOwnCourt(p, pts[i].x)) out.cross = f;
+    if (pts[i].y >= CO.groundY - 2) { out.land = f; out.landX = pts[i].x; break; }
+  }
+  return out;
+}
+
+/**
+ * 「就是现在」判据:起手帧与时机环收满那一帧**同源** —— game-root.updateSwingCue 拿
+ * flightFramesToClosest 算「还有几帧到判定区心」,给玩家的提示额外提前
+ * swingCue.reactFrames(10 帧,补"看到→按下"的反应时间)。机器不吃反应,所以门槛就是
+ * fc <= PRESS_LEAD_FRAMES 本身:按下后第 9 帧的质量峰,正好落在球过判定区心那一帧。
+ * 够不着的球 flightFramesToClosest 返回 null(最近逼近仍超出判定半径)⇒ 绝不起手,
+ * 不留"为了兑现机制而挥空"的幽灵拍。每帧重算,所以窗口里玩家改滑轨、风把球带偏,
+ * 判读跟着走 —— 宁可晚一帧,不会按早。
+ */
+function autoSwingDue(p: PlayerEntity, ball: Ball | null): boolean {
+  if (!ball || !ball.live || ball.held || ball.flying) return false;   // flying = 得分后球飞回手里
+  if (ball.lastHitter === p.side) return false;                        // 自己刚打出去的那一拍
+  if (p.hitLock > 0) return false;                                     // 双重击球锁还没解
+  const LG = C.lunge;
+  const z = strikeZone(p, Math.hypot(ball.vx || 0, ball.vy || 0));
+  const fc = flightFramesToClosest(ball, z.x, z.y, z.r, LG.autoHorizon);
+  if (fc === null || fc > PRESS_LEAD_FRAMES) return false;
+  const fut = ballFuture(p, ball, LG.autoLandHorizon);
+  // 隔网球:接触那一帧球必须在自己半场。判据放宽到"整条命中窗之内会过网",而不是"到最近逼近帧
+  // 为止"—— 挥拍有 windup+active 十几帧的窗口,球在窗口里任何一帧过网都打得着(真过不了网的
+  // tryHit 自己会拒)。按下当帧就卡 inOwnCourt 等于给自动多加一条手动没有的限制:网前抢点那
+  // 一类球全被拒掉,而玩家自己按却打得着(实测差 9 格)。
+  if (fut.cross < 0 || fut.cross > SW.windup + SW.active) return false;
+  if (fut.land <= LG.autoLandHorizon) {
+    // 要飞出边线的球:正确打法是让它落地、把这分收下。替玩家捞回去等于把到手的分还给人家。
+    if (fut.landX < CO.left - LG.autoOutMargin || fut.landX > CO.right + LG.autoOutMargin) return false;
+    // 挥拍最早也要起拍后第 windup+1 帧才可能接触:球已经在地上了,别空挥。
+    if (fut.land <= SW.windup + 1) return false;
+    // 球活不到"结算"那一刻就别起手。峰值追账(见 tryHit 头注)只记账不出手,要等球**离开判定区**
+    // 或走完窗才结算 —— 贴地快死球死在区里,这一拍永远结不出来:人物明明扫到球,分还是丢了,
+    // 读起来就是"它替我挥了个空"。门槛实测取 2 帧(132 格可救来球):0 帧 → 27 格空挥、救到 90;
+    // 2 帧 → 24 格空挥、救到 92;3 帧 → 20 格空挥但只救到 87。剩下的 24 格连完美手动也救不到。
+    if (fut.land <= fc + LG.autoSettleGrace) return false;
+  }
+  return true;
 }
 
 // 命中判定:挥拍窗口内 + 球在判定区(或真撞上拍头)。
@@ -668,4 +758,7 @@ function previewKind(p: PlayerEntity, ball: Ball): ShotResult["kind"] {
   return buildShot(p, ball, { q, sweet: true, dEdge: 0, heat: 0, preview: true }).kind;
 }
 
-export const Player = { create, update, tryHit, buildShot, previewKind, depthOf, strikeZone, ballInZone, setPlayerModifier, getPlayerModifier };
+// `autoSwingDue`/`ballFuture` 挂上导出面不是巧合:上面的 update 走的是 `Player.autoSwingDue(...)`
+// 这一条对象调用,tools/lunge-check.ts 的 --selftest 才能把它换成反例(与 Skills.modifyShot
+// 被 player.ts 按对象调用同一个道理 —— 直接闭包调用是换不掉的,那套反例就没牙齿)。
+export const Player = { create, update, tryHit, buildShot, previewKind, depthOf, strikeZone, ballInZone, autoSwingDue, ballFuture, setPlayerModifier, getPlayerModifier };

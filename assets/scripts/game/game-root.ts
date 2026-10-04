@@ -593,7 +593,7 @@ export class GameRoot extends Component {
             const sLab = skillKind === "lunge" ? K.floatSkillLunge
               : skillKind === "smash" ? K.floatSkillSmash
               : skillKind === "flash" ? K.floatSkillFlash
-              : skillKind === "magnet" ? K.floatSkillMagnet
+              : skillKind === "magnet" ? ((e.kind as string) === "smash" ? K.floatSkillMagnetAir : K.floatSkillMagnet)
               : skillKind === "focus" ? K.floatSkillFocus
               : null;
             // 技能命中字只给真人:AI 的命中特效/震屏保留,不再飘同款标签
@@ -624,10 +624,13 @@ export class GameRoot extends Component {
               }
             } else if (skillKind === "magnet") {
               const ang = hitAng ?? this.hitAngOf(e);
-              this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
+              // 空中收拍的引力跳杀(modifyShot 里 forceSmash 兑现):特效/震屏/推镜升一档;
+              // 地面回击维持原有手感
+              const air = (e.kind as string) === "smash";
+              this.world.fx.smash(e.x as number, e.y as number, ang, air ? TIER_SWEET_SMASH : TIER_SWEET);
               this.world.fx.singularityBurst(e.x as number, e.y as number);
-              this.world.shake(10, 0, ang);
-              this.world.punch(e.x as number, e.y as number, 1.045);
+              this.world.shake(air ? 14 : 10, 0, ang);
+              this.world.punch(e.x as number, e.y as number, air ? 1.06 : 1.045);
             } else if (skillKind === "focus") {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.sweet(e.x as number, e.y as number, ang);

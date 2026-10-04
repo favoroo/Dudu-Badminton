@@ -564,6 +564,12 @@ function step(inputs: PlayerInput[]): void {
   // 引力吸球:球沿吸力轨道平滑牵引至球员身前
   if (ball.magnetPull) {
     const mp = ball.magnetPull;
+    // 吸附目标每帧贴着人重算:跳跃中 9 帧牵引人已上升 ~70px,死记 activate 那一刻的
+    // 目标点会把球吸到半空中的旧位置,人物和接触点脱节 —— 跳杀尤其明显。跟随玩家,
+    // 地面滑轨移动中释放也同样受益。
+    const aim = Skills.magnetAimPoint(mp.player);
+    mp.targetX = aim.x;
+    mp.targetY = aim.y;
     mp.t--;
     const progress = 1 - mp.t / mp.total;
     const ease = 1 - Math.pow(1 - progress, 2);

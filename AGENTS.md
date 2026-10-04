@@ -44,7 +44,8 @@
 | 改虚拟按键能放在哪儿 | [touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 的 `clampDelta`(唯一约束 = 整块留在可视区内) |
 | 改技能键的冷却读数 | 浓度/几何/文案全在 [pad-cd.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/pad-cd.ts)(零 cc 依赖:`cdAlpha`·`cdArcs`·`cdText`·`drawCooldown`),取值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `padSkin.cd` 段,[touchpad.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/input/touchpad.ts) 只照参数摆笔 + 挂键心秒数 Label,剩余秒数由 `game-root.ts` 喂;回归 `node .tools-build/tools/pad-cd-check.js`、出图 `node .tools-build/tools/pad-cd-preview.js` |
 | 改 AI 难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `diffs` 段(`read`=每记球只认定一次的站位误差 / `zone`=CPU 判定区 / `shotErr`=出球误差 / `composure`=落后是否变强),生效逻辑在 [ai.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/ai.ts),落档到球员在 `rules.ts` 的 `applyAiTier()`;验收 `node .tools-build/tools/ai-check.js`(三档胜负口径) |
-| 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);**副作用契约**:球种预告 `player.previewKind` 与实打共用同一条 `buildShot`,靠 `HitOpt.preview` 分流 —— 往 `modifyShot` 加任何状态消耗(`buffT`/`flashStrikeT`/`magnetPulling`)或记账必须过 `!preview` 闸,漏一处就是「按了没反应」(2026-10-03 重击现场);顶档质量改写(`q/perfect`)只给真人,AI 的准头归 `diffs` 管;附魔类起手字挂人物头顶(`floatSys`)读作"上弦",完成时的兑现字才挂场边。验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、`node .tools-build/tools/smash-check.js`(+ `--selftest`)、出图 `node .tools-build/tools/flash-preview.js` |
+| 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);**副作用契约**:球种预告 `player.previewKind` 与实打共用同一条 `buildShot`,靠 `HitOpt.preview` 分流 —— 往 `modifyShot` 加任何状态消耗(`buffT`/`lungeShotT`/`flashStrikeT`/`magnetPulling`)或记账必须过 `!preview` 闸,漏一处就是「按了没反应」(2026-10-03 重击现场);顶档质量改写(`q/perfect`)只给真人,AI 的准头归 `diffs` 管;**凡是"替真人打"的机制一律 `!p.isAI` 闸**(AI 也装 lunge、也会自己按键 `ai.ts:487-501`,给它开等于白送永不失误的回球,而 `serve-check`/`ai-check` 的真人替身从不按技能键 ⇒ 那两把尺子量不到);附魔类起手字挂人物头顶(`floatSys`)读作"上弦",完成时的兑现字才挂场边。验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、`node .tools-build/tools/smash-check.js`(+ `--selftest`)、出图 `node .tools-build/tools/flash-preview.js` |
+| 改「跨步一键自动回球」(强力跨步 = 冲过去 + 自动把这一拍打完) | 承诺由 `skills.activate` 开(`p.lungeAutoT` 待发窗 + `p.lungeShotT` 加力窗,数值全在 `CFG.lunge` 的 `autoReturn/autoWindow/autoHorizon/autoLandHorizon/autoAim/autoOutMargin/autoSettleGrace/reachTailMul`),**那一拍由 [player.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/player.ts) 的 `autoSwingDue` 择帧 + `startSwing` 执行**(skills 不能 import player,会成环);择帧锚 `Physics.flightFramesToClosest` 与 `PRESS_LEAD_FRAMES` —— **与时机环/击球键辉光同一把尺子**,只差人不吃的 `swingCue.reactFrames`(那 10 帧是补"看到→按下"的反应,机器不吃);刻意**不给必中**(不碰 `flashStrikeT` 那条 `guar` 分支),走 `tryHit` 真实峰值追踪;手动优先:玩家一按击打键 `p.lungeAutoT = 0` 当场撤销承诺;起手不清窗(它是判定区尾段的开关,清了那一拍反而够不着自己判成"该打"的球)。整套只动真人(`!p.isAI`)。验收 `node .tools-build/tools/lunge-check.js`(+ `--selftest` 四份反例必须被拦住) |
 | 改技能配置弹窗排版 | [skill-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-layout.ts)(纯函数:详情板折行 + 右对齐块按实测宽倒推 + 面板竖排留缝,回归见 `tools/skill-check.ts`)+ [skill-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-dialog.ts) 只照坐标摆 —— 卡片只留「标签/名字/CD/装备」,完整说明在底部详情板,点卡片切换 |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
@@ -137,6 +138,28 @@ node .tools-build/tools/flash-preview.js --out .tools-build/flash-preview   # �
 #     只装回其中一份,另一份的断言照样绿)
 node .tools-build/tools/smash-check.js
 node .tools-build/tools/smash-check.js --selftest
+
+# 4.6.6 跨步一键自动回球回归(exit 0;用户现场:「点完跨步再去点击打,在手机上操作其实有点
+#     不太方便」。右簇 swing/lunge 同排,两下要踩在几十毫秒里 —— 纯操作税。现在按下跨步 =
+#     冲过去 + 把这一拍打完。坏法全都不崩不报错:按早按晚(变挥空)、替玩家捞该落地的界外球
+#     (把对手送的分还回去)、抢玩家自己那一拍、以及偷偷给 AI 也开(AI 也装 lunge、也会自己
+#     按键 ai.ts:487-501,而 serve-check/ai-check 的真人替身从不按技能键 ⇒ 那两把尺子量不到)。
+#     七段判据:① 起了拍必须兑现(球回对方场内、带跨步加力、命中即消耗、整段只起一次拍、不捞
+#     界外球)+ 每一次沉默都说得出理由(界外/够不着/没过网/贴地/死球/门槛)+ 逐格不比"完美手动
+#     两拍"差 ② 该不出手的场合端到端不起拍(附赠门槛:空场状态下跨步键仍按得下去 = 纯位移用法
+#     没被机制吃掉)③ 手动优先:玩家一按击打键,待发窗当场清零、落点用他瞄的、自动不许补第二下
+#     ④ 判定区:冲量期吃满 reachMul、待发窗吃 reachTailMul 尾段、窗口走完回落、**AI 恒拿不到
+#     待发窗** ⑤ 计时器每帧只减一次(p.lungeShotT 曾被两处各减,配置 60 帧=1 秒实际只有 30 帧,
+#     与技能文案同源的那句话在撒谎)⑥ 球种预告不许偷吃 buff、击球键徽标不许撒谎 ⑦ 一键 vs 两拍
+#     的救球率/质量对照 + 落点深浅(autoAim=0.8 实测压到对方场地 74% 深、0 格出界;deep=0.92
+#     会送 3 格出界)。基线是个死按的替身,逐格比较只在"来球界内且它真救得到"的子集上做 ——
+#     否则量出来的"自动不如手动"全是假账。
+#     改 CFG.lunge 任一 auto*/reachTailMul、skills 的 lunge 分支与 resetPoint、player 的
+#     autoSwingDue·ballFuture·strikeZone·挥拍机器 任一都要跑。
+#     --selftest 四份反例:alwaysDue(不择帧就起手)/ noConsume(一次跨步吃好几拍)/
+#     aiGetsAuto(拆掉 isAI 闸)/ doubleDecrement(计时器多减一次)必须各自被拦住)
+node .tools-build/tools/lunge-check.js
+node .tools-build/tools/lunge-check.js --selftest
 
 # 4.7 闯关进度与「下一关」判据(exit 0;大厅直达条、卡片「▶ 下一关」印章、
 #     结算页「下一关 ▶ 第 N 关」三处全押在 CampaignManager.getNextStage/getStageByNo 上,

@@ -346,6 +346,14 @@ export interface Player {
   lungeCd: number;
   /** 跨步后特殊击球窗口倒计时(>0=窗口内,每帧递减,跨步触发时重置为 C.lunge.shotWindow) */
   lungeShotT: number;
+  /**
+   * 跨步自动回球「待发窗」剩余帧:>0 = 系统替玩家按这一拍。
+   * 起手帧由 flightFramesToClosest 与 PRESS_LEAD_FRAMES 对齐(与时机环同一把尺子)。
+   * 出拍**不清**这个窗 —— 它同时是判定区尾段倍率的开关,清了会把尾段从正在进行的挥拍里抽走;
+   * 不重复出拍由 swingT < 0 与 ball.lastHitter 两头钉死。玩家自己按击打键则当场清零。
+   * 做成可选:AI 的残缺 ZoneProbe 与商店/预览的半成品人物字面量都不带它,读侧一律 `?? 0`。
+   */
+  lungeAutoT?: number;
   /** 球员当前技能系统状态 */
   skill?: PlayerSkillState;
   /** 闪现扣杀残影与电光倒计时(纯视觉,渲染层读它画雷光/蓄力环) */

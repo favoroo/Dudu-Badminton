@@ -30,6 +30,10 @@ const CHECKS = [
   // 这两条坏都不会崩,只会安静地"按了没反应",flash-check 走的是 Rules.step、根本不喂
   // previewKind,所以旧代码在那边全绿 —— 判据必须常驻这张表。
   "smash-check",
+  // 跨步自动回球(0.0.26):一键「跨过去 + 把这一拍打完」。坏法全都不崩不报错 ——
+  // 按早按晚(变挥空)、替玩家捞该落地的界外球、抢玩家自己那一拍、以及偷偷给 AI 也开
+  // (serve-check / ai-check 的真人替身从不按技能键,量不到这条),所以逐格判据必须常驻。
+  "lunge-check",
   "campaign-check",
   "haptic-check",
   // 场边飘字「车道整层重排」:两代叠字现场(0.0.23 的 min(n,2) 封顶、0.0.24 的
@@ -66,6 +70,7 @@ const CHECKS = [
 /** 带反例的 check:--selftest 必须也绿(规则脚本最怕悄悄全绿) */
 const SELFTESTS = [
   "flash-check",
+  "lunge-check",
   "smash-check",
   "campaign-check",
   "haptic-check",

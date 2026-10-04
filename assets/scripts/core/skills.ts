@@ -52,6 +52,7 @@ export function resetPoint(p: Player): void {
   p.lungeCd = 0;
   p.lungeT = -1;
   p.lungeShotT = 0;
+  p.lungeAutoT = 0;   // 每分开新局不许留残窗:否则上一分没花掉的待发窗会给这一分的来球凭空补一拍
 }
 
 /** 当前局势下是否满足激活门槛 (供 UI 按钮点亮/置灰与 AI 决策使用) */
@@ -141,6 +142,15 @@ export function skillBlockReason(p: Player, ball: Ball | null): string | null {
   }
 }
 
+/**
+ * 引力吸球的吸附点(拍前身位):activate 起手与 rules 牵引每帧都走这一个式子。
+ * 跟随 p.y 而不是贴地 —— 空中释放时球吸到跳跃中的身前高点,回击才读作"凌空一拍";
+ * y 轴向下为正,"p.y - 42" 即比脚底高 42px,地面释放被 min 钳在离地 60px 的低手位。
+ */
+export function magnetAimPoint(p: Player): { x: number; y: number } {
+  return { x: p.x + p.facing * 34, y: Math.min(p.y - 42, CO.groundY - 60) };
+}
+
 /** 触发技能激活, 返回是否成功 */
 export function activate(p: Player, ball: Ball, dir?: number): boolean {
   if (!p || !p.skill) return false;
@@ -153,10 +163,19 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
   switch (p.skill.id) {
     case "lunge": {
       // 强力跨步: 原有跨步冲量强化, 开启 1 秒流风动画与暴击窗口
+      // 2026-10-04 起这里多挂一个「自动回球待发窗」:跨过去之后由 player 的挥拍机器替玩家
+      // 按那一拍(起手帧与时机环同一把尺子,见 player.ts 的 autoSwingDue)。
+      // 两道消耗各管各的:自动那一拍出手**不**清 lungeAutoT(它是判定区尾段的开关,清了会把
+      // 尾段从正在进行的挥拍里抽走),由帧数自己走完;加力窗 lungeShotT 则在命中时被 modifyShot
+      // 清掉 —— 一次跨步只兑现一拍,与其余四技能同口径。
       const LG = C.lunge;
       p.lungeT = 0;
       p.lungeDir = dir ? dir : (Math.abs(p.vx) > 1 ? (p.vx > 0 ? 1 : -1) : p.facing);
       p.lungeShotT = LG.shotWindow; // 60 帧 = 1 秒
+      // 待发窗**只给真人**:AI 也装 lunge、也会自己按这个键(ai.ts:487-501),给它开就等于
+      // 给 CPU 白送一记"永远踩在最佳帧"的回球 —— 那不归技能管,归 diffs.* 那根旋钮管
+      // (同 modifyShot 的 applyQuality 口径)。serve-check / ai-check 因此可证明不受影响。
+      p.lungeAutoT = (!p.isAI && LG.autoReturn) ? LG.autoWindow : 0;
       p.sq = 0.85;
       p.vx += p.lungeDir * LG.speed;
       p.skill.activeT = LG.duration;
@@ -211,24 +230,26 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
     }
 
     case "magnet": {
-      // 引力吸球: 展开引力力场, 羽毛球高速牵引至身前
+      // 引力吸球: 展开引力力场, 羽毛球高速牵引至身前(吸附点只定初值,牵引期间
+      // rules 每帧重算 magnetAimPoint 跟着人走 —— 跳跃中不吸到"按下时的旧位置")
       p.skill.magnetPulling = true;
-      const tx = p.x + p.facing * 34;
-      const ty = Math.min(p.y - 42, CO.groundY - 60);
+      const aim = magnetAimPoint(p);
       const total = C.skills.magnet.pullFrames;
       ball.magnetPull = {
-        targetX: tx,
-        targetY: ty,
+        targetX: aim.x,
+        targetY: aim.y,
         player: p,
         total,
         t: total,
         fromX: ball.x,
         fromY: ball.y,
       };
-      // 玩家准备挥拍
+      // 玩家准备挥拍:空中释放直接起上手劈杀姿势(回击按引力跳杀兑现,见 modifyShot),
+      // 落点瞄准压深场(与 config reboundDepth 的"强抽对方深场"同源);玩家滑轨仍可后续改。
       p.smashGlow = 20;
       p.swingT = 0;
-      p.swingStyle = "under";
+      p.swingStyle = p.onGround ? "under" : "over";
+      p.swingAim = C.aimDepth.deep;
       return true;
     }
 
@@ -327,8 +348,12 @@ export function modifyShot(p: Player, opt: HitOpt): {
     return { speedBoost, powerDeg, forceSmash };
   }
 
-  // 1. 强力跨步击球
+  // 1. 强力跨步击球(命中即消耗)
+  //    旧写法只读不写:一次跨步的 buff 能吃好几拍(窗口 0.5~1 秒内对手若很快回球就是白嫖第二记
+  //    重击)。与其余四技能同口径「一次施放兑现一拍」。消耗必须挂 !preview 闸 ——
+  //    球种预告与实打共用这条通道,漏一处就是"按了没反应"(2026-10-03 重击现场)。
   if (opt.lungeShot && p.lungeShotT > 0) {
+    if (!preview) p.lungeShotT = 0;
     speedBoost += C.lunge.shotBoost;
     powerDeg += C.lunge.shotPowerDeg;
     skillKind = "lunge";
@@ -365,7 +390,12 @@ export function modifyShot(p: Player, opt: HitOpt): {
   }
 
   // 4. 引力吸球回击
+  //    空中收拍 = 引力跳杀:吸附点贴着 p.y 走,满跳球高 ~134px(92 跳高 + 42 吸附位)
+  //    永远差 6px 够不到 jumpSmash.minHeight(140),所以这里不比高度 —— 跳起来释放
+  //    就直接兑现扣杀,不许出现"跳了却没触发"的中间态。走 forceSmash(与 smash/flash
+  //    同口径的技能强杀:loft ≤10 + kind="smash"),preview 同样返回,击球键徽标自动一致。
   if (p.skill.id === "magnet" && p.skill.magnetPulling) {
+    if (!p.onGround) forceSmash = true;
     if (!preview) p.skill.magnetPulling = false;   // 回击窗口只由真正那一拍关闭(否则回球加成被预告偷走)
     speedBoost += C.skills.magnet.speedBoost;
     powerDeg += 6;
@@ -394,4 +424,5 @@ export const Skills = {
   activate,
   update,
   modifyShot,
+  magnetAimPoint,
 };
