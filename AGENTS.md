@@ -46,10 +46,11 @@
 | 改 AI 难度 | 档位表在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `diffs` 段(`read`=每记球只认定一次的站位误差 / `zone`=CPU 判定区 / `shotErr`=出球误差 / `composure`=落后是否变强),生效逻辑在 [ai.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/ai.ts),落档到球员在 `rules.ts` 的 `applyAiTier()`;验收 `node .tools-build/tools/ai-check.js`(三档胜负口径) |
 | 改主动技能(5 款) | 技能表与专属数值在 [config.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/config.ts) 的 `skills` 段,状态机在 [skills.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/skills.ts)(`canActivate` 点亮门槛 / `activate` 起手 / `update` 逐帧推进 / `modifyShot` 出球加成),起手演出在 `game-root.ts` 的 `onSkillCast()`;**换技能的入口** = 模式屏基类 `buildSkillBadge`(对练 / 无限练习)+ 闯关大厅标题行的技能胶囊,装备全局一份存 `Career.profile.equippedSkill`(不分模式);**副作用契约**:球种预告 `player.previewKind` 与实打共用同一条 `buildShot`,靠 `HitOpt.preview` 分流 —— 往 `modifyShot` 加任何状态消耗(`buffT`/`lungeShotT`/`flashStrikeT`/`magnetPulling`)或记账必须过 `!preview` 闸,漏一处就是「按了没反应」(2026-10-03 重击现场);顶档质量改写(`q/perfect`)只给真人,AI 的准头归 `diffs` 管;**凡是"替真人打"的机制一律 `!p.isAI` 闸**(AI 也装 lunge、也会自己按键 `ai.ts:487-501`,给它开等于白送永不失误的回球,而 `serve-check`/`ai-check` 的真人替身从不按技能键 ⇒ 那两把尺子量不到);附魔类起手字挂人物头顶(`floatSys`)读作"上弦",完成时的兑现字才挂场边。验收 `node .tools-build/tools/flash-check.js`(+ `--selftest` 反例必须被拦住)、`node .tools-build/tools/smash-check.js`(+ `--selftest`)、出图 `node .tools-build/tools/flash-preview.js` |
 | 改「跨步一键自动回球」(强力跨步 = 冲过去 + 自动把这一拍打完) | 承诺由 `skills.activate` 开(`p.lungeAutoT` 待发窗 + `p.lungeShotT` 加力窗,数值全在 `CFG.lunge` 的 `autoReturn/autoWindow/autoHorizon/autoLandHorizon/autoAim/autoOutMargin/autoSettleGrace/reachTailMul`),**那一拍由 [player.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/player.ts) 的 `autoSwingDue` 择帧 + `startSwing` 执行**(skills 不能 import player,会成环);择帧锚 `Physics.flightFramesToClosest` 与 `PRESS_LEAD_FRAMES` —— **与时机环/击球键辉光同一把尺子**,只差人不吃的 `swingCue.reactFrames`(那 10 帧是补"看到→按下"的反应,机器不吃);刻意**不给必中**(不碰 `flashStrikeT` 那条 `guar` 分支),走 `tryHit` 真实峰值追踪;手动优先:玩家一按击打键 `p.lungeAutoT = 0` 当场撤销承诺;起手不清窗(它是判定区尾段的开关,清了那一拍反而够不着自己判成"该打"的球)。整套只动真人(`!p.isAI`)。验收 `node .tools-build/tools/lunge-check.js`(+ `--selftest` 四份反例必须被拦住) |
+| 改「重击一键自动兑现」(百分百重击 = 上弦 + 到点替玩家轰出那一拍,挥空不罚冷却) | 承诺同样由 `skills.activate` 开(`p.smashAutoT` 代拍窗 + `p.skill.buffT` 附魔期,数值全在 `CFG.skills.smash` 的 `autoReturn/autoWindow/autoAim/autoHorizon/autoLandHorizon/autoOutMargin/autoSettleGrace/cdOnConsume`);**那一拍与跨步共用同一条 [player.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/player.ts) `autoSwingDue(p, ball, src)` 择帧尺子**(门控数值各取一份 config,判据 `smash-check ⑯` 钉住两侧不许分叉),起手当场清窗 ⇒ 一次施放最多代一拍,附魔过期或玩家自己按击打键都当场哑掉;**冷却推迟到真扣出去那一拍才付**(`Skills.defersCooldownToConsume`,只有真人重击;AI 按下即付 ⇒ ai-check / serve-check 基线不动);`autoWindow` 上限是 `buffDuration`(超出去会在没附魔的帧上代一记普通球)。窗长按球速档定标:实测「对方出手→该按那帧」标准档最远 84、极限慢 135 ⇒ 取 140。验收 `node .tools-build/tools/smash-check.js`(+ `--selftest` 七份反例必须被拦住) |
 | 改技能配置弹窗排版 | [skill-layout.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-layout.ts)(纯函数:详情板折行 + 右对齐块按实测宽倒推 + 面板竖排留缝,回归见 `tools/skill-check.ts`)+ [skill-dialog.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/skill-dialog.ts) 只照坐标摆 —— 卡片只留「标签/名字/CD/装备」,完整说明在底部详情板,点卡片切换 |
 | 改音效映射 | [sfx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/sfx.ts) |
 | 改背景音乐 | [bgm.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/bgm.ts) |
-| 改启动图/应用图标 | [make-app-icons.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-app-icons.py) 出图标母版 → [make-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-splash.py) 派生启动图 → [apply-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/apply-splash.py) 注入构建(比例见 [splash-config.json](file:///Users/a1/Documents/01Code/dudu-cocos/tools/splash-config.json)) |
+| 改启动图/应用图标 | [make-app-icons.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-app-icons.py) 出图标母版 → [make-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/make-splash.py) 提取发光羽毛球主体与流线光晕派生无缝启动图 → [apply-splash.py](file:///Users/a1/Documents/01Code/dudu-cocos/tools/apply-splash.py) 注入构建(比例见 [splash-config.json](file:///Users/a1/Documents/01Code/dudu-cocos/tools/splash-config.json)),闸门 `python3 tools/splash-check.py` |
 | 跑回归测试 | `tools/` 下脚本(见下文) |
 | 查历史改动/排查问题 | [CHANGELOG.md](CHANGELOG.md)(Agent 变更日志,仅本地) |
 | 构建配置 | [build-android.json](file:///Users/a1/Documents/01Code/dudu-cocos/build-android.json) / [build-web-mobile.json](file:///Users/a1/Documents/01Code/dudu-cocos/build-web-mobile.json) |
@@ -134,8 +135,22 @@ node .tools-build/tools/flash-preview.js --out .tools-build/flash-preview   # �
 #     挥空不吃附魔、附魔期发球也算暴扣(均为用户 2026-10-03 拍板);AI 吃 forceSmash/加成
 #     但不吃顶档改写(一并生效会把真人得分率 60%→46%,等于给对手加难度)。
 #     改 modifyShot 的任何消耗写入、buildShot 的调用顺序、或 skills/player/rules 技能路径都要跑。
-#     --selftest 两份反例:legacy(预告也算命中)/ noOverride(顶档改写读不到)必须各自被拦 ——
-#     只装回其中一份,另一份的断言照样绿)
+#     4.6.5b 一键化扩判据(2026-10-04;用户:「点击之后如果球在可打击范围内就也会自动击打,
+#     如果挥空不会冷却」)。⑩~⑰ 八段:300 格(6 高度 × 5 远近 × 5 来球速度 × 两侧)逐格只按一次
+#     重击,起了拍必须兑现(系统代拍 / 必定扣杀 / 顶档 / 命中即消耗 / 只代一拍 / 不捞界外球),
+#     每一次沉默都要归因到"界外/够不着/没过网/贴地/死球/门槛"并且不比零反应延迟的完美手动差;
+#     该不出手一律不代拍(含"附魔过期残窗必须哑掉" + 对照组必须真的代拍,否则判据没牙齿);
+#     手动优先(同帧抢拍与照时机环玩都被让位,落点用玩家瞄的);计时器逐帧算术(待发窗/附魔/冷却
+#     各只减一次,配置 240 帧=4 秒就是文案那句话);冷却三态(按下不付、挥空不付、扣出去付一次);
+#     AI 侧口径不动(按下即付、拿不到代拍窗、判定区不放大);窗覆盖度 + 两侧门控数值同源
+#     (autoWindow 下限吃球速档:极限慢档实测最远 135 帧 ⇒ 取 140);代拍落点深浅(77% 深、0 格出界)。
+#     --selftest 七份反例:legacy(预告也算命中)/ noOverride(顶档改写读不到)/ buffNotConsumed/
+#     noAuto(从不代拍 = "按了没反应")/ alwaysDue(不择帧就起手)/ cdAtPress(按下即付冷却 = 旧口径)/
+#     aiGetsAuto(拆掉 isAI 闸)必须各自被点名拦住,另附 doubleDecrement 与 autoNotCleared 两份算术对照;
+#     改 CFG.skills.smash 任一 auto*/cdOnConsume、skills 的 smash 分支与 resetPoint、
+#     player 的 autoSwingDue(src 分支)·挥拍机器 任一都要跑;
+#     旧的两份反例(legacy 预告也算命中 / noOverride 顶档读不到)仍在内 —— 只装回其中一份,
+#     另一份的断言照样绿,所以一份不够)
 node .tools-build/tools/smash-check.js
 node .tools-build/tools/smash-check.js --selftest
 
@@ -153,13 +168,27 @@ node .tools-build/tools/smash-check.js --selftest
 #     与技能文案同源的那句话在撒谎)⑥ 球种预告不许偷吃 buff、击球键徽标不许撒谎 ⑦ 一键 vs 两拍
 #     的救球率/质量对照 + 落点深浅(autoAim=0.8 实测压到对方场地 74% 深、0 格出界;deep=0.92
 #     会送 3 格出界)。基线是个死按的替身,逐格比较只在"来球界内且它真救得到"的子集上做 ——
-#     否则量出来的"自动不如手动"全是假账。
+#     否则量出来的"自动不如手动"全是假账。⑧(2026-10-04)跳跃中也能释放:真人悬空按下 =
+#     空中突进(冲量/加力窗/待发窗照开)+ 空中网格一键兑现、不比"空中完美手动"差 + 起拍那一帧
+#     人必须在空中 + **AI 悬空必须被拒**(够球范围归 diffs 管)。
 #     改 CFG.lunge 任一 auto*/reachTailMul、skills 的 lunge 分支与 resetPoint、player 的
 #     autoSwingDue·ballFuture·strikeZone·挥拍机器 任一都要跑。
-#     --selftest 四份反例:alwaysDue(不择帧就起手)/ noConsume(一次跨步吃好几拍)/
-#     aiGetsAuto(拆掉 isAI 闸)/ doubleDecrement(计时器多减一次)必须各自被拦住)
+#     --selftest 反例:alwaysDue(不择帧就起手)/ noConsume(一次跨步吃好几拍)/
+#     aiGetsAuto(拆掉 isAI 闸)/ doubleDecrement(计时器多减一次)/ airGateRestored(旧
+#     onGround 闸装回,空中按下没反应)/ aiAirAllowed(拆掉 AI 空中闸)必须各自被拦住)
 node .tools-build/tools/lunge-check.js
 node .tools-build/tools/lunge-check.js --selftest
+
+# 4.6.7 网前击球与物理判定回归(exit 0;用户现场:「羽毛球在球网旁边的时候,感觉击打起来操作不太舒服」。
+#     两大致命机制缺陷:①隔网硬拦截(inOwnCourt: x < 480 严格)与时机环脱节,判定区心在 488.7(已在对方半场),
+#     时机环按区心引导玩家在球抵网口时按键,但球在 480~485 时 tryHit 直接判非法拒接 -> 必成假动作挥空;
+#     ②网前低球(h <= 40px)解算 100% 挂网自杀死刑:离网仅 10px,而过网高度要求爬升 53~73px,几何需要起飞角 >80°;
+#     旧 loftMaxDeg=79 且 netClearMargin=10 死咬不放,导致 safeAngle 无解直接认命下网。
+#     断言:网前 x0=470 处各高度全解算过网、左右半场完全镜像对称、网顶/高球网口探入允许击打截击、
+#     对方半场深球严格拒绝。改 config.ts netClose*·netReachTol*、physics.ts safeAngle·solveShot、
+#     player.ts inOwnCourt·buildShot 都要跑。--selftest 模拟旧版硬卡 480 必须被拦下)
+node .tools-build/tools/net-shot-check.js
+node .tools-build/tools/net-shot-check.js --selftest
 
 # 4.7 闯关进度与「下一关」判据(exit 0;大厅直达条、卡片「▶ 下一关」印章、
 #     结算页「下一关 ▶ 第 N 关」三处全押在 CampaignManager.getNextStage/getStageByNo 上,
@@ -316,6 +345,17 @@ node .tools-build/tools/aura-preview.js --selftest
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu \
   --screenshot=.tools-build/aura-preview/sigil.png --window-size=1520,600 \
   --hide-scrollbars "file://$PWD/.tools-build/aura-preview/aura-sigil.html"
+
+# 7.8 启动画面(splash)无缝性与底色纯度闸门(exit 0;用户现场:「启动logo画面背景色和logo本身的背景色弄成一个颜色」。
+#     根因是旧素材直接用了桌面 App 图标(Squircle 圆角方块),且方块底色(~#1c1b17)与全屏
+#     清屏色(~#0d1114)亮度差近 2 倍,外加 JPEG 宏块失真与旧 displayRatio 缩小导致中央
+#     清清楚楚贴着一个方形小卡片。现在 make-splash 从母版提取纯净羽毛球主体+多尺度
+#     流线光晕,四周 120px 纯色平原与全屏底色 0 色差,无损 PNG 编码。
+#     断言:splash-source 存在且 1024x1024、底色严格等于 (13,17,21)、四周 120px 绝对零色差、
+#     发光主体居中且跨度在 [500,750] 内。
+#     改 tools/make-splash.py、tools/apply-splash.py、或 tools/splash-config.json 都要跑)
+python3 tools/splash-check.py
+python3 tools/splash-check.py --selftest   # 模拟旧版带方块贴片的坏图,必须被报警拦下
 
 # 8. 全量类型检查(零错误)
 npx tsc -p tools/tsconfig.check.json

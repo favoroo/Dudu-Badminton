@@ -116,6 +116,8 @@ export interface SkillDef {
 export interface PlayerSkillState {
   id: SkillId;
   cd: number;               // 剩余冷却帧数 (<=0 表示已就绪)
+                            // 按下即付是四个瞬发技能的口径;百分百重击(真人)例外 ——
+                            // 它是"上弦等兑现",冷却在真正扣出去那一拍才付,挥空不罚冷却(见 skills.ts)
   maxCd: number;            // 技能基础冷却总帧数
   activeT: number;          // 激活执行中的剩余帧数 (-1=空闲)
   buffT: number;            // 增益状态剩余帧数 (如百分百重击附魔, >0 表示激活中)
@@ -354,6 +356,14 @@ export interface Player {
    * 做成可选:AI 的残缺 ZoneProbe 与商店/预览的半成品人物字面量都不带它,读侧一律 `?? 0`。
    */
   lungeAutoT?: number;
+  /**
+   * 重击一键化的「代出一拍」待发窗剩余帧:>0 且附魔还在 = 系统替玩家把那一记暴扣轰出去。
+   * 择帧与跨步共用同一条判据(player.ts 的 autoSwingDue),只是门控数值各取一份 config。
+   * 与 lungeAutoT 的差别是刻意的:出拍**当场清零** —— 它不兼判定区尾段开关,留着只会在
+   * 替玩家挥空之后连挥第二下、第三下("人物自己乱挥半天"就是这么来的)。玩家自己按击打键同样当场清零。
+   * 做成可选:AI 永远拿不到它(activate 里按 !p.isAI 给零),商店/预览的半成品人物字面量也不带,读侧一律 `?? 0`。
+   */
+  smashAutoT?: number;
   /** 球员当前技能系统状态 */
   skill?: PlayerSkillState;
   /** 闪现扣杀残影与电光倒计时(纯视觉,渲染层读它画雷光/蓄力环) */

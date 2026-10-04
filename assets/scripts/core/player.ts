@@ -73,6 +73,7 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
     lungeCd: 0,                     // 跨步冷却:>0 不许再跨,移动照常
     lungeShotT: 0,                  // 跨步后特殊击球窗口倒计时(>0=窗口内)
     lungeAutoT: 0,                  // 跨步自动回球待发窗剩余帧(>0=系统替玩家按这一拍)
+    smashAutoT: 0,                  // 重击代出一拍待发窗剩余帧(>0=附魔到点由系统轰出暴扣)
     skill: Skills.initSkillState((opts.skill && opts.skill.id) || "lunge"),
     flashT: 0,
     focusT: 0,
@@ -90,7 +91,17 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
   };
 }
 
-const inOwnCourt = (p: PlayerEntity, x: number): boolean => (p.side === "left" ? x < CO.netX : x > CO.netX);
+/**
+ * 击球合法半场判定:
+ * 严格规则要求球在击球方本侧半场,但羽毛球实战中球头探过球网垂直面或网顶正上方即可击打。
+ * 旧逻辑硬卡严格 x < netX,导致球抵网口(x=480~485)时时机环亮起、玩家按了却因 1px 被判挥空。
+ * 低球给 netReachTolLow(6px,约球头半宽),高于网顶的高球(y <= netTopY)给 netReachTolHigh(12px),允许网前抢网扑球。
+ */
+const inOwnCourt = (p: PlayerEntity, x: number, y?: number): boolean => {
+  const isHigh = y !== undefined && y <= CO.netTopY;
+  const tol = isHigh ? (C.swing.netReachTolHigh ?? 12) : (C.swing.netReachTolLow ?? 6);
+  return p.side === "left" ? x <= CO.netX + tol : x >= CO.netX - tol;
+};
 
 // 瞄准:落点跟着击球键走 —— 远球键 = 深球压底线,近球键 = 短球放网前。
 // AI 不按键盘,直接给数值深度;两种来源共用 C.aimDepth 这一张表,不会两处跑偏。
@@ -152,6 +163,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   }
 
   const LG = C.lunge;
+  const SM = C.skills.smash;
   if (p.lungeT >= 0) {
     p.lungeT++;
     // 跨步中:vx 在触发帧已锁定(含跑速+爆发),这里只推进帧数与判定区扩大
@@ -170,6 +182,11 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // (= 1 秒,与技能文案"1 秒内激活强力暴击"同源)实际只有 30 帧。修回诚实值之后
   // 若实测过强,降 CFG.lunge.shotWindow 这个数值,别把重复递减留着当削弱手段。
   if ((p.lungeAutoT ?? 0) > 0) p.lungeAutoT = (p.lungeAutoT ?? 0) - 1;
+  // 重击「代出一拍」待发窗:与上面同一条规矩 —— 计时器只在这里递减一次。
+  // 【坑】附魔 buffT 与冷却 cd 的递减在 Skills.update(上面几十行)里,这里再写一行就是
+  // 每帧两减:4 秒附魔变 2 秒、3.5 秒冷却变 1.75 秒 —— 与 lungeShotT 从前那个 bug 同一形状,
+  // 判据 tools/smash-check.ts 的 ⑬。
+  if ((p.smashAutoT ?? 0) > 0) p.smashAutoT = (p.smashAutoT ?? 0) - 1;
 
   // ---------- 水平:加速度 + 摩擦 ----------
   // 模式优先级:
@@ -362,9 +379,11 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 闪现悬空期不接受手动起拍:那一拍由技能状态机在蓄力结束时发出。
     // 允许的话就是两次挥拍抢同一条时间线,人还悬在半空,球自然打不到。
     startSwing(p, ball, p.swingBufAim); p.swingBuf = 0;
-    // 玩家自己按了击打 = 这一拍归他瞄(落点用他滑的方向),跨步欠的那一拍当场撤销承诺。
+    // 玩家自己按了击打 = 这一拍归他瞄(落点用他滑的方向),技能欠的那一拍当场撤销承诺。
     // 排在上面的手动分支之后正是为了这件事:自动那拍永远不跟手动那拍抢。
+    // 两扇窗一起清:重击的附魔不清(那一拍照旧必定暴扣,只是不再由系统代按)。
     p.lungeAutoT = 0;
+    p.smashAutoT = 0;
   } else if ((p.lungeAutoT ?? 0) > 0 && !p.isAI && C.lunge.autoReturn && ball && Player.autoSwingDue(p, ball)) {
     // 跨步自动回球:窗口内替玩家按这一拍,起手帧与时机环收满那一帧同源(见 autoSwingDue)。
     // 走 startSwing → tryHit 的**真实**峰值追踪,不碰 flashStrikeT 那条必中分支 ——
@@ -373,6 +392,18 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 那一拍反而够不着刚才自己判成"该打"的球。不重复出拍由 p.swingT < 0(整条 else-if 链)
     // 与 ball.lastHitter(打完就是自家球)两头钉死。
     startSwing(p, ball, LG.autoAim);
+  } else if ((p.smashAutoT ?? 0) > 0 && !p.isAI && SM.autoReturn && p.skill
+    && p.skill.id === "smash" && p.skill.buffT > 0 && ball && Player.autoSwingDue(p, ball, "smash")) {
+    // 重击一键化(2026-10-04):上弦之后到点替玩家把那一记暴扣轰出去 —— 择帧与跨步共用同一条
+    // autoSwingDue(够不着/界外/将死/隔网/自家球一律不起手),不另编一套时机,免得两处跑偏。
+    // 排在跨步那一支之后是有意的:两扇窗同时开着时先让跨步代拍,因为它自带判定区尾段倍率,
+    // 够得着的可能性更大;而那一拍同时吃 lungeShotT + buffT,与玩家自己按时的行为完全一致。
+    // 起手**当场清窗**(与 lungeAutoT 相反):它不兼判定区开关,留着只会在替玩家挥空之后
+    // 隔二十帧再代一下、又代一下,读起来就是"人物自己乱挥半天"。一次施放最多代一拍。
+    // 不加必中:不碰 flashStrikeT,那一拍的"必定暴扣"由 modifyShot 在真打时兑现,
+    // 走位误差照样决定这一拍能不能碰到球 —— 代劳的是时机,不是判定。
+    p.smashAutoT = 0;
+    startSwing(p, ball, SM.autoAim);
   }
   // 滑动手势覆盖落点:startSwing 设的初值是 mid,挥拍期间手指横滑提交方向后,
   // 实时覆盖 p.swingAim。tryHit → buildShot 读的就是这里的最终值。
@@ -449,7 +480,7 @@ function ballInZone(p: ZoneProbe, ball: Ball): number | null {
   return d <= z.r ? clamp(d / z.r, 0, 1) : null;
 }
 
-// ---------- 跨步自动回球:替玩家按那一拍(2026-10-04) ----------
+// ---------- 一键自动回球:替玩家按那一拍(跨步 2026-10-04 / 重击同日)----------
 const autoPtsBuf: FuturePt[] = [];
 
 /** 一帧前瞻的三份账(全部按「从现在数第几帧」计,0 = 此刻) */
@@ -469,14 +500,20 @@ interface BallFuture {
  */
 function ballFuture(p: PlayerEntity, ball: Ball, horizon: number): BallFuture {
   const pts = Physics.futureInto(ball, horizon, autoPtsBuf);
-  const out: BallFuture = { cross: inOwnCourt(p, ball.x) ? 0 : -1, land: horizon + 1, landX: ball.x };
+  const out: BallFuture = { cross: inOwnCourt(p, ball.x, ball.y) ? 0 : -1, land: horizon + 1, landX: ball.x };
   for (let i = 0; i < pts.length; i++) {
     const f = i + 1;
-    if (out.cross < 0 && inOwnCourt(p, pts[i].x)) out.cross = f;
+    if (out.cross < 0 && inOwnCourt(p, pts[i].x, pts[i].y)) out.cross = f;
     if (pts[i].y >= CO.groundY - 2) { out.land = f; out.landX = pts[i].x; break; }
   }
   return out;
 }
+
+/**
+ * 代劳那一拍的来源。两条一键化(跨步 / 重击)共用**同一把择帧尺子**,只有四个门控数值各取
+ * 一份 config —— 分开两套逻辑迟早一边修好、另一边还在按早按晚。
+ */
+export type AutoSwingSrc = "lunge" | "smash";
 
 /**
  * 「就是现在」判据:起手帧与时机环收满那一帧**同源** —— game-root.updateSwingCue 拿
@@ -487,11 +524,11 @@ function ballFuture(p: PlayerEntity, ball: Ball, horizon: number): BallFuture {
  * 不留"为了兑现机制而挥空"的幽灵拍。每帧重算,所以窗口里玩家改滑轨、风把球带偏,
  * 判读跟着走 —— 宁可晚一帧,不会按早。
  */
-function autoSwingDue(p: PlayerEntity, ball: Ball | null): boolean {
+function autoSwingDue(p: PlayerEntity, ball: Ball | null, src: AutoSwingSrc = "lunge"): boolean {
   if (!ball || !ball.live || ball.held || ball.flying) return false;   // flying = 得分后球飞回手里
   if (ball.lastHitter === p.side) return false;                        // 自己刚打出去的那一拍
   if (p.hitLock > 0) return false;                                     // 双重击球锁还没解
-  const LG = C.lunge;
+  const LG = src === "smash" ? C.skills.smash : C.lunge;
   const z = strikeZone(p, Math.hypot(ball.vx || 0, ball.vy || 0));
   const fc = flightFramesToClosest(ball, z.x, z.y, z.r, LG.autoHorizon);
   if (fc === null || fc > PRESS_LEAD_FRAMES) return false;
@@ -529,7 +566,7 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
   if (p.swingT < SW.windup || p.swingT > SW.windup + SW.active) return null;
   if (p.swingHit || p.hitLock > 0) return null;
   if (!ball.live || ball.held) return null;
-  if (!inOwnCourt(p, ball.x)) return null;                 // 不能越过网去够
+  if (!inOwnCourt(p, ball.x, ball.y)) return null;         // 不能越过网去够(含网口球头/高球抢网容差)
   if (ball.lastHitter === p.side) return null;             // 同队一回合只许击球一次
 
   const guar = (p.flashStrikeT ?? 0) > 0;
@@ -677,7 +714,12 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   const q = opt.q ?? 0.5, sweet = !!opt.sweet, perfect = !!opt.perfect, dEdge = opt.dEdge ?? 0;
   const dir = p.side === "left" ? 1 : -1;
   const h = CO.groundY - ball.y;
-  const aim = opt.forced ? opt.forced.depth : depthOf(p.swingAim);
+  const rawAim = opt.forced ? opt.forced.depth : depthOf(p.swingAim);
+  // 网前高球自适应扑推:
+  // 当击球点在网前近网处(离网 <= 35px)且高出网顶(y <= netTopY - 15),若玩家未明确指定打深球(默认 mid 档),
+  // 意图倾向于前场扑杀/下切推压(depth=0.32),打出干脆利落的前场扑球,避免反解成后场慢平高球。
+  const isNetHigh = Math.abs(ball.x - CO.netX) <= 35 && ball.y <= CO.netTopY - 15;
+  const aim = (isNetHigh && p.swingAim === "mid" && !opt.forced) ? 0.32 : rawAim;
 
   let err = C.aimErr.base + dEdge * C.aimErr.edge;
   if (Math.abs(p.vx) > 2.4) err += C.aimErr.moving;

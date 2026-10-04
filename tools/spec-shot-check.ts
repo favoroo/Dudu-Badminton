@@ -270,12 +270,13 @@ console.log("⑤ config 锚点契约:「按着光环没触发」的根因修复"
 
 console.log("⑥ 技能门槛原因:skillBlockReason");
 {
-  const { R, hero } = setup({ lift: 60 });                    // 空中按跨步 → 落地再按
+  // 2026-10-04 起真人跳跃中也能释放跨步:空中按下必须放行,「落地再按」这一态已废
+  const { hero, ball } = setup({ lift: 60 });
   hero.skill = Skills.initSkillState("lunge");
   Skills.resetPoint(hero);
   hero.swingT = -1; hero.lungeT = -1;
-  const reason = Skills.skillBlockReason(hero, R.ball);
-  assert(reason === C.skills.blockText.needGround, `空中按跨步应报「${C.skills.blockText.needGround}」,实际「${reason}」`);
+  assert(Skills.canActivate(hero, ball), "真人悬空跨步必须可激活(旧 onGround 闸已拆)");
+  assert(Skills.skillBlockReason(hero, ball) === null, "空中跨步应完全就绪(不再报「落地再按」)");
 }
 {
   const { R, hero } = setup({});                              // 地面静立 → 完全就绪,无原因
@@ -337,20 +338,21 @@ if (process.argv.includes("--grid")) {
 }
 
 // ---------- --selftest:反例必须被报警 ----------
-// 反例一:把 blockText 文案表清空 = 旧版「静默拒绝」的真实状态(判据还在,玩家什么都看不到)。
-// 反例二:把 modifyShot 装回旧写法(预告也算命中,三处 buff 无条件消耗)—— ②里那条
-//        「不许动状态」的钉子必须红。两份都必须被抓住,否则本工具没有牙齿。
-if (process.argv.includes("--selftest")) {
+  // 反例一:把 blockText 文案表清空 = 旧版「静默拒绝」的真实状态(判据还在,玩家什么都看不到)。
+  //        钉子在「挥拍中」:空中释放落地门槛已废(needGround 键已删),这条换 swingT 压出来。
+  // 反例二:把 modifyShot 装回旧写法(预告也算命中,三处 buff 无条件消耗)—— ②里那条
+  //        「不许动状态」的钉子必须红。两份都必须被抓住,否则本工具没有牙齿。
+  if (process.argv.includes("--selftest")) {
   const table = C.skills.blockText as Record<string, string>;
   const saved = { ...table };
   let anti = 0;
   const antiAssert = (cond: boolean, msg: string): void => { if (!cond) { anti++; console.log(`    (反例命中)${msg}`); } };
-  const { R, hero } = setup({ lift: 60 });
+  const { R, hero } = setup({});
   hero.skill = Skills.initSkillState("lunge");
   Skills.resetPoint(hero);
-  hero.swingT = -1; hero.lungeT = -1;
+  hero.swingT = 3; hero.lungeT = -1;                        // 挥拍中 → 「挥拍中」
   for (const k of Object.keys(table)) table[k] = "";
-  antiAssert(Skills.skillBlockReason(hero, R.ball) === saved.needGround, "空文案表下门槛原因断言应失败");
+  antiAssert(Skills.skillBlockReason(hero, R.ball) === saved.swinging, "空文案表下门槛原因断言应失败");
   for (const k of Object.keys(table)) table[k] = saved[k];
 
   {

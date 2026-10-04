@@ -981,7 +981,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
   }
 
   // 技能门槛原因(仅技能键):cd 走完但局势不放时,键上方给可读原因
-  // (「落地再按」「球不够高」…判据在 skills.skillBlockReason,文案在 config.skills.blockText)
+  // (「挥拍中」「球不够高」…判据在 skills.skillBlockReason,文案在 config.skills.blockText)
   let hintOp: UIOpacity | null = null;
   let hintComp: Label | null = null;
   if (action === "lunge") {

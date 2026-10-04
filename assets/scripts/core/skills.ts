@@ -53,6 +53,22 @@ export function resetPoint(p: Player): void {
   p.lungeT = -1;
   p.lungeShotT = 0;
   p.lungeAutoT = 0;   // 每分开新局不许留残窗:否则上一分没花掉的待发窗会给这一分的来球凭空补一拍
+  p.smashAutoT = 0;   // 同一条规矩管重击的"代出一拍"窗(2026-10-04 一键化):残窗 = 凭空多打一拍
+}
+
+/**
+ * 这一位球员的冷却是否「推迟到兑现那一拍才付」。
+ *
+ * 只有百分百重击(真人)走这条路:按下技能 = 上弦,附魔挂着的时候既没位移也没出球,
+ * 罚它 3.5 秒冷却等于把"我按了但它没打出去"的账算在玩家头上(用户 2026-10-04 点名:
+ * 「如果挥空不会冷却」)。其余四个技能是瞬发/状态类,那一下本身就是代价,照旧按下即付。
+ *
+ * 不给 AI 开:它的技能循环强度归 diffs.* 那根旋钮管,放宽冷却等于偷偷改难度 —— 而
+ * serve-check / ai-check 的真人替身从不按技能键,那两把尺子量不到这条,只能在这里钉死。
+ * activate 与 modifyShot 两端共用这一个判据,别在调用点各写一份条件(写漏一侧就是白嫖)。
+ */
+export function defersCooldownToConsume(p: Player): boolean {
+  return !!p && !p.isAI && !!p.skill && p.skill.id === "smash" && C.skills.smash.cdOnConsume;
 }
 
 /** 当前局势下是否满足激活门槛 (供 UI 按钮点亮/置灰与 AI 决策使用) */
@@ -63,11 +79,18 @@ export function canActivate(p: Player, ball: Ball): boolean {
 
   switch (s.id) {
     case "lunge":
-      // 强力跨步: 在地面、未挥拍、未在跨步中
-      return p.onGround && p.swingT < 0 && p.lungeT < 0;
+      // 强力跨步: 未挥拍、未在跨步中。
+      // 2026-10-04 起真人跳跃中也可释放:跨步冲量照给(读作空中突进),重力不动,一次
+      // 起跳至多一次 —— 冷却 48 帧长于满跳滞空 ~38 帧,不会变成空中小马达。
+      // AI 保持落地门槛:AI 的够球范围归 diffs.* 那根旋钮管,空中突进不该白送
+      // (同 lungeAutoT 的 !p.isAI 口径,serve-check / ai-check 的真人替身从不按技能键)。
+      if (p.isAI && !p.onGround) return false;
+      return p.swingT < 0 && p.lungeT < 0;
 
     case "smash":
       // 百分百重击: 随时可预开启附魔 (只要未在附魔期)
+      // 2026-10-04 起真人这边 cd 在"扣出去"那一拍才付,所以拦人的门槛是 buffT 而不是冷却:
+      // 附魔挂着的时候再按一次没有意义(那一拍已经在等着兑现),按键因此仍置灰 = "附魔中"。
       return s.buffT <= 0;
 
     case "flash": {
@@ -116,7 +139,7 @@ export function skillBlockReason(p: Player, ball: Ball | null): string | null {
   const T = C.skills.blockText as Record<string, string>;
   switch (s.id) {
     case "lunge":
-      if (!p.onGround) return T.needGround;
+      // 真人空中也能跨(见 canActivate),不再有「落地再按」这一态;AI 不读 UI
       if (p.swingT >= 0) return T.swinging;
       if (p.lungeT >= 0) return T.lunging;
       return null;
@@ -157,12 +180,16 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
   if (!canActivate(p, ball)) return false;
 
   const def = defOf(p.skill.id);
-  p.skill.cd = def.cooldownFrames;
   p.skill.maxCd = def.cooldownFrames;
+  // 冷却何时开跑:瞬发的四个技能按下即付;重击(真人)按下只上弦,真正扣出去那一拍才付
+  // (判据与原因见 defersCooldownToConsume —— 两端共用,不许在这里再写一遍条件)。
+  p.skill.cd = defersCooldownToConsume(p) ? 0 : def.cooldownFrames;
 
   switch (p.skill.id) {
     case "lunge": {
       // 强力跨步: 原有跨步冲量强化, 开启 1 秒流风动画与暴击窗口
+      // 空中按下 = 空中突进:冲量照给、重力不动,冲量期走 player 的 lunge 专用分支不受
+      // 空中加速衰减影响,三件套(冲量/加力窗/待发窗)与地面释放同一套数值。
       // 2026-10-04 起这里多挂一个「自动回球待发窗」:跨过去之后由 player 的挥拍机器替玩家
       // 按那一拍(起手帧与时机环同一把尺子,见 player.ts 的 autoSwingDue)。
       // 两道消耗各管各的:自动那一拍出手**不**清 lungeAutoT(它是判定区尾段的开关,清了会把
@@ -184,7 +211,17 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
 
     case "smash": {
       // 百分百重击: 开启烈焰聚能附魔, 球拍高亮
-      p.skill.buffT = C.skills.smash.buffDuration;
+      // 2026-10-04 起这里多挂一个「代出一拍」待发窗:上弦之后由 player 的挥拍机器到点替玩家
+      // 把那一记暴扣轰出去(择帧与跨步共用同一条 autoSwingDue,见 player.ts)。
+      // 两道计时各管各的:buffT 是"这一拍必定暴扣"的兑现期(4 秒,手动按也照旧兑现);
+      // smashAutoT 只覆盖"要不要替你按"这一段,走完就交还手动 —— 附魔没消失,消失的是代劳。
+      // 窗长必须 ≤ buffDuration:超出去就会在附魔已经过期的帧上代出一记普通球,
+      // 玩家读到的是"我按了重击,它给我回了个高远球"。
+      const SM = C.skills.smash;
+      p.skill.buffT = SM.buffDuration;
+      // 待发窗**只给真人**(同 lungeAutoT 的口径):AI 也会自己按这个键(ai.ts:502-506),
+      // 给它开就等于白送一记"永远踩在最佳帧"的暴扣,而它的准头归 diffs 管。
+      p.smashAutoT = (!p.isAI && SM.autoReturn) ? Math.min(SM.autoWindow, SM.buffDuration) : 0;
       p.smashGlow = 36;
       p.face = "fierce";
       p.faceT = 30;
@@ -319,10 +356,10 @@ export function update(p: Player, ball: Ball): void {
 /**
  * 击球修正钩子: 在 player.tryHit / buildShot 中注入技能加成
  *
- * **副作用契约**:本函数会消耗技能状态(附魔 / 必中窗 / 吸球回击),因此只能挂在
- * 真正出手的那一次上。球种预告(player.previewKind)与实打共用同一条 buildShot
+ * **副作用契约**:本函数会消耗技能状态(附魔 / 必中窗 / 吸球回击 / 重击的冷却与待发窗),
+ * 因此只能挂在真正出手的那一次上。球种预告(player.previewKind)与实打共用同一条 buildShot
  * 通道,靠 opt.preview 区分:加成与质量改写照旧计算(徽标才不撒谎),
- * 下面三处「消耗」加 `!preview` 闸。漏一处就是"按了没反应"—— 判据 tools/smash-check.ts。
+ * 下面几处「消耗」一律加 `!preview` 闸。漏一处就是"按了没反应"—— 判据 tools/smash-check.ts。
  *
  * **质量改写只给真人**(`applyQuality`):q/sweet/perfect 那三个回写会一路决定
  * 误差归零 + perfectBoost + perfect.powerDeg,等于把这一拍从"按得一般"抬成"顶档"。
@@ -369,7 +406,17 @@ export function modifyShot(p: Player, opt: HitOpt): {
     forceSmash = true;
     speedBoost += C.skills.smash.speedBoost;
     powerDeg += C.skills.smash.powerDeg;
-    if (!preview) p.skill.buffT = 0; // 命中消耗附魔(预告不许吃 —— 旧写法把「上弦」当「已击发」)
+    // 命中才算兑现:附魔清零 + 冷却在这一拍开跑(按下/挥空都不付,见 defersCooldownToConsume)。
+    // 待发窗一并收掉 —— 附魔已经花掉了,再留一个"待发的自动拍"就是收招后凭空补第二下。
+    // 预告通道一口都不能吃(下面整块挂在 !preview 闸里)—— 那是 2026-10-03 的真机现场。
+    if (!preview) {
+      p.skill.buffT = 0;
+      p.smashAutoT = 0;
+      if (defersCooldownToConsume(p)) {
+        // maxCd 是 activate 刚写的诚实值,也带着关卡的 cooldownMul —— 照它付,不另抄一份数字
+        p.skill.cd = p.skill.maxCd > 0 ? p.skill.maxCd : defOf("smash").cooldownFrames;
+      }
+    }
     skillKind = "smash";
   }
 
@@ -421,6 +468,7 @@ export const Skills = {
   resetPoint,
   canActivate,
   skillBlockReason,
+  defersCooldownToConsume,
   activate,
   update,
   modifyShot,

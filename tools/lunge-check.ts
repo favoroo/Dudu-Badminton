@@ -15,6 +15,10 @@
 // 另修一处旧 bug:p.lungeShotT 曾被 player.ts 两处各减一次,配置 60 帧(=1 秒,与技能文案
 // 同源)实际只有 30 帧 —— ⑤ 用逐帧算术钉死,谁再手抖加一行就红。
 //
+// ⑧(2026-10-04 追加)跳跃中也能释放:真人悬空按跨步 = 空中突进 + 自动回球照样出手;
+//    AI 悬空必须被拒(够球范围归 diffs 管)。坏法照样不崩不报错:空中按下没反应(把旧的
+//    onGround 闸装回)、AI 白拿空中突进 —— --selftest 各喂一份反例。
+//
 // 用法:node .tools-build/tools/lunge-check.js [--selftest]
 // ============================================================
 import { Rules } from "../assets/scripts/core/rules";
@@ -38,8 +42,10 @@ const emptyInput = (): PlayerInput => ({
 /** 站位镜像:左队坐标 ↔ 右队坐标(场地关于 netX 对称,probe.js 也是这个口径) */
 const mirror = (x: number): number => CO.netX * 2 - x;
 
-/** 把局面摆成「来球正朝 hero 那侧半场飞」:跳过分发球员的球,只测跨步那一下 */
-function setup(side: TeamSide, h: number, x: number, vx: number, vy: number): { hero: PlayerEntity; ball: Ball } {
+/** 把局面摆成「来球正朝 hero 那侧半场飞」:跳过分发球员的球,只测跨步那一下。
+ *  heroLift > 0 把人提到半空(⑧ 空中释放用):y = 地面 - lift、onGround = false,
+ *  heroVy 给初始竖速(默认 0 = 悬停起点;-9.8 = 刚起跳的满跳)。 */
+function setup(side: TeamSide, h: number, x: number, vx: number, vy: number, heroLift = 0, heroVy = 0): { hero: PlayerEntity; ball: Ball } {
   Rules.newMatch("1p", "normal");
   const R = Rules.R;
   const hero = R.players[side === "left" ? 0 : 1];
@@ -47,7 +53,7 @@ function setup(side: TeamSide, h: number, x: number, vx: number, vy: number): { 
   Skills.resetPoint(hero);
   // 人站回中后场,与球拉开距离 —— 贴脸摆球等于"球本来就在判定区里",测不出跨步换了什么
   hero.x = side === "left" ? CO.netX - 175 : CO.netX + 175;
-  hero.y = CO.groundY; hero.vx = 0; hero.vy = 0; hero.onGround = true;
+  hero.y = CO.groundY - heroLift; hero.vx = 0; hero.vy = heroVy; hero.onGround = heroLift <= 0;
   hero.stats.whiffs = 0; hero.stats.hits = 0; hero.stats.lungeShots = 0;
 
   const ball = R.ball as Ball;
@@ -92,6 +98,8 @@ interface Cast {
   lungeShotLeft: number;
   /** 起拍那一帧的判定区半径 */
   zoneAtSwing: number;
+  /** 起拍那一帧人是否悬空(⑧:自动回球必须真的走空中路径,不是落了地才打) */
+  airborneAtSwing: boolean;
 }
 
 /** 每一帧决定要不要给 hero 输入:第 0 帧恒按跨步(要关就传 cast:false) */
@@ -112,7 +120,7 @@ const framesToCentre = (hero: PlayerEntity, ball: Ball): number | null => {
 const MISS: Cast = {
   hit: false, frames: 0, kind: null, skillKind: null, lungeShot: false, q: 0, aim: undefined,
   intoNet: false, landX: 0, swingFrame: -1, swings: 0, whiffs: 0, hits: 0,
-  lungeAutoLeft: 0, lungeShotLeft: 0, zoneAtSwing: 0,
+  lungeAutoLeft: 0, lungeShotLeft: 0, zoneAtSwing: 0, airborneAtSwing: false,
 };
 
 /**
@@ -120,9 +128,9 @@ const MISS: Cast = {
  * 走完整 Rules.step,帧序与真机一致(Pl.update → Physics.step → Pl.tryHit),
  * 所以"择帧"量的是真实相位,不是我以为的相位。
  */
-function run(side: TeamSide, h: number, x: number, vx: number, vy: number, plan: Plan, maxFrames = 70): Cast {
+function run(side: TeamSide, h: number, x: number, vx: number, vy: number, plan: Plan, maxFrames = 70, heroLift = 0, heroVy = 0): Cast {
   const R = Rules.R;
-  const { hero, ball } = setup(side, h, x, vx, vy);
+  const { hero, ball } = setup(side, h, x, vx, vy, heroLift, heroVy);
   let swingFrame = -1, swings = 0, prev = false;
   const acc: Cast = { ...MISS };
   for (let f = 0; f < maxFrames; f++) {
@@ -135,6 +143,7 @@ function run(side: TeamSide, h: number, x: number, vx: number, vy: number, plan:
       if (swingFrame < 0) {
         swingFrame = f;
         acc.zoneAtSwing = Pl.strikeZone(hero, Math.hypot(ball.vx, ball.vy)).r;
+        acc.airborneAtSwing = !hero.onGround;
       }
     }
     prev = swinging;
@@ -146,7 +155,7 @@ function run(side: TeamSide, h: number, x: number, vx: number, vy: number, plan:
         intoNet: !!e.intoNet, landX: e.landX as number, swingFrame, swings,
         whiffs: hero.stats.whiffs, hits: hero.stats.hits,
         lungeAutoLeft: hero.lungeAutoT ?? 0, lungeShotLeft: hero.lungeShotT,
-        zoneAtSwing: acc.zoneAtSwing,
+        zoneAtSwing: acc.zoneAtSwing, airborneAtSwing: acc.airborneAtSwing,
       };
     }
     if (R.state !== "RALLY") break;          // 球落地/得分:这一拍没接上
@@ -173,6 +182,23 @@ const perfect = (side: TeamSide, h: number, x: number, vx: number, vy: number): 
     }
     return {};
   });
+};
+
+/** 空中版一键(⑧):hero 满跳中按下跨步 —— 2026-10-04 起真人悬空可释放 */
+const autoAir = (side: TeamSide, h: number, x: number, vx: number, vy: number, lift = 60, heroVy = -9.8): Cast =>
+  run(side, h, x, vx, vy, (f, hero, ball) => (f === 0 ? castKey(hero, ball) : {}), 70, lift, heroVy);
+
+/** 空中版完美手动两拍:同一个悬空位,⑧ 的逐格基线(两边同样吃 aimErr.airborne,尺子公平) */
+const perfectAir = (side: TeamSide, h: number, x: number, vx: number, vy: number, lift = 60, heroVy = -9.8): Cast => {
+  let done = false;
+  return run(side, h, x, vx, vy, (f, hero, ball) => {
+    if (f === 0) return castKey(hero, ball);
+    if (!done) {
+      const fc = framesToCentre(hero, ball);
+      if (fc !== null && fc <= PERFECT_LEAD) { done = true; return { swingAim: "mid" }; }
+    }
+    return {};
+  }, 70, lift, heroVy);
 };
 
 /** 照游戏教的那一帧按(时机环收满 = 提前 reactFrames 补反应)——"认真玩了"的对照 */
@@ -539,6 +565,90 @@ const s7 = (ck: Checker): void => {
   ck.ok(variants[0][1].q >= bestQ - 0.06, `⑦ 一键平均质量不许低于手动最佳节奏 0.06 以上(实得 ${variants[0][1].q.toFixed(2)} vs ${bestQ.toFixed(2)})`);
 };
 
+// ---------- ⑧ 跳跃中也能释放:空中按下 = 空中突进 + 自动回球照样出手(2026-10-04) ----------
+const s8 = (ck: Checker): void => {
+  // ⑧-a 真人悬空按下:canActivate 放行,冲量/加力窗/待发窗三件套照开
+  {
+    const R = Rules.R;
+    const { hero, ball } = setup("left", 90, CO.netX - 150, 4, 3, 60, -9.8);
+    ck.ok(!hero.onGround, "⑧ 摆位自检:hero 确实悬空");
+    ck.ok(Skills.canActivate(hero, ball), "⑧ 真人悬空跨步键必须按得下去(旧 onGround 闸已拆)");
+    const vxBefore = hero.vx;
+    ck.ok(Skills.activate(hero, ball, 1), "⑧ 空中 activate 必须成功");
+    ck.ok(hero.vx - vxBefore >= LG.speed - 1e-6, `⑧ 空中冲量必须照给(Δvx=${(hero.vx - vxBefore).toFixed(1)})`);
+    ck.ok(hero.lungeShotT === LG.shotWindow, "⑧ 空中释放加力窗照开");
+    ck.ok((hero.lungeAutoT ?? 0) === LG.autoWindow, "⑧ 空中释放待发窗照开(真人)");
+    // ⑧-e 空中计时器逐帧只减一次(⑤ 的算术在空中同样成立):
+    // 把球挪去对方半场远处(那还是 CPU 自己击出的球,它不会追 own ball),8 帧内谁也碰不到
+    ball.x = CO.netX + 150; ball.px = ball.x; ball.vx = -3; ball.vy = 1;
+    for (let f = 0; f < 8; f++) {
+      R.events.length = 0;
+      Rules.step(R.players.map((p) => emptyInput()));
+    }
+    ck.ok(hero.lungeShotT === LG.shotWindow - 8, `⑧ 空中加力窗 8 帧只减 8(实得 ${hero.lungeShotT})`);
+    ck.ok((hero.lungeAutoT ?? 0) === LG.autoWindow - 8, `⑧ 空中待发窗 8 帧只减 8(实得 ${hero.lungeAutoT})`);
+  }
+  // ⑧-b AI 悬空必须被拒,落地照常可跨
+  {
+    const { hero, ball } = setup("left", 90, CO.netX - 150, 4, 3, 60, -9.8);
+    hero.isAI = true;
+    ck.ok(!Skills.canActivate(hero, ball), "⑧ AI 悬空跨步必须拒绝(够球范围归 diffs 管,不白送)");
+    hero.onGround = true;
+    ck.ok(Skills.canActivate(hero, ball), "⑧ AI 落地照常可跨");
+  }
+  // ⑧-c 空中网格:满跳中一键兑现,逐格不比「空中完美手动」差。
+  // 只测中近场两档 —— 太远的格子人落地了才碰球,量的是地面路径(① 已盖),不算空中释放的账。
+  {
+    const AIR_YS = [90, 150];
+    const AIR_XS = [CO.netX - 120, CO.netX - 60];      // 左队坐标;右队镜像
+    const AIR_VEL: Array<[number, number, string]> = [[8, 2, "平快"], [11, 4, "重杀压过来"]];
+    const dirty: string[] = [];
+    let pfSave = 0, autoSave = 0;
+    const qPairs: Array<[number, number]> = [];        // [一键 q, 完美手动 q](两边都命中的格子)
+    for (const side of ["left", "right"] as TeamSide[]) {
+      for (const h of AIR_YS) {
+        for (const xb of AIR_XS) {
+          const x = side === "left" ? xb : mirror(xb);
+          for (const [vx, vy, vLabel] of AIR_VEL) {
+            const tag = `${side === "left" ? "左" : "右"} h=${h} x=${Math.round(x)} ${vLabel}`;
+            const m = autoAir(side, h, x, vx, vy);
+            const pf = perfectAir(side, h, x, vx, vy);
+            if (pf.hit) pfSave++;
+            if (m.hit) autoSave++;
+            if (m.hit && pf.hit) qPairs.push([m.q, pf.q]);
+            if (!pf.hit && !m.hit) continue;           // 空中谁都救不到的格子不进账
+            if (pf.hit && !m.hit) { dirty.push(`${tag} → 空中完美手动救得到(q=${pf.q.toFixed(2)}),一键没打回来`); continue; }
+            const fail = (why: string): void => { dirty.push(`${tag} → ${why}`); };
+            if (m.swings !== 1) fail(`一次跨步起了 ${m.swings} 次拍`);
+            else if (!m.lungeShot) fail("出球没带跨步加力");
+            else if (m.intoNet) fail("这拍会下网");
+            else if (!inOpponentCourt(side, m.landX)) {
+              // 同 ① 的豁免:连空中完美手动也送出界的格子,是击球点的事,不是自动做了更差的决定
+              if (pf.hit && inOpponentCourt(side, pf.landX)) fail(`落点 ${Math.round(m.landX)} 不在对方场内(手动同一格落在 ${Math.round(pf.landX)})`);
+            }
+            else if (m.lungeShotLeft > 0) fail(`命中后加力窗没消耗(还剩 ${m.lungeShotLeft} 帧)`);
+          }
+        }
+      }
+    }
+    for (const b of dirty.slice(0, 8)) console.log(`  ✗ ${b}`);
+    ck.ok(dirty.length === 0, `⑧ 空中网格 ${autoSave}/${pfSave} 格干净:一键兑现、带加力、命中即消耗、落对方场内`);
+    ck.ok(autoSave >= pfSave, `⑧ 一键的空中救球数不许比「空中完美手动」少(实得 ${autoSave} vs ${pfSave})`);
+    if (qPairs.length) {
+      const aQ = qPairs.reduce((s, p) => s + p[0], 0) / qPairs.length;
+      const pQ = qPairs.reduce((s, p) => s + p[1], 0) / qPairs.length;
+      ck.ok(aQ >= pQ - 0.06, `⑧ 空中一键平均质量不许低于空中手动 0.06 以上(实得 ${aQ.toFixed(2)} vs ${pQ.toFixed(2)})`);
+    }
+  }
+  // ⑧-d 满跳中球贴脸快压过来:起拍那一帧人必须还在空中 —— 自动回球真的走空中路径,
+  // 不是"根本没飞起来、落了地才打"(那样 ⑧-a 的三件套断言会过,但空中释放名存实亡)
+  {
+    const near = autoAir("left", 120, CO.netX - 130, 11, 3);
+    ck.ok(near.hit, "⑧ 贴脸快球:空中一键必须打回来");
+    ck.ok(near.airborneAtSwing, "⑧ 起拍那一帧人必须还在空中(落地才起拍 = 空中路径没走通)");
+  }
+};
+
 // ---------- 段落表 ----------
 interface Section { name: string; run: (ck: Checker) => void }
 const SECTIONS: Section[] = [
@@ -549,6 +659,7 @@ const SECTIONS: Section[] = [
   { name: "⑤ 计时器每帧只减一次(旧 bug:配置 60 帧实际 30 帧)", run: s5 },
   { name: "⑥ 球种预告不许偷吃 buff,徽标不许撒谎", run: s6 },
   { name: "⑦ 一键 vs 两拍:自动该不比「凭手感补一拍」差", run: s7 },
+  { name: "⑧ 跳跃中也能释放:空中突进 + 自动回球照样出手、AI 悬空被拒", run: s8 },
 ];
 
 // ---------- 反例自检(--selftest):这套尺子有没有牙齿 ----------
@@ -575,6 +686,25 @@ const noTail: Due = (p, ball) => {
   return r;
 };
 
+// ⑧ 的反例走 canActivate 猴补丁:player.ts:137 / ai.ts:485 都按 Skills.canActivate 属性
+// 查找调用,补丁只动 lunge 分支、其余技能照旧委托 —— 与"把旧闸装回去"是同一件事。
+const originalCanAct = Skills.canActivate;
+type CanAct = typeof Skills.canActivate;
+/** 反例 D:旧的 onGround 闸装回所有人 —— 空中按下没反应,⑧ 必须红 */
+const airGateRestored: CanAct = (p, ball) => {
+  if (!p || !p.skill) return false;
+  if (p.skill.cd > 0) return false;
+  if (p.skill.id === "lunge") return p.onGround && p.swingT < 0 && p.lungeT < 0;
+  return originalCanAct(p, ball);
+};
+/** 反例 E:拆掉 AI 空中闸 —— AI 白拿空中突进,⑧ 的 AI 断言必须红 */
+const aiAirAllowed: CanAct = (p, ball) => {
+  if (!p || !p.skill) return false;
+  if (p.skill.cd > 0) return false;
+  if (p.skill.id === "lunge") return p.swingT < 0 && p.lungeT < 0;
+  return originalCanAct(p, ball);
+};
+
 const failsOf = (run2: (ck: Checker) => void): number => {
   const c = makeChecker({ printPass: false });
   run2(c);
@@ -582,7 +712,7 @@ const failsOf = (run2: (ck: Checker) => void): number => {
 };
 
 if (process.argv.includes("--selftest")) {
-  console.log("反例自检:四份改坏的真实写法必须被上面的判据拦住(拦不住 = 这套尺子没牙齿)");
+  console.log("反例自检:改坏的真实写法必须被上面的判据拦住(拦不住 = 这套尺子没牙齿)");
   const find = (n: string): Section => {
     const s = SECTIONS.find((x) => x.name.startsWith(n));
     if (!s) throw Error(`lunge-check selftest:找不到段落 ${n}`);
@@ -647,9 +777,24 @@ if (process.argv.includes("--selftest")) {
       if (gotWindow && tailOn) console.log("  ✓ 没有那道闸,AI 会同时拿到待发窗与判定区尾段 —— ④ 那两条就是钉它的");
       else { bad++; console.log(`  ✗ 反例没立住(拿到窗 ${gotWindow},尾段 ${tailOn})`); }
     }
+
+    // 反例 airGateRestored / aiAirAllowed:⑧ 的两把钉子(补丁经 Skills.canActivate 属性生效,
+    // player.ts:137 的触发路径与 ⑧ 的直接断言都在这条查找上)
+    for (const { tag, patch } of [
+      { tag: "airGateRestored(旧 onGround 闸装回,空中按下没反应)", patch: airGateRestored },
+      { tag: "aiAirAllowed(拆掉 AI 空中闸,AI 白拿空中突进)", patch: aiAirAllowed },
+    ]) {
+      console.log(`\n反例 ${tag}:`);
+      Skills.canActivate = patch;
+      const fails = failsOf(find("⑧").run);
+      if (fails === 0) { bad++; console.log("  ✗ ⑧ 全绿 —— 拦不住这份改坏"); }
+      else console.log(`  ✓ ⑧ 被拦住(${fails} 条报警)`);
+      Skills.canActivate = originalCanAct;
+    }
   } finally {
     Pl.autoSwingDue = originalDue;
     Skills.modifyShot = originalModify;
+    Skills.canActivate = originalCanAct;
   }
   console.log(bad ? "\n✗ lunge-check selftest 失败" : "\n✓ lunge-check selftest:反例全被拦住");
   process.exit(bad ? 1 : 0);

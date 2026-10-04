@@ -44,15 +44,17 @@ if not src_path.exists():
 # 生成 base64 logo
 # 尺寸/质量见上面两个常量。这里必须**保持长宽比**缩放:引擎按图片宽高比反算
 # logoWidth/logoHeight,拉成方的会把球压扁。
+# 采用无损 PNG 格式保存(消除 JPEG 宏块失真与量化阶跃)。
 img = Image.open(src_path).convert("RGB")
 img.thumbnail((LOGO_PX, LOGO_PX), Image.LANCZOS)
 buf = io.BytesIO()
-img.save(buf, "JPEG", quality=LOGO_QUALITY, optimize=True)
+img.save(buf, "PNG", optimize=True)
 b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-data_uri = f"data:image/jpeg;base64,{b64}"
+data_uri = f"data:image/png;base64,{b64}"
 
-# 采样边缘色作为背景 —— 从**编码后的字节**取,不是从原图取:
-# 底色是整屏平铺的,logo 图边缘若与它差上几点,手机上就是一圈清清楚楚的方框缝。
+# 采样边缘色作为背景 —— 从**编码后的字节**取,确保绝对零色差:
+# 底色是整屏平铺的,logo 图边缘与它完全同色,
+# 彻底杜绝手机屏幕上的方框贴片与边缘切线。
 shown = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
 w, h = shown.size
 pad = max(1, min(w, h) // 128)

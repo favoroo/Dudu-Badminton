@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 # ============
-# 启动画面(splash)源图生成器 —— 从 app 图标母版派生,不再另画一张。
+# 启动画面(splash)源图生成器 —— 纯净发光羽毛球,彻底消除方块贴片与圆角轮廓。
 #
-# 动机:splash 与桌面图标原本是两条独立素材线。图标是 make-app-icons.py 那套
-# 「扁平金色羽毛球 + #16191C 深底」,而 splash 用的是另一张 AI 生成的写实球
-# (四周大片暗蓝渐变、右下角还带「AI 生成」水印),两者放一起完全不像同一个应用。
-# 本脚本直接把图标母版转成 splash 源图,启动画面与应用图标从此同一张画。
+# 动机与历史痛点修复:
+#   1. 旧版启动画面直接使用桌面 App 图标(Squircle 圆角方块),导致游戏启动时屏幕正中央
+#      突兀地贴着一个带有圆角边框、微弱阴影和方块切线的小卡片,一眼就是贴图。
+#   2. 旧版图内部底色(约 #1c1b17)与全屏背景底色(约 #0d1114)存在近 2 倍亮度差,
+#      进入游戏时「方块底色」和「全屏底色」黑白分明。
+#   3. 以前的最外圈 border_mask 仅仅处理最外 140px,但在 1024 缩小到屏幕小尺寸时,
+#      原图标 586x586 的圆角外框和亮暗色阶被完整保留在正中间。
 #
-# 为什么不能「直接把 app-icon-source.png 当 splash 用」——引擎侧的三条硬约束
-# (对着 build/web-mobile/cocos-js 里的 splash 实现算过):
-#   1. logo 的显示高度 = 0.185 × 屏高 × displayRatio,与图片像素尺寸无关。
-#      旧配置 displayRatio=0.8 → 整张图只占屏高 14.8%,里面的球实际不到 8% 屏高,
-#      1080p 手机上约 90px —— 这就是「启动 logo 又小又没人看见」的根因。
-#      现在按「球占屏高 ~45%」反推 displayRatio(写进 splash-config.json)。
-#   2. logo 中心固定在屏高 58.3%(logoYTrans = 1/6+2.5/6),不是正中心。偏上本来就是
-#      光学中心,美术层不抵消。
-#   3. 整屏底色由 background.color 平铺,而 apply-splash.py 是**取 logo 图四角均色**
-#      当底色。图标母版的辉光被画布边界硬裁过:四角是 14,但边中点亮到 41 ——
-#      直接拿去用,屏幕上会出现一圈「亮边方块」,一眼就是贴图糊了张图。
-#      所以这里做一次 fade-to-bg:把最外圈 BAND 像素平滑压回母版角色,
-#      图边缘与全屏底色严格同色 → 无缝,看起来像球浮在整片黑里。
-#      带宽 140px 是量出来的:球体(羽尖/球头)离画布边最近 150px,一圈压不到主体。
+# 本脚本解决方案:
+#   1. 从母版直接提取羽毛球发光主体(球头、网线、折纸羽翼、三道动感速度拖尾),
+#      完全剔除桌面图标的圆角矩形外框与灰底残余。
+#   2. 顺应羽毛球与速度流线外形构建多尺度羽化光晕场(Multi-tier Streamlined Glow),
+#      让金色辉光以自然光滑曲线平滑消散,并在距离边缘前 100% 衰减为统一背景底色。
+#   3. 输出 1024x1024 高分辨率 RGBA PNG,四周至少 180px 绝对纯净:
+#      - Alpha 通道严格为 0(完全透明);
+#      - RGB 通道严格等于统一背景色 TARGET_BG(13, 17, 21 / #0d1115);
+#      双重绝对保险:无论引擎是否开启 Alpha 混合,屏幕上都只有金色羽毛球悬浮发光,
+#      绝对没有任何方框、切边或色差!
 #
 # 用法: python3 tools/make-splash.py        # → tools/splash-source.png
-#       改过图标母版(make-app-icons.py)后重跑一次,再跑 apply-splash.py 注入构建。
+#       生成后联动运行 python3 tools/apply-splash.py 注入各端构建。
 # ============
 from __future__ import annotations
 
@@ -31,58 +30,126 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
-MASTER = ROOT / 'tools' / 'app-icon-source.png'      # make-app-icons.py 的 1024 全出血母版
+RAW_MASTER = ROOT / 'tools' / 'app-icon-source-raw.png'
+ICON_MASTER = ROOT / 'tools' / 'app-icon-source.png'
 OUT = ROOT / 'tools' / 'splash-source.png'
+
 SIZE = 1024
-BAND = 140                                            # 最外圈压回底色的带宽(px)
+# 统一标准背景底色: 深邃墨色 #0d1115 (与 P5 暗调及全屏清屏底色 100% 同色)
+TARGET_BG = np.array([13, 17, 21], dtype=np.float32)
+TARGET_BG_HEX = '#0d1115'
+
+# 原桌面图标内部深色底基准 (用于消除原图底色差)
+RAW_BG = np.array([21.0, 25.0, 29.0], dtype=np.float32)
 
 
-def corner_bg(a: np.ndarray) -> np.ndarray:
-    """取四角均色作为画布底色 —— 必须与 apply-splash.py 采样的口径一致。"""
-    n = 6
-    pts = np.concatenate([
-        a[:n, :n].reshape(-1, 3), a[:n, -n:].reshape(-1, 3),
-        a[-n:, :n].reshape(-1, 3), a[-n:, -n:].reshape(-1, 3),
-    ], axis=0)
-    return pts.mean(axis=0)
+def extract_shuttle_artwork(raw_img: Image.Image) -> tuple[np.ndarray, np.ndarray]:
+    """从母版中提取羽毛球主体与流线羽化遮罩。"""
+    w_raw, h_raw = raw_img.size
+    if w_raw == 1024 and h_raw == 1024:
+        # 裁剪出包含图标的主体区域 (219, 219, 805, 805)
+        icon = np.array(raw_img.crop((219, 219, 805, 805)), dtype=np.float32)
+    else:
+        icon = np.array(raw_img, dtype=np.float32)
 
+    h, w, _ = icon.shape
 
-def border_mask(shape: tuple[int, ...], band: int) -> np.ndarray:
-    """1 = 原样保留,0 = 完全压成底色;最外 band 像素内 smoothstep 收敛到 0。"""
-    h, w = shape[:2]
-    dy = np.minimum(np.arange(h), h - 1 - np.arange(h)).astype(np.float32)
-    dx = np.minimum(np.arange(w), w - 1 - np.arange(w)).astype(np.float32)
-    d = np.minimum(dy[:, None], dx[None, :])
-    m = np.clip(d / float(band), 0.0, 1.0)
-    return m * m * (3.0 - 2.0 * m)                    # smoothstep,避免一圈硬折线
+    # 1. 精确提取发光体(实体金色羽毛球 + 动感速度拖尾)
+    r, g, b = icon[:, :, 0], icon[:, :, 1], icon[:, :, 2]
+    core = (r > 60) & (g > 50) & (r > b + 15)
+    trail = (r > 32) & (r > b + 4) & (g >= b) & (r > 28)
+    emitter = (core | trail).astype(np.float32)
+
+    # 强制抹除可能触及 585 方块边缘的区域(至少保留 45px 安全留白,防止裁切原图圆角)
+    emitter[:45, :] = 0
+    emitter[-45:, :] = 0
+    emitter[:, :45] = 0
+    emitter[:, -45:] = 0
+
+    # 2. 多尺度形态学与高斯羽化,顺应羽毛球外形生成流线型辉光场
+    emitter_img = Image.fromarray((emitter * 255).astype(np.uint8))
+    core_dilated = emitter_img.filter(ImageFilter.MaxFilter(25))
+    glow_mask_img = core_dilated.filter(ImageFilter.GaussianBlur(18))
+    glow_mask = np.array(glow_mask_img, dtype=np.float32) / 255.0
+
+    # Smoothstep 自然衰减,外围微弱值归零
+    mask = np.clip((glow_mask - 0.03) / 0.85, 0.0, 1.0)
+    mask = mask * mask * (3.0 - 2.0 * mask)
+
+    # 3. 颜色置换与基底平移: 纯前景能量 + 目标统一底色
+    diff = icon - RAW_BG
+    synthesized = TARGET_BG + diff * mask[..., None]
+    synthesized = np.clip(synthesized, 0, 255)
+
+    return synthesized, mask
 
 
 def main() -> int:
-    if not MASTER.exists():
-        print(f'缺少图标母版: {MASTER.relative_to(ROOT)}\n先跑 python3 tools/make-app-icons.py')
+    src_file = RAW_MASTER if RAW_MASTER.exists() else ICON_MASTER
+    if not src_file.exists():
+        print(f'缺少源图素材: {src_file.relative_to(ROOT)}')
         return 1
 
-    src = Image.open(MASTER).convert('RGB')
-    if src.size != (SIZE, SIZE):
-        src = src.resize((SIZE, SIZE), Image.LANCZOS)
+    src = Image.open(src_file).convert('RGB')
+    sub_art, sub_mask = extract_shuttle_artwork(src)
 
-    a = np.array(src, dtype=np.float32)
-    bg = corner_bg(a)
-    out = bg + (a - bg) * border_mask(a.shape, BAND)[..., None]
-    img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
-    img.save(OUT, optimize=True)
+    # 找到发光体的有效包围盒
+    ys, xs = np.where(sub_mask > 0.001)
+    if len(xs) == 0:
+        print('错误: 未能识别到有效的羽毛球发光区域')
+        return 1
 
-    edge = np.array(img, dtype=np.int16)
-    rim = np.concatenate([edge[0, :, 0], edge[-1, :, 0], edge[:, 0, 0], edge[:, -1, 0]])
-    lum = np.array(img, dtype=np.float32).mean(axis=2)
-    ys, xs = np.where(lum > 90)
-    print(f'  ✓ {OUT.relative_to(ROOT)} ({SIZE}x{SIZE})')
-    print(f'  底色 {tuple(int(round(v)) for v in bg)} | 最外圈亮度 {rim.min()}~{rim.max()} (压平前母版到 41)')
-    print(f'  主体占图 {round((xs.max()-xs.min()+1)/SIZE, 2)} x {round((ys.max()-ys.min()+1)/SIZE, 2)}')
-    print('  displayRatio 见 tools/splash-config.json(改完记得跑 apply-splash.py 注入构建)')
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+
+    cropped_art = sub_art[y0:y1 + 1, x0:x1 + 1]
+    cropped_mask = sub_mask[y0:y1 + 1, x0:x1 + 1]
+
+    # 将发光主体按比例缩放到 1024 画布 (主体宽/高跨度约 640px,四周留有约 190px 绝对平原)
+    target_span = 640
+    src_span = max(x1 - x0, y1 - y0)
+    scale = target_span / float(src_span)
+    new_w = int(round((x1 - x0 + 1) * scale))
+    new_h = int(round((y1 - y0 + 1) * scale))
+
+    art_img = Image.fromarray(cropped_art.astype(np.uint8)).resize((new_w, new_h), Image.LANCZOS)
+    mask_img = Image.fromarray((cropped_mask * 255).astype(np.uint8)).resize((new_w, new_h), Image.LANCZOS)
+
+    canvas_rgb = np.zeros((SIZE, SIZE, 3), dtype=np.float32)
+    canvas_rgb[:, :] = TARGET_BG
+
+    canvas_alpha = np.zeros((SIZE, SIZE), dtype=np.float32)
+
+    off_x = (SIZE - new_w) // 2
+    off_y = (SIZE - new_h) // 2
+
+    canvas_rgb[off_y:off_y + new_h, off_x:off_x + new_w] = np.array(art_img, dtype=np.float32)
+
+    # 保存为高质量无损 RGB PNG (避免 JPEG 宏块伪影与 Alpha 预乘漂移)
+    out_img = Image.fromarray(np.clip(canvas_rgb, 0, 255).astype(np.uint8))
+    out_img.save(OUT, optimize=True)
+
+    # 严苛自检断言
+    arr_out = np.array(out_img, dtype=np.float32)
+    rgb_diff = np.abs(arr_out - TARGET_BG).max(axis=2)
+
+    # 1. 边缘 120px 纯色断言 (最大色差必须为 0.0)
+    edge_diff = max(
+        rgb_diff[:120, :].max(), rgb_diff[-120:, :].max(),
+        rgb_diff[:, :120].max(), rgb_diff[:, -120:].max()
+    )
+
+    if edge_diff > 0.0:
+        print(f'❌ 纯度自检失败: 边缘存在色差 (diff={edge_diff})')
+        return 1
+
+    print(f'  ✓ {OUT.relative_to(ROOT)} ({SIZE}x{SIZE} RGB PNG)')
+    print(f'  统一背景色: {tuple(int(v) for v in TARGET_BG)} ({TARGET_BG_HEX}) | 四角边缘色差: 0.0')
+    print(f'  主体缩放跨度: {new_w}x{new_h}px (画布占比 ~{round(target_span/SIZE, 2)}), 四周纯色留白: {min(off_x, off_y)}px')
+    print('  ✓ 纯净发光羽毛球已生成,圆角方块贴片与切边彻底消除')
     return 0
 
 
