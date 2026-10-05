@@ -60,10 +60,11 @@ export interface Pad {
    * - swingSwipeY: 纵轴,与 swingSwipe 独立可组合:0=未提交(弧线物理自动决定),
    *   1=上滑(挑高),-1=下滑(平抽)。提交/保留/恢复时机与 swingSwipe 完全同构。
    * - swingLockX / swingLockY: **长滑锁定**(参考和平精英长滑锁定端口):触屏长滑
-   *   (touchAim.lockPx / lockPxY)把该轴方向锁成默认 —— 之后每一拍(手动按下、自动
-   *   击打代拍)都自动按锁向打,直到取消:沿当前锁向再长滑一次 = 取消(toggle),
-   *   反向长滑 = 换向,换局 resetPadHolds 清锁。短滑在锁定期间 = 临时覆盖本拍,
-   *   下一拍自动回锁。锁只住在 pad 上,键盘键(swingFar 等)是完整意图、不读写锁。
+   *   (快拉过 touchAim.lockRadiusK × 按键半径,或拉出按键停够 lockDwellMs)把该轴
+   *   方向锁成默认 —— 之后每一拍(手动按下、自动击打代拍)都自动按锁向打。
+   *   **锁着时任何一次短滑 = 解除**(clearSwingLocks,那一拍按短滑方向打,没滑到的轴
+   *   回 mid);长滑同向 = 维持、反向 = 换向;换局 resetPadHolds 清锁。不滑只按 =
+   *   一直按锁向打。锁只住在 pad 上,键盘键(swingFar 等)是完整意图、不读写锁。
    */
   swingPressed: boolean;
   swingHeld: boolean;
@@ -169,7 +170,7 @@ export function release(pad: Pad, action: "left" | "right" | "jump" | "swing"): 
  * (press 把两轴恢复成锁值),自动击打没有那一次按下 ⇒ 那一拍真打出去时由 core 经
  * PlayerInput.onAimConsume 调到这里(player.ts 的 consumeAutoAim)。没锁时恢复 = 0,
  * 与旧的「一次滑动只管一拍,不打成锁定态」逐位一致;有锁时恢复 = 锁向,长滑锁定的
- * 「管到取消」就是在这里兑现(短滑覆盖的本拍打完,下一拍自动回锁)。
+ * 「管到短滑解除」就是在这里兑现(不滑只按 = 每拍都按锁向打)。
  * 挥空不吃瞄准(不许白罚),AI 与喂球机永远走不到这里(它们没有"玩家的瞄准"可吃)。
  */
 export function restoreSwingAim(pad: Pad): void {
@@ -178,20 +179,27 @@ export function restoreSwingAim(pad: Pad): void {
 }
 
 /**
- * 长滑锁定的写入/取消(纯函数,touchpad 的 trackSwingSwipe 在长滑越过阈值时调):
- * 同轴同向已锁 → 取消(toggle,与和平精英「再点一下取消」同一心智);否则设锁。
- * 键值(pad.swingSwipe/swingSwipeY)由调用方按短滑语义照常写 —— 取消的那一拍仍按
- * 该方向打,下一拍起 press/restoreSwingAim 才回到未锁的 mid。
+ * 长滑锁定的写入(纯赋值,touchpad 的 trackSwingSwipe 在长滑判定成立时调):
+ * 把该轴锁成 dir(±1)—— 同向再长滑 = 维持,反向长滑 = 换向,**没有 toggle**。
+ * 取消不在这里:锁着时任何一次短滑都视作「我不锁了」,走 clearSwingLocks(用户
+ * 2026-10-05 的口径:「短滑应该就解除锁定了」,同向 toggle 的心智太绕)。
  */
-export function lockSwingAxis(pad: Pad, axis: "x" | "y", dir: number): boolean {
-  if (axis === "x") {
-    const cancel = pad.swingLockX === dir;
-    pad.swingLockX = cancel ? 0 : dir;
-    return !cancel;
-  }
-  const cancel = pad.swingLockY === dir;
-  pad.swingLockY = cancel ? 0 : dir;
-  return !cancel;
+export function lockSwingAxis(pad: Pad, axis: "x" | "y", dir: number): void {
+  if (axis === "x") pad.swingLockX = dir;
+  else pad.swingLockY = dir;
+}
+
+/**
+ * 解除长滑锁定:锁与欠着的瞄准**一起**归零 —— 锁着的时候任何一次真实滑动都视作
+ * 「我不锁了」,这一拍只听这次新滑动,没滑到的轴干净地回到 mid。键值一起清是因为
+ * press 起手时把锁值恢复进了键值,只清锁不清键,那个恢复值会冒充「这一拍的意图」。
+ * touchpad 在短滑提交前调(随后滑动照常写入);换局边界 resetPadHolds 也清锁。
+ */
+export function clearSwingLocks(pad: Pad): void {
+  pad.swingLockX = 0;
+  pad.swingLockY = 0;
+  pad.swingSwipe = 0;
+  pad.swingSwipeY = 0;
 }
 
 /**

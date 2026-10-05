@@ -37,7 +37,8 @@ description: Dudu Badminton 应用的 Git 提交存档、双平台推送与版�
 | APK 命名 | `dudu-badminton-v<version>-arm64-v8a.apk`（如 `dudu-badminton-v0.0.1-arm64-v8a.apk`），**两端文件名完全一致** |
 | 产物目录 | `build/` |
 | Tag 命名 | `v<version>`（如 `v0.0.1`），使用 annotated tag |
-| 版本号递增 | **每次发布/打包 APK，版本号必须递增 +1**（如 `v0.0.2` -> `v0.0.3`），禁止同版本覆盖发布。**预升未发布例外**：若 `version.ts`/`package.json` 已被前一次会话预升到 `X.Y.Z`、但 `vX.Y.Z` tag 尚不存在（`git tag -l "vX.Y.Z"` 为空、build/ 下无该版本 APK），可直接发布该版本，不必再 +1。先查 tag 再决定递增。 |
+| 版本号递增 | **每次发布/打包 APK，版本号必须递增 +1**（如 `v0.0.2` -> `v0.0.3`），禁止同版本覆盖发布。**由 `release.py bump` 自动判断**（agent 不用自己算）：读 `version.ts` 当前版本 X → 查 tag `vX` → 不存在直接用 X；已存在则 +1 到 X+1 并写回。决策真值表见下。 |
+| 版本号决策真值表 | ① `version.ts=X` + tag `vX` **不存在** → **用 X**（预升未发布例外：前一会话已预升但未发版）<br>② `version.ts=X` + tag `vX` **已存在** → **必须 +1 到 X+1**（跑 `release.py bump --write` 自动写回）<br>③ `package.json` 与 `version.ts` 不一致 → 先手动对齐再 bump<br>④ `publish` 预检：tag 已存在 + 双端远端 Release 都已存在 → **die 拦截**（防覆盖发布）；仅本地 tag 存在（重试场景）→ 放行复用 |
 | 版本来源 | `package.json` 的 `version`、`assets/scripts/core/version.ts` 的 `APP_VERSION` 以及 Android 原生层 `native/engine/android/app/build.gradle`（`versionName` 与 `versionCode`）保持严格一致 |
 | Android版本同步 | Gradle 自动动态读取 `package.json` 解析 `versionName` 并按 `Major*10000 + Minor*100 + Patch` 换算递增 `versionCode`；`release.py` 构建时注入环境变量双重兜底 |
 | 两端一致性 | GitHub 与 Gitee 必须使用相同 Tag、相同 APK 文件名、同为正式 Release（非 draft / prerelease） |
@@ -56,8 +57,9 @@ description: Dudu Badminton 应用的 Git 提交存档、双平台推送与版�
 > build.sh 内部会自行重设 PATH(含 JAVA_HOME/bin、node-bin),所以只要外面这四个能找到即可。
 
 ```text
-① 升级 package.json 与 assets/scripts/core/version.ts 版本号（Android 原生层自动联动）
-   —— 发版前先 `git tag -l "vX.Y.Z"` 确认目标 tag 不存在;若 version.ts 已是 X.Y.Z 且 tag 不存在,跳过升级直接用
+① 自动算版本号并写回:  python3 .agents/skills/dudu-release/release.py bump --write
+   —— 读 version.ts → 查 tag → 不存在直接用当前版本(预升未发布);已存在则 +1 写回 package.json+version.ts
+   —— 标准输出仅一行目标版本号 X.Y.Z,后续 build/publish 直接用(不用 agent 自己判断)
 ② 后台启动构建:  python3 .agents/skills/dudu-release/release.py build --version X.Y.Z   ← run_in_background
 ③ 前台跑测试:    npx tsc -p tools/tsconfig.check.json                   ← 与构建重叠
 ④ 提交:          git add -A && git commit -m "feat(...): ... 版本升至 X.Y.Z"

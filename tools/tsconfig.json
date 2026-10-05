@@ -28,6 +28,7 @@
     "../assets/scripts/ui/settings-layout.ts",
     "../assets/scripts/ui/pad-diagram.ts",
     "../assets/scripts/ui/campaign-layout.ts",
-    "../assets/scripts/ui/drill-layout.ts"
+    "../assets/scripts/ui/drill-layout.ts",
+    "../assets/scripts/ui/confirm-layout.ts"
   ]
 }

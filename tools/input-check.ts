@@ -15,7 +15,7 @@
 // 用法(先 npx tsc -p tools/tsconfig.json 编译):
 //   node .tools-build/tools/input-check.js
 import { makeChecker } from "./harness";
-import { newPad, press, release, cancelJump, clearEdges, buildIntent, restoreSwingAim, lockSwingAxis, resetPadHolds, tickHolds, setTargetX } from "../assets/scripts/input/pad";
+import { newPad, press, release, cancelJump, clearEdges, buildIntent, restoreSwingAim, lockSwingAxis, clearSwingLocks, resetPadHolds, tickHolds, setTargetX } from "../assets/scripts/input/pad";
 import { Player } from "../assets/scripts/core/player";
 import { CFG } from "../assets/scripts/core/config";
 import { Gait } from "../assets/scripts/core/gait";
@@ -424,37 +424,39 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
   ok(pad.swingSwipe === 0 && pad.swingSwipeY === 0, "按下击球键没锁时仍把两轴恢复成 0(老规矩)");
 }
 
-// ---------- ⑩b 长滑锁定:lockSwingAxis 的 toggle + press/restore 的「恢复锁值」 ----------
+// ---------- ⑩b 长滑锁定:lockSwingAxis 纯赋值 + clearSwingLocks 解除 + press/restore 恢复 ----------
 
 {
   const pad = newPad();
-  // 锁上:同轴同向再锁一次 = 取消(toggle),反向 = 换向
-  ok(lockSwingAxis(pad, "x", 1) === true, "首次长滑 = 锁上");
-  ok(pad.swingLockX === 1 && pad.swingLockY === 0, "锁值落在横轴,纵轴不连坐(两轴独立)");
-  ok(lockSwingAxis(pad, "x", 1) === false, "同向再长滑 = 取消(toggle)");
-  ok(pad.swingLockX === 0, "取消后锁值归 0");
-  ok(lockSwingAxis(pad, "x", 1) === true && lockSwingAxis(pad, "x", -1) === true && pad.swingLockX === -1,
-    "反向长滑 = 换向(不是取消)");
-  // 键值照常写(短滑语义仍在):取消的那一拍仍按该方向打,下一拍才回 mid
-  pad.swingLockX = 1;
-  pad.swingSwipe = 1;
-  ok(lockSwingAxis(pad, "x", 1) === false && pad.swingSwipe === 1 && pad.swingLockX === 0,
-    "取消锁不清键值 —— 本拍方向由键值说话,锁只管「下一拍起默认哪边」");
+  // 锁上:纯赋值 —— 同向再锁 = 维持,反向 = 换向,**没有 toggle**(取消走短滑解除)
+  lockSwingAxis(pad, "x", 1);
+  ok(pad.swingLockX === 1 && pad.swingLockY === 0, "长滑锁上横轴,纵轴不连坐(两轴独立)");
+  lockSwingAxis(pad, "x", 1);
+  ok(pad.swingLockX === 1, "同向再长滑 = 维持锁定(取消不在这条路上)");
+  lockSwingAxis(pad, "x", -1);
+  ok(pad.swingLockX === -1, "反向长滑 = 换向");
+  lockSwingAxis(pad, "y", -1);
+  ok(pad.swingLockY === -1, "纵轴独立上锁(与横轴互不干扰)");
 
-  // 锁定后 press(swing) 恢复锁值:短滑覆盖的本拍打完,下一拍自动回锁
-  lockSwingAxis(pad, "x", -1);               // 重新锁 near(上面那组 toggle 把锁收掉了)
+  // 解除:锁与欠着的键值一起清 —— 锁着时的一次短滑 = 「我不锁了」,这一拍只听新滑动
+  pad.swingSwipe = -1;
+  pad.swingSwipeY = 1;                       // 模拟 press 恢复进来的锁值残留在键值上
+  clearSwingLocks(pad);
+  ok(pad.swingLockX === 0 && pad.swingLockY === 0,
+    "clearSwingLocks 把两把锁一起收掉(解除 = 整体,不分轴)");
+  ok(pad.swingSwipe === 0 && pad.swingSwipeY === 0,
+    "键值跟着归零 —— press 恢复进来的锁值不许冒充这一拍的意图,方向由这次滑动重写");
+
+  // pad 层契约:锁定时 press 恢复锁值、短滑覆盖本拍、收招回锁(手势层的「短滑=解除」
+  // 在 UI 层先一步清锁,到不了这里的都是「没触发解除」的滑动)
+  lockSwingAxis(pad, "x", -1);
   press(pad, "swing");
   ok(pad.swingSwipe === -1 && pad.swingLockX === -1, "有锁时按下 = 恢复锁值(横轴)");
   pad.swingSwipeY = 1;                       // 本拍短滑临时改挑高
   ok(pad.swingSwipeY === 1, "锁定期间短滑照常覆盖本拍键值");
   restoreSwingAim(pad);
   ok(pad.swingSwipeY === 0 && pad.swingSwipe === -1,
-    "restoreSwingAim 有锁时回锁向:没锁的纵轴回 0、锁着的横轴停在锁值(短滑的例外一拍到此为止)");
-
-  // 纵轴锁与横轴锁互不干扰
-  lockSwingAxis(pad, "y", -1);
-  press(pad, "swing");
-  ok(pad.swingSwipe === -1 && pad.swingSwipeY === -1, "两轴各自锁定时按下恢复两把锁");
+    "restoreSwingAim 有锁时回锁向:没锁的纵轴回 0、锁着的横轴停在锁值");
 
   // 换局边界:resetPadHolds 清锁 —— 新对局从 mid 打起,别把上一局锁的后场带过来
   resetPadHolds(pad);

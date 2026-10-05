@@ -65,7 +65,7 @@
 // 摇杆与左右键是不同的节点结构,这时会拆左簇重建,同时清掉左半的 claim。
 // ============================================================
 import { Color, EventTouch, Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Vec3, Widget, sys, v3, view } from "cc";
-import { Pad, press, release, cancelJump, resetPadHolds, setMoveAxis, setTargetX, lockSwingAxis } from "./pad";
+import { Pad, press, release, cancelJump, resetPadHolds, setMoveAxis, setTargetX, lockSwingAxis, clearSwingLocks } from "./pad";
 import {
   PAD_BASE, PAD_LABEL, Settings,
   JOYSTICK_BASE,
@@ -98,6 +98,10 @@ const SWIPE_THRESHOLD_Y = CFG.touchAim.commitPxY;
  *  只有一把拉到头的长滑才会锁 —— 见 config.touchAim.lockRadiusK 的注释(第一版写死
  *  34px 比按键半径还小,真机上一滑就锁,用户现场反馈改的)。 */
 const SWIPE_LOCK_K = CFG.touchAim.lockRadiusK;
+/** 「拉住」锁入路径的近档:滑出按键半径的这么多倍(= 明显在按键外)后停够 dwell 才锁 */
+const SWIPE_LOCK_NEAR_K = CFG.touchAim.lockNearK;
+/** 「拉住」锁入路径的停留时长:在近档阈值外持续这么久才认可是刻意的拖,快甩永不触发 */
+const SWIPE_LOCK_DWELL_MS = CFG.touchAim.lockDwellMs;
 /** 长滑锁定时某轴要被锁上的方向占比:分量达到滑动距离的一半(±30° 锥角内)才算
  *  「明确指了这个方向」—— 斜 45° 长滑两轴都锁,基本沿纵轴的长滑只锁纵轴,
  *  不让漂移分量把持久锁带偏。与短滑提交的宽松判据(|dx| ≥ commitPx/2)刻意不同:
@@ -165,13 +169,19 @@ interface BtnRec {
   /** 纵向手势(仅 swing 键用):0=未提交, 1=上滑(挑高), -1=下滑(平抽)。与 swipeDir 两轴独立、可组合 */
   swipeDirY: number;
   /**
-   * 长滑锁定去重门(仅 swing 键):本次手势(按下→松手)里该轴**已经处理过的长滑方向**。
-   * trackSwingSwipe 每个 MOVE 事件都跑,没有这道门,手指停在长滑阈值外的事件流会把
-   * lockSwingAxis 的 toggle 连打两遍(锁上又立刻解锁)。同方向只触发一次;按下时清 0
-   * —— 「同向再长滑 = 取消」的心智按**手势**计,不在一次手势内来回刷。
+   * 长滑锁定去重门(仅 swing 键):本次手势(按下→松手)里该轴**已经锁过的方向**。
+   * trackSwingSwipe 每个 MOVE 事件都跑,没有这道门,手指停在锁定阈值外的事件流会把
+   * 同一个方向连写多遍(白亮).同方向只触发一次;按下时清 0 —— 锁定动作按**手势**计。
    */
   lockDirX: number;
   lockDirY: number;
+  /**
+   * 「拉住」锁入路径的计时(仅 swing 键):本次手势里手指**首次越过近档阈值**
+   * (lockNearK × 半径)的时刻,0 = 还没越过。越过之后在阈值外持续 lockDwellMs
+   * 才认可是刻意的拖;快甩越过即松,永远凑不满这段停留 —— 短滑/长滑按快慢区分。
+   * 按下时清 0(新手势重新计时)。
+   */
+  lockArmT: number;
   /**
    * 「欠着一拍的瞄准」(仅 swing 键):辅助开着时玩家滑了但那一拍还没打出去,
    * game 层每帧把 pad 上的提交值喂进来。手指抬起来后 swipeDir 归 0,靠它把方向继续
@@ -1220,7 +1230,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
 
   const rec: BtnRec = {
     action, node, ut, g, cluster, r, pressed: false, selected: false, glow: 0,
-    flash, flashG, flashOp, swipeDir: 0, swipeDirY: 0, lockDirX: 0, lockDirY: 0, aimEcho: 0, aimEchoY: 0, autoMark: false,
+    flash, flashG, flashOp, swipeDir: 0, swipeDirY: 0, lockDirX: 0, lockDirY: 0, lockArmT: 0, aimEcho: 0, aimEchoY: 0, autoMark: false,
     labelOp, labelComp, cdOp, cdComp,
     badgeComp, badgeOp, hintComp, hintOp,
     cdRatio: 0, cdGate: makeCdGate(), cdSec: 0, skillReady: true, skillId: "lunge", skillBlock: null, readyPulsing: false,
@@ -1615,7 +1625,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
         // 新手势开始:视觉初始化为**锁定值**(有锁时键缘弧当场亮起 = 「这一拍会往这个方向打」,
         // 与 pad 侧 press 恢复锁值同一帧语义),同时清长滑去重门 —— 去重按手势计。
         rec.swipeDir = pad.swingLockX; rec.swipeDirY = pad.swingLockY;
-        rec.lockDirX = 0; rec.lockDirY = 0;
+        rec.lockDirX = 0; rec.lockDirY = 0; rec.lockArmT = 0;
       }
       paint(rec, false);
       Tween.stopAllByTarget(rec.node);
@@ -1645,19 +1655,35 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
      * 读取;同一轴反向滑过阈值即改写(与横滑的「中途反悔」同构),斜上右滑一个动作即可
      * 组合出「挑高到后场」。同时更新 rec.swipeDir / rec.swipeDirY 触发方向色弧视觉反馈。
      *
-     * 长滑锁定(参考和平精英长滑锁定端口):滑动距离(从按下点起算)越过**按键半径的
-     * lockRadiusK 倍** = 把当前明确指着的方向锁成默认 —— 短滑管一拍,长滑管到取消。
-     * 沿当前锁向**再长滑一次** = 取消(toggle,pad.lockSwingAxis),反向长滑 = 换向;
-     * 键值照常按短滑语义写,所以取消的那一拍仍按该方向打,下一拍起 press/restoreSwingAim
-     * 才回到未锁的 mid。哪些轴锁上按 ±30° 锥角判(见 SWIPE_LOCK_CONE):斜 45° 长滑
-     * 两轴都锁,单轴长滑只锁那一轴。同方向在同一手势内只触发一次(lockDirX/Y 门)——
-     * 手指在门外绕圈的事件流不许把 toggle 连打成锁上又解锁。
+     * 长滑锁定(参考和平精英长滑锁定端口,语义按用户 2026-10-05 口径):
+     *  · **锁着时任何一次短滑 = 解除**(clearSwingLocks,白环)—— 那一拍按短滑方向打,
+     *    没滑到的轴回 mid。放在轴提交之前:清完后下面的提交照常写新方向。
+     *  · 锁入有两条路,都要求「刻意表态」:① 快拉,滑动距离越过按键半径 × lockRadiusK
+     *    当帧即锁;② 拉住,滑出按键(lockNearK × 半径)后**在阈值外停够 lockDwellMs**。
+     *    快甩哪怕甩得很远,越过即松、在阈值外不停留,绝不锁 —— 短滑/长滑按快慢区分,
+     *    绝不锁 —— 短滑/长滑按快慢区分,
+     *    不赌距离(距离阈值两版都被真机滑动击穿过:34 < 按键半径,138 < 正常短滑)。
+     *    同向长滑 = 维持,反向长滑 = 换向,**没有 toggle**;哪些轴锁上按 ±30° 锥角判
+     *    (见 SWIPE_LOCK_CONE):斜 45° 两轴都锁,单轴长滑只锁那一轴。
+     *  · 同方向在同一手势内只触发一次(lockDirX/Y 门)—— 手指在阈值外绕圈的事件流
+     *    不许把同一个方向连写多遍。
      */
     const trackSwingSwipe = (rec: BtnRec, sx: number, sy: number, e: EventTouch): void => {
       const u = e.getUILocation();
       const dx = u.x - sx;
       const dy = u.y - sy;
       if (Math.hypot(dx, dy) < SWIPE_THRESHOLD) return;       // 位移不足:仍是 mid
+      // 解除锁定:锁着时的一次真实滑动 = 「我不锁了」。键值一起清(press 起手时把锁值
+      // 恢复进了键值,只清锁不清键,恢复值会冒充这一拍的意图),rec 两轴归零让下面的
+      // 提交去重自然放行 —— 这一拍只听新滑动,没滑到的轴回 mid。白环 = 解锁的中性色。
+      if ((pad.swingLockX !== 0 || pad.swingLockY !== 0)
+        && (Math.abs(dx) >= SWIPE_THRESHOLD * 0.5 || Math.abs(dy) >= SWIPE_THRESHOLD_Y)) {
+        clearSwingLocks(pad);
+        rec.swipeDir = 0;
+        rec.swipeDirY = 0;
+        triggerFlash(rec, "#ffffff");
+        paint(rec, false);
+      }
       if (Math.abs(dx) >= SWIPE_THRESHOLD * 0.5) {
         const dir = dx > 0 ? 1 : -1;
         if (rec.swipeDir !== dir) {                            // 已提交同方向,不重复刷
@@ -1679,23 +1705,26 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
           triggerFlash(rec, dir > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive);
         }
       }
-      // 长滑锁定:一把拉过按键半径的 lockRadiusK 倍才触发 —— 普通滑动到不了这里,
-      // 到了就是把当前明确指着的方向锁成默认。荧光黄 = 锁上(downEdge,「这一下算数」
-      // 的确认色),白 = 解锁(回到 mid 的中性色)。
+      // 长滑锁定,两条锁入路径(见函数头注):快拉过远阈值当帧锁;拉出按键外停够
+      // lockDwellMs 才锁(快甩在阈值外不停留,永不触发)。荧光黄 = 锁上的确认色。
       const dist = Math.hypot(dx, dy);
-      if (dist >= rec.r * SWIPE_LOCK_K) {
+      const now = Date.now();
+      if (rec.lockArmT === 0 && dist >= rec.r * SWIPE_LOCK_NEAR_K) rec.lockArmT = now;
+      const dwellLong = rec.lockArmT > 0 && dist >= rec.r * SWIPE_LOCK_NEAR_K
+        && now - rec.lockArmT >= SWIPE_LOCK_DWELL_MS;
+      if (dist >= rec.r * SWIPE_LOCK_K || dwellLong) {
         if (Math.abs(dx) >= dist * SWIPE_LOCK_CONE && rec.lockDirX !== (dx > 0 ? 1 : -1)) {
           const dir = dx > 0 ? 1 : -1;
           rec.lockDirX = dir;
-          const on = lockSwingAxis(pad, "x", dir);
-          triggerFlash(rec, on ? CFG.padSkin.downEdge : "#ffffff");
+          lockSwingAxis(pad, "x", dir);
+          triggerFlash(rec, CFG.padSkin.downEdge);
           paint(rec, false);
         }
         if (Math.abs(dy) >= dist * SWIPE_LOCK_CONE && rec.lockDirY !== (dy > 0 ? 1 : -1)) {
           const dir = dy > 0 ? 1 : -1;
           rec.lockDirY = dir;
-          const on = lockSwingAxis(pad, "y", dir);
-          triggerFlash(rec, on ? CFG.padSkin.downEdge : "#ffffff");
+          lockSwingAxis(pad, "y", dir);
+          triggerFlash(rec, CFG.padSkin.downEdge);
           paint(rec, false);
         }
       }

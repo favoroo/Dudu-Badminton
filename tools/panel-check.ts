@@ -14,6 +14,9 @@
 // (旧写法字色与面色是同一支 #ffe14d、位置还压住货架末行 —— 用户截图「提示都看不清」)。
 // 判据住在 shop-shelf.TOAST / toastLane(),与面板取的是同一份数据。
 //
+// 2026-10-05 起加 ⑪「二次确认弹窗」:版式(卡高跟着文案算、两颗键不撞框)+ 接线完整性
+// (两颗「重置默认」都得走确认,不许有绕过它直接覆盖存档的第三条路)。
+//
 // 与同目录其它 check 一样:判据写成吃数据的纯函数,正题喂真实布局,
 // --selftest 喂**改动前的真实旧写法** —— 反例必须变红,否则这套断言没牙齿。
 //
@@ -35,6 +38,9 @@ import { JOYSTICK_BASE, railGeo, type MoveMode } from "../assets/scripts/core/se
 import { campaignOverflow, campaignOverlaps, CMP } from "../assets/scripts/ui/campaign-layout";
 import { DRILL, drillOverflow, drillOverlaps, drillTouch } from "../assets/scripts/ui/drill-layout";
 import { SHOP, shopOverflow, shopOverlaps, shopTouch, statCardFits, statCells, TOAST, TOAST_FG, toastLane } from "../assets/scripts/ui/shop-shelf";
+import {
+  CF, CONFIRM_PAD_RESET, confirmOverflow, confirmOverlaps, layoutConfirm,
+} from "../assets/scripts/ui/confirm-layout";
 import type { Profile } from "../assets/scripts/core/career";
 
 function findRoot(): string {
@@ -246,10 +252,30 @@ function diagramProbe(over: Partial<DiagramProbe> = {}): DiagramProbe {
   };
 }
 
+/**
+ * ⑪ 二次确认弹窗的「接线完整性」:上面的版式判据只证明这张弹窗自己没排坏,
+ * 证明不了两颗「重置默认」都走了它。而漏接的那颗**不崩、不报错、出图里也看不出来**
+ * —— 只有真机上误触一次才发现(用户 2026-10-05 报的正是这一颗)。所以扫源码:
+ *   a) 面板必须引用那份文案(两处同名键问同一句话,不许各抄一份);
+ *   b) askResetPad 至少三处(定义 + 两颗键各一处接线);
+ *   c) Settings.resetPad() 只许一处调用点(全走 doResetPad)——
+ *      多出来的那一处就是绕过确认的第三条路。
+ */
+export function checkConfirmWiring(raw: string, fileLabel: string): string[] {
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const out: string[] = [];
+  const n = (re: RegExp): number => (src.match(re) ?? []).length;
+  if (!n(/CONFIRM_PAD_RESET/g)) out.push(`${fileLabel}:没引用 CONFIRM_PAD_RESET —— 确认文案被抄回面板里了,两处同名键会各问一套`);
+  const wired = n(/askResetPad\b/g);
+  if (wired < 3) out.push(`${fileLabel}:askResetPad 只出现 ${wired} 处(要 定义 + 两颗「重置默认」各一处)—— 有那颗没接确认`);
+  const direct = n(/Settings\.resetPad\(\)/g);
+  if (direct !== 1) out.push(`${fileLabel}:Settings.resetPad() 有 ${direct} 处调用点(只许 1 处,在 doResetPad 里)—— 多出来的那条绕过了确认弹窗`);
+  return out;
+}
+
 // ============================================================
 // 真实数据
 // ============================================================
-
 /**
  * 履历页的摆拍存档:只喂 statCells 会读的那几个键。
  * 版式与文案都取自 shop-shelf 的真函数,所以这里红 = 面板上也会红(不是预览另算一份)。
@@ -344,6 +370,7 @@ function copyTargets(): string[] {
     "drill-panel.ts", "drill-layout.ts",
     "career-panel.ts",
     "widgets.ts", "ui-shell.ts", "p5-shapes.ts", "p5-tokens.ts", "pad-diagram.ts",
+    "confirm-layout.ts", "confirm-dialog.ts",
   ];
   const have = new Set(readdirSync(UI));
   return want.filter((f) => have.has(f));
@@ -439,6 +466,27 @@ if (selftest) {
             { kind: "fill", hex: "#ffffff", a: 1, pts: [[Number.NaN, 3]] }] : dl))],
       ] as Array<[string, string[]]>;
     })(),
+    // ---------- 确认弹窗的三份反例 ----------
+    // 这张弹窗的坏法同样不崩不报错:卡高一写死,文案长一点就压字;按钮文案长一点就出卡;
+    // 而「漏接确认」连界面都不会变 —— 只有真机误触那一次才知道。
+    ...(() => {
+      const base = layoutConfirm(CONFIRM_PAD_RESET);
+      const grown = layoutConfirm({
+        ...CONFIRM_PAD_RESET,
+        body: "你摆过的按键位置、大小与透明度会被出厂值全部覆盖。\n撤销不了,只能一颗一颗重新摆。\n移动方式与手感档位都不受影响,这一句只为了把话说完。",
+      });
+      return [
+        // 旧式弹窗的排法:卡高是个常量。四行正文按短文案的框摆 → 标题探上内边距 + 正文压进按钮行
+        ["确认弹窗卡高写死(正文长到四行)", confirmOverflow({ ...grown, cardH: base.cardH })],
+        // 兑现那颗被写成一句话:两键总宽越过可用宽,右半颗直接探出卡框
+        ["确认按钮文案长到一排放不下", confirmOverflow(layoutConfirm({
+          ...CONFIRM_PAD_RESET, action: "立刻把全部按键恢复成出厂位置",
+        }))],
+        // 有人图省事,在别的入口上直接覆盖存档
+        ["绕过确认直接 resetPad", checkConfirmWiring(
+          `Settings.resetPad();\nSettings.resetPad();\nreset.on(CLICK, () => Settings.resetPad());`, "sample-bad")],
+      ] as Array<[string, string[]]>;
+    })(),
     // ---------- 履历格的反例 ----------
     // 版式判据吃的是 statCells 的真文案,所以「格子压矮 / 名字写长」这两条会在同一把尺上红。
     ["履历格压回 100 高还留 40 号大数(大数顶到色签行)",
@@ -457,6 +505,11 @@ if (selftest) {
     "正例:纯中文文案不被文案闸误咬");
   ok(checkContrast([["primary", ROLE.primary.face, inkFor(ROLE.primary.face)]]).length === 0,
     "正例:斩劈红 + 纸白(4.18:1)过 4.0 线");
+  const baseC = layoutConfirm(CONFIRM_PAD_RESET);
+  ok(confirmOverflow(baseC).length === 0 && confirmOverlaps(baseC).length === 0,
+    "正例:确认弹窗真文案既不溢出也不压字(判据不咬人)");
+  ok(checkConfirmWiring(readFileSync(join(UI, "settings-panel.ts"), "utf8"), "settings-panel").length === 0,
+    "正例:真面板的接线过「两处都问」这道闸");
   process.exit(bad ? 1 : 0);
 }
 
@@ -532,6 +585,24 @@ for (const [nm, pw, ph] of [["闯关", CMP.pw, CMP.ph], ["训练场", DRILL.pw, 
   ok(ph + 20 <= SCREEN_H, `${nm} 面板高 ${ph} + 衬纸外溢 20 ≤ 屏高 ${SCREEN_H}`);
 }
 
+// ---------- 二次确认弹窗(「重置默认」那一句)----------
+{
+  const L = layoutConfirm(CONFIRM_PAD_RESET);
+  const ofC = confirmOverflow(L), ovC = confirmOverlaps(L);
+  for (const m of ofC) ok(false, `确认弹窗 ${m}`);
+  for (const m of ovC) ok(false, `确认弹窗 ${m}`);
+  ok(ofC.length === 0 && ovC.length === 0,
+    `确认弹窗:「${CONFIRM_PAD_RESET.title}」的标题 / ${L.items[1].lines.length} 行正文 / 补充行 / 两颗键`
+    + `互不压字、都不出卡(卡 ${L.cardW}×${L.cardH},高是跟着文案算出来的)`);
+  ok(L.cardH <= CF.maxCardH, `卡高 ${L.cardH} ≤ 红线 ${CF.maxCardH} —— 超了该改用带滚动井的公告弹窗,不是把红线调高`);
+  ok(L.cardH + 12 <= SCREEN_H, `确认弹窗 + 衬纸外溢仍在屏高 ${SCREEN_H} 内`);
+  ok(L.buttons.every((b) => b.h >= TOUCH.min), `两颗键高 ${L.buttons[0].h} ≥ 触控下限 ${TOUCH.min}`);
+  const sp = join(UI, "settings-panel.ts");
+  const wire = existsSync(sp) ? checkConfirmWiring(readFileSync(sp, "utf8"), "settings-panel") : ["settings-panel.ts 找不到"];
+  for (const m of wire) ok(false, `确认弹窗 ${m}`);
+  ok(wire.length === 0, "两颗「重置默认」都走 askResetPad、覆盖存档只有一处出口(没有绕过确认的第三条路)");
+}
+
 // ---------- 履历页六格:版式判据与面板同源(statCells / statCardDL / statCardFits 全在 shop-shelf) ----------
 {
   const cells = statCells(mockProfile(), 18);
@@ -558,5 +629,5 @@ ok(c5.length === 0, `文案闸:训练场关卡表 ${DRILLS.length} 关的分步/
 
 console.log(bad
   ? `\n${bad} 处问题:P5 面板语法断言未通过。`
-  : "\nP5 面板语法全部通过:对比度过线、网点在预算内、可点行够高、版式不撞、文案无 emoji。");
+  : "\nP5 面板语法全部通过:对比度过线、网点在预算内、可点行够高、版式不撞、文案无 emoji、确认弹窗排得下且两处都问。");
 process.exit(bad ? 1 : 0);

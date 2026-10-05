@@ -48,6 +48,8 @@ import { C, ROLE } from "./p5-tokens";
 import { paintP5 } from "./p5-paint";
 import { DIAG, padDiagramDL } from "./pad-diagram";
 import { sectionTitle, solidTab, type TabHandle } from "./ui-shell";
+import { askConfirm, type ConfirmDialog } from "./confirm-dialog";
+import { CONFIRM_PAD_RESET } from "./confirm-layout";
 import type { Slider, Toggle } from "./widgets";
 import { stripAt, stripLayout } from "./editor-strip";
 import {
@@ -141,6 +143,12 @@ export class SettingsPanel extends Component {
   private aboutResult = "";
   private selected: PadSlot | null = "left";
   private sizeLabel: Label | null = null;
+  /**
+   * 「重置默认」的确认弹窗:同一屏最多一张(再点同一颗键先收掉上一张,不叠)。
+   * 挂在 this.root 下而不是 listView / editView 里 —— 那两个容器会被整块 fadeOutHide
+   * 收起(收 = 禁用子树里的 Button),弹窗若住在里面就会被顺手关掉。
+   */
+  private confirm: ConfirmDialog | null = null;
   private modeTipLabel: Label | null = null;
   /**
    * 移动方式图示:一块逐帧重画的小舞台(只读,不吃触摸 —— 凹陷槽的语法就是"只读")。
@@ -187,6 +195,8 @@ export class SettingsPanel extends Component {
     this.tab = "control";
     this.sizeSlider = null;
     this.alphaSlider = null;
+    // 确认弹窗是 root 的子节点,跟着整树走;引用置空即可(它自己的淡出回调会摸到无效节点,有 isValid 兜)
+    this.confirm = null;
     this.onCloseCb = null;
     this.listView = null;
     this.editView = null;
@@ -370,12 +380,7 @@ export class SettingsPanel extends Component {
 
     const reset = this.kit.button(page, "重置默认", wOf(rstBox), rstBox.h, { size: 15 });
     reset.setPosition(cOf(rstBox), rstBox.cy, 0);
-    reset.on(Button.EventType.CLICK, () => {
-      this.kit.sfx.play("ui");
-      Settings.resetPad();
-      Settings.flush();
-      this.kit.toast("操作按钮已回到默认位子");
-    });
+    reset.on(Button.EventType.CLICK, () => this.askResetPad(false));
 
     // ---------- 手感两档(球速 / 移速)----------
     // 用滑杆而不是分段按钮:八档 / 六档分段在一行里放不下。行心一律由 settings-layout
@@ -715,6 +720,40 @@ export class SettingsPanel extends Component {
     }
   }
 
+  /**
+   * 「重置默认」两处(操控页 / 调整位置顶栏)的同一入口。
+   *
+   * 为什么要问一句:它覆盖的是用户一颗一颗拖出来的存档,误触代价不对称(点错=重摆一遍),
+   * 而顶栏那颗原来连提示都没有,拖乱了按一下就全回去了、屏幕上还看不出来。
+   * 为什么不是每次都问:**没有东西可撤销的时候问一句纯属拦路**(用户口径:确认只在真有
+   * 数据要撤销时弹),所以先问 Settings.padLayoutIsDefault() —— 判据与 resetPad 同源,
+   * 不会出现「刚重置完再点,还被拦一道」。
+   *
+   * @param inEditor 顶栏那颗要顺手把编辑器的滑杆读数与按键位置跟上(页面上那颗没有这两样)
+   */
+  private askResetPad(inEditor: boolean): void {
+    this.kit.sfx.play("ui");
+    if (Settings.padLayoutIsDefault()) { this.doResetPad(inEditor); return; }
+    this.confirm?.hide();
+    if (!this.root || !this.root.isValid) return;
+    this.confirm = askConfirm(this.root, this.kit, CONFIRM_PAD_RESET, () => {
+      this.confirm = null;
+      this.doResetPad(inEditor);
+    });
+  }
+
+  /** 真的动手:回位 + 落盘 + 报一句(两处共用,提示与编辑器同步只在各自该做的部分分叉) */
+  private doResetPad(inEditor: boolean): void {
+    Settings.resetPad();
+    Settings.flush();
+    this.kit.toast("操作按钮已回到默认位子");
+    if (inEditor) {
+      this.padHandle?.apply();
+      this.sizeSlider?.set(this.sizeOfSelected());
+      this.alphaSlider?.set(Settings.padAlpha);
+    }
+  }
+
   private repaint(): void {
     this.updateModeSelector();
     for (const t of this.toggles) if (t.node && t.node.isValid) t.paint();
@@ -834,14 +873,8 @@ export class SettingsPanel extends Component {
 
     const eReset = this.kit.button(strip, resetIt.text, resetIt.w, 44, { size: resetIt.fontSize });
     eReset.setPosition(resetIt.center, 0, 0);
-    eReset.on(Button.EventType.CLICK, () => {
-      this.kit.sfx.play("ui");
-      Settings.resetPad();
-      Settings.flush();
-      this.padHandle?.apply();
-      this.sizeSlider?.set(this.sizeOfSelected());
-      this.alphaSlider?.set(Settings.padAlpha);
-    });
+    // 与设置页那颗同名同义:同一份存档,问同一句话(见 askResetPad)
+    eReset.on(Button.EventType.CLICK, () => this.askResetPad(true));
 
     const eDone = this.kit.button(strip, doneIt.text, doneIt.w, 46, { style: "primary", size: doneIt.fontSize });
     eDone.setPosition(doneIt.center, 0, 0);

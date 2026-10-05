@@ -37,6 +37,7 @@ import {
 } from "../assets/scripts/ui/campaign-layout";
 import { cardBoxes as drillCardBoxes, DRILL } from "../assets/scripts/ui/drill-layout";
 import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopStats, shopTabs, shopTopBar, STAT, statCardDL, statCells, TOAST, toastBox, toastWidth } from "../assets/scripts/ui/shop-shelf";
+import { CONFIRM_PAD_RESET, layoutConfirm } from "../assets/scripts/ui/confirm-layout";
 import type { Profile } from "../assets/scripts/core/career";
 import {
   drawBevelSlot, drawHalftone, drawIconBtn, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
@@ -243,8 +244,7 @@ function shopTopRow(c: { X: (v: number) => number; Y: (v: number) => number }): 
 }
 
 function panelsSheet(): string {
-  const out: string[] = [];
-  // ---------- ① 设置(760×424)----------
+  const out: string[] = [];  // ---------- ① 设置(760×424)----------
   {
     const c = cell(40, 40, SET.pw, SET.ph, ROLE.primary.face, "设置");
     out.push(c.head);
@@ -441,6 +441,33 @@ function panelsSheet(): string {
       if (s.unit) out.push(txt(c.X(x + d.unit.x + d.unit.w / 2), c.Y(y + d.unit.y), s.unit, STAT.unitSize, C.paperDim));
       if (s.sub) out.push(txt(c.X(x + d.sub.x), c.Y(y + d.sub.y), s.sub, STAT.subSize, C.dimDeep));
     });
+  }
+
+  // ---------- ⑥ 二次确认弹窗(点「重置默认」先问那一句)----------
+  // 为什么要出图:这张弹窗的全部风险都在「文案一长就撞」,而断言只能证明算术没坏。
+  // 坐标一个不抄 —— 卡高、四块的 cy、两颗键的 cx,全是 layoutConfirm 算出来的那一份。
+  {
+    const c = cell(40, 610, SET.pw, SET.ph, ROLE.primary.face, "二次确认弹窗");
+    out.push(c.head);
+    const L = layoutConfirm(CONFIRM_PAD_RESET);
+    out.push(shape(c.X(0), c.Y(0), (g) => drawPosterPlate(g, L.cardW, L.cardH, { bandHex: ROLE.primary.face })));
+    for (const it of L.items) {
+      const hex = it.key === "title" ? C.acid : it.key === "body" ? C.paper : C.dim;
+      it.lines.forEach((l, k) => out.push(txt(
+        c.X(0), c.Y(it.cy + (it.h / 2 - (k + 0.5) * it.lineH)), l, it.size, hex,
+        { bold: it.key === "title" },
+      )));
+    }
+    for (const b of L.buttons) {
+      const face = b.key === "action" ? ROLE.primary.face : null;
+      out.push(shape(c.X(b.cx), c.Y(b.cy), (g) => (face
+        ? drawP5Block(g, b.w, b.h, face, SLANT.button)
+        : drawBevelSlot(g, b.w, b.h, SLANT.button))));
+      out.push(txt(c.X(b.cx), c.Y(b.cy), b.text, b.size, face ? inkFor(face) : C.dim, { bold: !!face }));
+    }
+    out.push(tag(40, 610 + SET.ph + 24,
+      `卡高 ${L.cardH} = 内边距 + 标题 + ${L.items[1].lines.length} 行正文 + 补充行 + 按钮行,全在 confirm-layout 算;`
+      + "真文案与四行长文案各量一遍见 panel-check ⑪"));
   }
   return out.join("\n");
 }

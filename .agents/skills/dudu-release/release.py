@@ -148,6 +148,77 @@ def read_project_versions() -> tuple[str, str]:
     return pkg_ver, ts_ver
 
 
+def bump_version(ver: str) -> str:
+    """X.Y.Z → X.Y.(Z+1)。patch 永远 +1,minor/major 不动(Dudu 约定)。"""
+    parts = ver.split('.')
+    if len(parts) != 3:
+        die(f'版本号格式异常: {ver}(期望 X.Y.Z)')
+    try:
+        parts[2] = str(int(parts[2]) + 1)
+    except ValueError:
+        die(f'版本号 patch 段不是整数: {ver}')
+    return '.'.join(parts)
+
+
+def write_version_files(ver: str) -> None:
+    """写回 package.json 与 version.ts,格式保持(indent=2 + 末尾换行)。"""
+    # package.json —— 解析后重写,保持 2 空格缩进
+    pkg = json.loads(PACKAGE_JSON.read_text())
+    if pkg.get('version') == ver:
+        log(f'package.json 已是 {ver},无需写回')
+    else:
+        pkg['version'] = ver
+        PACKAGE_JSON.write_text(json.dumps(pkg, ensure_ascii=False, indent=2) + '\n')
+        log(f'package.json version 已写回: {ver}')
+    # version.ts —— 正则替换 APP_VERSION 字符串字面量
+    ts_text = VERSION_TS.read_text()
+    new_ts = re.sub(
+        r'export const APP_VERSION = ["\'][^"\']+["\'];',
+        f'export const APP_VERSION = "{ver}";',
+        ts_text
+    )
+    if new_ts == ts_text:
+        log(f'version.ts APP_VERSION 已是 {ver},无需写回')
+    else:
+        VERSION_TS.write_text(new_ts)
+        log(f'version.ts APP_VERSION 已写回: {ver}')
+
+
+def cmd_bump(args) -> None:
+    """自动算下一个要发的版本号,可选写回 package.json 与 version.ts。
+
+    决策真值表(agent 不用再自己判断):
+      version.ts=X, tag vX 不存在 → 用 X(预升未发布例外)
+      version.ts=X, tag vX 已存在 → +1 到 X+1
+    """
+    pkg_ver, ts_ver = read_project_versions()
+    if pkg_ver != ts_ver:
+        die(f'package.json version={pkg_ver} 与 version.ts APP_VERSION={ts_ver} 不一致,先手动对齐再 bump')
+    current = pkg_ver
+    tag = f'v{current}'
+
+    r = run(['git', 'rev-parse', '--verify', f'refs/tags/{tag}'])
+    tag_exists = (r.returncode == 0)
+
+    if not tag_exists:
+        target = current
+        log(f'当前版本 {current} 的 tag {tag} 不存在(预升未发布例外),直接用 {target}')
+    else:
+        target = bump_version(current)
+        log(f'当前版本 {current} 的 tag {tag} 已存在,递增到 {target}')
+
+    if args.write and not tag_exists:
+        # 预升未发布:version.ts 已是 X,无需写回
+        log(f'--write 指定但当前版本已是 {target},文件无需改动')
+    elif args.write and tag_exists:
+        write_version_files(target)
+    elif not args.write and tag_exists:
+        log('--dry-run 模式(默认),未写回文件;加 --write 写回 package.json 与 version.ts')
+
+    # 标准输出仅一行版本号,便于 agent 捕获后传给 build/publish
+    print(target)
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -346,7 +417,7 @@ def wait_for_build(target_ver: str, timeout: int) -> dict:
     die(f'等待构建超时（{timeout}s）。检查 build 进程是否完成。')
 
 
-def preflight(tag: str) -> None:
+def preflight(tag: str, tokens: dict) -> None:
     r = run(['git', 'status', '--porcelain'])
     if r.stdout.strip():
         # 如果只有 release-meta.json 变动则放行，否则警告工作树不干净
@@ -356,7 +427,15 @@ def preflight(tag: str) -> None:
 
     r = run(['git', 'rev-parse', '--verify', f'refs/tags/{tag}'])
     if r.returncode == 0:
-        log(f'本地 tag {tag} 已存在，将复用该 tag')
+        # 本地 tag 已存在 —— 区分「重试场景」与「覆盖发布」:
+        #   双端远端 Release 都已存在 = 该版本已发过,禁止覆盖,die
+        #   任一端 Release 不存在 = build 后 publish 失败重跑的重试,放行复用
+        gh_id = gh_release_id_by_tag(tag, tokens['gh'])
+        gitee_id = gitee_release_id_by_tag(tag, tokens['gitee'])
+        if gh_id and gitee_id:
+            die(f'tag {tag} 已在双端发布过 Release(GitHub id={gh_id}, Gitee id={gitee_id}),'
+                f'禁止同版本覆盖发布。请先 `python3 release.py bump --write` 递增版本号。')
+        log(f'本地 tag {tag} 已存在,远端 Release 未发布完,将复用该 tag(重试场景)')
     else:
         log(f'创建本地 annotated tag: {tag}')
         r = run(['git', 'tag', '-a', tag, '-m', f'Dudu Badminton {tag}'])
@@ -575,7 +654,7 @@ def cmd_publish(args) -> None:
     apk_path = Path(meta['apk_path'])
     apk_name = meta['apk_name']
 
-    preflight(tag)
+    preflight(tag, tokens)
     branch = current_branch()
     push_both(branch, tag)
 
@@ -619,6 +698,10 @@ def main():
     p_prune.add_argument('--keep', type=int, default=20, help='保留最近 N 个版本')
     p_prune.add_argument('--dry-run', action='store_true', help='仅打印待清理列表')
 
+    p_bump = sub.add_parser('bump', help='自动算下一个版本号(读 version.ts,查 tag,已存在则 +1)')
+    p_bump.add_argument('--write', action='store_true', help='写回 package.json 与 version.ts')
+    p_bump.add_argument('--dry-run', action='store_true', help='只打印,不动文件(默认即 dry-run)')
+
     args = parser.parse_args()
     if args.subcmd == 'build':
         cmd_build(args)
@@ -627,6 +710,8 @@ def main():
     elif args.subcmd == 'prune':
         tokens = {'gh': get_github_token(), 'gitee': get_gitee_token()}
         prune_old_apks(args.keep, tokens, args.dry_run)
+    elif args.subcmd == 'bump':
+        cmd_bump(args)
 
 
 if __name__ == '__main__':

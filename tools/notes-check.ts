@@ -8,7 +8,10 @@
 //   1) 横向:任何物理行宽 <= 折行可用宽(带悬挂缩进),这是"不溢出"的定义本身;
 //   2) 纵向:内容高 == 逐行 h/lead 累加,且未滚动时首末行都落在框内边距里;
 //   3) 语法噪音:## ** ` []() <> - 列表符、SHA-256、裸哈希,一个都不许出现在屏上;
-//   4) 封顶:卡片最高 = NOTE_BOX.maxH + 卡头 99 + 卡尾 149,必须 < 设计高 540。
+//   4) 封顶:卡片最高 = NOTE_BOX.maxH + 卡头 99 + 卡尾 149,必须 < 设计高 540;
+//   5) 开窗方向:滚动态打开必须落在**第一条**(顶部)—— 更新记录弹窗「一进来看到
+//      最旧版本」的现场(2026-10-05)就是初始位把正负位移用反,这里逐字复刻摆放
+//      循环把方向钉死。
 //
 // 用法(仓库根目录):
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/notes-check.js
@@ -16,7 +19,7 @@
 // ============================================================
 import { makeChecker } from "./harness";
 import {
-  buildNotes, fitNotesBox, inlineSpans, NOTE, NOTE_BOX, noteTextW, parseReleaseNotes,
+  buildNotes, fitNotesBox, inlineSpans, NOTE, NOTE_BOX, noteScrollRange, noteTextW, parseReleaseNotes,
 } from "../assets/scripts/ui/release-notes";
 import { textW } from "../assets/scripts/core/text-metrics";
 
@@ -124,6 +127,37 @@ function audit(name: string, md: string): { lines: number; height: number; boxH:
   // 行前间距只属于小节行(且只有该逻辑行的首条物理行能带)
   ok(layout.lines.every((l) => l.lead === 0 || (l.kind === "section" && l.lead === NOTE.sectionLead)),
     `${name}: lead 分布异常`);
+
+  // —— 5) 滚动态的开窗方向:打开必须落在第一条(顶部),不是最后一条 ——
+  // 用户 2026-10-05 现场:更新记录弹窗一进来看到的是最旧版本 —— 旧写法把 +scrollMax
+  // 当「顶」,而正位移是把内容往上推、露出的是内容底部。方向真话在 noteScrollRange。
+  if (fit.scrollable) {
+    const viewH = fit.boxH - VIEW_INSET * 2;
+    const contentH = Math.max(fit.boxH, layout.height);
+    const blockH = Math.min(contentH, layout.height);
+    const range = noteScrollRange(contentH, viewH, fit.scrollable);
+    // 逐字复刻摆放循环,量出第一条上缘 / 最后一条下缘(content 坐标)
+    let y = contentH / 2 - (contentH - blockH) / 2 - NOTE.padY;
+    let firstTop = 0;
+    let lastBottom = 0;
+    let first = true;
+    for (const line of layout.lines) {
+      y -= line.lead;
+      if (first) { firstTop = y; first = false; }
+      y -= line.h;
+      lastBottom = y;
+    }
+    ok(range.min < range.max, `${name}: 判定可滚动但滚动区间为空`);
+    ok(range.min + firstTop <= viewH / 2 + 0.01,
+      `${name}: 滚到顶第一条仍探出视窗上缘 ${(range.min + firstTop - viewH / 2).toFixed(1)}(方向反了?)`);
+    ok(range.min + firstTop >= -viewH / 2 - 0.01, `${name}: 滚到顶第一条落在视窗下缘之外`);
+    ok(range.max + lastBottom >= -viewH / 2 - 0.01,
+      `${name}: 滚到底最后一条仍探出视窗下缘 ${( -viewH / 2 - (range.max + lastBottom)).toFixed(1)}(方向反了?)`);
+    ok(range.max + lastBottom <= viewH / 2 + 0.01, `${name}: 滚到底最后一条落在视窗上缘之外`);
+    // 方向钉子:用 +max 当「顶」(旧写法)必须真的探出上缘 —— 这条红说明区间语义被翻转
+    ok(range.max + firstTop > viewH / 2,
+      `${name}: +max 也装得下第一条,方向钉子失去牙齿(内容高 ${contentH} / 视窗 ${viewH})`);
+  }
 
   // —— 4) 封顶后卡片仍然装得下屏幕 ——
   ok(fit.boxH + CARD_STACK < 540 - 2 * VIEW_INSET, `${name}: 卡片高 ${fit.boxH + CARD_STACK} 顶穿 540`);

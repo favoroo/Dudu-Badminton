@@ -12,6 +12,7 @@
 // ============================================================
 import { EventTouch, Graphics, Mask, Node, UITransform } from "cc";
 import { drawChevron } from "./ui-arcade";
+import { noteScrollRange } from "./release-notes";
 
 export class NotesScroller {
   private readonly viewport: Node;
@@ -61,15 +62,17 @@ export class NotesScroller {
     return this.content.position.y;
   }
 
-  /** 内容高 / 可视高 → 裁切开关 + 滚动区间,并滚到顶(打开时从第一条看起)。
+  /** 内容高 / 可视高 → 裁切开关 + 滚动区间,并滚到**顶**(打开时从第一条看起)。
+   *  区间与「顶 = 负位移」的方向真话在 release-notes.noteScrollRange,这里不另推。
    *  scrollable 缺省按「内容高是否超过可视高」算;调用方已有判式(如 fitNotesBox)
    *  时显式传入,两边口径不一致时以调用方为准。 */
   setRange(contentH: number, viewH: number, scrollable?: boolean): void {
     this.scrollable = scrollable ?? contentH > viewH + 0.5;
     this.mask.enabled = this.scrollable;
-    this.scrollMax = this.scrollable ? (contentH - viewH) / 2 : 0;
-    this.scrollMin = -this.scrollMax;
-    this.scrollTo(this.scrollMax);
+    const range = noteScrollRange(contentH, viewH, this.scrollable);
+    this.scrollMin = range.min;
+    this.scrollMax = range.max;
+    this.scrollTo(this.scrollMin);
   }
 
   /** 箭头位置(井框半高随弹窗而异):x 取井宽内侧,y = ±(半高 - 12) */
@@ -78,12 +81,14 @@ export class NotesScroller {
     this.hintDown.setPosition(x, -halfH + 12, 0);
   }
 
-  /** 设滚动位并刷新箭头:钳到 [min, max],到顶/到底就把对应箭头收掉 */
+  /** 设滚动位并刷新箭头:钳到 [min, max]。
+   *  y 越负看得越靠上(顶 = scrollMin,上面再没有内容),越正看得越靠下 ——
+   *  没到顶就点亮上箭头、没到底就点亮下箭头,到边即收。 */
   scrollTo(v: number): void {
     const y = Math.max(this.scrollMin, Math.min(this.scrollMax, v));
     this.content.setPosition(0, y, 0);
-    this.hintUp.active = this.scrollable && y < this.scrollMax - 1;
-    this.hintDown.active = this.scrollable && y > this.scrollMin + 1;
+    this.hintUp.active = this.scrollable && y > this.scrollMin + 1;
+    this.hintDown.active = this.scrollable && y < this.scrollMax - 1;
   }
 
   /**

@@ -92,6 +92,20 @@ export function fitNotesBox(contentH: number): { boxH: number; scrollable: boole
   return { boxH, scrollable: contentH > boxH + 0.5 };
 }
 
+/**
+ * 说明井的滚动区间:content 节点 y 的钳制范围(0 = 内容居中)。
+ *
+ * 方向真话在这里,别在调用处现推 —— 说明是**自上而下**摆的(第一条在 content
+ * local +contentH/2 一侧),视窗居中不动,所以「看到顶」= 内容上缘对齐视窗上缘
+ * = **负**位移;正位移是把内容往上推、露出的是内容底部(用户 2026-10-05 现场:
+ * 更新记录弹窗一进来看到的是最旧版本,就是把这的正负用反了)。
+ * 不可滚动时区间收缩为 0(内容居中,不许有半截位移)。
+ */
+export function noteScrollRange(contentH: number, viewH: number, scrollable: boolean): { min: number; max: number } {
+  const half = scrollable ? Math.max(0, (contentH - viewH) / 2) : 0;
+  return { min: -half, max: half };
+}
+
 // ---------- markdown → 逻辑行 ----------
 
 const HEAD_RE = /^(#{1,6})\s+(.*)$/;

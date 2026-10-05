@@ -14,7 +14,7 @@
 //   node .tools-build/tools/settings-check.js
 import { makeChecker } from "./harness";
 import { setStorageBackend, type KVStorage } from "../assets/scripts/core/utils";
-import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, JOYSTICK_LIMIT, JOYSTICK_BASE, SLIDER_BASE, SLIDER_LIMIT, PAD_ACTIONS, railGeo } from "../assets/scripts/core/settings";
+import { Settings, SettingsStore, sanitize, PAD_BASE, PAD_LIMIT, PAD_ALPHA_DEFAULT, JOYSTICK_LIMIT, JOYSTICK_BASE, SLIDER_BASE, SLIDER_LIMIT, PAD_ACTIONS, railGeo } from "../assets/scripts/core/settings";
 import { CFG } from "../assets/scripts/core/config";
 
 // ---------- 假后端 ----------
@@ -239,9 +239,57 @@ console.log("设置层:默认值 / 消毒 / 夹取 / 落盘时机 / 老档兼容
   st.setPart({ padAlpha: 0.4 });
   st.resetPad();
   ok(near(st.v.pad.left.dx, 0) && near(st.v.pad.left.r, PAD_BASE.left.r), "resetPad 位移与半径回默认");
-  ok(near(st.v.padAlpha, 0.8), "resetPad 透明度也回默认 0.8");
+  ok(near(st.v.padAlpha, PAD_ALPHA_DEFAULT), `resetPad 透明度也回默认 ${PAD_ALPHA_DEFAULT}`);
   ok(near(st.v.joystick.dx, 0) && near(st.v.joystick.r, JOYSTICK_BASE.r), "resetPad 摇杆本体也回默认");
   ok(near(st.v.slider.dx, 0) && near(st.v.slider.r, SLIDER_BASE.r), "resetPad 滑轨本体也回默认");
+
+  // ---------- ⑨b padLayoutIsDefault:与 resetPad 同一把尺 ----------
+  // 「重置默认」要不要先问一句,吃的就是这一句判据(真有东西可撤销才弹确认)。
+  // 它必须**恰好**覆盖 resetPad 会动到的那些项:多算一项 = 刚重置完再点还被拦一道;
+  // 少算一项 = 那一项被静默覆盖,用户来不及说不要。
+  {
+    freshKV();
+    const fresh = new SettingsStore();
+    fresh.init();
+    ok(fresh.padLayoutIsDefault(), "新装机(一个键都没挪过)→ 直接重置,不拦人");
+    // 上一条用例把 st 改脏又重置过;这里从干净盘重来,确认「重置完立刻再问」是 false 拦路
+    st.resetPad();
+    ok(st.padLayoutIsDefault(), "刚 resetPad 完 → 判据为「没东西可撤销」(第二下不该再被弹窗拦)");
+  }
+  /** 一杆干净档:每个探针自己起一个实例,互不污染 */
+  const clean = (): SettingsStore => {
+    freshKV();
+    const s = new SettingsStore();
+    s.init();
+    ok(s.padLayoutIsDefault(), "探针起点:干净档判据为真");
+    return s;
+  };
+  /** 在干净档上一次只动一个维度,每个维度都必须被认出来 */
+  const probes: Array<[string, (s: SettingsStore) => void]> = [
+    ["挪一颗键", (s) => s.setPad("left", { dx: 1 })],
+    ["改一颗键的大小", (s) => s.setPad("swing", { r: PAD_BASE.swing.r + 2 })],
+    ["改透明度", (s) => s.setPart({ padAlpha: 0.5 })],
+    ["挪摇杆", (s) => s.setJoystick({ dy: 5 })],
+    ["改摇杆大小", (s) => s.setJoystick({ r: JOYSTICK_BASE.r - 4 })],
+    ["挪滑轨", (s) => s.setSlider({ dy: -8 })],
+    ["改滑轨粗细", (s) => s.setSlider({ r: SLIDER_BASE.r + 3 })],
+    // 键盘专用那两键也在 PAD_ACTIONS 里(resetPad 会连它们一起回位),漏了就是静默覆盖
+    ["挪键盘回退键", (s) => s.setPad("swingFar", { dx: 12 })],
+  ];
+  for (const [nm, mut] of probes) {
+    const s = clean();
+    mut(s);
+    ok(!s.padLayoutIsDefault(), `${nm} → 判据认得出来:先问一句再动手`);
+    s.resetPad();
+    ok(s.padLayoutIsDefault(), `${nm} → resetPad 之后又回到「没东西可撤销」(两把尺同源)`);
+  }
+  {
+    // 移动方式**不在** resetPad 的作用范围里(它是独立偏好),所以也不许算进「可撤销」:
+    // 否则一个只用滑轨的人每次点重置都会被问一句「要覆盖你的滑轨吗」,而弹窗明说不动滑轨。
+    const s = clean();
+    s.setPart({ moveMode: s.moveMode === "slider" ? "joystick" : "slider" });
+    ok(s.padLayoutIsDefault(), "换移动方式不算「可撤销的改动」(与弹窗那句『移动方式不受影响』对齐)");
+  }
 }
 
 // ---------- ⑩ moveMode:老档必须真的被迁到 slider(0.0.24 滑轨升为默认,用户指令) ----------

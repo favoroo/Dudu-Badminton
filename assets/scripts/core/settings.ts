@@ -85,6 +85,14 @@ export type MoveMode = "joystick" | "buttons" | "slider";
 export const PLACE_GUARD = 2000;
 export const PAD_LIMIT = { rMin: 26, rMax: 72, maxDx: PLACE_GUARD, maxDy: PLACE_GUARD, alphaMin: 0.05, alphaMax: 1.0 };
 
+/**
+ * 按键透明度的出厂值 —— **resetPad 与「有没有可撤销的东西」判据共用这一个常量**。
+ * 从前 0.8 在 resetPad / sanitize 默认值里各写一遍,判据再抄第三遍,
+ * 于是「把默认透明度改成 0.75」会让 padLayoutIsDefault() 永远返回 false
+ * (刚重置完再点重置,还会被弹窗拦一道)。
+ */
+export const PAD_ALPHA_DEFAULT = 0.8;
+
 /** 摇杆本体默认:底圈圆心在左簇内的位置(与 PAD_BASE.left 同参考系)+ 底圈半径 */
 export const JOYSTICK_BASE = { x: 78, y: 78, r: 68 };
 
@@ -187,7 +195,7 @@ function fresh(): GameSettings {
     hintLanding: true, hintShake: true, hintFloat: true,
     hapticOn: true,
     hapticLevel: CFG.haptic.default,
-    padAlpha: 0.8,
+    padAlpha: PAD_ALPHA_DEFAULT,
     pad,
     moveMode: "slider",
     paceTier: CFG.pace.default,
@@ -374,10 +382,32 @@ export class SettingsStore {
   resetPad(): void {
     const s = this.v;
     for (const a of PAD_ACTIONS) s.pad[a] = { dx: 0, dy: 0, r: PAD_BASE[a].r };
-    s.padAlpha = 0.8;
+    s.padAlpha = PAD_ALPHA_DEFAULT;
     s.joystick = { dx: 0, dy: 0, r: JOYSTICK_BASE.r };
     s.slider = { dx: 0, dy: 0, r: SLIDER_BASE.r };
     this.after(true);
+  }
+
+  /**
+   * 触屏布局是否还是出厂那套 —— 判的是 **resetPad 会动到的每一项**:
+   * 七个键的位移与半径、摇杆、滑轨、透明度。
+   *
+   * 为什么要这一句:「重置默认」是覆盖用户自己摆的一套位置,误触代价不对称(点错=白摆),
+   * 所以要点之前问一句;但**没有任何东西被改过**时问一句纯属拦路。于是把它做成条件:
+   * 有可撤销的东西才弹确认。判据必须与 resetPad 同源(同一份 BASE / 同一个 PAD_ALPHA_DEFAULT),
+   * 否则会出现「刚重置完再点,还被弹窗拦一道」这种自相矛盾。
+   */
+  padLayoutIsDefault(): boolean {
+    const s = this.v;
+    const same = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9;
+    if (!same(s.padAlpha, PAD_ALPHA_DEFAULT)) return false;
+    for (const a of PAD_ACTIONS) {
+      const p = s.pad[a];
+      if (p.dx !== 0 || p.dy !== 0 || !same(p.r, PAD_BASE[a].r)) return false;
+    }
+    if (s.joystick.dx !== 0 || s.joystick.dy !== 0 || !same(s.joystick.r, JOYSTICK_BASE.r)) return false;
+    if (s.slider.dx !== 0 || s.slider.dy !== 0 || !same(s.slider.r, SLIDER_BASE.r)) return false;
+    return true;
   }
 
   /**
