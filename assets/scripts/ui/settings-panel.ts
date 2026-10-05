@@ -589,9 +589,15 @@ export class SettingsPanel extends Component {
     check.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.checkNow(); });
     this.aboutCheckLabel = check.children[0].getComponent(Label);
 
+    // 「更新记录」:全部历史版本的更新说明,拉两端 Releases 列表在弹窗里翻
+    const log = this.kit.button(page, "更新记录", wOf(A.logBtn), A.logBtn.h, { size: 16 });
+    log.setPosition(cOf(A.logBtn), A.logBtn.cy, 0);
+    log.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.kit.showHistory(); });
+
     // 「浏览器下载」只在**确实挂着新版本**时才建这颗键(用户指令):没更新时点它,等于把人
     // 丢进一个空发布页去替我做检查。页本来就是切页整树重建的,所以按当前状态决定建不建,
     // 不去 toggle 已建节点的 active —— 原生侧一 disable 就把 Graphics 的渲染数据清了。
+    // 版面给它的位在「更新记录」右侧(见 aboutLayout):常驻两颗钉死不动,晚到的它排最右。
     const pend = UpdateService.instance.pendingUpdate;
     if (pend) {
       const site = this.kit.button(page, "浏览器下载", wOf(A.siteBtn), A.siteBtn.h, { size: 15 });

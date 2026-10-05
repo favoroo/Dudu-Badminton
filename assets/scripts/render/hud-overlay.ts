@@ -21,7 +21,7 @@ import { meter, winU, targetZoneFor } from "./drill-anim";
 import { DrillDemo } from "../core/drill-demo";
 import type { Viewport } from "./world";
 import { pal, withAlpha } from "./palette";
-import { drawCrossMark, drawCutinBands, drawTaper } from "./p5kit";
+import { drawCrossMark, drawTaper } from "./p5kit";
 import { applyFont } from "../game/fonts";
 
 const C = CFG;
@@ -29,8 +29,6 @@ const CO = C.court;
 /** 赛点横幅文字的两态颜色(模块级常量;旧版每帧 new 两个 Color) */
 const MP_COL_A = new Color().fromHEX("#fff5f2");
 const MP_COL_B = new Color().fromHEX("#ffd9d9");
-/** 怒气满管斩劈的带色(fire 红橙金,与怒气技能 accent 同族):模块级常量,帧循环里不再 map */
-const RAGE_CUTIN_COLS = (C.fx.slashCutinColorsFire ?? ["#e60012", "#ff6a1f", "#ffe14d"]).map((h) => pal(h));
 
 function txt(parent: Node, name: string, size: number): Label {
   const n = new Node(name);
@@ -64,13 +62,6 @@ export class HudOverlay {
   // 渲染层不自己判压力,避免出现第二份「什么叫力竭」的真话。
   private exhaustT = 0;
   private exLabel: Label;
-  // ---------- 怒气满管斩劈演出(按下满管怒气重击的那一瞬) ----------
-  // 同一条时钟模式:触发只在 game-root(onSkillCast 的 rage 满管分支),这里只管播完。
-  // 画法用 p5kit.drawCutinBands 吃 fx.slashCutin* 那套休眠配置(fire 带色)——
-  // 配置、形状、时序全在,此前一直没有游戏内消费点,这里就是它的第一个。
-  private rageCutinT = 0;
-  private rageLabel: Label;
-  private rageOp: UIOpacity;
   // ---------- 轨迹预测虚线的预分配缓冲(每帧复用,零 GC)----------
   // predictPath 写世界坐标点 → px/py 存换算后的 Graphics 坐标 → dashBuf 存切好的虚线段
   // (每段 5 个 float:x0,y0,x1,y1,透明度档)。虚线段数上限 ≈ 弧长/(dash+gap),
@@ -120,16 +111,6 @@ export class HudOverlay {
     this.exLabel.string = "对手力竭!";
     this.exLabel.color = new Color().fromHEX("#ffe14d");
     this.exLabel.node.active = false;
-    // 怒气满管大字:居中(带子扫过屏心的位置),文案/颜色/字号在 playRageCutin 里随档位表喂
-    this.rageLabel = txt(n, "rage-cast", 30);
-    this.rageLabel.enableOutline = true;
-    this.rageLabel.outlineColor = new Color().fromHEX("#07070d");
-    this.rageLabel.outlineWidth = 3;
-    this.rageLabel.node.setPosition(0, this.vp.y(C.world.h / 2 - 46), 0);
-    this.rageLabel.node.angle = -3;
-    this.rageOp = this.rageLabel.node.addComponent(UIOpacity);
-    this.rageOp.opacity = 0;
-    this.rageLabel.node.active = false;
   }
 
   draw(R: typeof Rules.R, t: number): void {
@@ -176,9 +157,6 @@ export class HudOverlay {
 
     // ---------- 力竭斩劈(game-root 触发,这里只管播) ----------
     this.exhaustDraw();
-
-    // ---------- 怒气满管斩劈(game-root 触发,这里只管播) ----------
-    this.rageCutinDraw();
 
     // ---------- 时机环(球上收缩环;game-root 喂了状态才画)----------
     // 与落点圈共用「落点预测圈」开关:都是操作引导,设置里关掉就一起收
@@ -660,36 +638,6 @@ export class HudOverlay {
     this.exLabel.node.active = true;
     this.exLabel.node.setPosition(this.vp.x(C.world.w / 2) + slide * 0.4, cy, 0);
     this.exLabel.node.angle = -4;
-  }
-
-  /** game-root 在满管怒气重击起手那一帧调用;文案/颜色/字号随档位表的 castLab 喂进来 */
-  playRageCutin(text: string, hex: string, size: number): void {
-    this.rageCutinT = C.fx.slashCutinFramesRage || 40;
-    this.rageLabel.string = text;
-    this.rageLabel.color = new Color().fromHEX(hex);
-    this.rageLabel.fontSize = Math.max(20, Math.round(size * 1.2));
-    this.rageLabel.lineHeight = Math.round(this.rageLabel.fontSize * 1.15);
-    this.rageLabel.node.active = true;
-  }
-
-  /**
-   * 怒气满管斩劈:fire 带色三道斜带错相位横扫全屏(p5kit.drawCutinBands,居中原点直接可用)
-   * + 中央大字(castLab 的「怒极·满溢!!」同文案,只在屏心停一瞬)。
-   * 与力竭斩劈同一条视觉语汇 —— 「大事发生」在这套 HUD 里就长这个样子。
-   */
-  private rageCutinDraw(): void {
-    if (this.rageCutinT <= 0) {
-      this.rageLabel.node.active = false;
-      return;
-    }
-    this.rageCutinT--;
-    const total = C.fx.slashCutinFramesRage || 40;
-    const p = 1 - this.rageCutinT / total;        // 0..1 演出进度
-    drawCutinBands(this.g, C.world.w, C.world.h, p,
-      C.fx.slashCutinAng ?? 14, C.fx.slashCutinBandW ?? 0.30, RAGE_CUTIN_COLS,
-      C.fx.slashCutinAlpha ?? 0.55, C.fx.slashCutinStagger ?? 0.22, 1);
-    // 大字走同一根 alpha 包络:进场渐显 → 屏心最亮 → 出场渐隐,不与带子抢戏
-    this.rageOp.opacity = Math.round(255 * Math.min(1, Math.sin(Math.PI * p) * 1.25));
   }
 
   // ---------- 赛点斩劈横幅(原 hud.js 旗标的 P5 化:全宽斜切红带 + 锯齿撕边) ----------

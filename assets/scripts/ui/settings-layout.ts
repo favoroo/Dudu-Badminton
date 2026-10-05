@@ -385,6 +385,8 @@ export interface AboutLayout {
   /** v0.0.x 读数 */
   verValue: Box;
   checkBtn: Box;
+  /** 「更新记录」:拉两端 Releases 列表,弹窗里翻全部历史版本的更新说明 */
+  logBtn: Box;
   /** 「浏览器下载」:应用内那条路走不通时的第二条路,整条链交给系统浏览器 */
   siteBtn: Box;
   /** 「重看新手教学」:教学的重看入口之一(另一处在训练场列表页) */
@@ -395,7 +397,10 @@ export interface AboutLayout {
 }
 
 /**
- * 关于页:版本读数 + 两颗按钮 + 一行状态。
+ * 关于页:版本读数 + 一排动作键 + 一行状态。
+ * 动作键固定三格:「检查更新」「更新记录」常驻,「浏览器下载」只在真挂着新版本时上
+ * (没更新时点它等于把人丢进空发布页)—— 常驻的两颗钉死在左/中,晚到的它排最右,
+ * 页是切页整树重建的,出现/消失都不挪别人的位。
  * 整页只占左半区宽度的一半不到,状态行与说明行拉通到内容右缘 ——
  * 「检查失败:请求超时」这种句子短不了,截在中间就变成读不到的信息。
  */
@@ -408,7 +413,8 @@ export function aboutLayout(): AboutLayout {
     verName: box(SET.colX, 70, rowY(0), 18),
     verValue: box(SET.colX + 78, 120, rowY(0), 18),
     checkBtn: box(SET.colX, btnW, rowY(1), SET.rowH),
-    siteBtn: box(SET.colX + btnW + btnGap, btnW, rowY(1), SET.rowH),
+    logBtn: box(SET.colX + (btnW + btnGap), btnW, rowY(1), SET.rowH),
+    siteBtn: box(SET.colX + (btnW + btnGap) * 2, btnW, rowY(1), SET.rowH),
     status: box(SET.colX, wide, rowY(2), 18),
     hint: box(SET.colX, wide, rowY(3), 16),
     tutBtn: box(SET.colX, 220, rowY(4), SET.rowH),
@@ -455,7 +461,7 @@ export function settingsOverlaps(): string[] {
     ]],
     ["操控·手感行", K.tiers.flatMap((t) => [t.name, t.slider, t.caption])],
     ["辅助页", [S.section, S.toggle, S.scope, S.tip, S.landingHint]],
-    ["关于", [A.section, A.verName, A.verValue, A.checkBtn, A.siteBtn, A.status, A.hint, A.tutBtn]],
+    ["关于", [A.section, A.verName, A.verValue, A.checkBtn, A.logBtn, A.siteBtn, A.status, A.hint, A.tutBtn]],
   ];
   for (const [nm, bs] of rows) {
     for (let i = 0; i < bs.length; i++) {
@@ -515,6 +521,7 @@ export function settingsOverflow(labels: string[] = [...TOGGLE_LABELS, ...ASSIST
     ]),
     ["关于·版本读数", A.verValue],
     ["关于·检查按钮", A.checkBtn],
+    ["关于·记录按钮", A.logBtn],
     ["关于·发布页按钮", A.siteBtn],
     ["关于·状态行", A.status],
     ["关于·说明行", A.hint],

@@ -280,8 +280,65 @@ function qualityAt(elapsed: number): number {
   return clamp(1 - Math.abs(a - (SW.active - 1) / 2) / (SW.active / 2), 0, 1);
 }
 
-/** 最佳按拍提前量(帧):qualityAt 峰值对应的挥拍帧 —— 想踩窗口正中,球到判定区心前这么多帧就得按 */
+/** 最佳按拍提前量(帧):qualityAt 峰值对应的挥拍帧 —— 想踩窗口正中,球到判定区心前这么多帧就得按。
+ *  单位 = **挥拍动画帧(玩家侧真实时间)**,不是世界步。领域内要经 playerFramesToWorld 折算才能跟 fc 对话。 */
 export const PRESS_LEAD_FRAMES = SW.windup + 0.5 + (SW.active - 1) / 2;
+
+/** 带 focusT 的最小形状:真人/AI/残缺探针都能传进来(缺省视为不在领域中) */
+type FocusClock = { focusT?: number };
+
+/**
+ * 时空领域(focus)里**世界的真实速率**:平时 1,领域内 = ballSlow ≈ 0.35
+ * (主循环把 dt × timeScale 喂进 60Hz 定步长累加器 ⇒ 每个真实帧只走 0.35 个世界步)。
+ *
+ * 为什么这套折算是**唯一**的出口:领域把「世界」拖慢,却故意把「玩家的挥拍/缓冲/收招」
+ * 留在真实时间(player.update 的 focusTimeStep = 1/本值)。于是"按下到质量峰 = 9 帧"这件
+ * 玩家侧的事,在领域里只值 3.1 个**世界步**,而 fc(球还有几帧到区心)、判定区按来球速度收严、
+ * AI 起手提前量全都在数世界步。
+ * 2026-10-05 用户现场「时空技能,我现在挥拍很难击中球了」的根因就是这条量纲错配:
+ * 时机环按未折算的 9 世界步教人按 ⇒ 系统性早按 6 世界步,那一拍在球到区心之前就走完了命中窗
+ * (实测:领域内按时机环按 100% 挥空,容错窗从平时 15~17 世界步掉到 5~9)。
+ * 凡跨这两个时钟的量都必须经下面三个包装器折算,再抄一份 0.35 / 2.86 就是第二把尺子
+ * (判据 focus-window-check ①②③④)。
+ */
+export function worldRate(p: FocusClock | null | undefined): number {
+  if (!p || (p.focusT ?? 0) <= 0) return 1;
+  // 总闸 fx.slowmoEnabled 关掉时主循环根本不变速(world 恒 1 步/真实帧),挥拍也就没有差要补偿。
+  // 少这一句就是"关慢放 ⇒ 世界全速、挥拍还按 2.86 倍跑",领域立刻变成比平时难三倍的空挥游戏。
+  if (C.fx.slowmoEnabled === false) return 1;
+  return C.skills.focus.ballSlow || 0.35;
+}
+
+/** swingT 每世界步的增量(领域外的挥拍状态机步进 1;领域内挥拍按真实时间走 ⇒ >1) */
+export function swingClockScale(p: FocusClock | null | undefined): number {
+  return 1 / worldRate(p);
+}
+
+/** 玩家侧的「真实帧」预算 → 世界步(领域内世界走得慢,同样 9 帧只值 3.1 步) */
+export function playerFramesToWorld(p: FocusClock | null | undefined, frames: number): number {
+  return frames * worldRate(p);
+}
+
+/** 世界步量 → 玩家眼里看到的量(来球 px/世界步 → px/真实帧) */
+export function worldToPlayerView(p: FocusClock | null | undefined, value: number): number {
+  return value * worldRate(p);
+}
+
+/** 真的处在"子弹时间"里吗 = 领域状态在场 **且**世界确实被拖慢了(慢放总闸关掉时两者等价) */
+export function inTimeDomain(p: FocusClock | null | undefined): boolean {
+  return (p?.focusT ?? 0) > 0 && worldRate(p) < 1;
+}
+
+/**
+ * 时机环该喊「现在按」的那一帧门槛(量纲 = 世界步,与 fc 直接可比):
+ * 质量峰提前量 PRESS_LEAD_FRAMES,再加真人"看到→按下"的反应余量 swingCue.reactFrames;
+ * 「自动击打」开着时不吃反应(那一拍不用人按)。
+ * game-root.updateSwingCue 用它摆环,focus-window-check ① 用它当"玩家该按的帧"下注 ——
+ * **预告与判据必须同源**,否则测的是我以为的时机而不是真话(见 [[feedback-demo-must-share-judging]])。
+ */
+export function swingCuePressFrames(p: FocusClock | null | undefined): number {
+  return playerFramesToWorld(p, PRESS_LEAD_FRAMES + (AutoHit.on ? 0 : C.swingCue.reactFrames));
+}
 
 function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   p.px = p.x; p.py = p.y; p.sqPrev = p.sq;
@@ -369,7 +426,9 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // 时空领域内:球与对手被子弹时间拖慢,玩家挥拍/收拍/续拍缓冲按真实时间推进
   // (挥拍动画播放速度正常,不被 slowmo 拖慢;swingT/swingBuf/recoverT 同步补偿,
   //  否则 slowmo 下 swingBuf 衰减慢 + swingT 跳得快会导致"按一次自动连挥")
-  const focusTimeStep = inFocus ? 1 / (C.skills.focus.ballSlow || 0.35) : 1;
+  // ⚠ 补偿把 swingT 换成真实时钟之后,所有"还剩几帧"的玩家侧判据必须跟着折算 ——
+  //   见 swingClockScale 头注(时机环 / autoSwingDue / AI 起手提前量 / 判定区来球速度)。
+  const focusTimeStep = swingClockScale(p);
 
   if (p.lungeT >= 0) {
     // 跨步中:速度由 lunge 物理冲量完全控制,不被滑轨定点刹停截断
@@ -533,9 +592,9 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     p.swingT += focusTimeStep;
     const total = Physics.swingTotal() + (p.swingHit ? 0 : SW.whiffExtra);
     if (p.swingT >= total) {
-      // 「这一拍到底打出去没有」必须取在收招清零之前:稍后 startSwing 会把 swingHit 重置成
-      // false,而引力那条分支(skills.ts 的 magnet 起手)不设 swingHit = false —— 现读会拿到
-      // 上一拍的脏真值,把没打出去的这一拍算成用掉了瞄准。
+      // 「这一拍到底打出去没有」必须取在收招清零之前:稍后 startSwing(以及引力那条
+      // skills.ts 的 magnet 接管)会把 swingHit 重置成 false —— 现读会拿到**下一拍**的假值,
+      // 把刚打完的这一拍算成"瞄准还没用掉"。
       const struck = p.swingHit;
       if (!p.swingHit) {
         p.stats.whiffs++;
@@ -672,11 +731,17 @@ export interface ZoneProbe {
   lungeDir?: number;
   /** 跨步自动回球待发窗剩余帧(只真人有;AI 的残缺探针不带 ⇒ `?? 0` 兜底,漏一处就是白给 CPU 手长) */
   lungeAutoT?: number;
+  /** 时空领域剩余帧:领域里来球的**真实**接近速度只有 ballSlow 倍,判定区不该再按世界步速度收严 */
+  focusT?: number;
 }
 
 function strikeZone(p: ZoneProbe, speed: number) {
   const rad = p.swingRadius;
-  const fast = clamp(((speed || 0) - C.swing.zoneFullSpeed) / C.swing.zoneTightenSpan, 0, 1);
+  // 来球速度折算成玩家眼里看到的接近速度(px/真实帧):领域外 scale=1 逐字不变,
+  // 领域内 12px/步的重杀在玩家眼里只有 4.2px/步 —— 球慢到能看清,判定区却照旧缩到 0.62,
+  // 那是"子弹时间里球速惩罚照吃"的量纲错配(判据 focus-window-check ③)。
+  const approach = worldToPlayerView(p, speed);
+  const fast = clamp(((approach || 0) - C.swing.zoneFullSpeed) / C.swing.zoneTightenSpan, 0, 1);
   // 跨步救球:判定区扩大,延伸方向由跨步方向决定(缺省为面向方向)
   const isLunging = (p.lungeT ?? -1) >= 0;
   // 冲量那 6 帧吃满倍率;之后的「自动回球待发窗」吃一个较小的尾段 —— 球真正被打到通常在
@@ -688,11 +753,15 @@ function strikeZone(p: ZoneProbe, speed: number) {
     : ((p.lungeAutoT ?? 0) > 0 && C.lunge.autoReturn ? C.lunge.reachTailMul : 1);
   const reachDir = isLunging ? (p.lungeDir || p.facing) : p.facing;
   const extraReach = activePlayerModifier?.reachMul ?? 1;
+  // 领域里拍头扫掠在世界时间里快 ballSlow 倍(一帧扫过的弧长是平时的 2.9 倍),判定区随之放宽:
+  // 物理口径与跨步的 reachMul 同一条(拍头扫过更大的空间 ⇒ 更早/更偏的球也碰得到),
+  // 而不是偷偷延长命中窗(那会让人物收完拍还把球打走)。只在领域内生效,领域外恒 1 ⇒ 逐字不变。
+  const focusMul = inTimeDomain(p) ? (C.skills.focus.zoneReachMul ?? 1) : 1;
   const off = Physics.strikeOffset(rad, reachDir, lungeMul);
   return {
     x: p.x + off.dx,
     y: p.y + off.dy,
-    r: (rad * 0.92 + SW.headR) * (p.zoneScale ?? 1) * lerp(1, C.swing.zoneFastMul, fast) * lungeMul * extraReach,
+    r: (rad * 0.92 + SW.headR) * (p.zoneScale ?? 1) * lerp(1, C.swing.zoneFastMul, fast) * lungeMul * extraReach * focusMul,
   };
 }
 
@@ -750,6 +819,7 @@ export type AutoSwingSrc = "lunge" | "smash" | "rage" | "auto";
  * flightFramesToClosest 算「还有几帧到判定区心」,给玩家的提示额外提前
  * swingCue.reactFrames(10 帧,补"看到→按下"的反应时间)。机器不吃反应,所以门槛就是
  * fc <= PRESS_LEAD_FRAMES 本身:按下后第 9 帧的质量峰,正好落在球过判定区心那一帧。
+ * 领域内这两个量分属两个时钟,门槛经 playerFramesToWorld 折算(见 worldRate 头注)。
  * 够不着的球 flightFramesToClosest 返回 null(最近逼近仍超出判定半径)⇒ 绝不起手,
  * 不留"为了兑现机制而挥空"的幽灵拍。每帧重算,所以窗口里玩家改滑轨、风把球带偏,
  * 判读跟着走 —— 宁可晚一帧,不会按早。
@@ -764,18 +834,24 @@ function autoSwingDue(p: PlayerEntity, ball: Ball | null, src: AutoSwingSrc = "l
     : src === "auto" ? C.autoHit : C.lunge;
   const z = strikeZone(p, Math.hypot(ball.vx || 0, ball.vy || 0));
   const fc = flightFramesToClosest(ball, z.x, z.y, z.r, LG.autoHorizon);
-  if (fc === null || fc > PRESS_LEAD_FRAMES) return false;
+  // ⚠ PRESS_LEAD_FRAMES 是**挥拍动画帧**(玩家侧真实时间),fc 数的是世界步:领域里挥拍按真实
+  //   时间走、世界被拖慢到 0.35,不折算就是"机器在区心前 9 世界步起手、那一拍 3.1 步就走完峰"
+  //   ⇒ 代拍在领域里系统性挥空(与玩家按时机环按挥空同一个根因,判据 focus-window-check ②)。
+  const lead = playerFramesToWorld(p, PRESS_LEAD_FRAMES);
+  if (fc === null || fc > lead) return false;
   const fut = ballFuture(p, ball, LG.autoLandHorizon);
   // 隔网球:接触那一帧球必须在自己半场。判据放宽到"整条命中窗之内会过网",而不是"到最近逼近帧
   // 为止"—— 挥拍有 windup+active 十几帧的窗口,球在窗口里任何一帧过网都打得着(真过不了网的
   // tryHit 自己会拒)。按下当帧就卡 inOwnCourt 等于给自动多加一条手动没有的限制:网前抢点那
   // 一类球全被拒掉,而玩家自己按却打得着(实测差 9 格)。
-  if (fut.cross < 0 || fut.cross > SW.windup + SW.active) return false;
+  // 窗口两端都是**挥拍动画帧**,而 fut.* 数世界步 ⇒ 一律折算(领域里这条窗只有 5.6 世界步)。
+  const swingWindow = playerFramesToWorld(p, SW.windup + SW.active);
+  if (fut.cross < 0 || fut.cross > swingWindow) return false;
   if (fut.land <= LG.autoLandHorizon) {
     // 要飞出边线的球:正确打法是让它落地、把这分收下。替玩家捞回去等于把到手的分还给人家。
     if (fut.landX < CO.left - LG.autoOutMargin || fut.landX > CO.right + LG.autoOutMargin) return false;
     // 挥拍最早也要起拍后第 windup+1 帧才可能接触:球已经在地上了,别空挥。
-    if (fut.land <= SW.windup + 1) return false;
+    if (fut.land <= playerFramesToWorld(p, SW.windup + 1)) return false;
     // 球活不到"结算"那一刻就别起手。峰值追账(见 tryHit 头注)只记账不出手,要等球**离开判定区**
     // 或走完窗才结算 —— 贴地快死球死在区里,这一拍永远结不出来:人物明明扫到球,分还是丢了,
     // 读起来就是"它替我挥了个空"。门槛实测取 2 帧(132 格可救来球):0 帧 → 27 格空挥、救到 90;
@@ -796,7 +872,14 @@ function autoSwingDue(p: PlayerEntity, ball: Ball | null, src: AutoSwingSrc = "l
 // 最优帧出手 —— 按拍对准球心 → 结算帧 ≈ 质量峰帧 → qRaw 顶格;早/晚按的偏差直接进
 // qualityAt,不再被进区帧摊薄。闪现保底不走追踪:技能承诺「必中即时」,当场出手。
 function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
-  if (p.swingT < SW.windup || p.swingT > SW.windup + SW.active) return null;
+  // 领域内 swingT 每世界步跳 swingClockScale(≈2.86)下,窗口上沿写成"≤ 17"的话,
+  // 越过上沿的那一步(17.14)会被这里的早退整帧吃掉 ⇒ 下面那条"窗尾按账结算"永远轮不到,
+  // 球明明在判定区里待了整个窗,最后一拍还是记成挥空。这是"很难击中球"的第二刀。
+  // 只给**非整数步进**容一个越界帧(领域外 tail=0,与旧写法逐字等价):实测把 tail 摊给平时
+  // 会让第 18 帧偶尔用陈账出手,落点从旧账的球位重启 ⇒ lunge-check ⑧ 的落点判据 2/10 变红。
+  const step = swingClockScale(p);
+  const tail = step > 1 ? step : 0;
+  if (p.swingT < SW.windup || p.swingT > SW.windup + SW.active + tail) return null;
   if (p.swingHit || p.hitLock > 0) return null;
   if (!ball.live || ball.held) return null;
   if (!inOwnCourt(p, ball.x, ball.y)) return null;         // 不能越过网去够(含网口球头/高球抢网容差)
@@ -809,6 +892,10 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
     ball.px, ball.py, ball.x, ball.y, headR);
   const atEdge = edge !== null || headHit;
   const windowEnd = p.swingT >= SW.windup + SW.active;
+  // 上沿那一帧(swingT 恰好 = windup+active)仍按窗内处理(旧口径);**越过**上沿的那一步
+  // (领域里 14.29 → 17.14)只许结算、不许再记新接触 —— 否则等于把命中窗拖长,
+  // 人物收完拍还能把球打走,而那是玩家看得见的谎。
+  const pastWindow = p.swingT > SW.windup + SW.active;
 
   if (guar && atEdge) {
     // 保底那一下按 guaranteedQ 上报质量:踩没踩准不由玩家负责,反馈档级直接给到顶。
@@ -819,7 +906,7 @@ function tryHit(p: PlayerEntity, ball: Ball): ShotResult | null {
       bx: ball.x, by: ball.y, bpx: ball.px, bpy: ball.py, swingT: p.swingT,
     });
   }
-  if (atEdge) {
+  if (atEdge && !pastWindow) {
     // 记账:这一帧若是目前最佳接触(综合质量最高)就存下,先不出手
     const qRaw = qualityAt(p.swingT);
     const dEdge = headHit ? Math.min(edge ?? 1, 0.35) : edge as number;
@@ -1090,4 +1177,4 @@ function previewKind(p: PlayerEntity, ball: Ball, pending?: {
 // 里那两处是自动击打的两个判定点(徽标基准 / 一次滑动只管一拍),直接闭包调用就把它们焊死,
 // auto-hit-check ⑩ 的反例(旧式基准、消耗一切、从不消耗、不看 AutoHit.on)就换不上去 ——
 // 换不上反例的闸门等于没牙齿。
-export const Player = { create, update, tryHit, buildShot, previewKind, previewBase, consumeAutoAim, depthOf, aimOverride, strikeZone, ballInZone, autoSwingDue, ballFuture, spawnShadowClone, setPlayerModifier, getPlayerModifier };
+export const Player = { create, update, tryHit, buildShot, previewKind, previewBase, consumeAutoAim, depthOf, aimOverride, strikeZone, ballInZone, autoSwingDue, ballFuture, spawnShadowClone, setPlayerModifier, getPlayerModifier, worldRate, swingClockScale, playerFramesToWorld, worldToPlayerView, swingCuePressFrames, inTimeDomain };

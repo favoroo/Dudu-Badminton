@@ -300,6 +300,7 @@ function touchItems(): Array<[string, number]> {
     ...M.toggles.map((r, i) => [`开关第 ${i} 行(${r.label})`, r.toggle.h] as [string, number]),
     ...M.hints.map((b, i) => [`右列开关#${i}`, b.h] as [string, number]),
     ["关于·检查更新按钮", A.checkBtn.h],
+    ["关于·更新记录按钮", A.logBtn.h],
     ["关于·浏览器下载按钮", A.siteBtn.h],
   ];
 }

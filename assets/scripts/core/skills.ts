@@ -189,6 +189,30 @@ export function defersCooldownToConsume(p: Player): boolean {
   );
 }
 
+/**
+ * 吸球的「挥拍中」闸 —— 判据只这一份,canActivate 与键面原因 skillBlockReason 共用它
+ * (写漏一侧就是"键亮着按了没反应",或反过来说不能按却按得响)。
+ *
+ * 2026-10-05 用户口径:「吸球技能优化一下,挥拍的时候也要可以使用技能」。
+ * 旧门槛 `p.swingT < 0` 的代价不是"晚一拍才响",而是**一整段时间听不见**:一次挥拍
+ * windup+active+recover = 22 帧,挥空再 +4 帧硬直,而收招瞬间 `p.swingBuf` 还能无缝续拍
+ * —— 连着打球的真人,swingT 长期 >= 0,吸球键就长期是灰的。而这款技能的定位恰恰是
+ * "这一拍挥空了/挥早了,还能把球捞回来",被它要救的那次挥拍锁死是反的。
+ *
+ * 真人放行后按下即**接管**正在进行的这一拍(见 activate 的 magnet 分支),所以既不会
+ * 白扣一次冷却(那一拍必定兑现),也不会出现两条挥拍时间线抢同一颗球。
+ *
+ * AI 恒守旧门槛:它的强度归 diffs.* 那根旋钮管,放宽门槛等于偷偷送 CPU 一次"挥空也能捞回来"
+ * (与 lunge 的 onGround 闸、三条一键化的 `!p.isAI` 同一条口径 —— serve-check / ai-check /
+ * sim-check 的真人替身从不按技能键,那三把尺子量不到这条,只能在这里钉死)。
+ *
+ * 想把真人也退回旧行为:在下面的合取里加一条 `|| !C.skills.magnet.castWhileSwing`,
+ * 并给 config.skills.magnet 补一个总闸键(与 smash.cdOnConsume / lunge.autoReturn 同款)。
+ */
+function magnetSwingGated(p: Player): boolean {
+  return p.isAI && p.swingT >= 0;
+}
+
 /** 当前局势下是否满足激活门槛 (供 UI 按钮点亮/置灰与 AI 决策使用) */
 export function canActivate(p: Player, ball: Ball): boolean {
   if (!p || !p.skill) return false;
@@ -238,11 +262,11 @@ export function canActivate(p: Player, ball: Ball): boolean {
     }
 
     case "magnet": {
-      // 引力吸球:
-      // 对方发球后、回合进行中、且球未在吸取中、未被抓手
+      // 引力吸球:回合进行中、球未被抓手、且不在牵引中。
+      // 挥拍中同样放行(判据与理由只在 magnetSwingGated 那一份,别在这里再写一遍 swingT)。
       if (!ball || !ball.live || ball.held || ball.flying) return false;
       if (ball.magnetPull) return false;
-      return p.swingT < 0;
+      return !magnetSwingGated(p);
     }
 
     case "focus":
@@ -307,7 +331,10 @@ export function skillBlockReason(p: Player, ball: Ball | null): string | null {
     }
     case "magnet":
       if (!ball || !ball.live || ball.held || ball.flying) return T.notIncoming;
-      if (p.swingT >= 0) return T.swinging;
+      // 真人挥拍中已放行(magnetSwingGated),这一条今天只有 AI 会命中,而 AI 不看键面 ——
+      // 留着是因为它是那条闸的**同一份判据**:总闸一旦关回旧行为,键面立刻跟着报「挥拍中」,
+      // 不会变成"按了没反应、一个字都不说"。
+      if (magnetSwingGated(p)) return T.swinging;
       return T.pulling;
     case "focus":
       return T.focusing;
@@ -466,12 +493,35 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
         fromX: ball.x,
         fromY: ball.y,
       };
+      // ---- 接管这一拍 ----
       // 玩家准备挥拍:空中释放直接起上手劈杀姿势(回击按引力跳杀兑现,见 modifyShot),
       // 落点瞄准压深场(与 config reboundDepth 的"强抽对方深场"同源);玩家滑轨仍可后续改。
-      p.smashGlow = 20;
+      //
+      // 2026-10-05 起这一拍可能是**打断正在进行的挥拍**拿过来的(canActivate 的挥拍闸已放开),
+      // 所以这里必须补齐 Player.startSwing 那套记账 —— 漏一条就是"两拍抢同一条时间线",
+      // 而且全都坏得悄无声息:
+      //  · swingHit = false —— 被打断那拍没打出去,不许沿用上一拍的"已击球"真值。
+      //    牵引到位那帧 rules 会当场把它置 true(rules.ts 的 magnetPull 收尾),
+      //    所以收招既不会把它误记成挥空、也不会白吃一次瞄准消耗(consumeAutoAim)。
+      //  · swingBest = null / swingQ = 0 —— 峰值追踪的账本重开。牵引 9 帧比命中窗 17 帧短,
+      //    回击之后挥拍窗还开着;旧账本若留着,tryHit 会凭上一拍的记账再 settle 一次。
+      //  · serveSwing = false —— 那是"起拍时球在手上"的粘性标记(startSwing 每次覆盖、无人清),
+      //    留着就是发球后第一次吸球摆出发球托球姿势(render/sprites.ts 读 swinging && serveSwing)。
+      //  · swingAuto = false —— 来路标记:吸球是玩家自己按下的技能拍,不许继承被接管那拍的"系统代打"。
+      //  · swingLoft = 0 —— 与 startSwing 同口径:深浅/高低两轴都以起拍为界重新提交,滑轨当场还能改。
+      const rad = Physics.reachRadius(ball);
+      p.swingRadius = rad;                    // 半径现算:别让上一拍的够球半径决定这次的拍头位
+      p.racketPrev = Physics.racketHead(p, 0, rad);   // 插值基准跟着跳,否则打断那帧拍头画出一条甩尾
       p.swingT = 0;
+      p.swingHit = false;
+      p.swingQ = 0;
+      p.swingBest = null;
+      p.serveSwing = false;
+      p.swingAuto = false;
       p.swingStyle = p.onGround ? "under" : "over";
       p.swingAim = C.aimDepth.deep;
+      p.swingLoft = 0;
+      p.smashGlow = 20;
       return true;
     }
 

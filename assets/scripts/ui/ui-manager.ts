@@ -54,6 +54,7 @@ import { objectiveResults } from "../core/campaign-hud";
 import { SettingsPanel } from "./settings-panel";
 import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
+import { HistoryDialog } from "./history-dialog";
 import { MatchSetupScreen, EndlessScreen } from "./mode-screen";
 import type { UpdateInfo } from "../game/update-service";
 
@@ -389,6 +390,8 @@ export interface UiKit {
   /** 当前球馆 */
   getCourtTheme(): CourtThemeItem;
   showUpdateDialog(info: UpdateInfo): void;
+  /** 「更新记录」弹窗:全部历史版本的更新说明(设置「关于」页进入) */
+  showHistory(): void;
 }
 
 // ---------- 结算截获(game-root 桥接) ----------
@@ -410,6 +413,7 @@ export class UIManager extends Component {
   private pausePanel!: PausePanel;
   private settlePanel!: SettlePanel;
   private updateDialog!: UpdateDialog;
+  private historyDialog!: HistoryDialog;
   private matchSetup!: MatchSetupScreen;
   private endlessScreen!: EndlessScreen;
   private skillDialog!: SkillDialog;
@@ -461,6 +465,8 @@ export class UIManager extends Component {
     // 设置页那块带 BlockInputEvents 的暗底整个压住(看不见也点不着)。配合 show() 里的
     // 抬层,从设置「关于」页查出来的弹窗才能盖在设置页上。
     this.updateDialog = new UpdateDialog(this.node, this.kit);
+    // 「更新记录」与更新弹窗同一个挂法:Canvas 直挂 + show() 抬层,才能盖住设置页的暗底
+    this.historyDialog = new HistoryDialog(this.node, this.kit);
     this.skillDialog = new SkillDialog(root, this.kit);
     this.campaignPanel = new CampaignPanel(root, this.kit);
     this.bridgeCareerSettle();
@@ -1011,6 +1017,7 @@ export class UIManager extends Component {
       setCourtTheme: (id) => this.setCourtTheme(id),
       getCourtTheme: () => this.getCourtTheme(),
       showUpdateDialog: (info) => this.updateDialog.show(info),
+      showHistory: () => this.historyDialog.show(),
     };
   }
 }

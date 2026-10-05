@@ -4,7 +4,8 @@
 // ============================================================
 
 import { native, sys } from "cc";
-import { APP_VERSION, formatBytes, isVersionNewer, releasePageUrl, REPO_CONFIG } from "../core/version";
+import { APP_VERSION, formatBytes, isVersionNewer, releasePageUrl, releasesListUrl, REPO_CONFIG } from "../core/version";
+import { parseReleaseList, type ReleaseEntry } from "../core/release-history";
 
 /** 原生流式下载器的 Java 侧入口(native/engine/android/app/src/com/cocos/game/ApkDownloader.java) */
 const DOWNLOADER_CLASS = "com/cocos/game/ApkDownloader";
@@ -111,10 +112,43 @@ export class UpdateService {
    * 不然「浏览器下载」那颗按钮只在手动查的那一次能出现,换个入口就装看不见。
    */
   private _pendingUpdate: UpdateInfo | null = null;
+  /** 「更新记录」的进程内缓存:null = 本次启动还没拉成功过(冷启动重取,不落盘) */
+  private _history: ReleaseEntry[] | null = null;
 
   /** 有待下载的新版本时返回它,否则 null(已是最新 / 没查过 / 查失败) */
   get pendingUpdate(): UpdateInfo | null {
     return this._pendingUpdate;
+  }
+
+  /** 已拉到的历史记录;null = 本次启动还没拉过(弹窗据此决定显示列表还是先转圈) */
+  get releaseHistory(): ReleaseEntry[] | null {
+    return this._history;
+  }
+
+  /**
+   * 拉全部历史版本说明(设置「关于」页的「更新记录」)。
+   * 候选源与 checkForUpdate 同一条顺序:Gitee 列表 → GitHub 列表 → 代理镜像兜底;
+   * 全挂时抛最后一个错误,由弹窗落成「重试」—— 绝不编一条假历史糊人。
+   * force=true(弹窗的「重试/刷新」)时无视缓存重取。
+   */
+  async fetchReleaseHistory(force = false): Promise<ReleaseEntry[]> {
+    if (!force && this._history) return this._history;
+    const githubUrl = releasesListUrl("github");
+    const endpoints = [releasesListUrl("gitee"), githubUrl, ...GH_PROXIES.map((p) => `${p}${githubUrl}`)];
+    let lastError = "";
+    for (const endpoint of endpoints) {
+      try {
+        const entries = parseReleaseList(await this.fetchJson(endpoint));
+        if (entries.length) {
+          this._history = entries;
+          return entries;
+        }
+        lastError = "发布列表为空";
+      } catch (e: any) {
+        lastError = e?.message || String(e);
+      }
+    }
+    throw new Error(lastError || "无法连接到发布服务器");
   }
 
   /**

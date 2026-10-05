@@ -18,7 +18,7 @@ import { flightFramesToClosest } from "../core/physics";
 import { Pace } from "../core/pace";
 import { Gait } from "../core/gait";
 import { AutoHit } from "../core/auto-hit";
-import { Player, PRESS_LEAD_FRAMES } from "../core/player";
+import { Player, playerFramesToWorld, swingCuePressFrames, swingClockScale } from "../core/player";
 import { Skills } from "../core/skills";
 import { ShadowGate } from "../core/shadow-gate";
 import { clockOf, renderDue, type ClockMode } from "../core/celebration";
@@ -197,7 +197,12 @@ export class GameRoot extends Component {
           // 挥拍风声:swingT 恰好走到起拍帧(引拍结束/发力开始)送一次,每挥必中一次
           // (音效早已烘焙,此前一直没接;双方玩家与 AI 都播,音量压低不抢戏)
           for (const p of R.players) {
-            if (p.swingT === C.swing.windup) this.sfx.play("swing", 0.35);
+            // 挥拍风声的判据要容得下**非整数步进**:时空领域里 swingT 每世界步跳 2.86,
+            // 旧写法 `swingT === windup` 在领域里一次都不成立 ⇒ 开了领域打球全程没挥拍声。
+            // [windup, windup+step) 这个区间对 step=1 与旧式逐字等价,对 step>1 恰好命中越过
+            // 起拍帧的那一步(一次挥拍必中一次,不会重复)。
+            const step = swingClockScale(p);
+            if (p.swingT >= C.swing.windup && p.swingT < C.swing.windup + step) this.sfx.play("swing", 0.35);
             // AI 够不到时的鱼跃俯冲:ai.ts 在置位那一帧给到满值,这里补一记扑空音效
             // (俯冲姿势由 sprites.ts 读 scrambleT 画;只表现,不改判定)
             if (p.ai && p.ai.scrambleT === C.aiReach.scrambleFrames) {
@@ -325,12 +330,17 @@ export class GameRoot extends Component {
       this.previewShotRef = null;
       return;
     }
-    const lead = PRESS_LEAD_FRAMES;
-    // 提示提前量:给人类反应留帧。**但自动击打开起来时不留** —— 那 10 帧补的是「看到→按下」,
-    // 机器不吃反应(player.autoSwingDue 的门槛就是 fc <= PRESS_LEAD 本身)。不重锚就会出现
-    // 「环说现在,人物十帧后才挥」,预告反而变成误导。
-    const pressAt = lead + (AutoHit.on ? 0 : cue.reactFrames);
-    const cueLevel = clamp(1 - Math.abs(fc - pressAt) / cue.rampFrames, 0, 1);
+    // 提示提前量与质量峰提前量(含"看到→按下"的反应余量、自动击打不吃反应)全在
+    // Player.swingCuePressFrames 一处算,focus-window-check ① 用的就是同一个函数 ——
+    // 环喊的那一帧与判据下注的那一帧必须同源,否则测的是我以为的时机。
+    //
+    // ⚠ 时空领域里这些是**玩家侧真实帧**,而 fc 数的是**世界步**:领域把世界拖到 0.35 步/真实帧、
+    //   挥拍却按真实时间走 ⇒ 不折算就是"环在区心前 9 世界步喊按,而那一拍 3.1 世界步就走完了峰"。
+    //   2026-10-05 用户「时空技能我现在挥拍很难击中球了」的根因就是这里,折算口径统一走
+    //   core/player.ts 的 worldRate(唯一尺子)。
+    const toWorld = (frames: number): number => playerFramesToWorld(human, frames);
+    const pressAt = swingCuePressFrames(human);
+    const cueLevel = clamp(1 - Math.abs(fc - pressAt) / toWorld(cue.rampFrames), 0, 1);
     touchPad.setSwingGlow(cueLevel);
     // 同一级辉光镜像到羽毛球本体:注意力跟球的玩家看不见按钮,球自己发光当预告
     this.world.setSwingCue(cueLevel);
@@ -342,13 +352,15 @@ export class GameRoot extends Component {
         this.swingCueArmed = false;
         if (!AutoHit.on) touchPad.pulseSwing("sweet");
       }
-    } else if (fc > pressAt + 8) {
+    } else if (fc > pressAt + toWorld(8)) {
       this.swingCueArmed = true;
     }
     // 时机环喂给渲染层:收缩环长在球上(按拍预告的球上版);判定区随人走、
     // 甜区圈不出新信息,用户拍板去掉,不再画
     const TR = C.timingRing;
-    this.cueRing.progress = clamp(1 - (fc - pressAt) / TR.spanFrames, 0, 1);
+    // spanFrames 也是玩家侧的量(环收拢一格多少真实帧):领域内不折算就会出现
+    // "球慢慢飘、环转得格外磨蹭",与平时那 0.4s 的收拢节奏对不上
+    this.cueRing.progress = clamp(1 - (fc - pressAt) / toWorld(TR.spanFrames), 0, 1);
     this.cueRing.locked = fc <= pressAt;
     this.world.hudOverlay.setTimingRing(this.cueRing);
     // 球种预告:按真实求解器预演这一拍,徽标写在击球键上方(挥拍中瞄准还能改,不掐)。
@@ -544,15 +556,9 @@ export class GameRoot extends Component {
       const t = RG.tiers[tier];
       this.world.fx.flameBurst(p.x, p.y - 20);
       if (tier >= 3) {
-        // 满怒(≥一整管):额外一记激波 + 羽片四散 + 全屏斩劈 cut-in —— 攒了一整局的那一下
-        // 必须"看得见不一样"。cut-in 是按下即燃的整屏宣言(2026-10-05 多管蓄力加料),
-        // 只给真人放:AI 装不上这款技能(aiSkillByDiff 恒 lunge),真轮到也只会糊玩家一脸。
-        this.world.fx.chronoBurst(p.x, p.y - 24);
+        // 满怒(≥一整管):角色脚下地面冲击波 + 羽片飞散(简单清爽的局部爆发,不遮挡全屏视野与来球)
+        this.world.fx.shockwave(p.x, C.court.groundY);
         this.world.fx.feather(p.x, p.y - 24, 6);
-        if (!p.isAI) {
-          const cf = t.castLab as FloatLabel;
-          this.world.hudOverlay.playRageCutin(cf.text, cf.color, cf.size);
-        }
       } else if (tier >= 2) {
         this.world.fx.shockwave(p.x, C.court.groundY);
       }

@@ -2,7 +2,7 @@
 // 应用版本定义与语义化版本比较工具
 // ============================================================
 
-export const APP_VERSION = "0.0.29";
+export const APP_VERSION = "0.0.30";
 export const APP_VERSION_NAME = `v${APP_VERSION}`;
 
 export const REPO_CONFIG = {
@@ -41,6 +41,17 @@ export function isVersionNewer(candidate: string, current: string = APP_VERSION)
     if (num1 < num2) return false;
   }
   return false;
+}
+
+/**
+ * Releases **列表** API(分页,按时间新→旧)—— 「更新记录」弹窗的数据源。
+ * 与 checkForUpdate 同一条候选顺序:Gitee 优先、GitHub 备选、代理镜像兜底
+ * (兜底拼接在 update-service,这里只出两端的原始地址)。
+ */
+export function releasesListUrl(platform: "gitee" | "github", perPage = 50): string {
+  return platform === "gitee"
+    ? `https://gitee.com/api/v5/repos/${REPO_CONFIG.giteeOwner}/${REPO_CONFIG.giteeRepo}/releases?per_page=${perPage}&page=1`
+    : `https://api.github.com/repos/${REPO_CONFIG.githubOwner}/${REPO_CONFIG.githubRepo}/releases?per_page=${perPage}`;
 }
 
 /**

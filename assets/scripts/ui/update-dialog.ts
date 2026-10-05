@@ -19,15 +19,16 @@
 // 卡片高度跟着内容伸缩;内容超过可视高度时日志框开 Mask 裁切 + 拖动滚动。
 // 于是「溢出」在结构上不再可能发生:要么框变高,要么内容可滚动,没有第三种。
 // ============================================================
-import { Button, Color, EventTouch, Graphics, Label, Mask, Node, sys, UIOpacity, UITransform, Vec2 } from "cc";
-import { col } from "./ui-manager";
+import { Button, Color, Graphics, Label, Mask, Node, sys, UIOpacity, UITransform, Vec2 } from "cc";
 import type { UiKit } from "./ui-manager";
 import {
-  cancelFade, drawBevelSlot, drawChevron, drawPosterPlate, fadeOutHide, paintP5, progressDL,
+  cancelFade, drawBevelSlot, drawPosterPlate, fadeOutHide, paintP5, progressDL,
   retainedDraw, ROLE, SLANT, slamIn, textW,
 } from "./ui-arcade";
 import { buildNotes, fitNotesBox, NOTE, NOTE_BOX } from "./release-notes";
-import type { NoteLine } from "./release-notes";
+import { clearNotePaint, paintNoteLine } from "./notes-paint";
+import type { NotePaintDeps } from "./notes-paint";
+import { NotesScroller } from "./notes-scroll";
 import { browserDownloadUrl, DownloadProgress, UpdateInfo, UpdateService } from "../game/update-service";
 
 /** 进度条轨道几何(与 ui-arcade 面板宽度配套);轨道与填充都以节点中心对称 */
@@ -58,10 +59,6 @@ const BOX_W = NOTE.boxW;
 /** 裁切窗比框再缩一点,斜切框缘里不贴字 */
 const VIEW_INSET = 5;
 
-/** 小节标记条 / 列表圆点的落点 */
-const MARK_W = 3;
-const DOT_R = 2;
-
 /** 字节数 → 人话;小于 1 MB 用 KB,免得显示 0.0 MB */
 function fmtSize(bytes: number): string {
   const b = Math.max(0, bytes || 0);
@@ -91,8 +88,8 @@ export class UpdateDialog {
   /** 日志内容:标记(色条/圆点)画在这层的 Graphics 上,文字是它的子 Label */
   private content: Node;
   private contentG: Graphics;
-  private hintUp: Node;
-  private hintDown: Node;
+  /** 滚动(裁切/拖动/箭头/触摸卫生)收口在 NotesScroller,与「更新记录」弹窗同一份 */
+  private scroll: NotesScroller;
   private verLabel: Label;
   private sizeLabel: Label;
   /** 本次弹窗是否显示大小行(false = 大小取不到,整行隐藏、头部收缩) */
@@ -114,14 +111,6 @@ export class UpdateDialog {
   private downloadedPath = "";
   /** 每轮下载/关窗都自增:在途的进度回调靠它判断自己是否已经过期 */
   private session = 0;
-  /** 滚动状态:内容比可视窗高才有意义 */
-  private scrollable = false;
-  /** 可视窗的裸拖动手势是否挂在身上(只允许在弹窗亮着时挂,理由见 setDragLive) */
-  private dragLive = false;
-  private scrollMin = 0;
-  private scrollMax = 0;
-  private dragFromY: number | null = null;
-  private dragBaseY = 0;
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -171,12 +160,13 @@ export class UpdateDialog {
     this.contentG = this.content.addComponent(Graphics);
     this.content.setParent(this.viewport);
 
-    // 滚动提示箭头:挂在框上而不是可视窗里,免得跟着内容一起被裁掉
-    this.hintUp = this.makeHint(90);
-    this.hintDown = this.makeHint(-90);
-    this.hintUp.setParent(this.notesBoxNode);
-    this.hintDown.setParent(this.notesBoxNode);
-    this.setDragLive(true);
+    // 滚动(裁切/拖动/箭头/触摸卫生)整体交给 NotesScroller —— 「更新记录」弹窗
+    // 用同一份;箭头挂在框上而不是可视窗里,免得跟着内容一起被裁掉
+    this.scroll = new NotesScroller({
+      viewport: this.viewport, mask: this.mask, content: this.content,
+      hintParent: this.notesBoxNode, color: P.dim, layer: this.root.layer,
+    });
+    this.scroll.setLive(true);
 
     // 进度条容器
     this.progressNode = new Node("progress-box");
@@ -237,17 +227,6 @@ export class UpdateDialog {
   }
 
   /** 滚动提示:一个旋转过的箭标节点(90 = 朝上,-90 = 朝下) */
-  private makeHint(angle: number): Node {
-    const n = new Node("scroll-hint");
-    n.layer = this.root.layer;
-    n.addComponent(UITransform).setContentSize(20, 20);
-    const g = n.addComponent(Graphics);
-    drawChevron(g, 7, this.kit.pal.dim, 0.85, 2);
-    n.angle = angle;
-    n.active = false;
-    return n;
-  }
-
   // ---------- 排版 ----------
 
   /** 卡片底:斜切衬纸,与 kit.panel(uiPanel)的默认画法同一配方,只是高度每次重算 */
@@ -266,44 +245,10 @@ export class UpdateDialog {
     drawBevelSlot(g, BOX_W, h, SLANT.block);
   }
 
-  /** 清空内容层(每次 show 重建 Label:更新说明一轮对话最多看几次,不值得做对象池) */
-  private clearNotes(): void {
-    for (const child of this.content.children.slice()) {
-      child.removeFromParent();
-      child.destroy();
-    }
-    this.contentG.clear();
-  }
-
-  /** 一行文字:按 span 从左往右排,anchor 压到 (0, .5) 才和 textW 量出来的宽度对得上 */
-  private addNoteLine(line: NoteLine, cy: number): void {
+  /** 画笔注入面:角色色从 pal 现取,Label 走 kit 工厂(落屏规则在 notes-paint) */
+  private get paint(): NotePaintDeps {
     const P = this.kit.pal;
-    const isHead = line.kind === "section";
-    const size = isHead ? NOTE.headSize : NOTE.size;
-    let x = -BOX_W / 2 + NOTE.padX + line.indent;
-    const g = this.contentG;
-    if (isHead) {
-      g.fillColor = col(P.accent, 0.9);
-      g.rect(-BOX_W / 2 + NOTE.padX, cy - 6, MARK_W, 12);
-      g.fill();
-    } else if (line.kind === "item") {
-      g.fillColor = col(P.dim, 0.9);
-      g.circle(-BOX_W / 2 + NOTE.padX + DOT_R, cy, DOT_R);
-      g.fill();
-    }
-    for (const span of line.spans) {
-      const label = this.kit.label(this.content, span.text, size, this.spanColor(span.strong, isHead), { align: 0 });
-      label.node.getComponent(UITransform)!.setAnchorPoint(0, 0.5);
-      label.node.setPosition(x, cy, 0);
-      x += textW(span.text, size);
-    }
-  }
-
-  /** 小节 = 强调色;正文 = 纸白;md 的 **加粗** 用强调色顶上(原生无粗体字面,靠颜色分层) */
-  private spanColor(strong: boolean, isHead: boolean): string {
-    const P = this.kit.pal;
-    if (isHead) return P.accent;
-    return strong ? P.accent : P.text;
+    return { label: this.kit.label, accent: P.accent, dim: P.dim, text: P.text };
   }
 
   /**
@@ -335,50 +280,23 @@ export class UpdateDialog {
     // 可视窗与裁切
     const viewH = boxH - VIEW_INSET * 2;
     this.viewport.getComponent(UITransform)!.setContentSize(BOX_W - VIEW_INSET * 2, viewH);
-    this.scrollable = fit.scrollable;
-    this.mask.enabled = this.scrollable;
+    this.scroll.placeHints(BOX_W / 2 - 16, boxH / 2);
 
     // 内容层:比窗口高就按窗口顶部对齐往下排;框被撑到最小高以上时整块垂直居中
     const contentH = Math.max(boxH, layout.height);
     const blockH = Math.min(contentH, layout.height);
     this.content.getComponent(UITransform)!.setContentSize(BOX_W, contentH);
-    this.clearNotes();
+    clearNotePaint(this.content, this.contentG);
     let y = contentH / 2 - (contentH - blockH) / 2 - NOTE.padY;
     for (const line of layout.lines) {
       y -= line.lead;
-      this.addNoteLine(line, y - line.h / 2);
+      paintNoteLine(this.paint, this.contentG, this.content, line, y - line.h / 2, BOX_W);
       y -= line.h;
     }
 
-    this.scrollMax = this.scrollable ? (contentH - viewH) / 2 : 0;
-    this.scrollMin = -this.scrollMax;
-    this.setScrollY(this.scrollMax);   // 打开时从第一条说明看起
-  }
-
-  /** 设滚动位并刷新箭头:钳到 [min, max],到顶/到底就把对应箭头收掉 */
-  private setScrollY(v: number): void {
-    const y = Math.max(this.scrollMin, Math.min(this.scrollMax, v));
-    this.content.setPosition(0, y, 0);
-    const boxH = this.notesBoxNode.getComponent(UITransform)!.height;
-    this.hintUp.setPosition(BOX_W / 2 - 16, boxH / 2 - 12, 0);
-    this.hintDown.setPosition(BOX_W / 2 - 16, -boxH / 2 + 12, 0);
-    this.hintUp.active = this.scrollable && y < this.scrollMax - 1;
-    this.hintDown.active = this.scrollable && y > this.scrollMin + 1;
-  }
-
-  private onDragStart(e: EventTouch): void {
-    if (!this.scrollable) return;
-    this.dragFromY = e.getUILocation().y;
-    this.dragBaseY = this.content.position.y;
-  }
-
-  private onDragMove(e: EventTouch): void {
-    if (!this.scrollable || this.dragFromY === null) return;
-    this.setScrollY(this.dragBaseY + (e.getUILocation().y - this.dragFromY));
-  }
-
-  private onDragEnd(): void {
-    this.dragFromY = null;
+    // 区间与初始滚动位(打开时从第一条说明看起)收口给 scroller;
+    // 可滚判式沿用 fitNotesBox 的口径(按框高,不是裁切窗高)
+    this.scroll.setRange(contentH, viewH, fit.scrollable);
   }
 
   // ---------- 进度 ----------
@@ -441,30 +359,9 @@ export class UpdateDialog {
   }
 
   /**
-   * 日志可视窗的拖动手势随弹窗亮/关挂卸。
-   *
-   * 与无限练习弹窗同一件事:`fadeOutHide` 的隐藏不 deactivate,只关掉子树里的
-   * Button / BlockInputEvents 组件,而裸 `Node.EventType.TOUCH_*` 监听照旧接活;
-   * 引擎派发默认吞噬触摸(见 UIEvent.preventSwallow 注释),所以关掉的弹窗会在屏幕
-   * 正中留一块隐形的「日志窗」挡板,把落在它范围内的按键全吃掉。
+   * 日志可视窗的拖动手势随弹窗亮/关挂卸 —— 挂卸逻辑收口在 NotesScroller.setLive
+   * (fadeOutHide 的隐藏不 deactivate,裸 TOUCH 监听不归它管,忘卸就是隐形挡板)。
    */
-  private setDragLive(on: boolean): void {
-    if (this.dragLive === on) return;
-    this.dragLive = on;
-    const T = Node.EventType;
-    if (on) {
-      this.viewport.on(T.TOUCH_START, this.onDragStart, this);
-      this.viewport.on(T.TOUCH_MOVE, this.onDragMove, this);
-      this.viewport.on(T.TOUCH_END, this.onDragEnd, this);
-      this.viewport.on(T.TOUCH_CANCEL, this.onDragEnd, this);
-    } else {
-      this.viewport.off(T.TOUCH_START, this.onDragStart, this);
-      this.viewport.off(T.TOUCH_MOVE, this.onDragMove, this);
-      this.viewport.off(T.TOUCH_END, this.onDragEnd, this);
-      this.viewport.off(T.TOUCH_CANCEL, this.onDragEnd, this);
-    }
-  }
-
   show(info: UpdateInfo): void {
     cancelFade(this.root);
     // 抬到 Canvas 的最上层:设置 / 商店 / 训练场是随开随建的晚到兄弟,各自带一块
@@ -472,7 +369,7 @@ export class UpdateDialog {
     // 那块暗底底下 —— 看不见也点不着,症状和"检查更新没反应"一模一样。
     const p = this.root.parent;
     if (p) this.root.setSiblingIndex(p.children.length - 1);
-    this.setDragLive(true);
+    this.scroll.setLive(true);
     this.session++;
     this.currentInfo = info;
     this.isDownloading = false;
@@ -499,7 +396,7 @@ export class UpdateDialog {
       this.isDownloading = false;
     }
     // 拖动手势先卸干净:淡出期间那块隐形日志窗不该还拦着触摸
-    this.setDragLive(false);
+    this.scroll.setLive(false);
     fadeOutHide(this.root);
   }
 

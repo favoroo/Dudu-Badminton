@@ -108,6 +108,9 @@ function entryLead(p: Player, ball: Ball, radius: number): number {
   const probe = {
     x: p.x, y: p.y, facing: p.facing,
     swingRadius: radius, swingStyle: p.swingStyle, zoneScale: p.zoneScale,
+    // 领域里判定区的来球速度要按真实速率收严(残缺探针不带 focusT 就是"AI 在自己领域里
+    // 照样吃快球惩罚")。今天没有关卡给 AI 装 focus,带上这一行是**不留第二条尺子**。
+    focusT: p.focusT,
   };
   const pts = futureInto(ball, SW.windup + SW.active + 6, entryPtsBuf);
   for (let f = 0; f < pts.length; f++) {
@@ -543,7 +546,11 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
 
   // ---------- 起手时机:按「提前量 = 窗口中心」起手,起手即定落点深浅 ----------
   const SW = C.swing;
-  const center = SW.windup + SW.active / 2;
+  // 窗口中心是**挥拍动画帧**(player.update 里 swingT 每世界步 +swingClockScale),lead 数的是
+  // 世界步 ⇒ 必须折算。领域外 scale=1、这一行逐字等于旧写法;今天没有任何关卡给 AI 装 focus
+  // (aiSkillByDiff 恒 lunge、关卡表只有 smash/magnet/flash),所以眼下量不到差别 ——
+  // 但尺子只许一把:哪天 boss 带上领域,不折算的 AI 就会在自己的子弹时间里场场挥空。
+  const center = Pl.playerFramesToWorld(p, SW.windup + SW.active / 2);
   if (!incoming) {
     S.swingLead = null;
     // 「新的一记来球」的边界就是这里:自己击球后 incoming 转假,对手击打后转真。

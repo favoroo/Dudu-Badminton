@@ -94,11 +94,15 @@ const SWIPE_THRESHOLD = CFG.touchAim.commitPx;
 /** 纵向手势阈值(像素):比横轴紧一档 —— 纵向曾是有意无语义区(防纯纵向晃动误触),
  *  给了语义(上滑挑高/下滑平抽)后仍要压住点按时的上下漂移。见 config.touchAim.commitPxY。 */
 const SWIPE_THRESHOLD_Y = CFG.touchAim.commitPxY;
-/** 长滑锁定阈值(像素):滑过这个距离 = 把该轴方向锁成默认(短滑管一拍,长滑管到取消)。
- *  必须远大于短滑阈值,两个动作段之间留足安全带 —— 见 config.touchAim.lockPx 注释。 */
-const LOCK_PX = CFG.touchAim.lockPx;
-/** 纵轴长滑阈值:与 commitPxY 同比例(3 倍)且保持纵轴整体更紧的档位关系。 */
-const LOCK_PX_Y = CFG.touchAim.lockPxY;
+/** 长滑锁定距离 = 按键显示半径 × 这个倍数(从按下点起算):普通瞄准滑动远远够不着,
+ *  只有一把拉到头的长滑才会锁 —— 见 config.touchAim.lockRadiusK 的注释(第一版写死
+ *  34px 比按键半径还小,真机上一滑就锁,用户现场反馈改的)。 */
+const SWIPE_LOCK_K = CFG.touchAim.lockRadiusK;
+/** 长滑锁定时某轴要被锁上的方向占比:分量达到滑动距离的一半(±30° 锥角内)才算
+ *  「明确指了这个方向」—— 斜 45° 长滑两轴都锁,基本沿纵轴的长滑只锁纵轴,
+ *  不让漂移分量把持久锁带偏。与短滑提交的宽松判据(|dx| ≥ commitPx/2)刻意不同:
+ *  短滑只管一拍,锁错也就错一拍;锁是持久的,宁可少锁不错锁。 */
+const SWIPE_LOCK_CONE = 0.5;
 
 /**
  * 每一簇的建键顺序(照改造前的书写序,别顺手改成 PAD_ACTIONS 的顺序):
@@ -1641,12 +1645,13 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
      * 读取;同一轴反向滑过阈值即改写(与横滑的「中途反悔」同构),斜上右滑一个动作即可
      * 组合出「挑高到后场」。同时更新 rec.swipeDir / rec.swipeDirY 触发方向色弧视觉反馈。
      *
-     * 长滑锁定(参考和平精英长滑锁定端口):位移继续越过 lockPx / lockPxY(远大于短滑
-     * 阈值)= 把该轴方向锁成默认 —— 短滑管一拍,长滑管到取消。沿当前锁向**再长滑一次**
-     * = 取消(toggle,pad.lockSwingAxis),反向长滑 = 换向;键值照常按短滑语义写,所以
-     * 取消的那一拍仍按该方向打,下一拍起 press/restoreSwingAim 才回到未锁的 mid。
-     * 同方向在同一手势内只触发一次(lockDirX/Y 门)—— 手指停在阈值外的事件流不许把
-     * toggle 连打成锁上又解锁。
+     * 长滑锁定(参考和平精英长滑锁定端口):滑动距离(从按下点起算)越过**按键半径的
+     * lockRadiusK 倍** = 把当前明确指着的方向锁成默认 —— 短滑管一拍,长滑管到取消。
+     * 沿当前锁向**再长滑一次** = 取消(toggle,pad.lockSwingAxis),反向长滑 = 换向;
+     * 键值照常按短滑语义写,所以取消的那一拍仍按该方向打,下一拍起 press/restoreSwingAim
+     * 才回到未锁的 mid。哪些轴锁上按 ±30° 锥角判(见 SWIPE_LOCK_CONE):斜 45° 长滑
+     * 两轴都锁,单轴长滑只锁那一轴。同方向在同一手势内只触发一次(lockDirX/Y 门)——
+     * 手指在门外绕圈的事件流不许把 toggle 连打成锁上又解锁。
      */
     const trackSwingSwipe = (rec: BtnRec, sx: number, sy: number, e: EventTouch): void => {
       const u = e.getUILocation();
@@ -1663,14 +1668,6 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
           // 在拇指底下说清楚,不等命中才知道。色值与中性图标的滑动箭头同源。
           triggerFlash(rec, dir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan);
         }
-        // 长滑锁定:越过 lockPx 且本手势还没处理过这个方向 → toggle 该轴锁。
-        // 荧光黄 = 锁上(downEdge,「这一下算数」的确认色),白 = 解锁(回到 mid 的中性色)。
-        if (Math.abs(dx) >= LOCK_PX && rec.lockDirX !== dir) {
-          rec.lockDirX = dir;
-          const on = lockSwingAxis(pad, "x", dir);
-          triggerFlash(rec, on ? CFG.padSkin.downEdge : "#ffffff");
-          paint(rec, false);
-        }
       }
       if (Math.abs(dy) >= SWIPE_THRESHOLD_Y) {
         const dir = dy > 0 ? 1 : -1;
@@ -1681,8 +1678,21 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
           // 纵轴方向色:挑高绿/平抽蓝(与 shotBadge 徽标同源,徽标会同步预告真实球种)
           triggerFlash(rec, dir > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive);
         }
-        // 纵轴长滑锁定:与横轴同构,阈值用更紧的 lockPxY(锁定是更重的承诺,见 config 注释)。
-        if (Math.abs(dy) >= LOCK_PX_Y && rec.lockDirY !== dir) {
+      }
+      // 长滑锁定:一把拉过按键半径的 lockRadiusK 倍才触发 —— 普通滑动到不了这里,
+      // 到了就是把当前明确指着的方向锁成默认。荧光黄 = 锁上(downEdge,「这一下算数」
+      // 的确认色),白 = 解锁(回到 mid 的中性色)。
+      const dist = Math.hypot(dx, dy);
+      if (dist >= rec.r * SWIPE_LOCK_K) {
+        if (Math.abs(dx) >= dist * SWIPE_LOCK_CONE && rec.lockDirX !== (dx > 0 ? 1 : -1)) {
+          const dir = dx > 0 ? 1 : -1;
+          rec.lockDirX = dir;
+          const on = lockSwingAxis(pad, "x", dir);
+          triggerFlash(rec, on ? CFG.padSkin.downEdge : "#ffffff");
+          paint(rec, false);
+        }
+        if (Math.abs(dy) >= dist * SWIPE_LOCK_CONE && rec.lockDirY !== (dy > 0 ? 1 : -1)) {
+          const dir = dy > 0 ? 1 : -1;
           rec.lockDirY = dir;
           const on = lockSwingAxis(pad, "y", dir);
           triggerFlash(rec, on ? CFG.padSkin.downEdge : "#ffffff");
