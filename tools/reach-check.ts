@@ -234,12 +234,32 @@ function incoming(paceId: string, sc: { name: string; depth: number; q: number }
   const stdLand = landByTier[C.pace.default];
   ok(std >= 10, `出货默认档 "${C.pace.default}":原地就能接到的那拍,余量应 ≥10 帧(实得 ${std.toFixed(1)})`);
   ok(stdLand >= 0, `出货默认档:非要走到落点去接的那拍也还有余量(实得 ${stdLand.toFixed(1)} 帧,<0 就是「来不及」)`);
-  ok(landByTier["slow"] > stdLand, `慢一档(slow)让「走落点那一拍」的余量变多(+${(landByTier["slow"] - stdLand).toFixed(1)} 帧)`);
-  ok(landByTier["vslow"] > landByTier["slow"], `再慢一档继续变多(+${(landByTier["vslow"] - landByTier["slow"]).toFixed(1)} 帧)`);
-  ok(slackByTier["slow"] >= std && slackByTier["vslow"] >= slackByTier["slow"],
-    "最好应对口径也单调不减(慢档不会让任何场景更紧)");
+  // 「慢一档 / 再慢一档」按表里相对默认档的位置现算。写死 "slow"/"vslow" 是默认档还在
+  // standard 年代留下的:default 一挪,断言就变成「比默认快的那档余量更多」= 必红的假检查。
+  const bySlow = C.pace.tiers.slice().sort((a, b) => a.s - b.s);        // 慢 → 快
+  const dIdx = bySlow.findIndex((t) => t.id === C.pace.default);
+  const slower = (k: number): string | null =>
+    (dIdx - k >= 0 ? bySlow[dIdx - k].id : null);
+  const oneSlower = slower(1), twoSlower = slower(2);
+  if (oneSlower) {
+    ok(landByTier[oneSlower] > stdLand,
+      `慢一档(${oneSlower})让「走落点那一拍」的余量变多(+${(landByTier[oneSlower] - stdLand).toFixed(1)} 帧)`);
+    ok(slackByTier[oneSlower] >= std, `慢一档(${oneSlower})的最好应对口径也不更紧`);
+  }
+  if (twoSlower && oneSlower)
+    ok(landByTier[twoSlower] > landByTier[oneSlower],
+      `再慢一档(${twoSlower})继续变多(+${(landByTier[twoSlower] - landByTier[oneSlower]).toFixed(1)} 帧)`);
+  // 整表单调:越慢的档不该让任何口径更紧(慢档不会让任何场景更紧)。
+  // 从默认档往两头都查一遍,所以 default 挪到哪一格都量得到。
+  let monoBad = "";
+  for (let i = 1; i < bySlow.length; i++) {
+    const a = bySlow[i - 1].id, b = bySlow[i].id;          // a 比 b 慢
+    if (slackByTier[a] < slackByTier[b] - 1e-9 || landByTier[a] < landByTier[b] - 1e-9) monoBad += ` ${a}↔${b}`;
+  }
+  ok(monoBad === "", `全表「慢档不会更紧」单调(最好应对与走落点两个口径都不反常${monoBad && `:反常于${monoBad}`})`);
   // 与最快档对照:告诉读数的人「原速/偏快」到底吃回去多少帧
-  ok(std - slackByTier["vfast"] >= 2, `比 ${BASE} 档慢 8% 换来 +${(std - slackByTier[BASE]).toFixed(1)} 帧,`
+  const defPct = Math.round((1 - sOf(C.pace.default)) * 100);
+  ok(std - slackByTier["vfast"] >= 2, `比 ${BASE} 档慢 ${defPct}% 换来 +${(std - slackByTier[BASE]).toFixed(1)} 帧,`
     + `比 vfast 快档多 ${(std - slackByTier["vfast"]).toFixed(1)} 帧`);
 }
 
@@ -348,7 +368,7 @@ console.log("\n=== §5 移速档:脚速换一档,接同一拍还剩几帧 ===");
   // 分开看两张表会误判(慢球 + 慢脚 ≈ 好接;慢球 + 快脚 = 从容到没对手)
   console.log(`  组合矩阵(走落点 slack,单位=帧;球速档 ↓ × 脚速档 →)`);
   console.log("    " + "".padEnd(12) + gTiers.map((t) => t.id.padStart(9)).join(""));
-  for (const p of ["fast", paceDef, "vslow", "xslow"]) {
+  for (const p of [...new Set(["fast", paceDef, "vslow", "xslow"])]) {
     const cells = gTiers.map((g) => landSlack(p, g.id).toFixed(0).padStart(9));
     console.log(`    ${p.padEnd(12)}${cells.join("")}`);
   }

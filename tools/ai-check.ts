@@ -30,6 +30,7 @@ import * as fs from "fs";
 import { Rules } from "../assets/scripts/core/rules";
 import { AI } from "../assets/scripts/core/ai";
 import { CFG } from "../assets/scripts/core/config";
+import { Pace } from "../assets/scripts/core/pace";
 import { Player, PRESS_LEAD_FRAMES } from "../assets/scripts/core/player";
 import { flightFramesToClosest } from "../assets/scripts/core/physics";
 import { clamp, rand } from "../assets/scripts/core/utils";
@@ -387,6 +388,68 @@ if (hardRow) {
   const s = hardRow.st.shots;
   assert(s.ph / Math.max(1, s.ph + s.pw) >= 0.6,
     `替身挥拍命中率应 ≥60%(实际 ${hitRate(s.ph, s.pw)})—— 替身太菜会让削弱方向跑偏`);
+}
+
+// ---------- AI 强度不随球速档漂(2026-10-05:球速档改成「只帮真人」那一次的验收) ----------
+// 上面四档是在**出货默认档**下测的。这一段量另一半:把球速档挪一格,AI 该不该跟着变强。
+// 旧行为(s=1.00 → 0.80,配对同种子):AI 接发 96% → 100% —— 玩家想借慢档喘口气,
+// 电脑也顺手喘了一口,那格滑杆等于把 diffs 整张难度表悄悄改了一笔。
+// 现在两刀折回去(player.ts 的 legTierMul 让 AI 腿速 ×s;ai.ts 的 readHardness 用 Pace.ref
+// 把"这球有多快"折回基准),AI 的**自身读数**该逐档压平 —— 这里钉的就是这两条。
+//
+// 为什么不钉"真人得分率不许跌":那是派生量。慢档把回合从 12.8 拍拉到 15.5 拍,
+// 而替身每拍的失误率天生比 AI 高,回合越长磨掉的分数越多 ⇒ 实测每拍命中率真人涨、
+// AI 平,胜负份额反而降。这不代表旋钮坏了,代表"能不能赢"不能只看帧数松紧。
+// 所以这一段的判据全落在 **AI 自身**的每拍质量上(两条不许漂 + 回合不许缩短)。
+// 「有没有帮到真人」不在这里判 —— 那是 reach-check §3 的口径(剩帧 − 跑位帧 − 提前量,
+// 实测默认档从 13 帧涨到 16 帧)。替身的每拍命中率受来球构成影响,12~25 局的样本量上
+// 它是 ±2% 的信号,拿它当门等于把骰子钉在源码里。
+// 配对样本:两边各自把 Math.random 复位到同一种子 ⇒ 吃同一条骰子流,差值才是档位的差,
+// 不是 12 局方差的噪声(不配对时批间 ±8% 起,这条判据就成了掷骰子)。
+{
+  const refTier = C.pace.tiers.find((t) => t.s === 1);
+  const shipTier = C.pace.tiers.find((t) => t.id === C.pace.default);
+  assert(!!refTier && !!shipTier, `球速表里要有 s=1 的参照档与默认档(实得 ref=${refTier?.id} ship=${shipTier?.id})`);
+  if (refTier && shipTier) {
+    const at = (id: string): Row => {
+      Pace.apply(id);
+      Math.random = mulberry32(0xD0D0B1D);
+      const st = measure("easy", MATCHES_PER_DIFF);
+      const total = st.proxyPoints + st.aiPoints;
+      return { diff: "easy", pointRate: total ? st.proxyPoints / total : 0,
+        avgRally: avg(st.rallies), receive: st.aiServes ? st.aiServeReceived / st.aiServes : 0, st };
+    };
+    const one = at(refTier.id);                       // s=1 = diffs 表标定的那一档(原速)
+    const ship = at(shipTier.id);                     // 出货默认档
+    Pace.apply(shipTier.id);                          // 还回去,别把后面的段落带跑
+    const acc = (r: Row, side: "h" | "a"): number => {
+      const x = r.st.shots;
+      const hit = side === "h" ? x.ph : x.ah;
+      const whiff = side === "h" ? x.pw : x.aw;
+      return hit / Math.max(1, hit + whiff);
+    };
+    console.log(`\n=== AI 强度 vs 球速档(配对同种子,入门档各 ${MATCHES_PER_DIFF} 局)===`);
+    const line = (t: typeof refTier, r: Row): string =>
+      `  ${t.id.padEnd(9)} s=${t.s.toFixed(2)}  回合 avg ${r.avgRally.toFixed(1)}`
+      + ` · AI 接发 ${pct(r.receive)} · AI 每拍命中 ${pct(acc(r, "a"))}`
+      + ` · 真人每拍命中 ${pct(acc(r, "h"))} 〔真人得分率 ${pct(r.pointRate)},派生量不设门〕`;
+    console.log(line(refTier, one));
+    console.log(line(shipTier, ship));
+    const dRecv = ship.receive - one.receive;
+    const dAi = acc(ship, "a") - acc(one, "a");
+    const dMe = acc(ship, "h") - acc(one, "h");
+    console.log(`  差值(默认档 − 原速):AI 接发 ${dRecv >= 0 ? "+" : ""}${pct(dRecv)}`
+      + ` · AI 每拍命中 ${dAi >= 0 ? "+" : ""}${pct(dAi)}`
+      + ` · 真人每拍命中 ${dMe >= 0 ? "+" : ""}${pct(dMe)}`
+      + ` · 真人得分率 ${ship.pointRate - one.pointRate >= 0 ? "+" : ""}${pct(ship.pointRate - one.pointRate)}`);
+    assert(Math.abs(dRecv) <= 0.05,
+      `AI 接发率不许跟着球速档漂(实得 ${pct(one.receive)} → ${pct(ship.receive)};折腿之前是 +4%)`);
+    assert(Math.abs(dAi) <= 0.05,
+      `AI 每拍命中率不许跟着球速档漂(实得 ${dAi >= 0 ? "+" : ""}${pct(dAi)})—— 漂了就说明难度表被滑杆改写`);
+
+    assert(ship.avgRally >= one.avgRally - 1,
+      `慢档的回合长度不许短于原速档(${one.avgRally.toFixed(1)} → ${ship.avgRally.toFixed(1)})—— 时间膨胀的 definitional 效果`);
+  }
 }
 
 if (failures) {

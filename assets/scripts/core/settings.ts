@@ -241,7 +241,7 @@ export function sanitize(raw: unknown): GameSettings {
   // 手改存档写了个不存在的强度档 → 保持默认,不带病下发反射调用
   s.hapticLevel = hapticLevelOf(r.hapticLevel, s.hapticLevel);
   s.padAlpha = num(r.padAlpha, s.padAlpha, PAD_LIMIT.alphaMin, PAD_LIMIT.alphaMax);
-  // 球速档位:老存档没这个键 → 直接吃到 CFG.pace.default(出货默认比上一版慢 8%)。
+  // 球速档位:老存档没这个键 → 直接吃到 CFG.pace.default(出货默认比上一版原速慢 20%)。
   // 这就是「老玩家也自动吃新默认」的落点,不需要版本号。
   s.paceTier = paceTierOf(r.paceTier, s.paceTier);
   s.gaitTier = gaitTierOf(r.gaitTier, s.gaitTier);

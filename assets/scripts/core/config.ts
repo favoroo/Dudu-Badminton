@@ -171,17 +171,19 @@ export const CFG = {
   // 更不要靠砍 shot.speedMax 来放慢(那会让低点深球够不到底线,实测 798→696→611)。
   // 存 id 不存索引:往表里插一档不会让老存档的索引指错。
   pace: {
-    default: "standard",       // 出货默认 = 比上一版整体慢 8%(用户反馈手机接不到球)
+    default: "vslow",          // 出货默认 = 比上一版原速整体慢 20%(用户 2026-10-05 把滑杆停在「很慢」并定为默认)
     min: 0.5, max: 1.4,        // 运行时兜底夹取(手改存档 / 以后加档)
     // 表序必须从慢到快单调(settings-check 有断言):设置页那根滑杆按下标定位,反了会拖反方向。
     // 已有五档的 id 与系数**别改**:玩家存档存的是 id,改系数等于改了人家设好的档。
+    // 挪 default 不伤读数:pace 的百分比是**相对 s=1 原速**算的(pace.ts 的 labelOf),
+    // 所以「很慢 · 慢 20%」这一行在挪默认档前后一模一样 —— 不像 gait 那样会跟着挪零点。
     // 两头各留了两档"试验档":越靠边, Euler 离散的落点漂移越大(xfast 1.16 档实测 mean 1.6px /
     // max 15.3px,extreme 0.60 档 mean 1.7 / max 13.8),mean 才是牙齿 —— 缩放方式一错就漂到 12px 量级。
     // 再往外扩先看 tools/reach-check.ts §1 的数,别为了"更慢"直接把档砍到飞。
     tiers: [
       { id: "extreme",  s: 0.60, label: "极慢", note: "慢 40%:滞空 ×1.67,基本打不死人,当试验档" },
       { id: "xslow",    s: 0.70, label: "超慢", note: "慢 30%:很从容,回合会明显变长" },
-      { id: "vslow",    s: 0.80, label: "很慢", note: "慢 20%:回合变长,已经很好接" },
+      { id: "vslow",    s: 0.80, label: "很慢", note: "慢 20%:出货默认档,回合变长、已经很好接" },
       { id: "slow",     s: 0.86, label: "偏慢", note: "慢 14%:再给一拍反应时间" },
       { id: "standard", s: 0.92, label: "标准", note: "慢 8%:比上一版好接,落点一点没变" },
       { id: "fast",     s: 1.00, label: "原速", note: "上一版的节奏,一点没放慢" },
@@ -2155,10 +2157,14 @@ export const CFG = {
   // 适配,风就变成"AI 自己会输"而不是"玩家要读的方向";补太满又把机制从玩家手里拿走
   // (极限 1 是满补 —— 想赢极限档,风这层红利就不存在了)。
   diffs: {
-    easy:   { label: "简单", tick: 20, speed: 0.90, read: 45, readFloor: 0.62, zone: 0.88, shotErr: 50, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5, windSense: 0.25, softGate: 0 },
-    normal: { label: "普通", tick: 14, speed: 0.91, read: 42, readFloor: 0.40, zone: 0.86, shotErr: 24, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 0.85, notice: 3, windSense: 0.55, softGate: 1 },
-    hard:   { label: "困难", tick: 8,  speed: 0.95, read: 38, readFloor: 0.62, zone: 0.90, shotErr: 20, timingErr: 4, aggr: 0.52, composure: 1, crush: 0.55, notice: 2, windSense: 0.85, softGate: 1 },
-    expert: { label: "极限", tick: 6,  speed: 0.98, read: 30, readFloor: 0.62, zone: 0.92, shotErr: 14, timingErr: 2, aggr: 0.55, composure: 1, crush: 0.30, notice: 1, windSense: 1, softGate: 1 },
+    // read 四档整体抬过一截(45/42/38/30 → 60/52/50/46):出货球速档改到「很慢」(s=0.80)之后
+    // 回合被拉长,每拍失误率更高的那一方被磨得更狠,四档的胜负差被压平(实测 normal 与 hard
+    // 都落到 20~21%,阶梯塌了)。按 2026-09-30 定的口径只动「看走眼」这一维
+    // —— tick/notice 这些"慢半拍"的量一个没碰(用户会读成"AI 卡住了"),重铺成 50/33/26/16。
+    easy:   { label: "简单", tick: 20, speed: 0.90, read: 60, readFloor: 0.62, zone: 0.88, shotErr: 50, timingErr: 9, aggr: 0.12, composure: 0, crush: 0.5, notice: 5, windSense: 0.25, softGate: 0 },
+    normal: { label: "普通", tick: 14, speed: 0.91, read: 52, readFloor: 0.40, zone: 0.86, shotErr: 24, timingErr: 4, aggr: 0.50, composure: 0.5, crush: 0.85, notice: 3, windSense: 0.55, softGate: 1 },
+    hard:   { label: "困难", tick: 8,  speed: 0.95, read: 50, readFloor: 0.62, zone: 0.90, shotErr: 20, timingErr: 4, aggr: 0.52, composure: 1, crush: 0.55, notice: 2, windSense: 0.85, softGate: 1 },
+    expert: { label: "极限", tick: 6,  speed: 0.98, read: 46, readFloor: 0.62, zone: 0.92, shotErr: 14, timingErr: 2, aggr: 0.55, composure: 1, crush: 0.30, notice: 1, windSense: 1, softGate: 1 },
   } as Record<DiffKey, AiTier>,
 
   // ===== AI 每一档带哪一招 =====

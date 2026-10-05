@@ -12,6 +12,7 @@
 //      移动=圈外连续 24 帧不算、圈内停稳才算;起跳=没离地不算;
 //      击球=下网/挥空不计有效、两拍有效才过;喂球=非击球实操抱球、击球实操按拍放球;
 //      完成口径=三关全过才算 allDone。
+//   ⑤ 摆字的最后一跳:①~④ 全在算 Box,而「Box 怎么变成节点位置」没人管(见该段注释)。
 // 另带 --selftest:喂一份「旧式无条件放行」的坏实现(一帧全过、什么都算有效),
 // 套件必须把它拦下 —— 规则脚本最怕悄悄全绿。
 //
@@ -19,13 +20,16 @@
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/tutorial-check.js
 // ============================================================
 import "./cc-stub";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { makeChecker } from "./harness";
 import {
-  BAR_TITLE, DONE, KEYS, SECTIONS, TUT, bannerBadge, bottom, bottomRow, briefInfo, demoBox,
-  tutOverlaps, tutOverflow, tutTouch, widthOf,
+  BAR_TITLE, DONE, KEYS, SECTIONS, TUT, bandText, bannerBadge, bannerLayout, bottom, bottomRow, briefInfo,
+  demoBox, titleBand, tutOverlaps, tutOverflow, tutTouch, widthOf, type Box,
 } from "../assets/scripts/ui/tutorial-layout";
 import { TUTORIAL_ENTRY } from "../assets/scripts/ui/drill-layout";
 import { TUTORIAL_TOPICS, CFG } from "../assets/scripts/core/config";
+import { textW } from "../assets/scripts/core/text-metrics";
 import { TOUCH } from "../assets/scripts/ui/p5-tokens";
 import { Rules } from "../assets/scripts/core/rules";
 import { Settings } from "../assets/scripts/core/settings";
@@ -109,7 +113,7 @@ function copyIssues(): string[] {
   ok(JSON.stringify(TUTORIAL_TOPICS.map((t) => t.id)) === JSON.stringify(["move", "hit", "jump"]),
     "主题顺序 move > hit > jump(教学由易到难)");
   for (const t of TUTORIAL_TOPICS) {
-    ok(t.lines.length === 3, `${t.id}:讲解正好 3 条`);
+    ok(t.lines.length >= 3 && t.lines.length <= 4, `${t.id}:讲解 ${t.lines.length} 条,在 3~4 条的位置预算内`);
     ok(t.label.length <= 4, `${t.label}:chip 名称 ≤4 字`);
     ok(bannerBadge(0).includes("1"), "横幅 badge 从 1 起数(给玩家看的是 1/3 不是 0/3)");
   }
@@ -180,7 +184,9 @@ export function demoSuite(b: TutDemoBake | null): string[] {
   }
   okq(jumpTable().length >= 20, `跳跃递推表 ${jumpTable().length} 帧与引擎同步(顶点 ≈19)`);
 
-  // 标字:抽帧全在演示画布内(出画布就是压标题带/底排)
+  // 标字:抽帧时**整串字**都在演示画布内(出画布就是压标题带/底排)。
+  // 量的是边角不是点:面板把标字 Label 居中钉在那个点上(锚点语义由 ⑤ 钉死),
+  // 所以「点在框内」不等于「字在框内」—— 旧判据只量点,才让 8 个字的标字整串拖出面板。
   const demo = demoBox();
   const W = widthOf(demo), H = demo.h;
   for (let topic = 0; topic < 3; topic++) {
@@ -188,8 +194,9 @@ export function demoSuite(b: TutDemoBake | null): string[] {
     for (let f = 0; f < TutorialAnim.loopOf(topic); f += 7) {
       rig.t = f;
       for (const c of TutorialAnim.callouts(rig, W, H)) {
-        okq(Math.abs(c.x) <= W / 2 && Math.abs(c.y) <= H / 2 - 6,
-          `主题 ${topic} t=${f} 标字「${c.text}」出画布(${c.x.toFixed(0)},${c.y.toFixed(0)})`);
+        const halfW = textW(c.text, c.size) / 2, halfH = c.size * 0.75;
+        okq(Math.abs(c.x) + halfW <= W / 2 + 0.5 && Math.abs(c.y) + halfH <= H / 2 + 0.5,
+          `主题 ${topic} t=${f} 标字「${c.text}」整串出画布(x=${c.x.toFixed(0)}±${halfW.toFixed(0)} y=${c.y.toFixed(0)}±${halfH.toFixed(0)},画布 ${W}×${H})`);
       }
     }
   }
@@ -351,7 +358,94 @@ function gateSuite(T: TutorialLike): string[] {
   ok(Settings.moveMode === "slider", "end 幂等:恢复过一次不再覆盖");
 }
 
-// ---------- ⑤ selftest:旧式「无条件放行」必须被拦下 ----------
+// ---------- ⑤ 摆字的最后一跳:Box → 节点(锚点语义) ----------
+// ①~④ 全在算 Box,而「Box 怎么变成节点位置」住在面板里、没人管。0.0.32 的现场:
+//   · band() 把「色带左缘 +12」当成 x 交给了**中心锚**的 Label ⇒ 整串字往左偏半个盒宽,
+//     「怎么玩」只剩「么玩」、「操作教学」头两个字掉到黑底上、黄带里空着半截;
+//   · 画布标字用「画布全宽 + 左对齐」的盒子钉在标字点上 ⇒ 字从那个点往左拖出整块面板。
+// 两条都不崩、不报错,出的图里也看不见(预览工具不建 Label),只有真机看得出来。
+// 钉法与 panel-check ⑪ 同一条路:扫面板源码,把「左缘当盒心」这个写法本身拦住。
+
+/** 抠出源码里每个 `head`( 调用的完整片段(括号配平) */
+function callSpans(src: string, head: string): string[] {
+  const out: string[] = [];
+  for (let i = src.indexOf(head); i >= 0; i = src.indexOf(head, i + head.length)) {
+    let d = 1, j = i + head.length;
+    for (; j < src.length && d > 0; j++) {
+      if (src[j] === "(") d++;
+      else if (src[j] === ")") d--;
+    }
+    out.push(src.slice(i + head.length, j - 1));
+  }
+  return out;
+}
+
+/** 某个函数定义的整块花括号体(找不到给空串) */
+function fnBody(src: string, head: string): string {
+  const i = src.indexOf(head);
+  if (i < 0) return "";
+  const open = src.indexOf("{", i);
+  if (open < 0) return "";
+  let d = 0;
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === "{") d++;
+    else if (src[j] === "}" && --d === 0) return src.slice(open, j + 1);
+  }
+  return "";
+}
+
+/** 教学面板的摆字锚点闸(吃源码,--selftest 喂旧写法必须报) */
+export function checkLabelAnchors(raw: string, fileLabel: string): string[] {
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const out: string[] = [];
+
+  // 规则 1:色带的文字必须走 layout 的 bandText()(中心锚语义),不许在面板里写带内偏移
+  const body = fnBody(src, "function band(");
+  if (!body) out.push(`${fileLabel}:找不到 function band(`);
+  else {
+    if (!/bandText\(/.test(body)) out.push(`${fileLabel}:band() 没走 bandText() —— 色带文字的锚点又回到面板里手抄了一份`);
+    if (/x: -/.test(body)) out.push(`${fileLabel}:band() 给中心锚的 Label 传了左缘偏移(x: -…) —— 整串字往左偏半个盒宽,头几个字掉到带外看不见`);
+  }
+
+  // 规则 2:每帧搬动节点的画布标字必须居中,否则「节点在点上」= 字从点往左拖半个盒子
+  const cos = callSpans(src, "mkLabel(").filter((s) => s.includes("callout"));
+  if (!cos.length) out.push(`${fileLabel}:找不到画布标字 Label 的创建处(callout…)`);
+  for (const s of cos) {
+    if (!/align: 1\b/.test(s)) out.push(`${fileLabel}:画布标字 Label 没居中(缺 align: 1)—— 每帧搬的是节点,左对齐会把整串字拖出画布`);
+  }
+
+  // 规则 3:全文件兜底 —— 中心锚 + 左对齐的 Label,x 不许由「父盒宽度」取负派生
+  for (const s of callSpans(src, "mkLabel(")) {
+    if (/align: 0\b/.test(s) && /x: -\s*(w\b|half\b|widthOf)/.test(s)) {
+      out.push(`${fileLabel}:mkLabel 出现「左缘当盒心」写法 → x:…${(s.match(/x: [^,]*/) ?? [""])[0]}`);
+    }
+  }
+  return out;
+}
+
+{
+  // 编译产物在 .tools-build/ 下,工程根要向上找(照 panel-check 的 findRoot)
+  let dir = __dirname;
+  for (let i = 0; i < 8 && !existsSync(join(dir, "assets/scripts/ui/tutorial-panel.ts")); i++) dir = join(dir, "..");
+  const file = join(dir, "assets/scripts/ui/tutorial-panel.ts");
+  const src = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const issues = src ? checkLabelAnchors(src, "tutorial-panel") : ["tutorial-panel.ts 找不到"];
+  for (const m of issues) ok(false, m);
+  ok(issues.length === 0, "摆字锚点:色带走 bandText()、画布标字居中,没有「左缘当盒心」");
+
+  // 定宽色带(标题带 128 / 横幅 badge 150):文字盒必须由 bandText() 落在带内、
+  // 且文案放得进去 —— 放不下的那几个字在面板上不是「挤一点」,是「看不见」。
+  for (const [nm, b, text, size] of [
+    ["标题带", titleBand(), BAR_TITLE, TUT.titleSize],
+    ["横幅 badge", bannerLayout(TUTORIAL_TOPICS[0]).badge, bannerBadge(0), TUT.bandSize],
+  ] as Array<[string, Box, string, number]>) {
+    const t = bandText(b), half = widthOf(b) / 2;   // bandText 给的是**色带节点局部**坐标(带心 = 0)
+    ok(t.left >= -half - 0.01 && t.right <= half + 0.01, `${nm}:文字盒落在带内 ${t.left.toFixed(1)}~${t.right.toFixed(1)}(带 ±${half})`);
+    ok(textW(text, size) <= widthOf(t) + 0.01, `${nm}:文案「${text}」${textW(text, size)} 放得进带内 ${widthOf(t)}`);
+  }
+}
+
+// ---------- ⑥ selftest:旧式「无条件放行」必须被拦下 ----------
 
 if (process.argv.includes("--selftest")) {
   console.log("\nselftest:旧式无条件放行的坏实现必须全红");
@@ -382,10 +476,11 @@ if (process.argv.includes("--selftest")) {
     : t);
   const of = tutOverflow(badTopics);
   ok(of.some((s) => s.startsWith("move")), `超长讲解行被报警(${of.length} 处)`);
-  // 三条变四条:结构断言要红
-  const fourTopics: TutTopic[] = TUTORIAL_TOPICS.map((t, i) => i === 0 ? { ...t, lines: [...t.lines, "多余的一条"] } : t);
-  const of4 = tutOverflow(fourTopics);
-  ok(of4.some((s) => s.includes("讲解必须正好 3 条")), "讲解条数 ≠3 被报警");
+  // 讲解条数越出 3~4 的位置预算:两头都要红(击球本来就 4 条,再加一条才是坏)
+  const fiveTopics: TutTopic[] = TUTORIAL_TOPICS.map((t, i) => i === 1 ? { ...t, lines: [...t.lines, "多余的一条"] } : t);
+  ok(tutOverflow(fiveTopics).some((s) => s.includes("hit:讲解 5 条")), "讲解条数超预算被报警");
+  const twoTopics: TutTopic[] = TUTORIAL_TOPICS.map((t, i) => i === 0 ? { ...t, lines: t.lines.slice(0, 2) } : t);
+  ok(tutOverflow(twoTopics).some((s) => s.includes("move:讲解 2 条")), "讲解条数不足也被报警");
 
   // 演示真值判据也要有牙齿:喂旧式「手编贝塞尔弧线 + 编的落点」的假烘焙,必须被拦下 ——
   // 这是 0.0.24 之前 tutorial-anim 的真实写法(教的弧线和实机喂的球是两套东西)。
@@ -413,6 +508,24 @@ if (process.argv.includes("--selftest")) {
   };
   const dfails = demoSuite(fake);
   ok(dfails.length >= 3, `手编弧线的假烘焙被拦下(${dfails.length} 处,要 ≥3):${dfails.slice(0, 2).join(" / ")}`);
+
+  // —— 摆字锚点闸:0.0.32 的两份真实旧写法必须被拦下 ——
+  const oldBand = [
+    "function band(parent: Node, name: string): void {",
+    "  const w = widthOf(b);",
+    "  mkLabel(n, \"txt\", text, size, inkFor(face), { x: -w / 2 + 12, y: 0, w: w - 20, align: 0 });",
+    "}",
+  ].join("\n");
+  const oldCallout = "const lb = mkLabel(page, `callout${i}`, \"\", 12, C.paper, { x: centerX(demo), y: demo.cy, w: widthOf(demo) - 16, shrink: true });";
+  const a1 = checkLabelAnchors(oldBand, "反例·色带");
+  const a2 = checkLabelAnchors(oldCallout, "反例·标字");
+  ok(a1.length >= 2, `旧写法「左缘当盒心」被拦下(${a1.length} 处):${a1[0] ?? ""}`);
+  ok(a2.length >= 1, `旧写法「标字左对齐 + 画布全宽」被拦下(${a2.length} 处):${a2[0] ?? ""}`);
+
+  // 标字边角判据比旧的那把更严:同一个贴边点,只量「点」全绿、量「整串字」越界
+  const W0 = widthOf(demoBox());
+  ok(Math.abs(W0 / 2 - 6) + textW("跳起来够高球", 11) / 2 > W0 / 2,
+    "正例:贴边标字按整串字量确实越界(旧判据只量点,量不到这种)");
 }
 
 console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);

@@ -49,7 +49,7 @@ export interface PaceTier {
   s: number;
   /** 设置面板上给人看的两字档名 */
   label: string;
-  /** 一行说明(如「慢 8%(默认)」) */
+  /** 一行说明(如「慢 20%(默认)」) */
   note: string;
 }
 

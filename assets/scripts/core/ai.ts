@@ -10,6 +10,7 @@
 import { CFG } from "./config";
 import { clamp, approach, rand } from "./utils";
 import { Physics, FuturePt } from "./physics";
+import { Pace } from "./pace";
 import { Player as Pl } from "./player";
 import { Rules, RulesState } from "./rules";
 import { Skills } from "./skills";
@@ -17,6 +18,34 @@ import { AiState, Ball, HitCostInput, Intercept, Player, PlayerInput } from "./t
 
 const C = CFG;
 const CO = C.court;
+
+/**
+ * ===== AI 侧的时钟:球速档只许帮真人,不许顺手帮电脑 =====
+ *
+ * `core/pace.ts` 的时间膨胀是**全场**的:设每帧位移系数 s(<1 = 更慢),同一记球的空帧数
+ * 变成 1/s 倍。真人拿这份便宜是有意的(那格滑杆就是为「手机上接不到球」造的)。
+ * 但 AI 活在同一个世界里,而它的失误量全都不随档缩放:站位误差 `diffs.read` 是**像素**、
+ * 跑位能力是**像素/帧** —— 球慢 25% 而腿不缩,它就有 25% 的多余时间去纠同一个像素错误;
+ * 而"这记球有多快"读的是世界速度,慢档里球看着好读,`readHardness` 就把误差整段打折。
+ * 实测(s=1.00 → 0.80,配对同种子):AI 接发 96% → 100%、回合 avg 12.8 → 15.5、
+ * 入门档真人得分率 55% → 42%。那不是"玩家变强了",是这格滑杆顺手把难度表改写了。
+ *
+ * 所以折两刀,而且都是**量出来**的那两刀:
+ *   ① 腿速 ×s —— player.ts 的 `legTierMul` 与这里 `selfVmax` 用同一份真值(自估与实际
+ *      跑速一旦分家,AI 就会承诺它跑不到的球,那是 AGENTS.md 坑 #5 那一族);
+ *   ② 读球快慢折回基准 —— `readHardness` 用 `Pace.ref`,球"看着慢"不等于"好读"。
+ *      (同一口径的先例:physics.classify 早就把速度折回基准再判球种,否则慢档里
+ *       一记重杀会被念成「劈吊」—— 见 physics.ts 那条注释。)
+ * 实测这两刀把 AI 的自身读数压平:接发率 s=1→0.8 从 +4% 变成 +1%,每拍命中率 −1%。
+ *
+ * **第三刀试过又撤了**:把 `diffs.tick / notice / timingErr` 这些帧预算也 ÷s(逻辑上同样
+ * 说得通 —— 慢档白送更多次决策、更宽的时机容错)。实测过矫得离谱:AI 接发率 99% → 90%,
+ * 也就是玩家一放慢球,电脑当场变得笨手笨脚。那不是"不帮电脑",那是**惩罚**电脑 ——
+ * 这格滑杆的用途是"我接不到球时给我留的口子",不是把难度表另一头拧松。留档免得再试一遍。
+ * 空间量(read / shotErr / zone / 判定区几何)一律不折:球路逐点不变,那些才是难度档的本体。
+ *
+ * 验收:tools/ai-check.ts 的「AI 强度 vs 球速档」那一段(配对同种子,逐档比 AI 与真人各自每拍命中率)。
+ */
 
 function fresh(): AiState {
   return { tick: 0, targetX: 0, serveT: 0, serveDelay: 0, serveAim: C.aimDepth.deep, wantSmash: false, ic: null, swingLead: null, chasing: true,
@@ -56,6 +85,8 @@ const SM = (p: Player) => (p.aiDiff ? C.aiSmashDefense[p.aiDiff] : C.aiSmashDefe
  * AI 都按"满腿"去承诺它跑不到的球:站位算得准,人就是到不了,看上去像纯蠢。
  * 注意这里**不乘 Gait.s**:移速滑杆是真人侧的档位(见 AGENTS.md 的 gait 条),
  * AI 走 diffs.speed,两层刻意不叠。
+ * 但**要乘 Pace.s**:球速档放慢是给真人的松绑,AI 的腿跟着缩,才不把"多出来的帧"
+ * 白送给它 —— 折算与 player.ts 的 legTierMul 同一份真值,实际跑速与这里的自估不许分家。
  */
 function selfVmax(p: Player, em: { speed: number }): number {
   const mod = Pl.getPlayerModifier();
@@ -67,7 +98,7 @@ function selfVmax(p: Player, em: { speed: number }): number {
   const staminaMul = p.isExhausted ? 0.65 : 1;
   // em.speed 已含情绪/连击压力的加减成;speedMul 是 applyAiTier 落的档位基础值。
   // 两者同源于 diffs.speed,这里以 speedMul 为"事实",情绪只作它自己的那份估计。
-  return C.player.vmax * p.speedMul * (em.speed / (D(p).speed || 1)) * vmaxMul * staminaMul;
+  return C.player.vmax * p.speedMul * Pace.s * (em.speed / (D(p).speed || 1)) * vmaxMul * staminaMul;
 }
 
 // 把球往前推 n 步(不改原对象)
@@ -330,13 +361,14 @@ type Diff = ReturnType<typeof D>;
  * 为什么必须加权:误差全局放大就会把每一拍都变成 winner,回合掉到三五拍,
  * 而用户明确要「保留长回合,只要得分变成可能」。所以慢高球只吃 readFloor
  * (高远对拉照常打得起来),快球与需要长距离跑位的球才吃满 —— 失分点集中在难球。
- * 速度口径与 player.strikeZone「来球越快判定区越小」同源(都读世界速度、不折档):
- * 慢档里 AI 也更少看走眼,那正是「慢一档更好接」的另一半。
+ * 速度口径折回基准(`Pace.ref`)再查表:球速档把球拖慢,不等于把这记球变得好读 ——
+ * 那是"看走眼多少像素"的判断,该按球的**本来多快**算。真人那侧相反:判定区收严
+ * (player.strikeZone)照旧读世界速度,慢档就是更好接 —— 那份便宜是留给他的,不给 AI。
  */
 function readHardness(p: Player, ball: Ball, ic: Intercept, d: Diff): number {
   const SW = C.swing;
   const AR = C.aiRead;
-  const spd = clamp((Math.hypot(ball.vx, ball.vy) - SW.zoneFullSpeed) / SW.zoneTightenSpan, 0, 1);
+  const spd = clamp((Pace.ref(Math.hypot(ball.vx, ball.vy)) - SW.zoneFullSpeed) / SW.zoneTightenSpan, 0, 1);
   const run = clamp(Math.abs(ic.x - p.x) / AR.runRef, 0, 1);
   const k = clamp(spd * AR.speedMix + run * (1 - AR.speedMix), 0, 1);
   return clamp(d.readFloor + k * (AR.hardMax - d.readFloor), 0, AR.hardMax);

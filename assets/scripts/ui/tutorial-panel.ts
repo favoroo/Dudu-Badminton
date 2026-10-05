@@ -30,7 +30,7 @@ import type { UiKit } from "./ui-manager";
 import { C } from "./p5-tokens";
 import { clearKids, faceOf, pressable, uinode } from "./ui-shell";
 import {
-  BAR_TITLE, DONE, KEYS, SECTIONS, TUT, bannerBadge, bannerLayout, bottomRow, briefInfo, closeHit,
+  BAR_TITLE, DONE, KEYS, SECTIONS, TUT, bandText, bannerBadge, bannerLayout, bottomRow, briefInfo, closeHit,
   demoBox, doneLayout, headInfoBand, titleBand, widthOf, centerX, type Box,
 } from "./tutorial-layout";
 
@@ -66,7 +66,11 @@ function txt(
   });
 }
 
-/** 分区色带(整面 accent 实底 + 由面色亮度算字色;底块登记重放防原生清渲染数据) */
+/**
+ * 分区色带(整面 accent 实底 + 由面色亮度算字色;底块登记重放防原生清渲染数据)。
+ * 文字走 layout 的 `bandText()` 而不是在这里写 `x: -w/2 + 12` —— 本面板的 Label 是中心锚,
+ * 交左缘数字 = 整串字往左偏半个盒宽,头几个字掉到黑底上(实测「怎么玩」只剩「么玩」)。
+ */
 function band(parent: Node, name: string, text: string, b: Box, role: Parameters<typeof faceOf>[0], size = 13): void {
   const w = widthOf(b);
   const n = uinode(name, parent, w, b.h);
@@ -74,7 +78,7 @@ function band(parent: Node, name: string, text: string, b: Box, role: Parameters
   const face = faceOf(role);
   const g = n.addComponent(Graphics);
   retainedDraw(g, () => drawSectionBand(g, w, b.h, face));
-  mkLabel(n, "txt", text, size, inkFor(face), { x: -w / 2 + 12, y: 0, w: w - 20, align: 0 });
+  txt(n, "txt", text, size, inkFor(face), bandText(b), 0);
 }
 
 interface ChipHandle { node: Node; paint(cur: boolean, done: boolean): void }
@@ -185,7 +189,7 @@ export class TutorialPanel extends Component {
   private _bannerLayer: Node | null = null;
 
   private _buildTopBar(panel: Node): void {
-    band(panel, "title", BAR_TITLE, titleBand(), "info", 16);
+    band(panel, "title", BAR_TITLE, titleBand(), "info", TUT.titleSize);
     this._headInfo = txt(panel, "headInfo", "", 13, C.dim, headInfoBand(), 2);
     const hit = closeHit();
     const back = uiIconButton(panel, "✕", { hit: widthOf(hit), vis: 36, fontSize: 18 });
@@ -255,10 +259,13 @@ export class TutorialPanel extends Component {
     this._animGfx = gfxNode.addComponent(Graphics);
     this._rig = TutorialAnim.build(this._topic);
 
-    // 标字层:「这一条不显示」= string 置空,不走 active(原生坑)
+    // 标字层:「这一条不显示」= string 置空,不走 active(原生坑)。
+    // align 必须是 1(居中):_syncCallouts 每帧搬的是**节点**,左对齐 + 画布全宽的盒子
+    // = 字从那个点往左拖半个画布(实测整串拖出面板)。tutorial-demo-preview 一直是按
+    // 「点 = 字心」出的图 —— 面板与自己的出图对不上,只有真机看得出来。
     for (let i = 0; i < CALLOUT_MAX; i++) {
       const lb = mkLabel(page, `callout${i}`, "", 12, C.paper, {
-        x: centerX(demo), y: demo.cy, w: widthOf(demo) - 16, shrink: true,
+        x: centerX(demo), y: demo.cy, w: widthOf(demo) - 16, align: 1, shrink: true,
       });
       lb.node.layer = Layers.Enum.UI_2D;
       this._calloutLabels.push(lb);

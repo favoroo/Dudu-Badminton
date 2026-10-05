@@ -59,6 +59,10 @@ export const TUT = {
   /** 右列编号行 */
   nameSize: 20, lineSize: 14, lineH: 22, lineGap: 8,
   bandH2: 24, bandSize: 13, hintSize: 11, hintH: 16,
+  /** 顶栏标题字号(面板不再自己写死,判据要拿它量文案放不放得进色带) */
+  titleSize: 16,
+  /** 色带内的左右内边距:文字不许贴到斜切角上 */
+  bandPadL: 12, bandPadR: 10,
 
   /** 底排:‹ › 翻题箭头 + 三个主题 chip + 跳过/去练一练 */
   chevW: 48, chipW: 118, chipGap: 10,
@@ -180,6 +184,19 @@ export function bandW(text: string, size: number): number {
   return textW(text, size) + 28;
 }
 
+/**
+ * 色带内的文字盒 —— **以色带节点自己为父**(色带节点摆在 centerX(b),子节点原点就是带心)。
+ *
+ * 为什么收在这里而不是让面板写 `x: -w/2 + 12`:本面板的 Label 恒「盒心 = 节点位置」
+ * (中心锚),左缘数字交给它就是整串字往左偏半个盒宽 —— 0.0.32 的现场:「怎么玩」只剩
+ * 「么玩」、「操作教学」头两个字掉到黑底上。交出一个 Box 让面板走同一个 txt(),
+ * 锚点语义就只有一份真话,而且能被 tutOverflow 量。
+ */
+export function bandText(b: Box): Box {
+  const w = widthOf(b);
+  return box(-w / 2 + TUT.bandPadL, Math.max(1, w - TUT.bandPadL - TUT.bandPadR), 0, b.h);
+}
+
 // ---------- 讲解页底排:‹ › + 三个主题 chip + 跳过/去练一练 ----------
 
 export interface BottomRow {
@@ -287,6 +304,17 @@ export function baseOverflow(b: Box, deg = SLANT.block): string | null {
   return null;
 }
 
+/** 色带文案放得进「带内文字盒」吗(标题带/badge 是定宽带,只有量了才知道撑不撑得下) */
+export function bandTextFits(b: Box, text: string, size: number): string | null {
+  const inner = bandText(b);
+  const half = widthOf(b) / 2;
+  if (inner.left < -half - EPS) return `文字盒越出带左缘 ${inner.left.toFixed(1)} < ${-half}`;
+  if (inner.right > half + EPS) return `文字盒越出带右缘 ${inner.right.toFixed(1)} > ${half}`;
+  const need = textW(text, size);
+  if (need > widthOf(inner) + EPS) return `文案「${text}」${need} > 带内可放 ${widthOf(inner)}`;
+  return null;
+}
+
 /** 判据要吃整张主题表 */
 export function briefInfos(topics: readonly TutTopic[] = TUTORIAL_TOPICS): Array<{ topic: TutTopic; info: BriefInfo }> {
   return topics.map((topic) => ({ topic, info: briefInfo(topic) }));
@@ -363,7 +391,8 @@ export function tutOverflow(topics: readonly TutTopic[] = TUTORIAL_TOPICS): stri
     for (const line of wrapped) {
       if (textW(line, TUT.lineSize) > infoInner() + EPS) out.push(`${topic.id} 编号行「${line}」放不下 ${infoInner()}`);
     }
-    if (topic.lines.length !== 3) out.push(`${topic.id}:讲解必须正好 3 条(版式只给三条的位置)`);
+    /** 「击球」要教三轴手势 + 时机,是 4 条(0.0.24 起);真正的尺是「折行 ≤6 行 + 不压底排」 */
+    if (topic.lines.length < 3 || topic.lines.length > 4) out.push(`${topic.id}:讲解 ${topic.lines.length} 条,版式只给 3~4 条的位置`);
     if (textW(topic.label, TUT.nameSize) > widthOf(info.name)) out.push(`${topic.id}:名称超宽`);
     if (textW(topic.practice, TUT.bandSize) + 28 > widthOf(info.practice) + EPS) out.push(`${topic.id}:练一练带「${topic.practice}」文案比带宽`);
     if (widthOf(info.practice) > TUT.right - infoLeftX() - 2 * TUT.padX + EPS) out.push(`${topic.id}:练一练带宽 > 右列宽`);
@@ -384,6 +413,20 @@ export function tutOverflow(topics: readonly TutTopic[] = TUTORIAL_TOPICS): stri
     for (const hint of [topic.hint, "有效 2/2 · 下网了:等球落低一点、仰角给足"]) {
       if (textW(hint, TUT.hintSize) > widthOf(bn.hint) + EPS) out.push(`${topic.id}:横幅提示「${hint}」放不下`);
     }
+  }
+
+  // 色带:文案必须放得进「带内文字盒」(面板把文字摆在这里,放不下的那几个字是看不见的)
+  const bandIssues: Array<[string, Box, string, number]> = [
+    ["标题带", titleBand(), BAR_TITLE, TUT.titleSize],
+  ];
+  for (const [i, { topic, info }] of briefInfos(topics).entries()) {
+    bandIssues.push([`${topic.id}·怎么玩`, info.howTo, SECTIONS.howTo, TUT.bandSize]);
+    bandIssues.push([`${topic.id}·练一练`, info.practice, topic.practice, TUT.bandSize]);
+    bandIssues.push([`横幅badge${i + 1}`, bannerLayout(topic).badge, bannerBadge(i), TUT.bandSize]);
+  }
+  for (const [nm, b, text, size] of bandIssues) {
+    const o = bandTextFits(b, text, size);
+    if (o) out.push(`${nm} ${o}`);
   }
 
   const D = doneLayout();

@@ -689,7 +689,7 @@ export class SettingsPanel extends Component {
   }
 
   /**
-   * 当前档的人话标签:「标准 · 慢 8%」。
+   * 当前档的人话标签:「很慢 · 慢 20%」(百分比相对 s=1 原速,与默认档是谁无关)。
    * 绝不给玩家看 s=0.92 这种系数 —— 那是实现细节;「慢百分之几、原速是哪一档」才是他能用的信息。
    */
   private paceCaption(): string {

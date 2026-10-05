@@ -25,6 +25,7 @@ import { Rules } from "../assets/scripts/core/rules";
 import { Player as Pl, ZoneProbe } from "../assets/scripts/core/player";
 import { Skills } from "../assets/scripts/core/skills";
 import { CFG } from "../assets/scripts/core/config";
+import { Pace } from "../assets/scripts/core/pace";
 import { flightFramesToClosest } from "../assets/scripts/core/physics";
 import { Ball, HitOpt, PlayerInput, TeamSide, Player as PlayerEntity } from "../assets/scripts/core/types";
 import { makeChecker, Checker } from "./harness";
@@ -713,6 +714,12 @@ const failsOf = (run2: (ck: Checker) => void): number => {
 
 if (process.argv.includes("--selftest")) {
   console.log("反例自检:改坏的真实写法必须被上面的判据拦住(拦不住 = 这套尺子没牙齿)");
+  // 反例一律在**原速档(s=1)**上跑。出货球速档放慢到 s=0.80 之后,有些"改坏"不再改变任何
+  // 结果 —— 实测 noTail(判定区尾段不给)在默认档上 ① 全绿:球在区里多待 25%,那点尾段
+  // 容错根本不承重。牙齿要在机制承重的那个时钟上量,与玩家把滑杆停在哪一档无关。
+  const REF = C.pace.tiers.find((t) => t.s === 1);
+  if (!REF) { console.log("  ✗ 球速表里没有 s=1 的参照档,反例自检无法定位时钟"); process.exit(1); }
+  Pace.apply(REF.id);
   const find = (n: string): Section => {
     const s = SECTIONS.find((x) => x.name.startsWith(n));
     if (!s) throw Error(`lunge-check selftest:找不到段落 ${n}`);

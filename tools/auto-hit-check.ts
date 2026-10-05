@@ -35,6 +35,7 @@ import { Rules } from "../assets/scripts/core/rules";
 import { Player as Pl, aimOverride, PRESS_LEAD_FRAMES, ZoneProbe } from "../assets/scripts/core/player";
 import { Skills } from "../assets/scripts/core/skills";
 import { CFG } from "../assets/scripts/core/config";
+import { Pace } from "../assets/scripts/core/pace";
 import { AutoHit } from "../assets/scripts/core/auto-hit";
 import { AI } from "../assets/scripts/core/ai";
 import { flightFramesToClosest, Physics } from "../assets/scripts/core/physics";
@@ -142,9 +143,13 @@ interface RunOpts {
   stopOnWhiff?: boolean;
 }
 
+/** 前瞻门控与 player.autoSwingDue **同一把尺子**:那两个数是基准帧,慢档里要折成世界步。
+ *  这里再抄一份"不折"的版本,量出来的沉默理由就是假的(2026-10-05 球速档改慢后现场)。 */
+const lookFrames = (n: number): number => Math.ceil(Pace.frames(n));
+
 const framesToCentre = (hero: PlayerEntity, ball: Ball): number | null => {
   const z = Pl.strikeZone(hero, Math.hypot(ball.vx, ball.vy));
-  return flightFramesToClosest(ball, z.x, z.y, z.r, AH.autoHorizon);
+  return flightFramesToClosest(ball, z.x, z.y, z.r, lookFrames(AH.autoHorizon));
 };
 
 /** 把探针里的 lungeAutoT 强制清零,量"没有尾段倍率时该有多大" */
@@ -288,11 +293,24 @@ const OUT_STRICT = 40;
 /** 这颗来球自己会落在哪儿:界外/贴地的球,正确答案都是"别碰"(与机制同一批判据) */
 function incomingTag(side: TeamSide, h: number, x: number, vx: number, vy: number): "界外" | "贴地" | "可救" {
   const { hero, ball } = setup(side, h, x, vx, vy);
-  const fut = Pl.ballFuture(hero, ball, AH.autoLandHorizon);
-  if (fut.land <= AH.autoLandHorizon
+  // 前瞻门控与机制同源折一遍:AH.autoLandHorizon 是**基准帧**,慢档里要按世界步数才看得
+  // 到落点。不折的话"会出界的那颗球"在 s=0.80 上被误判成"可救"(落点在 90 步之外 ⇒ 看不见),
+  // 于是 ⑦ 反过来记代拍一桩"该救没救" —— 判据先跟机制跑偏,红的是尺子不是游戏。
+  const landH = lookFrames(AH.autoLandHorizon);
+  const fut = Pl.ballFuture(hero, ball, landH);
+  if (fut.land <= landH
     && (fut.landX < CO.left - OUT_STRICT || fut.landX > CO.right + OUT_STRICT)) return "界外";
   if (fut.land <= SW.windup + 1) return "贴地";
   return "可救";
+}
+
+/** 代拍**按机制自己的规矩**该放掉这颗球吗(落点在界外 autoOutMargin 之外 ⇒ 让它落地收分) */
+function willDropOut(g: { side: TeamSide; h: number; x: number; vx: number; vy: number }): boolean {
+  const { hero, ball } = setup(g.side, g.h, g.x, g.vx, g.vy);
+  const landH = lookFrames(AH.autoLandHorizon);
+  const fut = Pl.ballFuture(hero, ball, landH);
+  return fut.land <= landH
+    && (fut.landX < CO.left - AH.autoOutMargin || fut.landX > CO.right + AH.autoOutMargin);
 }
 
 /** 沉默的理由,拿与机制同一批判据反查;归不进任何一类就是真 bug */
@@ -301,9 +319,10 @@ const silenceWhy = (hero: PlayerEntity, ball: Ball): string => {
   const fc = framesToCentre(hero, ball);
   if (fc === null) return "整段都够不着(最近逼近超出判定区)";
   if (fc > PERFECT_LEAD) return "整段始终没到该按的那一帧";
-  const fut = Pl.ballFuture(hero, ball, AH.autoLandHorizon);
+  const landH = lookFrames(AH.autoLandHorizon);
+  const fut = Pl.ballFuture(hero, ball, landH);
   if (fut.cross < 0 || fut.cross > SW.windup + SW.active) return "整条命中窗内球都没过网";
-  if (fut.land <= AH.autoLandHorizon
+  if (fut.land <= landH
     && (fut.landX < CO.left - AH.autoOutMargin || fut.landX > CO.right + AH.autoOutMargin)) return "落点在界外:让它落地收分";
   if (fut.land <= SW.windup + 1) return "球已贴地:救不到,不空挥";
   if (fut.land <= fc + AH.autoSettleGrace) return "球死在结算之前:不空挥";
@@ -529,12 +548,17 @@ const s7 = (ck: Checker): void => {
     c.hit && !c.intoNet && inOpponentCourt(side, c.landX);
   for (const g of cells()) {
     const tag = incomingTag(g.side, g.h, g.x, g.vx, g.vy);
-    const a = auto(g.side, g.h, g.x, g.vx, g.vy);
+    const a = autoWhy(g.side, g.h, g.x, g.vx, g.vy);
     const m = perfect(g.side, g.h, g.x, g.vx, g.vy);
     // "手动救得到、自动救不到"只有在**那颗球本来会落在界内**时才算丢了一次救球。
     // 要出界的球被捞回去是把对手送的分还给人家(① 专门罚这条),不该反过来记自动的账。
-    if (tag !== "界外" && usable(m, g.side) && !usable(a, g.side)) {
-      worse.push(`${g.tag}:完美手动把球送回对方场(landX=${Math.round(m.landX)} q=${m.q.toFixed(2)}),自动却没做到`);
+    // 口径必须是机制**自己**那道界外门 autoOutMargin(8px),不是 ① 用的 OUT_STRICT(40px):
+    // 后者故意比机制严,是用来"少冤枉代拍捞界外球"的。拿 40 的那一边问"你怎么不救",
+    // 等于一边允许它放掉压线出界的球、一边怪它没救回来 —— 实测 s=0.80 时两格 38px 出界
+    // 的平抽就是这样变红的(球速档一放慢合,完美手动够得着了,这条才露出来)。
+    if (!willDropOut(g) && usable(m, g.side) && !usable(a, g.side)) {
+      worse.push(`${g.tag}:完美手动把球送回对方场(landX=${Math.round(m.landX)} q=${m.q.toFixed(2)}),`
+        + ` 自动没做到 —— 归因「${a.why}」`);
       continue;
     }
     if (!a.hit || !m.hit) continue;

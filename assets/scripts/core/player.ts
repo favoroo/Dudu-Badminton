@@ -6,6 +6,7 @@ import { CFG } from "./config";
 import { clamp, lerp, approach, sweptHit } from "./utils";
 import { Physics, FuturePt, flightFramesToClosest } from "./physics";
 import { Gait } from "./gait";
+import { Pace } from "./pace";
 import { AutoHit } from "./auto-hit";
 import { Skills } from "./skills";
 import { ShadowGate } from "./shadow-gate";
@@ -19,6 +20,18 @@ export type Player = PlayerEntity;
 const C = CFG;
 const CO = C.court, PL = C.player, SW = C.swing;
 const SPAN = C.shot.farOffset - C.shot.nearOffset;
+
+/**
+ * 腿速那一层乘谁的档:真人乘「移速」滑杆,AI 乘「球速」档的**反折**(×s)。
+ *
+ * 为什么 AI 要跟着球速档缩腿:球慢 20% = 同一记来球多给 25% 的帧,而 AI 的失误是
+ * **空间量**(看走眼多少 px、出球误差多少 px),帧一多它就有更多时间去纠同一个空间错
+ * —— 于是"给玩家松绑"的旋钮顺手把电脑也松强了(实测 s=0.92→0.80 时 AI 接发 90%→96~100%,
+ * 入门档真人得分率从 55% 掉到 42%)。腿 ×s 之后"跑到位要几帧"跟着球一起变长,这一份便宜就还回去了。
+ * 另一半(读球快慢)在 core/ai.ts 的 readHardness,用 Pace.ref 折回基准 —— 两处合起来才是完整一层。
+ * 真人**不**吃这一折:那格滑杆就是给他留的(见 core/pace.ts 文件头)。
+ */
+const legTierMul = (p: PlayerEntity): number => (p.isAI ? Pace.s : Gait.s);
 
 export interface PlayerModifier {
   accelMul?: number;
@@ -493,15 +506,16 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   } else if (isSliderActive && axisCap === 0) {
     // 精准定点刹停达成:vx 已置零,无需摩擦
   } else if (!p.forbiddenWarn || p.forbiddenWarn <= 0) {
-    // 真人侧多乘一层「移速档位」(core/gait.ts),AI 不叠这层 —— 它已经有 diffs.speed 写进
-    // p.speedMul,两层叠一起会让难度档和玩家设置互相污染,回归就在测玩家偏好。
+    // 腿速这一层按人/CPU 分岔(见 legTierMul):真人乘「移速档位」(core/gait.ts),
+    // AI 乘「球速档位」的反折 ×s。两层刻意不叠:AI 没有移速档(它的腿是 diffs.speed),
+    // 真人不吃球速档的腿速反折(那格滑杆就是给他松绑用的),叠一起回归就在测玩家偏好。
     // 时空减速(focus)激活时赋予倍率加成:对抗世界 slowmo 0.35 并赋予超速移动能力。
     // accel 与 vmax 同比例乘:只提极速不提起步会显得"推起来肉";
     // 跨步冲量与跳跃弹道故意不跟着乘(lunge.speed / jumpV 是另一套手感)。
     const accelMul = (mod?.accelMul ?? 1) * focusAccelMul;
     const vmaxMul = (mod?.vmaxMul ?? 1) * focusSpeedMul;
     const staminaMul = p.isExhausted ? 0.65 : 1;
-    const smBase = p.speedMul * (p.isAI ? 1 : Gait.s) * staminaMul;
+    const smBase = p.speedMul * legTierMul(p) * staminaMul;
     maxV = PL.vmax * smBase * vmaxMul * axisCap;
     const accel = PL.accel * (p.onGround ? 1 : PL.airAccelMul) * smBase * accelMul;
     const fMul = mod?.frictionMul ?? 1;
@@ -518,7 +532,7 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // 横向安全钳制:跨步是叠加冲量,跑动中爆发可达 vmax+speed,钳制要留够余量。
   // 跑动那一项按同一层 sm 放大(移速档「极快」时真人 vmax 13.8 + 跨步 15 + 3 才够,
   // 不放大就会把跨步冲量凭空削掉一截);时空减速高速也确保容纳。
-  const xvCap = Math.max(12, Math.max(PL.vmax * p.speedMul * (p.isAI ? 1 : Gait.s) + LG.speed + 3, maxV + 3));
+  const xvCap = Math.max(12, Math.max(PL.vmax * p.speedMul * legTierMul(p) + LG.speed + 3, maxV + 3));
   if (isSliderActive && targetX !== undefined && p.lungeT < 0) {
     const stepVx = clamp(p.vx, -xvCap, xvCap);
     if ((p.x - targetX) * (p.x + stepVx - targetX) <= 0) {
@@ -833,13 +847,20 @@ function autoSwingDue(p: PlayerEntity, ball: Ball | null, src: AutoSwingSrc = "l
   const LG = src === "smash" ? C.skills.smash : src === "rage" ? C.skills.rage
     : src === "auto" ? C.autoHit : C.lunge;
   const z = strikeZone(p, Math.hypot(ball.vx || 0, ball.vy || 0));
-  const fc = flightFramesToClosest(ball, z.x, z.y, z.r, LG.autoHorizon);
+  // 两个前瞻预算是**世界步**数出来的,而球每一步只走 s 倍远 ⇒ 慢档里同一串帧看到的球
+  // 更近,40/90 步盖不住"这球会飞到哪、会不会出界"。折成基准帧的等距离版本(Pace.frames = ÷s),
+  // 否则一放慢球,代拍就从"看得见落点"退化成"看不见"—— 实测 s=0.80 时 64 格里 2 格
+  // 完美手动救得到、代拍直接不起手(判据 auto-hit-check ⑦)。config 那四个数照旧逐字共用。
+  // 向上取整:宁可多看一帧,别少看(Pace.frames 会给出 112.5 这种小数,前瞻缓冲按它开长度会炸)
+  const lookH = Math.ceil(Pace.frames(LG.autoHorizon));
+  const landH = Math.ceil(Pace.frames(LG.autoLandHorizon));
+  const fc = flightFramesToClosest(ball, z.x, z.y, z.r, lookH);
   // ⚠ PRESS_LEAD_FRAMES 是**挥拍动画帧**(玩家侧真实时间),fc 数的是世界步:领域里挥拍按真实
   //   时间走、世界被拖慢到 0.35,不折算就是"机器在区心前 9 世界步起手、那一拍 3.1 步就走完峰"
   //   ⇒ 代拍在领域里系统性挥空(与玩家按时机环按挥空同一个根因,判据 focus-window-check ②)。
   const lead = playerFramesToWorld(p, PRESS_LEAD_FRAMES);
   if (fc === null || fc > lead) return false;
-  const fut = ballFuture(p, ball, LG.autoLandHorizon);
+  const fut = ballFuture(p, ball, landH);
   // 隔网球:接触那一帧球必须在自己半场。判据放宽到"整条命中窗之内会过网",而不是"到最近逼近帧
   // 为止"—— 挥拍有 windup+active 十几帧的窗口,球在窗口里任何一帧过网都打得着(真过不了网的
   // tryHit 自己会拒)。按下当帧就卡 inOwnCourt 等于给自动多加一条手动没有的限制:网前抢点那
@@ -847,7 +868,7 @@ function autoSwingDue(p: PlayerEntity, ball: Ball | null, src: AutoSwingSrc = "l
   // 窗口两端都是**挥拍动画帧**,而 fut.* 数世界步 ⇒ 一律折算(领域里这条窗只有 5.6 世界步)。
   const swingWindow = playerFramesToWorld(p, SW.windup + SW.active);
   if (fut.cross < 0 || fut.cross > swingWindow) return false;
-  if (fut.land <= LG.autoLandHorizon) {
+  if (fut.land <= landH) {
     // 要飞出边线的球:正确打法是让它落地、把这分收下。替玩家捞回去等于把到手的分还给人家。
     if (fut.landX < CO.left - LG.autoOutMargin || fut.landX > CO.right + LG.autoOutMargin) return false;
     // 挥拍最早也要起拍后第 windup+1 帧才可能接触:球已经在地上了,别空挥。

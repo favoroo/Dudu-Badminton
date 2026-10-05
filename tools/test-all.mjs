@@ -15,6 +15,13 @@ const CHECKS = [
   "drill-diagram-check",
   // 六关 × 四步定格出图 + 锚帧自洽(不登记就等于没人跑,而这一屏的赌注是观感)
   "drill-diagram-preview",
+  // 新手操作教学:版式 + 文案 + 门控行为 + 摆字锚点。AGENTS.md 一直写着「验收 tutorial-check」,
+  // 但它**从没登记进这张表** —— 于是 0.0.24 起「击球有 4 条讲解」这条结构断言一直红着没人看见,
+  // 而色带文字锚点写错(「怎么玩」只剩「么玩」)这类只有真机才看得出来的事,更没人跑。
+  "tutorial-check",
+  // 三主题演示出图(标字/手势/球路与真机同一批多边形)。0.1s 的代价,和 drill-diagram-preview
+  // 同一条理由:不登记就等于没人跑 —— 而它是套件里唯一能看见「演示那一屏」的东西。
+  "tutorial-demo-preview",
   // 四面板语法闸门。从前**根本没登记进这张表** —— 对比度/网点/触控/溢出/文案五类判据
   // 只在人肉跑 panel-check 时才生效,「哪些工具存在且必须绿」这份唯一事实源漏了它。
   "panel-check",
@@ -161,6 +168,8 @@ const SELFTESTS = [
   "spec-shot-check",
   "drill-diagram-check",
   "panel-check",
+  // 反例:旧式无条件放行的门控、手编贝塞尔的假演示真值、0.0.32 那两份「左缘当盒心」的摆字源码
+  "tutorial-check",
   "stamina-check",
   "aura-preview",
   // 反例:三色填成同一色 / 身份色写成纯黑 / 辉光浓度拉爆 / pips 不错行 / 辉光逐帧重掷
