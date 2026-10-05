@@ -94,18 +94,16 @@ const SWIPE_THRESHOLD = CFG.touchAim.commitPx;
 /** 纵向手势阈值(像素):比横轴紧一档 —— 纵向曾是有意无语义区(防纯纵向晃动误触),
  *  给了语义(上滑挑高/下滑平抽)后仍要压住点按时的上下漂移。见 config.touchAim.commitPxY。 */
 const SWIPE_THRESHOLD_Y = CFG.touchAim.commitPxY;
-/** 长滑锁定距离 = 按键显示半径 × 这个倍数(从按下点起算):普通瞄准滑动远远够不着,
- *  只有一把拉到头的长滑才会锁 —— 见 config.touchAim.lockRadiusK 的注释(第一版写死
- *  34px 比按键半径还小,真机上一滑就锁,用户现场反馈改的)。 */
-const SWIPE_LOCK_K = CFG.touchAim.lockRadiusK;
-/** 「拉住」锁入路径的近档:滑出按键半径的这么多倍(= 明显在按键外)后停够 dwell 才锁 */
-const SWIPE_LOCK_NEAR_K = CFG.touchAim.lockNearK;
-/** 「拉住」锁入路径的停留时长:在近档阈值外持续这么久才认可是刻意的拖,快甩永不触发 */
-const SWIPE_LOCK_DWELL_MS = CFG.touchAim.lockDwellMs;
-/** 长滑锁定时某轴要被锁上的方向占比:分量达到滑动距离的一半(±30° 锥角内)才算
- *  「明确指了这个方向」—— 斜 45° 长滑两轴都锁,基本沿纵轴的长滑只锁纵轴,
- *  不让漂移分量把持久锁带偏。与短滑提交的宽松判据(|dx| ≥ commitPx/2)刻意不同:
- *  短滑只管一拍,锁错也就错一拍;锁是持久的,宁可少锁不错锁。 */
+/** 长滑锁定位置提示与手感 (和平精英长滑锁定同构设计):
+ *  ① 滑出按键 (dist >= 半径 × lockAppearK) 时开始显现对应方向的小锁图标 🔒 与虚线引导轨;
+ *     短滑(按键内滑动)绝不出现图标,没有任何干扰。
+ *  ② 小锁出现于按键半径 × lockTargetK 处 (在指尖自然延伸范围内,不超屏)。
+ *  ③ 手指滑入小锁激活范围 (距离目标点 <= lockRadius) 时,小锁点亮为高亮荧光黄 (进入就绪态)。
+ *  ④ 在小锁处【松开手指】,才是正式触发锁定!中途滑回松手则不锁定 (仅作普通瞄准打出)。
+ */
+const SWIPE_LOCK_APPEAR_K = CFG.touchAim.lockAppearK;
+const SWIPE_LOCK_TARGET_K = CFG.touchAim.lockTargetK;
+const SWIPE_LOCK_RADIUS = CFG.touchAim.lockRadius;
 const SWIPE_LOCK_CONE = 0.5;
 
 /**
@@ -169,19 +167,17 @@ interface BtnRec {
   /** 纵向手势(仅 swing 键用):0=未提交, 1=上滑(挑高), -1=下滑(平抽)。与 swipeDir 两轴独立、可组合 */
   swipeDirY: number;
   /**
-   * 长滑锁定去重门(仅 swing 键):本次手势(按下→松手)里该轴**已经锁过的方向**。
-   * trackSwingSwipe 每个 MOVE 事件都跑,没有这道门,手指停在锁定阈值外的事件流会把
-   * 同一个方向连写多遍(白亮).同方向只触发一次;按下时清 0 —— 锁定动作按**手势**计。
+   * 长滑小锁提示节点与图形 (仅 swing 键):
+   * 滑出按键时在锁定目标位置显示小锁图标与虚线引导轨;
+   * 手指进入小锁区域高亮就绪, 松开手指时才触发锁定。
    */
-  lockDirX: number;
-  lockDirY: number;
-  /**
-   * 「拉住」锁入路径的计时(仅 swing 键):本次手势里手指**首次越过近档阈值**
-   * (lockNearK × 半径)的时刻,0 = 还没越过。越过之后在阈值外持续 lockDwellMs
-   * 才认可是刻意的拖;快甩越过即松,永远凑不满这段停留 —— 短滑/长滑按快慢区分。
-   * 按下时清 0(新手势重新计时)。
-   */
-  lockArmT: number;
+  lockPromptNode?: Node | null;
+  lockPromptG?: Graphics | null;
+  /** 当前滑动是否已处于锁定就绪状态 (手指已达小锁目标点区域) */
+  lockReady?: boolean;
+  /** 当前小锁的目标轴与方向 (松手时触发锁定) */
+  lockTargetAxis?: "x" | "y" | null;
+  lockTargetDir?: number;
   /**
    * 「欠着一拍的瞄准」(仅 swing 键):辅助开着时玩家滑了但那一拍还没打出去,
    * game 层每帧把 pad 上的提交值喂进来。手指抬起来后 swipeDir 归 0,靠它把方向继续
@@ -983,6 +979,120 @@ function drawIcon(g: Graphics, action: PadAction, r: number, color: Color, varia
   }
 }
 
+/**
+ * 绘制长滑锁定目标提示（小锁图标 + 虚线/光轨引导线），对标和平精英长滑锁定手感：
+ * - 只有滑出按键（dist >= r * appearK）才显现，短滑完全不出现；
+ * - 引导虚线/光轨指向锁定目标位置；
+ * - 小锁底圈：未就绪为墨黑半透明 + 白描边；就绪时为高亮荧光黄（CFG.padSkin.downEdge）+ 微放大；
+ * - 小锁图形：P5 风格硬朗折角锁梁 + 斜角矩形锁身 + 墨黑锁孔。
+ */
+function drawLockPrompt(
+  g: Graphics,
+  btnR: number,
+  targetX: number,
+  targetY: number,
+  ready: boolean
+): void {
+  g.clear();
+  const A = Settings.padAlpha;
+  const dist = Math.hypot(targetX, targetY);
+  if (dist < 1) return;
+
+  const nx = targetX / dist;
+  const ny = targetY / dist;
+
+  // 1. 引导轨（从按键边缘到小锁底圈外缘）
+  const startX = nx * btnR;
+  const startY = ny * btnR;
+  const endX = targetX - nx * 22;
+  const endY = targetY - ny * 22;
+
+  g.lineCap = Graphics.LineCap.ROUND;
+  g.lineJoin = Graphics.LineJoin.ROUND;
+
+  if (ready) {
+    // 就绪态：高亮荧光黄实线光轨
+    g.strokeColor = skinColor(CFG.padSkin.downEdge, 0.95 * A);
+    g.lineWidth = 3.5;
+    g.moveTo(startX, startY);
+    g.lineTo(endX, endY);
+    g.stroke();
+  } else {
+    // 引导态：点状虚线，浅白半透明
+    const steps = 4;
+    g.strokeColor = skinColor("#ffffff", 0.45 * A);
+    g.lineWidth = 2.5;
+    for (let i = 0; i < steps; i++) {
+      const t0 = (i * 2) / (steps * 2);
+      const t1 = (i * 2 + 1) / (steps * 2);
+      g.moveTo(startX + (endX - startX) * t0, startY + (endY - startY) * t0);
+      g.lineTo(startX + (endX - startX) * t1, startY + (endY - startY) * t1);
+    }
+    g.stroke();
+  }
+
+  // 2. 小锁底圈（圆心在 targetX, targetY）
+  const pr = ready ? 22 : 19;
+  if (ready) {
+    // 外发光环
+    g.strokeColor = skinColor(CFG.padSkin.downEdge, 0.4 * A);
+    g.lineWidth = 4;
+    g.circle(targetX, targetY, pr + 4);
+    g.stroke();
+
+    // 底板
+    g.fillColor = skinColor("#0a0d18", 0.92 * A);
+    g.circle(targetX, targetY, pr);
+    g.fill();
+
+    // 高亮主边框
+    g.strokeColor = skinColor(CFG.padSkin.downEdge, 0.98 * A);
+    g.lineWidth = 3;
+    g.circle(targetX, targetY, pr);
+    g.stroke();
+  } else {
+    // 未就绪：暗色墨黑底 + 白灰细描边
+    g.fillColor = skinColor("#0a0d18", 0.8 * A);
+    g.circle(targetX, targetY, pr);
+    g.fill();
+
+    g.strokeColor = skinColor("#ffffff", 0.55 * A);
+    g.lineWidth = 2;
+    g.circle(targetX, targetY, pr);
+    g.stroke();
+  }
+
+  // 3. 小锁图标 (P5 几何风)
+  const lockColor = ready ? CFG.padSkin.downEdge : "#ffffff";
+  const lockAlpha = ready ? 0.98 : 0.75;
+  const col = skinColor(lockColor, lockAlpha * A);
+
+  // 锁身 (矩形居中偏下)
+  const bodyW = ready ? 14 : 12;
+  const bodyH = ready ? 10 : 9;
+  const bodyY = targetY - 2;
+  g.fillColor = col;
+  g.rect(targetX - bodyW / 2, bodyY - bodyH / 2, bodyW, bodyH);
+  g.fill();
+
+  // 锁孔 (墨黑中央小点)
+  g.fillColor = skinColor("#0a0d18", 0.95);
+  g.circle(targetX, bodyY, 1.5);
+  g.fill();
+
+  // 锁梁 (硬朗折角拱形, 避免 Graphics.arc 的 counterclockwise 补集陷阱)
+  const shackleW = ready ? 8 : 7;
+  const shackleH = ready ? 6 : 5.5;
+  const shackleBaseY = bodyY + bodyH / 2 - 0.5;
+  g.strokeColor = col;
+  g.lineWidth = ready ? 2.8 : 2.2;
+  g.moveTo(targetX - shackleW / 2, shackleBaseY);
+  g.lineTo(targetX - shackleW / 2, shackleBaseY + shackleH);
+  g.lineTo(targetX + shackleW / 2, shackleBaseY + shackleH);
+  g.lineTo(targetX + shackleW / 2, shackleBaseY);
+  g.stroke();
+}
+
 // ---------- 安全区 ----------
 
 export interface SafeMargins { l: number; r: number; b: number }
@@ -1228,9 +1338,23 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     hintComp = hb;
   }
 
+  // 长滑锁定目标提示节点 (仅击球键)
+  let lockPromptNode: Node | null = null;
+  let lockPromptG: Graphics | null = null;
+  if (action === "swing") {
+    lockPromptNode = new Node(`lock-prompt-${action}`);
+    lockPromptNode.layer = Layers.Enum.UI_2D;
+    lockPromptNode.addComponent(UITransform);
+    lockPromptG = lockPromptNode.addComponent(Graphics);
+    lockPromptNode.active = false;
+    lockPromptNode.setParent(node);
+  }
+
   const rec: BtnRec = {
     action, node, ut, g, cluster, r, pressed: false, selected: false, glow: 0,
-    flash, flashG, flashOp, swipeDir: 0, swipeDirY: 0, lockDirX: 0, lockDirY: 0, lockArmT: 0, aimEcho: 0, aimEchoY: 0, autoMark: false,
+    flash, flashG, flashOp, swipeDir: 0, swipeDirY: 0,
+    lockPromptNode, lockPromptG, lockReady: false, lockTargetAxis: null, lockTargetDir: 0,
+    aimEcho: 0, aimEchoY: 0, autoMark: false,
     labelOp, labelComp, cdOp, cdComp,
     badgeComp, badgeOp, hintComp, hintOp,
     cdRatio: 0, cdGate: makeCdGate(), cdSec: 0, skillReady: true, skillId: "lunge", skillBlock: null, readyPulsing: false,
@@ -1623,9 +1747,12 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       rec.pressed = true;
       if (rec.action === "swing") {
         // 新手势开始:视觉初始化为**锁定值**(有锁时键缘弧当场亮起 = 「这一拍会往这个方向打」,
-        // 与 pad 侧 press 恢复锁值同一帧语义),同时清长滑去重门 —— 去重按手势计。
+        // 与 pad 侧 press 恢复锁值同一帧语义)。
         rec.swipeDir = pad.swingLockX; rec.swipeDirY = pad.swingLockY;
-        rec.lockDirX = 0; rec.lockDirY = 0; rec.lockArmT = 0;
+        rec.lockReady = false;
+        rec.lockTargetAxis = null;
+        rec.lockTargetDir = 0;
+        if (rec.lockPromptNode) rec.lockPromptNode.active = false;
       }
       paint(rec, false);
       Tween.stopAllByTarget(rec.node);
@@ -1635,7 +1762,18 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
     const upOf = (rec: BtnRec): void => {
       rec.pressed = false;
-      if (rec.action === "swing") { rec.swipeDir = 0; rec.swipeDirY = 0; }  // 松手清视觉反馈(pad 上的提交值保留给命中消费)
+      if (rec.action === "swing") {
+        // 和平精英风格长滑锁定: 手指滑到小锁高亮处松开, 真正触发锁定!
+        if (rec.lockReady && rec.lockTargetAxis && rec.lockTargetDir) {
+          lockSwingAxis(pad, rec.lockTargetAxis, rec.lockTargetDir);
+          triggerFlash(rec, CFG.padSkin.downEdge);
+        }
+        rec.lockReady = false;
+        rec.lockTargetAxis = null;
+        rec.lockTargetDir = 0;
+        if (rec.lockPromptNode) rec.lockPromptNode.active = false;
+        rec.swipeDir = 0; rec.swipeDirY = 0; // 松手清当前拍手势视觉反馈(锁向由 aimEcho 回显)
+      }
       paint(rec, false);
       Tween.stopAllByTarget(rec.node);
       // 两段:先 0.9 → 1.06 再回到 1.0,过冲幅度可控、比单调 backOut 更"实"
@@ -1655,24 +1793,25 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
      * 读取;同一轴反向滑过阈值即改写(与横滑的「中途反悔」同构),斜上右滑一个动作即可
      * 组合出「挑高到后场」。同时更新 rec.swipeDir / rec.swipeDirY 触发方向色弧视觉反馈。
      *
-     * 长滑锁定(参考和平精英长滑锁定端口,语义按用户 2026-10-05 口径):
-     *  · **锁着时任何一次短滑 = 解除**(clearSwingLocks,白环)—— 那一拍按短滑方向打,
-     *    没滑到的轴回 mid。放在轴提交之前:清完后下面的提交照常写新方向。
-     *  · 锁入有两条路,都要求「刻意表态」:① 快拉,滑动距离越过按键半径 × lockRadiusK
-     *    当帧即锁;② 拉住,滑出按键(lockNearK × 半径)后**在阈值外停够 lockDwellMs**。
-     *    快甩哪怕甩得很远,越过即松、在阈值外不停留,绝不锁 —— 短滑/长滑按快慢区分,
-     *    绝不锁 —— 短滑/长滑按快慢区分,
-     *    不赌距离(距离阈值两版都被真机滑动击穿过:34 < 按键半径,138 < 正常短滑)。
-     *    同向长滑 = 维持,反向长滑 = 换向,**没有 toggle**;哪些轴锁上按 ±30° 锥角判
-     *    (见 SWIPE_LOCK_CONE):斜 45° 两轴都锁,单轴长滑只锁那一轴。
-     *  · 同方向在同一手势内只触发一次(lockDirX/Y 门)—— 手指在阈值外绕圈的事件流
-     *    不许把同一个方向连写多遍。
+     * 长滑锁定 (和平精英长滑锁定同构设计):
+     *  · 短滑 (位移未出按键) 绝不显示小锁图标, 无任何多余视觉干扰。
+     *  · 滑出按键时, 在对应锁定目标位置动态浮现「小锁图标 🔒 + 虚线引导轨」。
+     *  · 手指滑入小锁激活范围时, 小锁点亮为高亮荧光黄 (进入就绪态)。
+     *  · 在小锁处【松开手指】, 才是正式触发锁定! 若中途滑回松手则不锁定 (仅作普通瞄准打出)。
+     *  · 锁着时任何一次短滑 = 解除 (clearSwingLocks, 白环中性反馈), 这一拍按短滑方向打。
      */
     const trackSwingSwipe = (rec: BtnRec, sx: number, sy: number, e: EventTouch): void => {
       const u = e.getUILocation();
       const dx = u.x - sx;
       const dy = u.y - sy;
-      if (Math.hypot(dx, dy) < SWIPE_THRESHOLD) return;       // 位移不足:仍是 mid
+      const dist = Math.hypot(dx, dy);
+
+      if (dist < SWIPE_THRESHOLD) {
+        if (rec.lockPromptNode) rec.lockPromptNode.active = false;
+        rec.lockReady = false;
+        return;
+      }
+
       // 解除锁定:锁着时的一次真实滑动 = 「我不锁了」。键值一起清(press 起手时把锁值
       // 恢复进了键值,只清锁不清键,恢复值会冒充这一拍的意图),rec 两轴归零让下面的
       // 提交去重自然放行 —— 这一拍只听新滑动,没滑到的轴回 mid。白环 = 解锁的中性色。
@@ -1684,6 +1823,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
         triggerFlash(rec, "#ffffff");
         paint(rec, false);
       }
+
       if (Math.abs(dx) >= SWIPE_THRESHOLD * 0.5) {
         const dir = dx > 0 ? 1 : -1;
         if (rec.swipeDir !== dir) {                            // 已提交同方向,不重复刷
@@ -1705,29 +1845,42 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
           triggerFlash(rec, dir > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive);
         }
       }
-      // 长滑锁定,两条锁入路径(见函数头注):快拉过远阈值当帧锁;拉出按键外停够
-      // lockDwellMs 才锁(快甩在阈值外不停留,永不触发)。荧光黄 = 锁上的确认色。
-      const dist = Math.hypot(dx, dy);
-      const now = Date.now();
-      if (rec.lockArmT === 0 && dist >= rec.r * SWIPE_LOCK_NEAR_K) rec.lockArmT = now;
-      const dwellLong = rec.lockArmT > 0 && dist >= rec.r * SWIPE_LOCK_NEAR_K
-        && now - rec.lockArmT >= SWIPE_LOCK_DWELL_MS;
-      if (dist >= rec.r * SWIPE_LOCK_K || dwellLong) {
-        if (Math.abs(dx) >= dist * SWIPE_LOCK_CONE && rec.lockDirX !== (dx > 0 ? 1 : -1)) {
-          const dir = dx > 0 ? 1 : -1;
-          rec.lockDirX = dir;
-          lockSwingAxis(pad, "x", dir);
-          triggerFlash(rec, CFG.padSkin.downEdge);
-          paint(rec, false);
-        }
-        if (Math.abs(dy) >= dist * SWIPE_LOCK_CONE && rec.lockDirY !== (dy > 0 ? 1 : -1)) {
-          const dir = dy > 0 ? 1 : -1;
-          rec.lockDirY = dir;
-          lockSwingAxis(pad, "y", dir);
-          triggerFlash(rec, CFG.padSkin.downEdge);
-          paint(rec, false);
-        }
+
+      // 长滑锁定位置提示与判定 (和平精英风格: 滑出按键显现小锁, 滑到小锁松开才是锁定)
+      const appearDist = rec.r * SWIPE_LOCK_APPEAR_K;
+      if (dist < appearDist || !rec.lockPromptNode || !rec.lockPromptG) {
+        if (rec.lockPromptNode) rec.lockPromptNode.active = false;
+        rec.lockReady = false;
+        rec.lockTargetAxis = null;
+        rec.lockTargetDir = 0;
+        return;
       }
+
+      // 确定主轴与目标方向
+      const isXMajor = Math.abs(dx) >= Math.abs(dy);
+      const targetAxis: "x" | "y" = isXMajor ? "x" : "y";
+      const targetDir = (isXMajor ? dx : dy) > 0 ? 1 : -1;
+
+      // 小锁目标位置 (相对按键中心)
+      const targetDist = rec.r * SWIPE_LOCK_TARGET_K;
+      const targetX = targetAxis === "x" ? targetDir * targetDist : 0;
+      const targetY = targetAxis === "y" ? targetDir * targetDist : 0;
+
+      // 判定是否进入小锁锁定区:
+      // ① 距小锁中心 <= SWIPE_LOCK_RADIUS;
+      // ② 或在同方向扇区内继续向外拉 (拉过头依然有效, 贴心容错)
+      const distToLock = Math.hypot(dx - targetX, dy - targetY);
+      const overDist = targetAxis === "x"
+        ? (targetDir > 0 ? dx >= targetDist : dx <= -targetDist) && Math.abs(dy) <= SWIPE_LOCK_RADIUS * 1.5
+        : (targetDir > 0 ? dy >= targetDist : dy <= -targetDist) && Math.abs(dx) <= SWIPE_LOCK_RADIUS * 1.5;
+      const ready = distToLock <= SWIPE_LOCK_RADIUS || overDist;
+
+      rec.lockReady = ready;
+      rec.lockTargetAxis = targetAxis;
+      rec.lockTargetDir = targetDir;
+
+      rec.lockPromptNode.active = true;
+      drawLockPrompt(rec.lockPromptG, rec.r, targetX, targetY, ready);
     };
 
     /**
@@ -2332,6 +2485,12 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     clearPressed(): void {
       claims.clear();
       for (const rec of recs) {
+        if (rec.action === "swing") {
+          rec.lockReady = false;
+          rec.lockTargetAxis = null;
+          rec.lockTargetDir = 0;
+          if (rec.lockPromptNode) rec.lockPromptNode.active = false;
+        }
         const hadGlow = rec.glow > 0;
         const hadSwipe = rec.swipeDir !== 0 || rec.swipeDirY !== 0; // 滑动档位也是视觉态:层被藏起来时一并清,
         rec.swipeDir = 0;                      // 否则再亮出来会残留上一次的深/浅图标
