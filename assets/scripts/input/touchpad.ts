@@ -1019,7 +1019,7 @@ function drawLockPrompt(
     g.stroke();
   } else {
     // 引导态：点状虚线，浅白半透明
-    const steps = 4;
+    const steps = 7;
     g.strokeColor = skinColor("#ffffff", 0.45 * A);
     g.lineWidth = 2.5;
     for (let i = 0; i < steps; i++) {
