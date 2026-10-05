@@ -33,9 +33,11 @@ import * as fs from "fs";
 import { installCc, Graphics as StubGraphics, opPoints, opsToSvg } from "./cc-stub";
 import { Rules } from "../assets/scripts/core/rules";
 import { AI } from "../assets/scripts/core/ai";
+import { Player as Pl } from "../assets/scripts/core/player";
+import { ShadowGate } from "../assets/scripts/core/shadow-gate";
 import { CFG } from "../assets/scripts/core/config";
 import { courtRenderer } from "../assets/scripts/render/court";
-import { drawPlayer, drawShuttle } from "../assets/scripts/render/sprites";
+import { drawPlayer, drawShadowClone, drawShuttle } from "../assets/scripts/render/sprites";
 import { Ribbon } from "../assets/scripts/render/ribbon";
 import { FXSystem } from "../assets/scripts/render/fx";
 import { makeShuttleMotion, advanceShuttle } from "../assets/scripts/render/shuttle-motion";
@@ -58,6 +60,10 @@ const VP: Viewport = {
 // 余量必须小于「分频收益」(dyn 层全额约占稳态 3 成),selftest 的旧节奏成本才撞得到红线。
 const BUDGET_STEADY = 255;   // 实测稳态 ≈220 笔/帧(本次优化后首跑)
 const BUDGET_PEAK = 420;     // 实测最忙帧 ≈312 笔(特效爆发帧;峰值受对局随机影响大,余量放宽到 35%)
+// 满编影分身档:三枚常驻 ⇒ 场上从 2 具身体变 5 具。**0.0.28 影分身上线时这一档根本不在账上**
+// (本工具只画 R.players),等于"最坏稳态"从来没人量过。2026-10-05 同场放开到三个,补一条:
+// 预算 = 实测满编水位 × 余量,和稳态那条同一口径 —— 它红就说明"分身越画越贵"在悄悄发生。
+const BUDGET_STEADY_CLONES = 320;
 
 function fail(msg: string): never {
   console.error(`✗ ${msg}`);
@@ -84,6 +90,7 @@ interface Measure {
   peakFrame: number;
   snapshot: StubGraphics["ops"];
   frames: number;
+  clones: number;      // 这一档场上常驻了几个影分身
 }
 
 // ---------- 测量主循环 ----------
@@ -91,11 +98,17 @@ interface Measure {
  * 跑一段 AI 对 AI 对局并按真实渲染节奏计费。
  * @param dynEveryFrame selftest 用:court-dyn 恢复每帧重绘(旧写法节奏),
  *   正常跑恒为 false(节奏与 world.render 的门控一致)。
+ * @param clones 影分身档:0 = 现状(两个实名球员);3 = **满编常驻**的最坏稳态。
+ *   这一档必须量:0.0.28 那版影分身上线时本工具只画 R.players,分身的成本**完全不在账上**
+ *   —— 而"同场最多三个"是把一具身体变成四具,不量就是拿中低端机的帧率去赌。
+ *   这里每帧把编制补满(分身接满三球会散,补满才是稳态上界),画的是 sprites.drawShadowClone
+ *   —— 与真机 world.drawShadowClones **同一个函数**,不是这里另抄一份便宜画法。
  */
-function runMeasure(dynEveryFrame: boolean): Measure {
+function runMeasure(dynEveryFrame: boolean, clones = 0): Measure {
   Rules.newMatch("1p", "normal");
   for (const p of Rules.R.players) { p.isAI = true; p.aiDiff = "normal"; }
   Rules.applyAiTier();
+  const cloneHost = clones > 0 ? Rules.R.players[0] : null;
 
   const mainG = new StubGraphics();     // 实体层(球员/球/丝带/特效,每帧)
   const dynG = new StubGraphics();      // court-dyn(每 2 帧 + 晃网强制)
@@ -126,6 +139,10 @@ function runMeasure(dynEveryFrame: boolean): Measure {
     }
     Rules.step(inputs);
     R.events.length = 0;                     // 事件只驱动音效/UI,本工具不消费
+    // 满编常驻:分身接满三球会散,这里每帧补回三个,量的才是"影子防线拉满"的最坏稳态
+    if (cloneHost) {
+      while (ShadowGate.clonesOf(cloneHost).length < C.skills.shadow.slots.length) Pl.spawnShadowClone(cloneHost);
+    }
     fx.step(1 / 60);
     frameT++;
     const ball = R.ball;
@@ -133,6 +150,21 @@ function runMeasure(dynEveryFrame: boolean): Measure {
 
     // ---- 渲染帧(1 渲染帧/模拟步;分频节奏与 world.render 一致)----
     mainG.clear();
+    // 影分身:与 world.drawShadowClones 同一批参数、同一个函数(画在实名球员下层)
+    if (cloneHost) {
+      const SHC = C.skills.shadow;
+      for (const sc of ShadowGate.clonesOf(cloneHost)) {
+        if ((sc.spawnT > 0 || sc.despawnT > 0) && frameT % 2 === 1) continue;
+        drawShadowClone(asCC(mainG), VP, sc.entity, frameT, 1, ball, {
+          tint: ShadowGate.slotTint(sc.slot),
+          remaining: SHC.maxHits - sc.hits,
+          slot: sc.slot,
+          seed: sc.seed,
+          phase: frameT,
+          showPips: sc.spawnT <= 0 && sc.despawnT <= 0,
+        });
+      }
+    }
     for (const p of R.players) drawPlayer(asCC(mainG), VP, p, frameT, 1, ball);
     if (ball && (ball.live || ball.held || ball.flying)) {
       Object.assign(ballView, ball);
@@ -186,13 +218,16 @@ function runMeasure(dynEveryFrame: boolean): Measure {
     peakFrame,
     snapshot,
     frames: billedFrames,
+    clones,
   };
 }
 
 // ---------- 正常跑:稳态 + 峰值双预算 ----------
 const m = runMeasure(false);
+const m3 = runMeasure(false, C.skills.shadow.slots.length);
 console.log(`采样 ${m.frames} 帧`);
 console.log(`稳态均值: ${m.steady.toFixed(1)} 笔/帧(预算 ${BUDGET_STEADY})`);
+console.log(`满编影分身: ${m3.steady.toFixed(1)} 笔/帧(三枚常驻,每枚 +${((m3.steady - m.steady) / 3).toFixed(1)} 笔;预算 ${BUDGET_STEADY_CLONES}) / 最忙帧 ${m3.peak.toFixed(0)} 笔(预算 ${BUDGET_PEAK})`);
 console.log(`最忙帧:   ${m.peak.toFixed(0)} 笔(第 ${m.peakFrame} 帧,顶点 ${m.peakVerts};预算 ${BUDGET_PEAK})`);
 
 // 最忙帧出图(本地 Graphics 坐标 → SVG:y 翻转 + 平移回世界原点)
@@ -221,6 +256,14 @@ if (process.argv.includes("--selftest")) {
     process.exit(1);
   }
   console.log(`selftest ✓ 旧节奏成本撞红预算(${old.steady.toFixed(1)} > ${BUDGET_STEADY}),world.ts 分频回退会被拦`);
+  // 满编档必须**真的在量分身**:哪天有人把渲染循环里那段 drawShadowClone 删了,这一档会退化成
+  // 与稳态同一个数,预算就变成摆设 —— 所以这里要求"三个分身至少多出一笔可辨的量"。
+  const delta = m3.steady - m.steady;
+  if (delta < 3 * 8) {
+    console.error(`✗ selftest:满编档只比稳态多 ${delta.toFixed(1)} 笔(每枚不到 8 笔)—— 分身没进账,这条预算是死的`);
+    process.exit(1);
+  }
+  console.log(`selftest ✓ 满编影分身档在量真东西:三枚共 +${delta.toFixed(1)} 笔(每枚 ${(delta / 3).toFixed(1)})`);
   process.exit(0);
 }
 
@@ -232,6 +275,19 @@ if (m.steady > BUDGET_STEADY) {
 if (m.peak > BUDGET_PEAK) {
   failures++;
   console.error(`✗ 最忙帧 ${m.peak.toFixed(0)} > 预算 ${BUDGET_PEAK} —— 特效/庆祝峰值失控(第 ${m.peakFrame} 帧)`);
+}
+if (m3.steady > BUDGET_STEADY_CLONES) {
+  failures++;
+  console.error(`✗ 满编影分身稳态 ${m3.steady.toFixed(1)} > 预算 ${BUDGET_STEADY_CLONES} —— 三枚常驻把每帧成本抬出水位了(减辉光笔数 / pips 合并 / 降本体细节,别拿中低端机赌)`);
+}
+// 满编档的最忙帧也要过同一条峰值红线:特效爆发与三枚分身撞在同一帧,才是真最坏情况
+if (m3.peak > BUDGET_PEAK) {
+  failures++;
+  console.error(`✗ 满编档最忙帧 ${m3.peak.toFixed(0)} > 预算 ${BUDGET_PEAK} —— 三分身 + 特效同帧失控(第 ${m3.peakFrame} 帧)`);
+}
+if (m3.steady <= m.steady) {
+  failures++;
+  console.error(`✗ 满编档(${m3.steady.toFixed(1)})没比稳态(${m.steady.toFixed(1)})贵 —— 渲染循环里的分身没被量到,这条预算是死的`);
 }
 if (failures) {
   console.error(`frame-cost-check: ${failures} 处超预算`);

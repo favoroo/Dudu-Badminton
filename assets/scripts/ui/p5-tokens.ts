@@ -27,7 +27,7 @@
 export const C: Record<
   "ink" | "navy" | "navy2" | "panelTop" | "line" | "paper" | "paperDim"
   | "acid" | "acidEdge" | "acidDk" | "slash" | "slashDk" | "red" | "blue" | "wood"
-  | "good" | "bad" | "cyan" | "dim" | "dimDeep", string
+  | "good" | "bad" | "hot" | "cyan" | "dim" | "dimDeep", string
 > = {
   // ---- 底与墨 ----
   ink: "#07070d",        // 最深底(P5 黑):衬纸面色、凹陷槽底
@@ -50,6 +50,7 @@ export const C: Record<
   wood: "#c8703a",       // 暖木(球场氛围)
   good: "#7dff9e",       // 绿 = 练成 / 已拥有
   bad: "#ff6b6b",
+  hot: "#ff6a1f",        // 打击橙 = 扣杀 / 连击类数据(结算屏与履历格同源,别在面板里再写一遍)
   cyan: "#00f0ff",       // 青 = 专项 / 说明
   dim: "#8f9cbe",        // 暗部正文
   dimDeep: "#6f7ca6",    // 更暗:锁定态、次要读数
@@ -93,7 +94,7 @@ export function halftoneDots(w: number, h: number, step: number = HALFTONE.step)
 
 // ---------- 色即功能:面板层唯一的角色表 ----------
 
-export type Role = "primary" | "star" | "drill" | "info" | "record" | "off";
+export type Role = "primary" | "star" | "drill" | "info" | "record" | "power" | "off";
 
 /**
  * 一个角色 = 面色 + 同色系提亮描边 + 同色压暗厚底边。
@@ -107,6 +108,7 @@ export const ROLE: Record<Role, { face: string; edge: string; dk: string; why: s
   drill: { face: C.good, edge: "#4fd07a", dk: "#2f8f4c", why: "练成 / 已拥有 / 进行中的训练" },
   info: { face: C.cyan, edge: "#66f7ff", dk: "#0a9fb2", why: "专项 / 说明性标题" },
   record: { face: C.paper, edge: C.paperDim, dk: "#b3a893", why: "档案 / 履历 / 已通关卡" },
+  power: { face: C.hot, edge: "#ff9a5a", dk: "#a83f08", why: "打击 / 扣杀类数据(结算屏 TONE.hot 与履历格同源)" },
   off: { face: C.navy2, edge: C.line, dk: C.ink, why: "未选中 / 锁定 / 凹陷槽" },
 };
 

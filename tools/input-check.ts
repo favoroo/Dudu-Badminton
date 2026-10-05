@@ -15,7 +15,7 @@
 // 用法(先 npx tsc -p tools/tsconfig.json 编译):
 //   node .tools-build/tools/input-check.js
 import { makeChecker } from "./harness";
-import { newPad, press, release, cancelJump, clearEdges, buildIntent, resetPadHolds, tickHolds, setTargetX } from "../assets/scripts/input/pad";
+import { newPad, press, release, cancelJump, clearEdges, buildIntent, restoreSwingAim, lockSwingAxis, resetPadHolds, tickHolds, setTargetX } from "../assets/scripts/input/pad";
 import { Player } from "../assets/scripts/core/player";
 import { CFG } from "../assets/scripts/core/config";
 import { Gait } from "../assets/scripts/core/gait";
@@ -393,6 +393,75 @@ console.log("输入意图层:跨步键 / 方向解析 / 边沿清理\n");
   Player.update(pImmune, inpHit, mkBall());
   ok(pImmune.lungeT === 1, "跨步成功起步");
   ok(pImmune.vx === -CFG.lunge.speed, `距离 targetX 零距离但跨步速度不被刹停(实得 vx=${pImmune.vx})`);
+}
+
+// ---------- ⑩ restoreSwingAim:自动击打的「一滑一拍」恢复的只是瞄准,不是按下状态 ----------
+
+{
+  const pad = newPad();
+  press(pad, "swing");            // 真按下:两轴恢复锁值(没锁 = 0)+ swingPressed/swingHeld 立起来
+  pad.swingSwipe = 1;             // 同帧手指横滑提交(trackSwingSwipe 干的事)
+  pad.swingSwipeY = -1;
+  press(pad, "right");            // 顺手按着右移 + 记一个方向意图
+  pad.lastDir = -1;
+
+  const before = { held: pad.swingHeld, pressed: pad.swingPressed, right: pad.right, lastDir: pad.lastDir };
+  restoreSwingAim(pad);
+  ok(pad.swingSwipe === 0 && pad.swingSwipeY === 0, "restoreSwingAim 没锁时把深浅 + 高低两轴一起归 0");
+  const out = buildIntent(pad, {});
+  ok(out.swingSwipe === 0 && out.swingSwipeY === 0,
+    `清完之后 buildIntent 输出 0/0(实得 ${out.swingSwipe}/${out.swingSwipeY})⇒ 下一拍回到物理自动决定的那一档`);
+  ok(pad.swingHeld === before.held && pad.right === before.right && pad.lastDir === before.lastDir,
+    "只清瞄准:按住态 / 方向键 / lastDir 一个都不动(它是存储,不是按下状态;清错了就是把玩家定在原地)");
+  restoreSwingAim(pad);
+  ok(pad.swingSwipe === 0 && pad.swingHeld === before.held, "再清一次幂等(收招帧与 resetPadHolds 撞同一帧也不会互相顶)");
+
+  // 与 press 的分工:键盘键自己就是完整意图,一次性化不插手键盘那一侧
+  pad.swingSwipe = -1;
+  press(pad, "swingNear");
+  ok(pad.swingSwipe === -1, "press(swingNear) 自己就是提交(键盘路径即按即定),restoreSwingAim 不参与");
+  press(pad, "swing");
+  ok(pad.swingSwipe === 0 && pad.swingSwipeY === 0, "按下击球键没锁时仍把两轴恢复成 0(老规矩)");
+}
+
+// ---------- ⑩b 长滑锁定:lockSwingAxis 的 toggle + press/restore 的「恢复锁值」 ----------
+
+{
+  const pad = newPad();
+  // 锁上:同轴同向再锁一次 = 取消(toggle),反向 = 换向
+  ok(lockSwingAxis(pad, "x", 1) === true, "首次长滑 = 锁上");
+  ok(pad.swingLockX === 1 && pad.swingLockY === 0, "锁值落在横轴,纵轴不连坐(两轴独立)");
+  ok(lockSwingAxis(pad, "x", 1) === false, "同向再长滑 = 取消(toggle)");
+  ok(pad.swingLockX === 0, "取消后锁值归 0");
+  ok(lockSwingAxis(pad, "x", 1) === true && lockSwingAxis(pad, "x", -1) === true && pad.swingLockX === -1,
+    "反向长滑 = 换向(不是取消)");
+  // 键值照常写(短滑语义仍在):取消的那一拍仍按该方向打,下一拍才回 mid
+  pad.swingLockX = 1;
+  pad.swingSwipe = 1;
+  ok(lockSwingAxis(pad, "x", 1) === false && pad.swingSwipe === 1 && pad.swingLockX === 0,
+    "取消锁不清键值 —— 本拍方向由键值说话,锁只管「下一拍起默认哪边」");
+
+  // 锁定后 press(swing) 恢复锁值:短滑覆盖的本拍打完,下一拍自动回锁
+  lockSwingAxis(pad, "x", -1);               // 重新锁 near(上面那组 toggle 把锁收掉了)
+  press(pad, "swing");
+  ok(pad.swingSwipe === -1 && pad.swingLockX === -1, "有锁时按下 = 恢复锁值(横轴)");
+  pad.swingSwipeY = 1;                       // 本拍短滑临时改挑高
+  ok(pad.swingSwipeY === 1, "锁定期间短滑照常覆盖本拍键值");
+  restoreSwingAim(pad);
+  ok(pad.swingSwipeY === 0 && pad.swingSwipe === -1,
+    "restoreSwingAim 有锁时回锁向:没锁的纵轴回 0、锁着的横轴停在锁值(短滑的例外一拍到此为止)");
+
+  // 纵轴锁与横轴锁互不干扰
+  lockSwingAxis(pad, "y", -1);
+  press(pad, "swing");
+  ok(pad.swingSwipe === -1 && pad.swingSwipeY === -1, "两轴各自锁定时按下恢复两把锁");
+
+  // 换局边界:resetPadHolds 清锁 —— 新对局从 mid 打起,别把上一局锁的后场带过来
+  resetPadHolds(pad);
+  ok(pad.swingLockX === 0 && pad.swingLockY === 0 && pad.swingSwipe === 0 && pad.swingSwipeY === 0,
+    "resetPadHolds 清锁 + 清键值(换局 = 全部回到物理自动决定)");
+  press(pad, "swing");
+  ok(pad.swingSwipe === 0 && pad.swingSwipeY === 0, "清锁后按下 = 老规矩的 0/0");
 }
 
 console.log(h.bad === 0 ? "\n输入意图层自洽 ✓" : `\n${h.bad} 项未通过`);

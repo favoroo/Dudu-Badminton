@@ -8,7 +8,8 @@ import { Physics, FuturePt, flightFramesToClosest } from "./physics";
 import { Gait } from "./gait";
 import { AutoHit } from "./auto-hit";
 import { Skills } from "./skills";
-import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShotResult, SwingBestShot, Theme } from "./types";
+import { ShadowGate } from "./shadow-gate";
+import { Ball, HitOpt, Player as PlayerEntity, PlayerInput, ShadowCloneState, ShotResult, SwingBestShot, Theme } from "./types";
 
 // 本模块导出的 Player(值:移动/挥拍/命中的 API)与 types 的 Player 实体(类型)
 // 同名对外,调用方 `import { Player } from "./player"` 两个语义都拿得到,
@@ -92,8 +93,15 @@ function create(side: PlayerEntity["side"], opts: Partial<PlayerEntity> & { home
   };
 }
 
-/** 影分身专属墨色主题:全剪影人偶 + 紫光点缀,黑脸白线五官天然读作"无面之影" */
-const SHADOW_THEME: Theme = { main: "#232733", dark: "#12141c", glow: "#8b5cf6", name: "影分身" };
+/**
+ * 影分身的墨色主题:全剪影人偶 + 身份色点缀,黑脸无五官天然读作"无面之影"。
+ * **每体复制一份,绝不共享同一对象** —— 三个分身共用一个 theme 时,任何一方就地写一下
+ * 就改了三个(本仓 palette.ts 顶部专门警告过这个形状)。身份色进 glow:渲染从 p.theme.glow
+ * 取它,于是"三色"零新增跨层字段 —— world 的 cloneView 用 Object.assign 拷实体,自动带上。
+ */
+function shadowTheme(slot: number): Theme {
+  return { main: "#232733", dark: "#12141c", glow: ShadowGate.slotTint(slot), name: "影分身" };
+}
 
 /**
  * 召唤影分身(「影分身」技能的实体落点)。
@@ -101,32 +109,45 @@ const SHADOW_THEME: Theme = { main: "#232733", dark: "#12141c", glow: "#8b5cf6",
  * game-root 的 R.players[0]=真人假设都不许被第三名球员污染 —— 它是挂在宿主身上的
  * 独立 Player,由 core/shadow.ts 用 AI.think 出输入、走本模块 update/tryHit 全套机器。
  * 放在本模块而不是 skills.ts,是因为 create() 工厂在这里,而 skills 不许反向 import player。
+ *
+ * 2026-10-05 多分身化:同场最多 CFG.skills.shadow.slots.length 个,**身份看 slot**(取最低空位),
+ * 颜色 / 防区 / AI 档全由 slot 索引配置。**恒按 slot 升序插入** —— 绘制顺序与补位优先顺序都要
+ * 确定,回归才量得出"第几号分身"这种事(不排序的话同一局跑两次结果不同,判据就成了掷骰子)。
  */
 export function spawnShadowClone(host: PlayerEntity): void {
-  if (host.shadowClone) return; // 已在场:同分第二次 activate 已被 shadowCast 闸住,这里再拦一道
   const SH = C.skills.shadow;
+  const slot = ShadowGate.freeSlotOf(host);
+  if (slot < 0) return;   // 满编:canActivate 已经拦在外面,这里再拦一道(与旧写法同一条纪律)
+  const conf = SH.slots[slot];
   const c = create(host.side, {
     isAI: true,
-    aiDiff: SH.cloneDiff,
-    theme: SHADOW_THEME,
+    aiDiff: conf.diff,
+    theme: shadowTheme(slot),
     label: "影分身",
     hideTag: true, // 分身不挂名牌:场上多一块名牌会与宿主名牌混淆
-    homeX: host.side === "left" ? CO.netX - 200 : CO.netX + 200,
+    // 各守一块防区:homeX 由槽位偏移决定(右队镜像取反)。0 号 = 0.0.28 那个唯一分身的老位置
+    homeX: CO.netX + (host.side === "left" ? conf.homeOffset : -conf.homeOffset),
   });
   c.idx = -1;        // 不占名单索引:R.players[idx] 按位索引永远不该摸到分身(applyShot 事件归因已改用 isAI)
   c.skill = undefined; // 分身不吃技能:AI 决策链(AI.think 的技能分支)与 Pl.update 的 activate 都被这一行封死
-  c.x = host.x - host.facing * SH.spawnPushBack; // 从宿主影子里"拔出来":出生在宿主身后半步
+  c.x = host.x - host.facing * SH.spawnPushBack; // 从宿主影子里"拔出来":出生在宿主身后半步,再自己跑去防区
   c.px = c.x;
   c.y = CO.groundY;
   c.py = c.y;
   c.facing = host.facing;
-  host.shadowClone = {
+  const sc: ShadowCloneState = {
     entity: c,
+    slot,
     hits: 0,
     spawnT: SH.spawnFrames, // 成影演出帧(隔帧闪烁):期间不接球,来球归玩家
-    despawnT: 0,            // 消散演出帧:>0 期间不再起拍,演完整个状态清空
-    seed: (Math.random() * 1e9) | 0,
+    despawnT: 0,            // 消散演出帧:>0 期间不再起拍,演完从数组里摘掉
+    refillT: 0,             // 补满亮片演出:只有跨回合补满的那一下才非零
+    seed: (Math.random() * 1e9) | 0,  // 出生定形种子:渲染层拿它画轮廓辉光的尖刺,逐帧只缩放不重掷
   };
+  const arr = host.shadowClones || (host.shadowClones = []);
+  let at = arr.length;
+  for (let i = 0; i < arr.length; i++) { if (arr[i].slot > slot) { at = i; break; } }
+  arr.splice(at, 0, sc);
 }
 
 /**
@@ -174,6 +195,54 @@ export function aimOverride(
     // 同上:没滑过纵轴就不覆盖,弧线由物理自动决定
   }
   return { aim: a, loft: l };
+}
+
+/**
+ * 球种预告徽标的**基准**瞄准(深浅 + 高低)。
+ *
+ * 为什么需要它:徽标回答的是「下一拍会打成什么球」。自动击打开着时玩家不再按下击球键,
+ * `p.swingAim` 就停在**上一拍**的值上 —— 旧写法直接拿它当基准,于是"滑一次管一拍"落地之后
+ * 会出现徽标一直报上一拍落点、而系统这一拍打的是 mid 的撒谎(本仓库反复栽的那条:
+ * 徽标一套判定、实球另一套)。所以不在收招处改写 `p.swingAim`(那是闪现/引力起手时
+ * 故意写下的"下一拍压深场"承诺,见 skills.ts 的 flash/magnet 分支),而是在**读侧**取种子。
+ *
+ * 三条合取项每一条都有承重:
+ *  · `AutoHit.on` —— 关掉时逐字等于今天的表达式(auto-hit-check ⑥/⑩c 的"零变化"口径);
+ *  · `!p.isAI` —— 替身/AI 的 p.swingAim 是它们自己的意图,不该被代拍种子覆盖;
+ *  · `p.swingT < 0` —— 正在挥拍时基准必须是活值(手动起拍的 aim、技能承诺的 deep、
+ *    已经覆盖上来的那次滑动),否则会报成 mid。
+ */
+export function previewBase(p: PlayerEntity): { aim: string | number; loft: number } {
+  if (AutoHit.on && !p.isAI && p.swingT < 0) return { aim: C.autoHit.autoAim, loft: 0 };
+  return { aim: p.swingAim, loft: p.swingLoft };
+}
+
+/**
+ * 「这一次滑动用掉了」:自动击打开着、且这一拍**真把球打出去**(`struck`)时,
+ *  ① 把本步输入快照里那两轴作废,② 再经钩子让表现层把 pad 上的瞄准恢复成锁定值
+ * (input/pad.ts 的 restoreSwingAim)⇒ 没锁时击球键滑一次只管一拍,不进锁定态;
+ * 长滑锁定的方向经同一条路回锁向。
+ *
+ * 三道闸每一条都不冗余,而且**闸刻意放在这个函数里**(不是调用点的 if):
+ * 挂到 `Player` 对象上按对象调用,tools/auto-hit-check.ts 的 --selftest 才能把它换成
+ * "消耗一切 / 从不消耗 / 不看 struck / 不看 AutoHit.on"四份反例 —— 换不掉反例的闸门等于没牙齿
+ * (与 autoSwingDue 同一套接缝规矩)。
+ *  · `!AutoHit.on` 先走 ⇒ 关掉时不写任何东西、钩子也不调,今天那套逐帧行为逐字不变(判据 ⑥/⑩c);
+ *  · `!struck` ⇒ **挥空不吃瞄准**(判据 ⑩b):没打上球就没兑现,与「按了没兑现不许白罚」同源;
+ *  · `p.isAI` ⇒ AI 永不消耗(判据 ⑩d):game-root 的 inputHooks 是**共用对象**,铺给场上每个人
+ *    (含喂球机与影分身),漏了这道闸就是 CPU 打一拍吃掉真人欠着的瞄准。
+ *
+ * 为什么连 `inp` 也要当场清零:`inp` 是本步**开始时**拍的快照,清 pad 清不到它 —— 而收招帧
+ * 正被 `p.swingBuf` 接续下一拍(player.ts 的挥拍机器)时,同一帧稍后的 aimOverride 还会读它,
+ * 一次滑动就打两拍(判据 ⑩g)。这个对象一步一个新份、`p.lastInp` 全仓库无人读,作废它是干净的。
+ * 刻意不碰 lungeAutoT / flashStrikeT / p.swingAim:代劳的是清一个输入读数,不改任何判定。
+ */
+export function consumeAutoAim(p: PlayerEntity, inp: PlayerInput, struck: boolean): boolean {
+  if (!AutoHit.on || !struck || p.isAI) return false;
+  inp.swingSwipe = 0;
+  inp.swingSwipeY = 0;
+  inp.onAimConsume?.(p);
+  return true;
 }
 
 /**
@@ -230,15 +299,18 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     const success = Skills.activate(p, ball, dir);
     if (success && p.skill) {
       p.stats.skillCasts++;             // 三星判据「释放技能 N 次」:lunge 也是五技能之一,计入
-      inp.onSkill && inp.onSkill(p, p.skill.id);
-      if (p.skill.id === "lunge") {
-        if (inp.onLunge) inp.onLunge(p);
-        inp.targetX = undefined; // 跨步冲量接管,清空当帧定点避免与跨步初速度竞争
-      }
+      // 影分身**先落地再播起手**:onSkill 那条链要读"刚出生的是几号分身"(取身份色做粒子与辉光)
+      // 和"在场几个"(飘字)。旧写法把召唤排在 onSkill 之后 —— 单分身时无所谓,多分身之后起手字会
+      // 少报一个、爆开的还是上一号的色(症状:召第二个时字写「已在场 1 个」、脚下炸的是紫)。
       if (p.skill.id === "shadow") {
         // 影分身实体落点:skills.activate 只记账(shadowCast),create() 工厂在本模块,
         // 所以召唤在这里完成 —— AI 状态由 core/shadow.ts 首次驱动时懒初始化(避免 player→ai 成环)
         spawnShadowClone(p);
+      }
+      inp.onSkill && inp.onSkill(p, p.skill.id);
+      if (p.skill.id === "lunge") {
+        if (inp.onLunge) inp.onLunge(p);
+        inp.targetX = undefined; // 跨步冲量接管,清空当帧定点避免与跨步初速度竞争
       }
     }
   }
@@ -294,6 +366,10 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   const inFocus = (p.focusT ?? 0) > 0;
   const focusSpeedMul = inFocus ? (C.skills.focus.playerSpeedMul ?? 4.2) : 1;
   const focusAccelMul = inFocus ? (C.skills.focus.playerAccelMul ?? 4.5) : 1;
+  // 时空领域内:球与对手被子弹时间拖慢,玩家挥拍/收拍/续拍缓冲按真实时间推进
+  // (挥拍动画播放速度正常,不被 slowmo 拖慢;swingT/swingBuf/recoverT 同步补偿,
+  //  否则 slowmo 下 swingBuf 衰减慢 + swingT 跳得快会导致"按一次自动连挥")
+  const focusTimeStep = inFocus ? 1 / (C.skills.focus.ballSlow || 0.35) : 1;
 
   if (p.lungeT >= 0) {
     // 跨步中:速度由 lunge 物理冲量完全控制,不被滑轨定点刹停截断
@@ -454,9 +530,13 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   // whiff 惩罚照旧,不助长乱按。hitstop 顿帧期保留的输入边沿照常从这里消化。
   if (inp.swingAim != null) { p.swingBuf = SW.buffer; p.swingBufAim = inp.swingAim; }
   if (p.swingT >= 0) {
-    p.swingT++;
+    p.swingT += focusTimeStep;
     const total = Physics.swingTotal() + (p.swingHit ? 0 : SW.whiffExtra);
     if (p.swingT >= total) {
+      // 「这一拍到底打出去没有」必须取在收招清零之前:稍后 startSwing 会把 swingHit 重置成
+      // false,而引力那条分支(skills.ts 的 magnet 起手)不设 swingHit = false —— 现读会拿到
+      // 上一拍的脏真值,把没打出去的这一拍算成用掉了瞄准。
+      const struck = p.swingHit;
       if (!p.swingHit) {
         p.stats.whiffs++;
         if (activePlayerModifier?.zenFocus) p.zenMeter = 0;
@@ -464,6 +544,12 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
       }
       p.swingT = -1;
       p.recoverT = SW.blendOut;    // 收拍回摆:渲染端把弧线终点插回待机姿势
+      // 「一次滑动只管一拍」在这里兑现:真把球打出去的那一拍才算用掉。三道闸(开着辅助 /
+      // 这一拍真打出去了 / 不是 AI)与"顺手把本步那份输入快照也作废"都写在 consumeAutoAim
+      // 里,并按对象调用 ⇒ --selftest 能把它们各自换成反例(判据 ⑩a~⑩g)。
+      // 排在续拍之前:同一帧被 p.swingBuf 接续的下一拍读到的就是已作废的快照,不会把用掉的
+      // 方向再吃一次(一次滑动打两拍)。
+      Player.consumeAutoAim(p, inp, struck);
       // 收招瞬间消化排队的击球键(挥拍尾声 ~7 帧内按下的就无缝接续下一拍)
       if (p.swingBuf > 0) { startSwing(p, ball, p.swingBufAim); p.swingBuf = 0; }
     }
@@ -533,6 +619,9 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     //   · 不压 sweet/perfect —— 代劳的是帧,质量该多少是多少(用户明确选了"不打折")。
     // 起手给的是字符串 "mid"(与真人点按同一条路:pad.buildIntent 也是 "mid"),落点/弧线的
     // 玩家意图由下面 aimOverride 在**同一帧**覆盖上来 ⇒ 「击球键变纯瞄准键」零新增代码。
+    // 但那份意图默认**借一拍**:这一拍真打出去后由收招处的 consumeAutoAim 当场恢复
+    // (没锁回 mid;长滑锁定了就回锁向),想再改方向就得再滑一次
+    // (用户 2026-10-05:「一次之后就重置为默认状态」)。
     startSwing(p, ball, AH.autoAim);
     p.swingAuto = true;                       // 来路:这一拍是系统起的(玩家抢的那拍不会被打标)
     p.autoTryRef = ball.shot;
@@ -540,15 +629,19 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     inp.onAutoSwing && inp.onAutoSwing(p, ball);  // 表现层读数(场边飘「自动」):只在真起手的这一帧
   }
   // 滑动手势覆盖落点与弧线:startSwing 设的初值在这里被玩家的实际意图盖掉。
-  // 触屏那两个字段是**粘住不丢**的(pad.buildIntent 每步输出,只有 resetPadHolds 清),
-  // 所以自动那一拍继承的就是玩家最后一次滑动的方向;键盘路径在 press 时已定好 ±1,等价于立即覆盖。
+  // 触屏那两个字段是**粘住不丢**的(pad.buildIntent 每步输出,press / resetPadHolds /
+  // restoreSwingAim 都只是把它们恢复成锁值),所以自动那一拍继承的就是玩家欠着的那一次
+  // 滑动方向;键盘路径在 press 时已定好 ±1,等价于立即覆盖。**默认这份意图只作用一拍** ——
+  // 打出去那一拍的收招处 consumeAutoAim 把本步快照作废、pad 恢复成锁值(没锁 = 0):
+  // 下一次还想改方向就得再滑一次(判据 ⑩)。触屏**长滑**(touchAim.lockPx)会把方向
+  // 锁成默认(pad.swingLockX/Y),此后每一拍自动回锁向 —— 「管到取消」走的是同一条恢复路。
   if (p.swingT >= 0) {
     const o = aimOverride(p.swingAim, p.swingLoft, inp.swingSwipe, inp.swingSwipeY);
     p.swingAim = o.aim;
     p.swingLoft = o.loft;
   }
-  if (p.swingBuf > 0) p.swingBuf--;
-  if (p.recoverT > 0) p.recoverT--;
+  if (p.swingBuf > 0) p.swingBuf -= focusTimeStep;
+  if (p.recoverT > 0) p.recoverT -= focusTimeStep;
   if (p.hitLock > 0) p.hitLock--;
   if (p.contactFlash > 0) p.contactFlash--;
   if (p.smashGlow > 0) p.smashGlow--;
@@ -966,17 +1059,20 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
  * 每个真实帧(按 ≤10 帧节流)跑一次。旧写法没有它 —— 按下重击后的第一记预告就把附魔
  * 清零,玩家看到「按了没反应、下一拍还是普通球」还白付冷却(判据 tools/smash-check.ts)。
  *
- * `pending`(击球键上粘住的那次滑动)走 aimOverride 折成 aimHint 传进同一条解算:
- * 没起拍时 p.swingAim 停在上一拍的旧值,不传就会一直报上一拍的落点。手动模式下这条
- * 修正同样成立(滑了就立刻看到),而实打路径不经过这里 ⇒ 弹道一个数都不动。
+ * `pending`(击球键上那次还没用掉的滑动)走 aimOverride 折成 aimHint 传进同一条解算:
+ * 基准由 previewBase 取 —— 自动击打开着且人不在挥拍中时,下一拍由系统起手,基准就是代拍
+ * 那个种子(autoAim),而不是 p.swingAim 上停着的上一拍。滑动改成"只管一拍"之后,不取种子
+ * 就会一直报上一拍的落点(徽标撒谎,而这正是"我滑了到底有没有用"唯一的读数)。手动模式下
+ * 逐字等于旧写法,而实打路径不经过这里 ⇒ 弹道一个数都不动。
  */
 function previewKind(p: PlayerEntity, ball: Ball, pending?: {
   swipe: number | null | undefined; swipeY: number | null | undefined;
 }): ShotResult["kind"] {
+  const base = Player.previewBase(p);
   const hint = pending
-    ? aimOverride(p.swingAim, p.swingLoft, pending.swipe, pending.swipeY)
+    ? aimOverride(base.aim, base.loft, pending.swipe, pending.swipeY)
     : undefined;
-  const aim = hint ? hint.aim : p.swingAim;
+  const aim = hint ? hint.aim : base.aim;
   const isNear = typeof aim === "string" ? aim === "near" : false;
   if (!p.onGround && (CO.groundY - ball.y) >= C.jumpSmash.minHeight) {
     if (isNear) return "slash";
@@ -990,4 +1086,8 @@ function previewKind(p: PlayerEntity, ball: Ball, pending?: {
 // 这一条对象调用,tools/lunge-check.ts 的 --selftest 才能把它换成反例(与 Skills.modifyShot
 // 被 player.ts 按对象调用同一个道理 —— 直接闭包调用是换不掉的,那套反例就没牙齿)。
 // `aimOverride` 一起挂上:auto-hit-check 要拿它单验「预告与实打同一份算术」。
-export const Player = { create, update, tryHit, buildShot, previewKind, depthOf, aimOverride, strikeZone, ballInZone, autoSwingDue, ballFuture, setPlayerModifier, getPlayerModifier };
+// `previewBase`/`consumeAutoAim` 同样**必须走对象调用**而不是本地符号:update 与 previewKind
+// 里那两处是自动击打的两个判定点(徽标基准 / 一次滑动只管一拍),直接闭包调用就把它们焊死,
+// auto-hit-check ⑩ 的反例(旧式基准、消耗一切、从不消耗、不看 AutoHit.on)就换不上去 ——
+// 换不上反例的闸门等于没牙齿。
+export const Player = { create, update, tryHit, buildShot, previewKind, previewBase, consumeAutoAim, depthOf, aimOverride, strikeZone, ballInZone, autoSwingDue, ballFuture, spawnShadowClone, setPlayerModifier, getPlayerModifier };

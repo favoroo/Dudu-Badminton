@@ -1,15 +1,16 @@
 {
   "splashSource": "tools/splash-source.png",
   "_doc": {
-    "源图": "tools/splash-source.png 由 `python3 tools/make-splash.py` 生成(纯净金色羽毛球+流线辉光+统一底色),不要手改或另找图。",
-    "displayRatio": "引擎画 logo 的高度 = 0.185 × 屏高 × displayRatio。设 2.4 时,发光羽毛球主体约占屏高 28%,横屏视觉比例开阔大气,四周纯色与全屏底色 100% 同色且带透明过渡,绝无方块贴片感。",
-    "bgColor": "这里不配底色 —— apply-splash.py 取 logo 图编码后的四角均色(13, 17, 21 / #0d1115)平铺整屏,保证全屏底色与图边缘绝对同色无缝。",
-    "totalTime": "splash 时长(ms),引擎在这段时间里做首屏加载。"
+    "源图": "tools/splash-source.png 由 `python3 tools/make-splash.py` 生成(金色羽毛球+流线辉光,RGBA 透明底),不要手改或另找图。",
+    "displayRatio": "引擎画 logo 的高度 = 0.185 × 屏高 × displayRatio。设 2.4 时,发光羽毛球主体约占屏高 28%,横屏视觉比例开阔大气。",
+    "bgColor": "整屏平铺底色(引擎 clearColor),apply-splash.py 注入 settings.json。logo 图非主体区域 alpha=0,任何淡入进度下都混合成这个颜色,永无方块。必须与游戏首帧相机清屏色一致(main.scene 相机 _color = config.ts colors.ink = #0a0d18),splash-check.py 会对照 config.ts 校验。",
+    "totalTime": "splash 时长(ms),引擎在这段时间里做首屏加载;淡入全程底色不变。"
   },
   "config": {
     "displayRatio": 2.4,
     "totalTime": 2000,
     "watermarkLocation": "default",
-    "autoFit": true
+    "autoFit": true,
+    "bgColor": "#0a0d18"
   }
 }

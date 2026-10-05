@@ -44,13 +44,15 @@ import { haptic, hapticCancel, hapticStatus } from "../game/haptics";
 import { browserDownloadUrl, UpdateService, type UpdateCheckResult } from "../game/update-service";
 import type { UiKit } from "./ui-manager";
 import { cancelFade, fadeOutHide, riseIn, safePad, slamIn, SLANT, type Role } from "./ui-arcade";
-import { ROLE } from "./p5-tokens";
+import { C, ROLE } from "./p5-tokens";
+import { paintP5 } from "./p5-paint";
+import { DIAG, padDiagramDL } from "./pad-diagram";
 import { sectionTitle, solidTab, type TabHandle } from "./ui-shell";
 import type { Slider, Toggle } from "./widgets";
 import { stripAt, stripLayout } from "./editor-strip";
 import {
   aboutLayout, ASSIST_COPY, ASSIST_COPY_SIZE, assistLayout, controlLayout, donePos,
-  hapticTestRow, mediaLayout, SET, SETTINGS_TABS,
+  hapticTestRow, mediaLayout, MODE_TIP_SIZE, MOVE_MODES, SET, SETTINGS_TABS,
   strengthRow, tabBoxes, type SettingsTab,
 } from "./settings-layout";
 import { newPad } from "../input/pad";
@@ -83,11 +85,12 @@ const BAND_HEX = ROLE.primary.face;
 /** 页表在 settings-layout 里(零 cc):panel-check 要拿它量「再加一页 tab 栏挤不挤」 */
 const TAB_DEFS: Array<{ key: SettingsTab; label: string }> = SETTINGS_TABS;
 
-const MODES: Array<{ mode: MoveMode; label: string; tip: string }> = [
-  { mode: "joystick", label: "摇杆", tip: "虚拟摇杆模拟走位 · 向上推摇杆即起跳" },
-  { mode: "slider", label: "滑轨", tip: "手指在哪人就在哪 · 上滑或双击起跳" },
-  { mode: "buttons", label: "按键", tip: "经典左右两键全速 · 左手独立按键跳跃" },
-];
+/**
+ * 三档移动方式与那行提示 —— 表住在 settings-layout(零 cc)。
+ * 原来这张表写在本文件里,于是「提示行窄了 22px 会不会把句子静默截掉」panel-check 量不到
+ * (它 import 不动一个要 cc 的文件);挪过去之后,量宽吃的就是面板真正摆出去的那三句。
+ */
+const MODES = MOVE_MODES;
 
 /** tab → 页节点名:切页时按这个建,别再用三目串拼(加一页就漏一处) */
 const PAGE_NAME: Record<SettingsTab, string> = {
@@ -139,6 +142,16 @@ export class SettingsPanel extends Component {
   private selected: PadSlot | null = "left";
   private sizeLabel: Label | null = null;
   private modeTipLabel: Label | null = null;
+  /**
+   * 移动方式图示:一块逐帧重画的小舞台(只读,不吃触摸 —— 凹陷槽的语法就是"只读")。
+   * 引用随 discardPage 置空,切页从不复用画过的子树(见文件头两条原生坑)。
+   */
+  private diagGfx: Graphics | null = null;
+  /** 图示盒的宽高:建的时候从 controlLayout 抄一份,免得每帧再算一遍版式 */
+  private diagW = 0;
+  private diagH = 0;
+  /** 图示时钟(帧,取模 DIAG.loop)。切档不重置:同一拍继续演,换的只是那件控件 */
+  private diagT = 0;
   private modeBtns: Array<{ mode: MoveMode; tab: TabHandle }> = [];
   private toggles: Toggle[] = [];
   private sliders: Slider[] = [];
@@ -262,6 +275,7 @@ export class SettingsPanel extends Component {
   private discardPage(): void {
     this.modeBtns.length = 0;
     this.modeTipLabel = null;
+    this.diagGfx = null;
     this.toggles.length = 0;
     this.sliders.length = 0;
     this.paceSlider = null;
@@ -321,13 +335,32 @@ export class SettingsPanel extends Component {
     });
 
     // 模式提示:随选中档变化(updateModeSelector 刷新文案)
-    const tip = this.kit.label(page, "", 12, P.dim, { align: 0 });
+    const tip = this.kit.label(page, "", MODE_TIP_SIZE, P.dim, { align: 0 });
     const tipUt = tip.node.getComponent(UITransform)!;
     tipUt.setContentSize(wOf(K.modeTip), K.modeTip.h);
     tip.overflow = Label.Overflow.CLAMP;
     tip.node.setPosition(cOf(K.modeTip), K.modeTip.cy, 0);
     this.modeTipLabel = tip;
     this.updateModeSelector();
+
+    // ---------- 移动方式图示(右半格,会动) ----------
+    // 底是一块凹陷槽:这套语法里「凹 = 只读、凸 = 能点」,所以这一格不吃任何触摸,
+    // 也不会跟左列那三颗真键抢点按。动画本体是叠在槽上的第二块画布,逐帧重画
+    // (装配法照先例 drill-panel 的 animBg + animGfx 两层:底一次成型、上面每帧 clear)。
+    const D = K.diagram;
+    this.diagW = wOf(D);
+    this.diagH = D.h;
+    const diagSlot = this.kit.slot("diag-slot", page, this.diagW, D.h, C.ink);
+    diagSlot.node.setPosition(cOf(D), D.cy, 0);
+    const diagNode = new Node("diag-gfx");
+    diagNode.layer = Layers.Enum.UI_2D;
+    diagNode.addComponent(UITransform).setContentSize(this.diagW, this.diagH);
+    diagNode.setParent(page);
+    diagNode.setPosition(cOf(D), D.cy, 0);
+    this.diagGfx = diagNode.addComponent(Graphics);
+    this.diagT = 0;
+    // 建完当场画一帧:等下一次 update 的话,打开设置页的第一帧这一格是空的
+    this.paintDiagram();
 
     // 「调整位置」进 EDIT;「重置默认」一行两颗,不再竖着占两条
     const [adjBox, rstBox] = K.actions;
@@ -376,6 +409,29 @@ export class SettingsPanel extends Component {
       () => this.kit.toast(`移速「${this.gaitCaption()}」· 已生效`));
     this.gaitValueLabel = this.txt(page, this.gaitCaption(), 13, P.text,
       K.tiers[1].caption.left, K.tiers[1].y, wOf(K.tiers[1].caption));
+  }
+
+  /**
+   * 每帧推进「移动方式图示」。四道门控,少一道就是白画:
+   *   · diagGfx 为空 —— 不在操控页(discardPage 里置空)
+   *   · node 失效 —— 面板正在退场销毁,摸它就是摸一块死画布
+   *   · editView 非空 —— 进「调整位置」了:外壳整块淡出(靠 opacity 不是 active=false,
+   *     见文件头那条原生坑),看不见还每帧画 50 条多边形,就是纯浪费
+   *   · tab 不是 control —— 理论上第一条已挡住,留着是防以后加页时漏改
+   */
+  update(dt: number): void {
+    if (!this.diagGfx || !this.diagGfx.node.isValid || this.editView || this.tab !== "control") return;
+    // dt 封顶 3 帧:切后台回来或掉一帧大卡,不该让图示一次跳过半段动作
+    this.diagT = (this.diagT + Math.min(3, dt * 60)) % DIAG.loop;
+    this.paintDiagram();
+  }
+
+  /** 画当前这一帧。档位每帧现读 Settings —— 点哪档下一帧就换哪档,不需要谁去通知它 */
+  private paintDiagram(): void {
+    const g = this.diagGfx;
+    if (!g || !g.node.isValid) return;
+    g.clear();
+    paintP5(g, padDiagramDL(Settings.moveMode, this.diagT, this.diagW, this.diagH));
   }
 
   /**

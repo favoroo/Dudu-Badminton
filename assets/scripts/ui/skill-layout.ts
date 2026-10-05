@@ -138,12 +138,15 @@ export function skillCd(def: SkillLike): string {
  * 蓄满要几拍:把「这款技能的门槛是一整局的积累」翻译成玩家能规划的次数。
  * 两个数都说 —— 只印最好那个(每拍又准又杀)就是在骗人,只印最坏那个又白丢了
  * "打得好就攒得快"这层正反馈。上下界直接从 config 的增益算,不在这里抄数字。
+ * 多管蓄力后印「蓄**一管** N~M 拍」:卡片读数槽只有 cardW-6 宽(82px),
+ * 「蓄满一管 N~M 拍 · 最多攒 3 管」90px 出卡(skill-check 量过)—— 管数上限
+ * 由说明行/config desc 承载,卡面只报一管的账。
  */
 export function skillFillShots(def: SkillLike): string {
   const RG = CFG.skills.rage;
   const best = Math.ceil(RG.max / (RG.perHit * RG.bothMul));
   const worst = Math.ceil(RG.max / RG.perHit);
-  return `蓄满 ${best}~${worst} 拍`;
+  return `蓄一管 ${best}~${worst} 拍`;
 }
 
 /**

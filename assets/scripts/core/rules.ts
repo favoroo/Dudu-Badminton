@@ -14,6 +14,7 @@ import { Player as Pl } from "./player";
 import { AI } from "./ai";
 import { Skills } from "./skills";
 import { Shadow } from "./shadow";
+import { ShadowGate } from "./shadow-gate";
 import { Ball, DiffKey, GameEvent, Player, PlayerInput, TeamSide } from "./types";
 import { CampaignManager, StageDef, StarFacts, aiReliefFor, evaluateStars, tuneAiTier } from "./campaign";
 
@@ -45,6 +46,8 @@ export interface RulesState {
   serveIdx: number;
   serverPlayer: Player | null;
   rally: number;
+  /** 我方(左队)拍数:连击徽章专用,敌方击打不计入(累计在 applyShot,随 beginPoint 清零) */
+  myRally: number;
   longestRally: number;
   msg: string;
   reason: string;
@@ -90,6 +93,7 @@ const R: RulesState = {
   serveIdx: 0,
   serverPlayer: null,
   rally: 0,
+  myRally: 0,
   longestRally: 0,
   msg: "",
   reason: "",
@@ -233,6 +237,10 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   // 自动击打的模式门控与 R.mode 同源(训练场/教学/本地对战不代打)。全仓只有这里和
   // startCampaign 两处写 R.mode,所以任何调 newMatch 的回归工具自动拿到正确门控。
   AutoHit.onMatch(mode);
+  // 影分身的模式门控同一条路(判据在 core/shadow-gate.ts,与 auto-hit 是两个各管各的闸)。
+  // 训练场/教学不召:那两处判的是"你会不会这一拍",而 drill 的 matches() 只认 lastHitter 的**队**,
+  // 分身那一拍会被算成玩家自己打成的。
+  ShadowGate.onMatch(mode);
   R.diff = diff || "normal";
   const dbl = mode === "2v2";
   const n = dbl ? 2 : 1;
@@ -269,6 +277,7 @@ function newMatch(mode: string, diff: DiffKey, humans?: number): void {
   R.serveIdx = 0;
   R.winner = null;
   R.rally = 0;
+  R.myRally = 0;
   R.longestRally = 0;
   R.pointNo = 0;
   R.deuce = false;
@@ -301,6 +310,7 @@ function startCampaign(stage: StageDef): void {
 
   R.mode = "campaign";
   AutoHit.onMatch("campaign");   // 与上面 newMatch 同一处规矩:门控跟着模式走
+  ShadowGate.onMatch("campaign");
   R.diff = stage.aiDiff;
   R.humans = 1;
   R.players = [];
@@ -367,6 +377,7 @@ function startCampaign(stage: StageDef): void {
   R.serveIdx = 0;
   R.winner = null;
   R.rally = 0;
+  R.myRally = 0;
   R.longestRally = 0;
   R.pointNo = 0;
   R.timeScale = 1;
@@ -403,6 +414,7 @@ function beginPoint(): void {
     R.ball.lastHitter = R.server;
   }
   R.rally = 0;
+  R.myRally = 0;
   R.state = "SERVE";
   R.timer = C.scoring.servePause;
   R.serveWait = 0;
@@ -428,6 +440,11 @@ function applyShot(ball: Ball, shot: ShotLike): void {
   ball.shot = shot;
   R.rally++;
   R.longestRally = Math.max(R.longestRally, R.rally);
+  // 我方拍数:右上角连击徽章只数玩家侧的回球,敌方的击打不计入 —— 连击读的是
+  // 「我连续回了多少拍」,不是回合总拍数(总拍数仍看 rally)。按侧不按 isAI:
+  // 影分身随宿主在玩家侧照数,2v2 的 CPU 搭档同属我方;左队恒为玩家侧(2p 的 P1),
+  // 与 EMP 计数(下面 empReturns)同一口径。
+  if (shot.hitter.side === "left") R.myRally++;
   // 体力记账:AI 每次真实击中在此消费 think() 起手时记的快照,
   // 按这一拍有多费力扣/回一笔(跑动为主力项,重杀/跨步额外加,软球回气)。
   // 只影响 aiStamina 账本,不改判定与物理。发球拿不到快照 → 天然不掉体力。
@@ -674,7 +691,8 @@ function step(inputs: PlayerInput[]): void {
     const ch = Shadow.tryCloneHit(R.players, ball);
     if (ch) {
       applyShot(ball, ch.shot);
-      Shadow.noteHit(ch.host);
+      // slot 必带:多分身之后不带定位就是恒记 0 号账(紫的接球、青的掉额度,三组亮片全对不上)
+      Shadow.noteHit(ch.host, ch.slot);
     }
   }
 

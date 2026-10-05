@@ -783,12 +783,12 @@ export class Hud {
     g.clear();
     drawSlantShadow(g, w, h, sk, 3, 3, 0.45);
     drawSlantPanel(g, w, h, sk, { face: ARCADE.navy, alpha: 0.9, edge: hex, edgeA: 0.9 });
-    // 进度槽:5 拍起显、15 拍(epic)拉满 —— 徽章小,涨到哪一眼可见
+    // 进度槽:showAt 起显、epicAt 拉满 —— 徽章小,涨到哪一眼可见
     const trackW = w - 20;
     g.fillColor = col("#ffffff", 0.1);
     g.roundRect(-trackW / 2, -h / 2 + 5, trackW, 3, 1.5);
     g.fill();
-    const p = Math.min(1, Math.max(0, (r - 5) / 10));
+    const p = Math.min(1, Math.max(0, (r - CFG.hudCombo.showAt) / (CFG.hudCombo.epicAt - CFG.hudCombo.showAt)));
     if (p > 0) {
       g.fillColor = col(hex, 0.95);
       g.roundRect(-trackW / 2, -h / 2 + 5, Math.max(3, trackW * p), 3, 1.5);
@@ -1073,8 +1073,9 @@ export class Hud {
       this.serveFlagG.node.setScale(left ? 1 : -1, 1, 1);
     }
 
-    // ---- 连击徽章:RALLY 且 ≥5 拍;≥10 换橙色,≥15 换红且脉动更猛 ----
-    const showCombo = !drill && R.state === "RALLY" && R.rally >= 5;
+    // ---- 连击徽章:RALLY 且我方拍数达标;hot 换橙,epic 换红且脉动更猛 ----
+    // 连击只数 R.myRally(我方回球数),敌方的击打不计入 —— 档位口径见 config hudCombo。
+    const showCombo = !drill && R.state === "RALLY" && R.myRally >= CFG.hudCombo.showAt;
     this.combo.active = showCombo;
     if (showCombo) {
       // 手动收边:FIXED_HEIGHT 下可视区宽随屏幕比例涨,右缘按可视宽实时算,
@@ -1085,9 +1086,9 @@ export class Hud {
       const rightEdge = (vs.width * k) / 2 - (4 + this.safeRight);
       const topY = CFG.world.h / 2 - (64 + this.safeTop) - 24;
       this.combo.setPosition(rightEdge - this.comboW / 2, topY, 0);
-      const r = R.rally;
-      const epic = r >= 15;
-      const hotC = r >= 10;
+      const r = R.myRally;
+      const epic = r >= CFG.hudCombo.epicAt;
+      const hotC = r >= CFG.hudCombo.hotAt;
       if (r !== this.lastCombo) {
         const hex = epic ? this.kit.pal.danger : hotC ? "#ff9f1c" : this.kit.pal.accent;
         this.comboNum.string = `${r}`;

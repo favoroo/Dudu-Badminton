@@ -20,13 +20,14 @@ import { Gait } from "../core/gait";
 import { AutoHit } from "../core/auto-hit";
 import { Player, PRESS_LEAD_FRAMES } from "../core/player";
 import { Skills } from "../core/skills";
+import { ShadowGate } from "../core/shadow-gate";
 import { clockOf, renderDue, type ClockMode } from "../core/celebration";
 import { clamp } from "../core/utils";
 import { Ball, FaceKind, GameEvent, PlayerInput, ShotKind, ShotResult, SkillId } from "../core/types";
 import type { DiffKey } from "../core/types";
 import { WorldView } from "../render/world";
 import { TIER_FIRE, TIER_NORMAL, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "../render/shuttle-motion";
-import { newPad, clearEdges, buildIntent, emptyIntent, tickHolds, Pad } from "../input/pad";
+import { newPad, clearEdges, buildIntent, restoreSwingAim, emptyIntent, tickHolds, Pad } from "../input/pad";
 import { bindKeyboard } from "../input/keyboard";
 import { touchPad } from "../input/touchpad";
 import { Sfx } from "./sfx";
@@ -145,6 +146,17 @@ export class GameRoot extends Component {
     // 虚拟按键只在真正对局(SERVE/RALLY/POINT)时出现:菜单、暂停、结算、
     // 生涯/训练面板都不露;隐藏时顺带清按下状态,见 input/touchpad 控制器注释。
     touchPad.setPlaying(Rules.isPlaying());
+    // 键面两条读数每**真实帧**同步一次(位置在 setPlaying 之后、模拟循环之前,三条都有理由):
+    //  · 不放 updateSwingCue:那函数有两条 early return,没来球时压根不进来 ⇒ 发球/死球时
+    //    「自动」这两个字不会出现 —— 而玩家恰恰在这几拍最想知道键归谁按;
+    //  · 不放 buildInputs:那是每模拟步,hitstop/庆祝/省电档整段跳过 ⇒ 键名会冻在半路;
+    //  · setAimEcho 排在 setAutoMark 之后:自动关着且没锁时恒传 0,击球键的表现与今天
+    //    逐位相同;辅助开着(欠着一拍的瞄准)或触屏长滑锁定(pad.swingLockX/Y 非 0,
+    //    键缘弧常亮 = 「之后每一拍都往这个方向打」的读数)才喂 pad 真值。
+    const autoOn = AutoHit.on;
+    const locked = this.pad.swingLockX !== 0 || this.pad.swingLockY !== 0;
+    touchPad.setAutoMark(autoOn);
+    touchPad.setAimEcho(autoOn || locked ? this.pad.swingSwipe : 0, autoOn || locked ? this.pad.swingSwipeY : 0);
     this.frameT++;
     // 累加器速度。BGM 跑在音频时钟上,所以变速不会拖慢音乐节奏。
     // 定格段恒按真实速度走:定格步调 stepFx(frozen),慢动作计时 slowT 被一起冻住不递减。
@@ -229,9 +241,13 @@ export class GameRoot extends Component {
       const blockReason = (cdRatio <= 0 || charge)
         ? Skills.skillBlockReason(human, R.ball) : null;
       // chargeRatio 只在充能款下有值(其余技能恒 0 ⇒ 键上不会多画一圈莫名其妙的环)。
+      // 多管蓄力后这里喂的是"管"量纲:chargeRatio = 进行中那管的填充、chargePipes =
+      // 已攒满的整管数(键面画 N 段点亮 + 当前段弧),强度/档位仍走 rageRatioOf 那条线。
       // 倒数第二参 cdSec 对充能款恒传 0:它读的是 s.cd 那 20 帧防连点,画出来是个骗人的"0.3"
       touchPad.setSkillState(cdRatio, s.ready, s.id, def.shortName,
-        charge ? 0 : s.cd / 60, blockReason, charge ? Skills.rageRatioOf(human) : 0);
+        charge ? 0 : s.cd / 60, blockReason,
+        charge ? Skills.ragePipeFillOf(human) : 0,
+        charge ? Skills.ragePipesOf(human) : 0);
     }
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     // 氛围暗角输入(长回合金晕/赛点红晕在渲染层只读消费)
@@ -349,8 +365,9 @@ export class GameRoot extends Component {
       this.previewFrame = this.frameT;
       this.previewKindCache = Player.previewKind(human, ball, { swipe, swipeY });
     }
-    // 自动模式给徽标缀上「· 自动」:同一批字、同一个 Label,零新节点(模式读数必须看得见)
-    touchPad.setShotPreview(this.previewKindCache, AutoHit.on);
+    // 徽标只报球种。「自动」这个模式读数已经搬到键名上(config.autoHit.padLabel,常亮、
+    // 发球/死球时也看得见),同一信息不在一个键上说两遍
+    touchPad.setShotPreview(this.previewKindCache);
   }
 
   /** 慢放总闸(见 config.fx.slowmoEnabled):关掉时两处 world.slowmo() 与赛点常驻微慢放全不发,世界恒速 */
@@ -390,6 +407,14 @@ export class GameRoot extends Component {
           const f = C.autoHit.castFloat;
           this.world.float(p.x, C.court.groundY - 118, f.text, f.color, f.size, f.life);
         },
+        // 「这一次滑动用掉了」:core 在那一拍真打出去的收招帧调过来(player.ts 的 consumeAutoAim),
+        // 把击球键欠着的瞄准**恢复成锁值** ⇒ 没锁时辅助模式横滑/纵滑只管一拍,而不是滑一次
+        // 锁到底(用户 2026-10-05:「不要滑动之后就进入那个锁定状态了」);触屏长滑锁定的
+        // 方向(pad.swingLockX/Y)经同一条路回锁 —— 短滑打完回锁向,直到玩家再长滑取消。
+        // 恢复的是 pad 的存储,判定/弹道一概不动 —— 那一拍已经按这个方向打出去了。
+        // setAimEcho 的读数跟着走:没锁回 0(键缘方向弧当场熄灭 = 「已经不欠一拍了」),
+        // 有锁停在锁向(弧常亮 = 「之后每一拍都往这个方向打」)。
+        onAimConsume: () => restoreSwingAim(this.pad),
       };
     }
     const hooks = this.inputHooks;
@@ -486,16 +511,26 @@ export class GameRoot extends Component {
       // 折跃那一下是全游戏最"空间感"的起手,给满档:与命中时的 perfectSmash 一唱一和
       if (!p.isAI) haptic("skill");
     } else if (id === "shadow") {
-      // 影分身召唤(2026-10-04):脚下墨紫尖刺星芒 + 锯齿烟环 + 撕纸碎片;
+      // 影分身召唤(2026-10-05 多分身):脚下**身份色**尖刺星芒 + 锯齿烟环 + 撕纸碎片;
       // 分身本体从宿主影子位置拔起(渲染层的隔帧闪烁成影由 world 画,这里只管爆发一刻)。
-      // 飘字直接喊出玩法承诺:「接三球」—— 数量契约写进起手,玩家不用去翻说明。
+      // 槽位从"刚出生的那一枚"读 —— player.update 已经把召唤排在 onSkill **之前**,
+      // 调换顺序就会出现"爆的还是上一号的色、字少报一个"。
+      // 第二行报「已在场 N 个」而不是「替你接三球」:跨回合补满之后那句在撒谎,
+      // 而这句正好把"最多三个"的数量契约当场讲出来,玩家不用去翻说明。
       const SHC = C.skills.shadow;
-      this.world.fx.shadowSummon(p.x, C.court.groundY);
+      const born = ShadowGate.bornClone(p);
+      const slot = born ? born.slot : 0;
+      const alive = ShadowGate.clonesOf(p).length;
+      this.world.fx.shadowSummon(p.x, C.court.groundY, slot);
       this.world.punch(p.x, p.y, SHC.castPunch || 1.035);
       this.world.shake(SHC.castShake || 4);
       if (showLab) {
-        this.floatSideLab({ text: "影分身·参上!", color: "#8b5cf6", size: 24, life: 46, plate: "slant" }, p.x);
-        this.floatSideLab({ text: "替你接三球", color: "#c4b5fd", size: 15, life: 52, plate: "slant" }, p.x);
+        const FXC = (C.fx as unknown) as Record<string, FloatLabel>;
+        const cast = FXC.floatSkillShadowCast || { text: "影分身·参上!", color: "#8b5cf6", size: 24, life: 46, plate: "slant" };
+        const note = FXC.floatSkillShadowNote || { text: "已在场 {n} 个", color: "#c4b5fd", size: 15, life: 52, plate: "slant" };
+        this.floatSideLab(cast, p.x);
+        // {n} 占位符留在 config 那一行里,句子不许在两个文件各写一半
+        this.floatSideLab({ ...note, text: note.text.replace("{n}", String(alive)) }, p.x);
       }
       this.sfx.play("whiff", 0.75);
       if (!p.isAI) haptic("skillLight");
@@ -509,9 +544,15 @@ export class GameRoot extends Component {
       const t = RG.tiers[tier];
       this.world.fx.flameBurst(p.x, p.y - 20);
       if (tier >= 3) {
-        // 满怒:额外一记激波 + 羽片四散 —— 攒了一整局的那一下必须"看得见不一样"
+        // 满怒(≥一整管):额外一记激波 + 羽片四散 + 全屏斩劈 cut-in —— 攒了一整局的那一下
+        // 必须"看得见不一样"。cut-in 是按下即燃的整屏宣言(2026-10-05 多管蓄力加料),
+        // 只给真人放:AI 装不上这款技能(aiSkillByDiff 恒 lunge),真轮到也只会糊玩家一脸。
         this.world.fx.chronoBurst(p.x, p.y - 24);
         this.world.fx.feather(p.x, p.y - 24, 6);
+        if (!p.isAI) {
+          const cf = t.castLab as FloatLabel;
+          this.world.hudOverlay.playRageCutin(cf.text, cf.color, cf.size);
+        }
       } else if (tier >= 2) {
         this.world.fx.shockwave(p.x, C.court.groundY);
       }

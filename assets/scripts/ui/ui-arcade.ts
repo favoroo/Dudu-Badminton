@@ -32,7 +32,8 @@ export { C as TOKENS };
 // 这里再导出,面板一律 `import { drawPosterPlate } from "./ui-arcade"` 就够了。
 // 为什么要拆三层:形状算成点列(零 cc)才能在 node 里出图与断言,
 // 而 tools/cc-stub.ts 只桩得住 Color + Graphics —— 于是出图与实机共用同一份形状代码。
-import { drawIconBtn } from "./p5-paint";
+import { chipDL, chipHeight, chipWidth } from "./p5-shapes";
+import { drawIconBtn, paintP5 } from "./p5-paint";
 export {
   drawBevelSlot, drawHalftone, drawIconBtn, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
   drawSectionBand, drawSliderFace, drawSlantKnob, drawStarGlyph, drawToggleFace,
@@ -742,8 +743,10 @@ export function drawSolidBlock(g: Graphics, w: number, h: number, accent: string
   const s = skew / 2;
   g.strokeColor = ac("#ffffff", 0.25);                       // 顶缘高光线
   g.lineWidth = 1;
-  g.moveTo(-w / 2 + s + 3, h / 2);
-  g.lineTo(w / 2 + s - 3, h / 2);
+  // 顶缘在 y=+h/2,而 slantPath 把上缘放在 `-s`(下缘才是 `+s`):旧写法用 `+s` 画顶缘,
+  // 整根线右偏一个 skew —— 首页 372×74 的标题块(9°)偏 11.7,高光线从右上角戳到框外。
+  g.moveTo(-w / 2 - s + 3, h / 2);
+  g.lineTo(w / 2 - s - 3, h / 2);
   g.stroke();
   g.strokeColor = acShade(accent, 0.62, 0.9);                // 同色系描边
   g.lineWidth = 2;
@@ -942,17 +945,14 @@ export function makeChip(parent: Node, text: string, size = 9, bg = ARCADE.acid,
   n.addComponent(UITransform);
   const g = n.addComponent(Graphics);
 
-  // 计算字符显示宽度(全角汉字按 1.05, 半角按 0.62)
-  const h = Math.round(size + 10);
-  const w = Math.max(size * 2 + 16, textW(text, size) + 16) + (slantDeg !== 0 ? Math.abs(skewOf(h, slantDeg)) : 0);
+  // 宽高一律读 p5-shapes 那把尺:履历格要把色签当标题行、右边接引导线,
+  // 线的起点必须和这里的宽度同源,否则就是「线压住字」。
+  const h = chipHeight(size);
+  const w = chipWidth(text, size, slantDeg);
   retainedDraw(g, () => {
-    if (slantDeg !== 0) {
-      g.fillColor = ac(bg);
-      slantPath(g, w, h, skewOf(h, slantDeg));
-      g.fill();
-    } else {
-      drawChip(g, w, h, bg);
-    }
+    // 底块走 p5-shapes.chipDL:出图与真机画同一份点列,不是「看着像」
+    if (slantDeg !== 0) paintP5(g, chipDL(text, size, bg, slantDeg));
+    else drawChip(g, w, h, bg);
   });
 
   const lNode = new Node("chip-text");

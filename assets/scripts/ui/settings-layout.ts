@@ -11,7 +11,13 @@
 //
 // 依赖纪律:零 cc,只 import p5-tokens 与本目录的 text-metrics(与 editor-strip 同规格,
 // 已挂进 tools/tsconfig.json 的 include)。面板只照返回的坐标摆。
+//
+// 0.0.29 操控页加「移动方式图示」后这一页改成两列:左列是三选一 + 提示 + 两颗动作键,
+// 右列是一块会动的示意图(摇杆/滑轨/按键各自长什么样、手指怎么动、人怎么走)。
+// 原来三档是整页居中排的,那套坐标在两列下会直接压进图示盒 —— 所以整列改成
+// 贴内容左缘的左对齐(与 tab 栏、小节色带同一规矩),宽度由 LEFT_W 一处算。
 // ============================================================
+import type { MoveMode } from "../core/settings";
 import { TOUCH } from "./p5-tokens";
 import { textW } from "../core/text-metrics";
 
@@ -187,10 +193,42 @@ export function hapticTestRow(): { btn: Box; status: Box } {
 
 // ---------- 操控页 ----------
 
+/**
+ * 左列宽:这一页的上半区是两列 —— 左列放控件,右列放图示。
+ * 398 = 内容宽 678 - 图示 256 - 两列之间 24 的缝(与 tab 栏、小节色带同一规矩:贴内容左缘)。
+ */
+export const LEFT_W = 398;
+
+/**
+ * 图示盒:右缘贴内容右缘,顶边 116 与「移动方式」色带顶边齐平。
+ * 高 156 不是拍的 —— pad-diagram 的取景(地面 70 + 人物 100 + 一次满跳 92 + 余量)按宽度
+ * 定标后折算成图示像素正好 127,再加上下内边距与抬底,盒子矮一寸就把起跳的顶点切掉了,
+ * 高一寸则整格空得像个没画完的框。这条账由 panel-check 的「取景高 ≤ 盒内高」钉住。
+ */
+export const DIAGRAM = { w: 256, h: 156, cy: 38 };
+
+/**
+ * 三档移动方式:label 给分段选择器,tip 给提示行。
+ *
+ * 为什么从 settings-panel 搬进来 —— 那行提示是 Label.Overflow.CLAMP 摆的,格子从 420 窄到
+ * 398 **不报错、不出格,只从中间静默截字**,而 tsc 也量不到字宽。文案是数据就该住在
+ * 量得到它的地方(与 ASSIST_COPY / SETTINGS_TABS 同一先例),panel-check 现在量的是真话本身。
+ */
+export const MOVE_MODES: Array<{ mode: MoveMode; label: string; tip: string }> = [
+  { mode: "joystick", label: "摇杆", tip: "虚拟摇杆模拟走位 · 向上推摇杆即起跳" },
+  { mode: "slider", label: "滑轨", tip: "手指在哪人就在哪 · 上滑或双击起跳" },
+  { mode: "buttons", label: "按键", tip: "经典左右两键全速 · 左手独立按键跳跃" },
+];
+
+/** 提示行字号(面板与判据共用一个数,否则量的是另一套字) */
+export const MODE_TIP_SIZE = 12;
+
 export interface ControlLayout {
   sectionMove: Box;
   modes: Box[];
   modeTip: Box;
+  /** 移动方式图示:一块只读的舞台,切档即换内容 */
+  diagram: Box;
   actions: Box[];
   sectionFeel: Box;
   feelHint: Box;
@@ -198,13 +236,15 @@ export interface ControlLayout {
 }
 
 /**
- * 操控页:移动方式三选一 + 两颗动作键 + 手感两档(球速/移速)。
+ * 操控页:移动方式三选一 + 图示 + 两颗动作键 + 手感两档(球速/移速)。
  * 行心一律由 rowPitch 推,不再手写 -124/-168 这种「看着差不多」的数 ——
  * 上一版滑杆触摸区从 34 抬到 44 后,那两行会重叠 4px,而 4px 在屏幕上是看不出来的撞。
+ *
+ * 上半区三排(三选一 / 提示 / 动作键)整列左对齐贴内容列,右半留给图示盒:
+ * 原来它们是整页居中的,居中那版在图示进来后会把动作键的右缘(178)顶进图示左缘(84)。
  */
 export function controlLayout(): ControlLayout {
   const modeW = 120, modeH = TOUCH.min, modeGap = 14;
-  const modeTotal = 3 * modeW + 2 * modeGap;
   const modeY = 62;
   const actY = -20;
   const feelY = actY - 64;
@@ -219,17 +259,41 @@ export function controlLayout(): ControlLayout {
   });
   return {
     sectionMove: box(SET.colX, 120, 104, SET.sectionH),
-    modes: [0, 1, 2].map((i) => box(-modeTotal / 2 + i * (modeW + modeGap), modeW, modeY, modeH)),
-    modeTip: box(-210, 420, modeY - 34, 16),
+    modes: [0, 1, 2].map((i) => box(SET.colX + i * (modeW + modeGap), modeW, modeY, modeH)),
+    modeTip: box(SET.colX, LEFT_W, modeY - 34, 16),
+    diagram: box(SET.right - DIAGRAM.w, DIAGRAM.w, DIAGRAM.cy, DIAGRAM.h),
     actions: [
-      box(-178, 190, actY, TOUCH.min + 2),
-      box(28, 150, actY, TOUCH.min + 2),
+      box(SET.colX, 190, actY, TOUCH.min + 2),
+      box(SET.colX + 204, 150, actY, TOUCH.min + 2),
     ],
     sectionFeel: box(SET.colX, 70, feelY, SET.sectionH),
     feelHint: box(SET.colX + 78, 330, feelY, 18),
     tiers,
   };
 }
+
+/**
+ * 操控页左列的可用宽:三选一与两颗动作键都得排在 LEFT_W 之内(排不下就是
+ * 「图示把控件挤出去了」,屏幕上表现为最后一档贴到图示边缘)。
+ */
+export function controlLeftOverflow(): string[] {
+  const out: string[] = [];
+  const K = controlLayout();
+  const right = SET.colX + LEFT_W;
+  for (const [nm, b] of [...K.modes.map((m, i): [string, Box] => [`移动方式第 ${i} 档`, m]),
+    ...K.actions.map((a, i): [string, Box] => [`动作键#${i}`, a]),
+    ["提示行", K.modeTip]] as Array<[string, Box]>) {
+    if (b.right > right + 0.5) out.push(`${nm}右缘 ${b.right.toFixed(1)} 越过左列边界 ${right}`);
+  }
+  // 提示行是 CLAMP 摆的字:格子没出左列不代表字没被截
+  for (const m of MOVE_MODES) {
+    const w = textW(m.tip, MODE_TIP_SIZE);
+    const bw = K.modeTip.right - K.modeTip.left;
+    if (w > bw) out.push(`移动方式提示「${m.label}」实测 ${w.toFixed(0)}px > 格宽 ${bw}px(CLAMP 会静默截字)`);
+  }
+  return out;
+}
+
 
 // ---------- 辅助页 ----------
 
@@ -384,8 +448,11 @@ export function settingsOverlaps(): string[] {
       M.test.btn, M.test.status,
     ]],
     ["声音画面·右列", M.hints],
-    ["操控·移动方式", K.modes],
-    ["操控·动作键", K.actions],
+    // 操控页上半区:图示盒是晚到的兄弟 —— 三选一/提示/动作键原来整页居中排,
+    // 不把它们一起拉进左列,盒子的左缘会正好咬在「调整位置」那颗键上。
+    ["操控·上半区(左列 + 图示)", [
+      K.sectionMove, ...K.modes, K.modeTip, ...K.actions, K.diagram,
+    ]],
     ["操控·手感行", K.tiers.flatMap((t) => [t.name, t.slider, t.caption])],
     ["辅助页", [S.section, S.toggle, S.scope, S.tip, S.landingHint]],
     ["关于", [A.section, A.verName, A.verValue, A.checkBtn, A.siteBtn, A.status, A.hint, A.tutBtn]],
@@ -439,6 +506,10 @@ export function settingsOverflow(labels: string[] = [...TOGGLE_LABELS, ...ASSIST
     ["辅助生效行", S.scope],
     ["辅助说明", S.tip],
     ["辅助界外提示", S.landingHint],
+    ["操控·图示盒", K.diagram],
+    ...K.modes.map((b, i): [string, Box] => [`移动方式第 ${i} 档`, b]),
+    ["操控·提示行", K.modeTip],
+    ...K.actions.map((b, i): [string, Box] => [`动作键#${i}`, b]),
     ...K.tiers.flatMap((t, i): Array<[string, Box]> => [
       [`手感标签#${i}`, t.name], [`手感滑杆#${i}`, t.slider], [`手感档名#${i}`, t.caption],
     ]),
@@ -460,6 +531,8 @@ export function settingsOverflow(labels: string[] = [...TOGGLE_LABELS, ...ASSIST
   }
   // 辅助页三行说明:格子没出内容区不代表字没溢出(CLAMP 静默截字),所以量的是字。
   for (const m of assistTextOverflow(assistCopyLines())) out.push(m);
+  // 操控页左列:图示盒占掉右半之后,三选一与两颗键、以及那行提示都得还留在左列里
+  for (const m of controlLeftOverflow()) out.push(m);
   // tab 栏:整组要落在内容区里,每格的字要放得下(斜切会吃掉两端,各留 12)
   const groupW = tabRowWidth();
   if (groupW > SET.right - SET.colX) out.push(`tab 栏整组宽 ${groupW} > 内容宽 ${SET.right - SET.colX}`);

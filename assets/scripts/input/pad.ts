@@ -55,13 +55,24 @@ export interface Pad {
    * - swingSwipe:  已提交方向:0=未提交(mid,物理自动决定),1=右滑(deep),-1=左滑(near)
    *   触屏在 TOUCH_MOVE 里提交;键盘路径(swingFar/swingNear)在 press 时即定 ±1。
    *   松手时不清零 —— 命中前一直保留,给 player.ts 在 tryHit 前读取。
+   *   下一次按下/自动击打真打出去时,两轴会被**恢复成锁定值**(见 swingLockX):
+   *   没锁 = 恢复成 0,与旧的「清零」逐位一致;有锁 = 沿用记忆。
    * - swingSwipeY: 纵轴,与 swingSwipe 独立可组合:0=未提交(弧线物理自动决定),
-   *   1=上滑(挑高),-1=下滑(平抽)。提交/保留/清零时机与 swingSwipe 完全同构。
+   *   1=上滑(挑高),-1=下滑(平抽)。提交/保留/恢复时机与 swingSwipe 完全同构。
+   * - swingLockX / swingLockY: **长滑锁定**(参考和平精英长滑锁定端口):触屏长滑
+   *   (touchAim.lockPx / lockPxY)把该轴方向锁成默认 —— 之后每一拍(手动按下、自动
+   *   击打代拍)都自动按锁向打,直到取消:沿当前锁向再长滑一次 = 取消(toggle),
+   *   反向长滑 = 换向,换局 resetPadHolds 清锁。短滑在锁定期间 = 临时覆盖本拍,
+   *   下一拍自动回锁。锁只住在 pad 上,键盘键(swingFar 等)是完整意图、不读写锁。
    */
   swingPressed: boolean;
   swingHeld: boolean;
   swingSwipe: number;
   swingSwipeY: number;
+  /** 横轴锁向:0=未锁,1=锁定 deep,-1=锁定 near(touchpad 长滑写,pad 内纯存储) */
+  swingLockX: number;
+  /** 纵轴锁向:0=未锁,1=锁定挑高,-1=锁定平抽(与 swingLockX 同构) */
+  swingLockY: number;
 }
 
 export function newPad(): Pad {
@@ -70,6 +81,7 @@ export function newPad(): Pad {
     jumpPressed: false, jumpSteps: 0, jumpTail: 0,
     lungePressed: false, lungeDir: 0, lastDir: 0,
     swingPressed: false, swingHeld: false, swingSwipe: 0, swingSwipeY: 0,
+    swingLockX: 0, swingLockY: 0,
   };
 }
 
@@ -103,9 +115,11 @@ export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "s
       }
       break;
     }
-    // 触屏击球键:按下即挥拍,方向暂定 mid(swingSwipe=0),后续 TOUCH_MOVE 提交
+    // 触屏击球键:按下即挥拍,两轴恢复为锁定值 —— 没锁 = 0(与旧「清零」一致,点按即 mid),
+    // 有锁 = 记忆(「按一下不滑也按锁定方向打」就是在这兑现);按住后的滑动照常覆盖本拍。
     case "swing":
-      pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 0; pad.swingSwipeY = 0; break;
+      pad.swingPressed = true; pad.swingHeld = true;
+      pad.swingSwipe = pad.swingLockX; pad.swingSwipeY = pad.swingLockY; break;
     // 键盘专用:J = 深球(swingSwipe=1),K = 短球(swingSwipe=-1),即按即定
     case "swingFar":
       pad.swingPressed = true; pad.swingHeld = true; pad.swingSwipe = 1; pad.swingSwipeY = 0; break;
@@ -145,6 +159,39 @@ export function release(pad: Pad, action: "left" | "right" | "jump" | "swing"): 
       break;
     }
   }
+}
+
+/**
+ * 把**已提交、还没用掉**的击球键瞄准(横轴深浅 + 纵轴高低)恢复成锁定值。
+ * 只碰这两个字段:按下状态、移动意图、lastDir、锁本身一概不动 —— 它是"瞄准的存储",不做判断。
+ *
+ * 为什么是「恢复」而不是「清零」:手动模式下"下一次按下击球键"天然就是瞄准的边界
+ * (press 把两轴恢复成锁值),自动击打没有那一次按下 ⇒ 那一拍真打出去时由 core 经
+ * PlayerInput.onAimConsume 调到这里(player.ts 的 consumeAutoAim)。没锁时恢复 = 0,
+ * 与旧的「一次滑动只管一拍,不打成锁定态」逐位一致;有锁时恢复 = 锁向,长滑锁定的
+ * 「管到取消」就是在这里兑现(短滑覆盖的本拍打完,下一拍自动回锁)。
+ * 挥空不吃瞄准(不许白罚),AI 与喂球机永远走不到这里(它们没有"玩家的瞄准"可吃)。
+ */
+export function restoreSwingAim(pad: Pad): void {
+  pad.swingSwipe = pad.swingLockX;
+  pad.swingSwipeY = pad.swingLockY;
+}
+
+/**
+ * 长滑锁定的写入/取消(纯函数,touchpad 的 trackSwingSwipe 在长滑越过阈值时调):
+ * 同轴同向已锁 → 取消(toggle,与和平精英「再点一下取消」同一心智);否则设锁。
+ * 键值(pad.swingSwipe/swingSwipeY)由调用方按短滑语义照常写 —— 取消的那一拍仍按
+ * 该方向打,下一拍起 press/restoreSwingAim 才回到未锁的 mid。
+ */
+export function lockSwingAxis(pad: Pad, axis: "x" | "y", dir: number): boolean {
+  if (axis === "x") {
+    const cancel = pad.swingLockX === dir;
+    pad.swingLockX = cancel ? 0 : dir;
+    return !cancel;
+  }
+  const cancel = pad.swingLockY === dir;
+  pad.swingLockY = cancel ? 0 : dir;
+  return !cancel;
 }
 
 /**
@@ -217,6 +264,9 @@ export function resetPadHolds(pad: Pad): void {
   pad.swingHeld = false;
   pad.swingSwipe = 0;
   pad.swingSwipeY = 0;
+  // 长滑锁也是「这一局的意图」,换局清掉 —— 新对局从 mid 打起,别把上一局锁的后场带过来。
+  pad.swingLockX = 0;
+  pad.swingLockY = 0;
 }
 
 /** 老仓库 humanIntent 的等价物:把 Pad 翻成 PlayerInput(含反馈钩子) */

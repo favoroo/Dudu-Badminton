@@ -19,9 +19,15 @@
 //   ⑧ 同一球连挥 → flightFramesToClosest 从第 0 帧起扫,球已在区心时 fc = 0 当即"该按",
 //      不限次就是 smashAutoT 注释警告过的「人物自己乱挥半天」
 //   ⑨ 门控数值分叉 → 「四条一键化共用一把尺子」变成假话,而它只会让某个来源按早按晚
+//   ⑩ 瞄准锁死 → 用户 2026-10-05 的现场:「通过滑动控制方向…一次之后就重置为默认状态,
+//      不要滑动之后就进入那个锁定状态了」。同一条承诺还有五种静默坏法:挥空也吞瞄准(白罚)、
+//      关掉不干净(手动老玩家的手感被改)、CPU 打一拍吃掉真人的瞄准(hooks 是共用对象)、
+//      收招同帧被续拍再吃一次(inp 是本步快照,清 pad 清不到它)、徽标停在上一拍(读数撒谎)、
+//      键名「自动」被透明度滑杆抹掉(看不见的控件就是 bug)。判据 ⑩a~⑩h + 七份反例。
 //
 // 另外钉一条与手感直接相关的:球种预告徽标必须与代拍同一份瞄准算术(aimOverride),
 // 否则自动模式下玩家再也不会起拍,徽标就永远停在上一拍的落点 —— 撒谎的读数比没有读数更坏。
+// (⑩f 之前这条只写在 header 里、aimOverride import 了却一次没用过,现在真有判据了)
 //
 // 用法:node .tools-build/tools/auto-hit-check.js [--selftest]
 // ============================================================
@@ -30,7 +36,10 @@ import { Player as Pl, aimOverride, PRESS_LEAD_FRAMES, ZoneProbe } from "../asse
 import { Skills } from "../assets/scripts/core/skills";
 import { CFG } from "../assets/scripts/core/config";
 import { AutoHit } from "../assets/scripts/core/auto-hit";
-import { flightFramesToClosest } from "../assets/scripts/core/physics";
+import { AI } from "../assets/scripts/core/ai";
+import { flightFramesToClosest, Physics } from "../assets/scripts/core/physics";
+import { newPad, buildIntent, restoreSwingAim, clearEdges, tickHolds, press, type Pad } from "../assets/scripts/input/pad";
+import { alphaFloor } from "../assets/scripts/input/pad-cd";
 import { Ball, PlayerInput, TeamSide, Player as PlayerEntity } from "../assets/scripts/core/types";
 import { makeChecker, Checker } from "./harness";
 
@@ -614,6 +623,273 @@ const s9 = (ck: Checker): void => {
     `⑨ maxTriesPerBall = ${SNAPSHOT_CAP} 在设计红线内(1..3):再大就是"人物自己乱挥半天"`);
 };
 
+/**
+ * ⑩ 用的"真 pad"跑法:上面那套合成输入量的是**算术**(滑了往哪打),这条量的是**账本** ——
+ * 一次滑动到底管几拍。所以要走真路径:`buildIntent(pad)` 每步出意图(粘住不丢就是它做的),
+ * `onAimConsume` 接 `restoreSwingAim(pad)`(game-root 就是这么接的:没锁归 0、有锁回锁向),
+ * 边沿按 game-root 的次序清。对手喂 AI.think 而不是空输入:它必须真的回球,
+ * 否则"AI 偷吃玩家瞄准"那条判据量的是死支。
+ */
+interface PadCast {
+  /** 真人每一记命中的落点档(ShotResult.aim)与落点 */
+  aims: string[]; landXs: number[];
+  hits: number; cpuHits: number;
+  /** 真人侧 / CPU 侧各自被调到几次"这一次滑动用掉了" */
+  consumes: number; cpuConsumes: number;
+  /** 收工时 pad 上还留着的方向 */
+  swipe: number; swipeY: number;
+  whiffs: number;
+  /** 第一拍代拍起手的帧(⑩b/⑩c 要拿它当"按早/按准"的靶子) */
+  autoStart: number;
+  /** 每一帧末尾的 hero.swingAim(⑩g 抓"同帧被续拍再吃一次") */
+  swingAims: string[];
+}
+interface PadState { hits: number; cpuHits: number; consumes: number; cpuConsumes: number; whiffs: number; hero: PlayerEntity }
+interface PadOpts {
+  maxFrames?: number; seed?: number;
+  /** 在第几帧"按下击球键 + 同帧横滑提交"(真机上 down() 清零、trackSwingSwipe 再写 ±1) */
+  pressFrame?: number; pressSwipe?: number;
+  stopWhen?: (s: PadState) => boolean;
+}
+
+/** ⑪ 的反例接缝:收招时 pad 恢复成什么。默认 = restoreSwingAim(没锁归 0、有锁回锁向);
+ *  --selftest 把它换成「无视锁的清零」来证明 ⑪ 的判据有牙 —— 与 Player.* 那几条接缝同规矩:
+ *  pad 函数是 runPad 闭包里的常量换不上去,经这一层间接,selftest 才有下刀的地方。 */
+let padAimRestore: (pad: Pad) => void = restoreSwingAim;
+
+const armPad = (swipe: number, swipeY = 0): Pad => {
+  const pad = newPad();
+  pad.swingSwipe = swipe; pad.swingSwipeY = swipeY;
+  return pad;
+};
+
+function runPad(side: TeamSide, h: number, x: number, vx: number, vy: number,
+  pad: Pad, o: PadOpts = {}): PadCast {
+  seedRandom(o.seed ?? 7);
+  const R = Rules.R;
+  const { hero } = setup(side, h, x, vx, vy);
+  const out: PadCast = {
+    aims: [], landXs: [], hits: 0, cpuHits: 0, consumes: 0, cpuConsumes: 0,
+    swipe: 0, swipeY: 0, whiffs: 0, autoStart: -1, swingAims: [],
+  };
+  let consumes = 0, cpuConsumes = 0;
+  const max = o.maxFrames ?? 140;
+  try {
+    for (let f = 0; f < max; f++) {
+      R.events.length = 0;
+      if (o.pressFrame === f) {
+        press(pad, "swing");                        // 按下即把两轴恢复成锁值(没锁 = 0,与真机同一条 press)
+        // 同帧手指横滑才写键值 = trackSwingSwipe 只在手指真动过阈值时写;
+        // 不写的话 pad 停在 press 恢复出来的锁值上 —— 长滑锁定后「按下不滑」就该按锁向打。
+        if (o.pressSwipe !== undefined) pad.swingSwipe = o.pressSwipe;
+      }
+      const mine = buildIntent(pad, { onAimConsume: () => { consumes++; padAimRestore(pad); } });
+      const inputs = R.players.map((p) => p === hero
+        ? mine
+        : { ...AI.think(p, R.ball as Ball, R.state), onAimConsume: () => { cpuConsumes++; } });
+      Rules.step(inputs);
+      clearEdges(pad); tickHolds(pad);               // 与 game-root 的模拟步同一套收尾
+      if (hero.swingAuto && hero.swingT >= 0 && out.autoStart < 0) out.autoStart = f;
+      for (const ev of R.events) {
+        if (ev.t !== "hit") continue;
+        if (ev.side === hero.side) {
+          out.hits++; out.aims.push(String(ev.aim ?? "?")); out.landXs.push(ev.landX as number);
+        } else out.cpuHits++;
+      }
+      out.swingAims.push(String(hero.swingAim));
+      if (o.stopWhen && o.stopWhen({ hits: out.hits, cpuHits: out.cpuHits, consumes, cpuConsumes, whiffs: hero.stats.whiffs, hero })) break;
+    }
+  } finally { unseed(); }
+  out.consumes = consumes; out.cpuConsumes = cpuConsumes;
+  out.swipe = pad.swingSwipe; out.swipeY = pad.swingSwipeY; out.whiffs = hero.stats.whiffs;
+  return out;
+}
+
+/** ⑩g 用:代拍那一拍收招的帧(命中后 swingHit=true ⇒ total 不含 whiffExtra) */
+const swingEndFrame = (start: number): number => start + Physics.swingTotal();
+
+/**
+ * ⑩ 瞄准一次性 + 已瞄准读数。
+ * 这条改动的坏法照例全都不崩、不报错、tsc 也不报:
+ *  ⑩a 打完不清 = 玩家说的"滑一次就锁住了"(用户 2026-10-05 的原话)
+ *  ⑩b 挥空也清 = 没兑现还把玩家的瞄准没收走(与三条一键化"挥空不罚冷却"同一条规矩)
+ *  ⑩c 关掉不干净 = 手动模式的粘住行为被改坏,而那是老玩家的手感记忆
+ *  ⑩d AI 也消耗 = game-root 的 inputHooks 是**共用对象**,铺给场上每个人 ⇒ CPU 打一拍吃掉真人欠着的瞄准
+ *  ⑩f 徽标停在上一拍 = "我滑了到底有没有用"这个唯一读数开始撒谎
+ *  ⑩g 同帧被续拍再吃一次 = 一次滑动打两拍(inp 是本步快照,清 pad 清不到它)
+ *  ⑩h 键名读数被透明度滑杆抹掉 = 看不见的控件就是 bug
+ */
+const s10 = (ck: Checker): void => {
+  AutoHit.request(true);
+  // 与 ⑦ 同款"必定接得到"的格子:左半场、高 105、平快下坠来球
+  const sd: TeamSide = "left", hh = 105, xx = CO.netX - 150, vx = 5, vy = 3;
+
+  // 先探一枪纯自动:拿到代拍起手帧,后面几条要拿它当"按早/按准"的靶子
+  const probe = runPad(sd, hh, xx, vx, vy, armPad(0, 0), { stopWhen: (s) => s.hits >= 1 });
+  ck.ok(probe.hits >= 1 && probe.autoStart >= 0,
+    `⑩ 探针格能接到球(autoStart=${probe.autoStart})—— 下面全部判据的对照基准`);
+  const f0 = probe.autoStart;
+
+  // ---- ⑩a 滑一次 = 那一拍按你滑的打,打完当场回默认 ----
+  const padA = armPad(1, 0);
+  const a = runPad(sd, hh, xx, vx, vy, padA, { stopWhen: (s) => s.hits >= 1 && s.consumes >= 1 });
+  ck.ok(a.aims[0] === "deep", `⑩a 右滑那一拍就按右滑打(实得 aim=${a.aims[0] ?? "无"})`);
+  ck.ok(a.consumes === 1, `⑩a 一次命中恰好一次消耗:${a.consumes}(必须 1)`);
+  ck.ok(a.swipe === 0 && a.swipeY === 0,
+    `⑩a 打完就回默认,pad 两轴 = ${a.swipe}/${a.swipeY}(必须 0/0;非 0 就是玩家说的"锁定状态")`);
+
+  // ---- ⑩b 没滑的第二拍 = 从没滑过,逐位一致 ----
+  const again = runPad(sd, hh, xx, vx, vy, padA, { stopWhen: (s) => s.hits >= 1 });
+  const virgin = runPad(sd, hh, xx, vx, vy, armPad(0, 0), { stopWhen: (s) => s.hits >= 1 });
+  ck.ok(again.aims[0] === "mid", `⑩b 再滑之前不重滑:下一拍 aim=${again.aims[0]}(必须 mid)`);
+  ck.ok(again.landXs.length > 0 && virgin.landXs.length > 0
+    && Math.abs(again.landXs[0] - virgin.landXs[0]) < 1e-9,
+    `⑩b 用掉之后的那一拍与"从没滑过"逐位一致:${Math.round(again.landXs[0])} vs ${Math.round(virgin.landXs[0])}`);
+
+  // ---- ⑩c 挥空不吃瞄准 ----
+  const c = (() => {
+    // "按早了"要有得按:探针格(f0=0,球一上来就在判定区里)做不出挥空,得挑一颗还在远处的。
+    // 与其硬编码帧差(改一个数值就静默变成空断言),这里扫几颗候选,只取**真的**挥空成功那一格。
+    const tries: Array<[number, number, number, number]> = [
+      [105, CO.netX - 250, 3, 5], [150, CO.netX - 250, 4, -3], [70, CO.netX - 300, 7, 2], [40, CO.netX - 150, 11, 8],
+    ];
+    for (const [ch, cx, cvx, cvy] of tries) {
+      const t = runPad(sd, ch, cx, cvx, cvy, armPad(0, 0), {
+        maxFrames: 60, pressFrame: 0, pressSwipe: 1, stopWhen: (s) => s.whiffs >= 1,
+      });
+      if (t.whiffs >= 1) return t;
+    }
+    return null;
+  })();
+  ck.ok(c !== null, `⑩c 找到一格"第 0 帧就按 ⇒ 必挥空"的候选(找不到就是这几格都被判定区兜住了,这条判据成了摆设)`);
+  ck.ok(!c || c.consumes === 0, `⑩c 挥空不吃瞄准:消耗 ${c ? c.consumes : "-"}(必须 0;辅助模式不罚玩家挥空,与三条一键化"挥空不付冷却"同源)`);
+  ck.ok(!c || c.swipe === 1, `⑩c 挥空之后那次右滑还欠着(实得 ${c ? c.swipe : "-"}):没兑现就不许没收`);
+
+  // ---- ⑩d AI 永不消耗(它的准头归 diffs 管,而 pad 上的瞄准是玩家的)----
+  // 不能"抓到第一记 CPU 命中就收工":消耗发生在**收招帧**,比出手晚约 22 帧 ——
+  // 那样两条路径(正写 / 拆掉 isAI 闸)都会在事件当帧就停,判据量的是死支(--selftest 现场抓到的)。
+  // 所以整段跑满,再拿"真人侧确实被消耗过 ≥1 次"作正对照,证明钩子是接着的。
+  const d = runPad(sd, hh, xx, vx, vy, armPad(1, 0), { maxFrames: 200 });
+  ck.ok(d.cpuHits >= 1, `⑩d 对手在这 200 帧里真的回球了(${d.cpuHits} 拍)—— 否则下一条量的是死支`);
+  ck.ok(d.consumes >= 1, `⑩d 正对照:同一场里真人那一侧被消耗 ${d.consumes} 次(钩子确实接在输入上)`);
+  ck.ok(d.cpuConsumes === 0, `⑩d CPU 打一拍不许吃掉真人的瞄准:AI 侧消耗 ${d.cpuConsumes}(必须 0)`);
+
+  // ---- ⑩e 关掉 = 今天:滑动仍然粘住,钩子一次都不调 ----
+  AutoHit.request(false);
+  const padE = armPad(1, 0);
+  const e = runPad(sd, hh, xx, vx, vy, padE, {
+    pressFrame: f0, pressSwipe: 1,
+    stopWhen: (s) => s.hits >= 1 && s.hero.swingT < 0,
+  });
+  ck.ok(e.hits >= 1, `⑩e 关掉后玩家自己按准那一拍仍能出球(命中 ${e.hits})`);
+  ck.ok(e.consumes === 0, `⑩e 关掉时消耗钩子一次都没调:${e.consumes}(必须 0)`);
+  ck.ok(e.swipe === 1, `⑩e 关掉后 pad 仍是老行为的粘住值(${e.swipe})—— 手动模式手感一字不动`);
+  AutoHit.request(true);
+
+  // ---- ⑩f 徽标基准:上一拍落在 deep 不许冒充下一拍 ----
+  const { hero, ball } = setup(sd, hh, xx, vx, vy);
+  hero.swingT = -1; hero.swingAim = "deep"; hero.swingLoft = 0;
+  const base = Pl.previewBase(hero);
+  ck.ok(base.aim === AH.autoAim && base.loft === 0,
+    `⑩f 开着辅助且不在挥拍 → 预告基准回落到代拍种子 ${base.aim}(实得 ${base.aim})`);
+  ck.ok(base.aim !== hero.swingAim,
+    `⑩f 上一条不是空断言:实体上还挂着上一拍的 ${hero.swingAim},基准必须不等于它`);
+  const midGround = runPad(sd, hh, xx, vx, vy, armPad(0, 0), { stopWhen: (s) => s.hits >= 1 });
+  ck.ok(midGround.aims[0] === "mid", `⑩f 对照:没滑过时那一拍本来就是 ${midGround.aims[0]}`);
+  void midGround.landXs.length;
+  const q = 1 - C.sweet.coreRatio;
+  const armedBase = Pl.previewBase(hero);
+  const viaBase = Pl.buildShot(hero, ball, {
+    q, sweet: true, dEdge: 0, heat: 0, preview: true,
+    aimHint: aimOverride(armedBase.aim, armedBase.loft, 0, 0),
+  }).kind;
+  ck.ok(Pl.previewKind(hero, ball, { swipe: 0, swipeY: 0 }) === viaBase,
+    "⑩f 徽标(没滑动)与走同一份 aimOverride 的 buildShot 同球种 —— header 那句「同一份瞄准算术」现在有判据了");
+  const hintDeep = aimOverride(armedBase.aim, armedBase.loft, 1, 0);
+  ck.ok(hintDeep.aim === "deep", `⑩f 有 pending 滑动时基准被盖成 ${hintDeep.aim}`);
+  const viaDeep = Pl.buildShot(hero, ball, {
+    q, sweet: true, dEdge: 0, heat: 0, preview: true, aimHint: hintDeep,
+  }).kind;
+  ck.ok(Pl.previewKind(hero, ball, { swipe: 1, swipeY: 0 }) === viaDeep,
+    "⑩f 徽标(已滑右)与同一份算术的 buildShot 同球种");
+  const armedBaseLive = (() => { hero.swingT = 4; const b = Pl.previewBase(hero); hero.swingT = -1; return b; })();
+  ck.ok(armedBaseLive.aim === "deep",
+    `⑩f 挥拍进行中基准必须是活值(实得 ${armedBaseLive.aim}),不能被种子顶掉`);
+
+  // ---- ⑩g 同帧不重复吃:收招帧被 swingBuf 接续下一拍时,那份快照已经作废 ----
+  const g = runPad(sd, hh, xx, vx, vy, armPad(1, 0), {
+    maxFrames: 90, pressFrame: swingEndFrame(f0), pressSwipe: 1,
+  });
+  const endF = swingEndFrame(f0);
+  const afterG = g.swingAims[endF + 1];
+  ck.ok(g.swipe === 0, `⑩g 收招处把 pad 清了(实得 ${g.swipe})`);
+  ck.ok(afterG === "mid",
+    `⑩g 同一帧续上的那一拍不许再吃一次用掉的滑动:swingAims[${endF + 1}] = ${afterG}(必须 mid;漏了快照清零就是 deep)`);
+  ck.ok(g.swingAims[endF] === "deep" || g.swingAims[endF - 1] === "deep",
+    `⑩g 上一条不是空断言:被用掉的那一拍确实带着滑动的方向(${g.swingAims[endF - 1]}/${g.swingAims[endF]})`);
+
+  // ---- ⑩h 键面读数的配置自洽 + 浓度下限 ----
+  const badgeRaw = C.shotBadge as unknown as Record<string, unknown>;
+  ck.ok(badgeRaw.autoSuffix === undefined,
+    "⑩h 徽标上那串「· 自动」已经删掉:模式读数只在击球键的键名上说一次");
+  const lab = AH.padLabel;
+  ck.ok(lab.text === "自动" && lab.keep > 0 && lab.keep <= 1,
+    `⑩h config.autoHit.padLabel = { text:${lab.text}, keep:${lab.keep} } 自洽(keep 必须 >0,否则读数会被透明度抹掉)`);
+  ck.ok(alphaFloor(0, lab.keep) >= lab.keep - 1e-9 && alphaFloor(1, lab.keep) === 1,
+    `⑩h alphaFloor 两端:滑杆 0 时 ${alphaFloor(0, lab.keep).toFixed(3)} ≥ keep,滑杆拉满 ${alphaFloor(1, lab.keep).toFixed(3)}`);
+  ck.ok(alphaFloor(0.2, lab.keep) >= 0.8,
+    `⑩h 滑杆最低(0.2)时「自动」两字的浓度 = ${alphaFloor(0.2, lab.keep).toFixed(3)}(必须 ≥0.8 才读得出来)`);
+  let mono = true;
+  for (let i = 1; i <= 10; i++) if (alphaFloor(i / 10, lab.keep) < alphaFloor((i - 1) / 10, lab.keep)) mono = false;
+  ck.ok(mono, `⑩h alphaFloor 随滑杆单调不减(反过来会被读成"滑杆往上调反而更淡")`);
+};
+
+/**
+ * ⑪ 长滑锁定(pad.swingLockX/Y):短滑管一拍,长滑管到取消(参考和平精英长滑锁定端口)。
+ * 锁只住在 pad 上,core 只看见键值 —— 所以这条量的是「锁通过 press/restoreSwingAim 两条
+ * 恢复路进管道之后」的账本,手势判定本身(阈值/toggle)在 UI 层,由 input-check ⑩b 钉死。
+ * 这条改动的坏法照例全都不崩、不报错:
+ *  ⑪a 锁只管一拍 = 长滑白滑,与没锁一个样(收招把锁恢复成了 0)
+ *  ⑪b 按下不继承锁 = 手动模式锁定失灵(按下不滑必须按锁向打)
+ *  ⑪c 短滑例外拍打完不回锁 = 短滑一滑就把锁顶掉,「锁定」名存实亡
+ */
+const s11 = (ck: Checker): void => {
+  AutoHit.request(true);
+  // 与 ⑩ 同一格:左半场、高 105、平快下坠来球(探针格第 0 帧必命中,见 ⑩c)
+  const sd: TeamSide = "left", hh = 105, xx = CO.netX - 150, vx = 5, vy = 3;
+
+  // ---- ⑪a 锁一次管多拍:代拍每一拍都往锁向打,锁在收招后原样留在 pad 上 ----
+  // 装弹与真机长滑同构:trackSwingSwipe 先按短滑语义写键值、再上锁 —— 两个都写才是长滑。
+  const padL = armPad(1, 0);
+  padL.swingLockX = 1;
+  const a = runPad(sd, hh, xx, vx, vy, padL, { maxFrames: 240, stopWhen: (s) => s.hits >= 2 });
+  ck.ok(a.hits >= 2, `⑪a 这格两拍都接到了(${a.hits})—— 锁定判据的对照基准`);
+  ck.ok(a.aims[0] === "deep" && a.aims[1] === "deep",
+    `⑪a 锁 deep 后代拍连着两拍都 deep(实得 ${a.aims[0]}/${a.aims[1]};锁只管一拍 = 长滑白滑)`);
+  ck.ok(a.consumes >= 1, `⑪a 收招钩子照常在调(${a.consumes} 次)—— 锁定的恢复走的是同一条路`);
+  ck.ok(a.swipe === 1 && padL.swingLockX === 1,
+    `⑪a 打完 pad 键值停在锁向(${a.swipe})、锁原样还在(${padL.swingLockX}):恢复 ≠ 清零`);
+
+  // ---- ⑪b 按下继承锁:手动按下那一拍不滑也按锁向打 ----
+  const padB = armPad(0, 0);
+  padB.swingLockX = -1;
+  const b = runPad(sd, hh, xx, vx, vy, padB, { pressFrame: 0, stopWhen: (s) => s.hits >= 1 });
+  ck.ok(b.hits >= 1, `⑪b 按下那一拍真的出球了(命中 ${b.hits})`);
+  ck.ok(b.aims[0] === "near",
+    `⑪b 有锁按下不滑 = 按锁向打(实得 ${b.aims[0] ?? "无"};必须 near —— press 恢复的就是锁值)`);
+
+  // ---- ⑪c 短滑例外一拍:锁 deep 期间短滑 near,本拍听短滑的,下一拍自动回锁 ----
+  const padC = armPad(0, 0);
+  padC.swingLockX = 1;
+  const c11 = runPad(sd, hh, xx, vx, vy, padC, { maxFrames: 240, pressFrame: 0, pressSwipe: -1, stopWhen: (s) => s.hits >= 2 });
+  ck.ok(c11.hits >= 2, `⑪c 两拍都接到了(${c11.hits})`);
+  ck.ok(c11.aims[0] === "near",
+    `⑪c 锁 deep 期间短滑 near = 本拍听短滑的(实得 ${c11.aims[0] ?? "无"})`);
+  ck.ok(c11.aims[1] === "deep",
+    `⑪c 短滑打完自动回锁(实得 ${c11.aims[1] ?? "无"};必须 deep —— 锁是默认值,短滑是例外一拍)`);
+  ck.ok(c11.swipe === 1, `⑪c 收工时 pad 停在锁向(${c11.swipe}),短滑没有被顶成新锁`);
+};
+
 const SECTIONS: Array<{ name: string; run: (ck: Checker) => void }> = [
   { name: "① 起了拍必兑现 + 沉默必归因", run: s1 },
   { name: "② 永不发球", run: s2 },
@@ -624,6 +900,8 @@ const SECTIONS: Array<{ name: string; run: (ck: Checker) => void }> = [
   { name: "⑦ 不加强度 + 瞄准同源", run: s7 },
   { name: "⑧ 每球限次", run: s8 },
   { name: "⑨ 四侧门控同源", run: s9 },
+  { name: "⑩ 瞄准一次性 + 已瞄准读数", run: s10 },
+  { name: "⑪ 长滑锁定:锁管到取消", run: s11 },
 ];
 
 // ============================================================
@@ -632,6 +910,11 @@ const SECTIONS: Array<{ name: string; run: (ck: Checker) => void }> = [
 type Due = typeof Pl.autoSwingDue;
 const originalDue = Pl.autoSwingDue;
 const originalOnMatch = AutoHit.onMatch;
+// ⑩ 的两条接缝:消耗闸门与徽标基准都挂在 Player 导出面上,反例才换得上去
+type Consume = typeof Pl.consumeAutoAim;
+type PreviewBase = typeof Pl.previewBase;
+const originalConsume = Pl.consumeAutoAim;
+const originalBase = Pl.previewBase;
 
 /** 反例 1:不择帧 —— 武装着就起手(会对着够不着/界外/贴地的球乱挥) */
 const alwaysDue: Due = () => true;
@@ -725,6 +1008,75 @@ if (process.argv.includes("--selftest")) {
       tag: "deepAim(代拍偷偷压深,不再等于玩家点按)", secs: ["⑦"],
       apply: () => { rawAH.autoAim = "deep"; },
       undo: () => { rawAH.autoAim = "mid"; },
+    },
+    // ---------- ⑩ 瞄准一次性:七份反例,每份都对应一种"不会崩、只会安静地不对"的坏法 ----------
+    {
+      // 从不消耗 = 今天那套锁定态(滑一次之后每一拍都往同一个方向打),用户要改掉的正是它
+      tag: "neverConsume(滑动永远粘住 = 玩家说的锁定状态)", secs: ["⑩"],
+      apply: () => { Pl.consumeAutoAim = (() => false) as Consume; },
+      undo: () => { Pl.consumeAutoAim = originalConsume; },
+    },
+    {
+      // 消耗一切:挥空也吃、AI 也吃、关了也吃 —— 三道闸同时拆掉,⑩b/⑩c/⑩d/⑩e 都该报警
+      tag: "consumeAll(不看挥空/AI/开关三道闸)", secs: ["⑩"],
+      apply: () => {
+        Pl.consumeAutoAim = ((p: PlayerEntity, inp: PlayerInput) => {
+          inp.swingSwipe = 0; inp.swingSwipeY = 0; inp.onAimConsume?.(p); return true;
+        }) as Consume;
+      },
+      undo: () => { Pl.consumeAutoAim = originalConsume; },
+    },
+    {
+      tag: "whiffEats(挥空也吞瞄准 = 白罚)", secs: ["⑩"],
+      apply: () => {
+        Pl.consumeAutoAim = ((p: PlayerEntity, inp: PlayerInput) => {
+          if (!AutoHit.on || p.isAI) return false;
+          inp.swingSwipe = 0; inp.swingSwipeY = 0; inp.onAimConsume?.(p); return true;
+        }) as Consume;
+      },
+      undo: () => { Pl.consumeAutoAim = originalConsume; },
+    },
+    {
+      tag: "aiEats(CPU 打一拍吃掉真人的瞄准)", secs: ["⑩"],
+      apply: () => {
+        Pl.consumeAutoAim = ((p: PlayerEntity, inp: PlayerInput, struck: boolean) => {
+          if (!AutoHit.on || !struck) return false;
+          inp.swingSwipe = 0; inp.swingSwipeY = 0; inp.onAimConsume?.(p); return true;
+        }) as Consume;
+      },
+      undo: () => { Pl.consumeAutoAim = originalConsume; },
+    },
+    {
+      // 只清 pad 不清本步那份输入快照:收招帧被 swingBuf 接续下一拍时又吃一次 ⇒ 一滑两拍
+      tag: "leakSnapshot(不清 inp ⇒ 同一帧续拍再吃一次)", secs: ["⑩"],
+      apply: () => {
+        Pl.consumeAutoAim = ((p: PlayerEntity, inp: PlayerInput, struck: boolean) => {
+          if (!AutoHit.on || !struck || p.isAI) return false;
+          inp.onAimConsume?.(p); return true;
+        }) as Consume;
+      },
+      undo: () => { Pl.consumeAutoAim = originalConsume; },
+    },
+    {
+      // 旧式基准:没滑动时回落实体上停着的上一拍 ⇒ 徽标一直报上一拍的落点
+      tag: "legacyBase(徽标停在上一拍)", secs: ["⑩"],
+      apply: () => {
+        Pl.previewBase = ((p: PlayerEntity) => ({ aim: p.swingAim, loft: p.swingLoft })) as PreviewBase;
+      },
+      undo: () => { Pl.previewBase = originalBase; },
+    },
+    {
+      tag: "labelNoFloor(「自动」被透明度滑杆抹掉)", secs: ["⑩"],
+      apply: () => { (AH.padLabel as unknown as { keep: number }).keep = 0; },
+      undo: () => { (AH.padLabel as unknown as { keep: number }).keep = 0.8; },
+    },
+    // ---------- ⑪ 长滑锁定 ----------
+    {
+      // 旧式清零:收招把 pad 一律归 0(无视锁)—— 长滑锁定整个失效,滑了也只管一拍。
+      // pad 函数是 runPad 闭包里的常量,经 padAimRestore 这层间接 selftest 才换得上去。
+      tag: "lockWiped(收招无视锁把 pad 清零 = 锁定只管一拍)", secs: ["⑪"],
+      apply: () => { padAimRestore = (pad) => { pad.swingSwipe = 0; pad.swingSwipeY = 0; }; },
+      undo: () => { padAimRestore = restoreSwingAim; },
     },
   ];
   for (const c of cases) {

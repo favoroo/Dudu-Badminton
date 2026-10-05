@@ -65,13 +65,25 @@ export interface CdArcs {
 }
 
 /**
+ * 读数的有效透明度:把「按键淡出滑杆」和「状态读数」解耦的一般式。
+ * keep=0 时退化成原来的「完全跟随滑杆」;keep=1 时读数无视滑杆。
+ * 为什么必须有下限:玩家调淡的是**按键**,不是「这颗键现在什么状态」这条信息 ——
+ * 线性相乘时滑杆 0.2 会把墨底压到 0.116,合成到亮场上与就绪态只差 10%,
+ * 读出来就是「这键坏了」。(见 AGENTS 的记忆:看不见的控件就是 bug)
+ * 留在零 cc 的本文件里而不是 touchpad:这样 node 侧能断言,判据 pad-cd-check。
+ */
+export function alphaFloor(padAlpha: number, keep: number): number {
+  const A = clamp(padAlpha, 0, 1);
+  return clamp(A + (1 - A) * clamp(keep, 0, 1), 0, 1);
+}
+
+/**
  * 冷却层的有效透明度。
  * keep=0 时退化成原来的「完全跟随滑杆」;keep=1 时读数无视滑杆。
  * 0.82 的取法:滑杆最低 0.2 时读数仍有 0.856,而滑杆拉满时不会超过 1(不额外糊屏)。
  */
 export function cdAlpha(padAlpha: number): number {
-  const A = clamp(padAlpha, 0, 1);
-  return clamp(A + (1 - A) * CD.keep, 0, 1);
+  return alphaFloor(padAlpha, CD.keep);
 }
 
 /**
@@ -268,6 +280,11 @@ export function drawBlockedTape(pen: CdPen, color: CdColor, r: number, padAlpha:
 //      传 a1 > a0 画不出那一段、画的是它的补集。症状是"充了 20% 却暗了 80%"。
 //   ② 所有 alpha 一律过 cdAlpha(padAlpha) —— 透明度滑杆拉到底也不许把读数抹掉
 //      (用户原话「透明度调低之后冷却都看不太清了」,同一款病不许在新增件上复发)。
+//
+// 多管分段(2026-10-05,氮气式):怒气重击改成最多攒 3 管,键面跟着从"一条环"改成
+// "N 段管"—— 每管占整圈的 1/pipes,段间留一道缺口当管与管的分界,攒满哪管哪管整段点亮。
+// 量纲在此分家:这里画与印的都吃「管」(ragePipesOf/ragePipeFillOf 喂进来),
+// 强度与档位仍走 rageRatioOf 那条线,两条量纲不许互相顶替。
 // 分层照旧:零 cc 依赖(只 import config 与 utils),所以几何能在 node 下断言
 // (tools/pad-cd-check.ts 的 charge 段),真机画的与断言吃的是同一份代码。
 // ============================================================
@@ -279,33 +296,32 @@ export const CH = CD.charge ?? {
   ringW: 5.5, ringA: 0.95, trackA: 0.25,
   head: "#ffffff", headA: 1, headW: 6.5, headSpan: 0.5,
   fullRingW: 2.2, fullRingA: 0.9,
-  pctK: 0.42, pctY: 0.08, stepTol: 0.008,
+  pctK: 0.42, pctY: 0.08, stepTol: 0.008, segGap: 0.16,
 };
 
-/**
- * 蓄能环各段角度(全部递减序,理由见本节头注 ①)。
- * 与 CdArcs 不同的是这里三段都是"弧"不是"扇形"(底槽/填充/亮头都描边不填充),
- * 因为充能是"进度"而不是"惩罚",实底扇形会把它读成冷却那张脸。
- */
-export interface ChargeArcs {
-  /** 满环底槽:整圈(唯一一处 da 恰为 -2π 的用法,引擎画得出完整一圈) */
-  track0: number; track1: number;
-  /** 已充能填充:从 12 点顺时针扫过 ratio 那一圈 */
-  fill0: number; fill1: number;
-  /** 前沿亮头:骑在填充终点上的一小段(向"已充"那一侧收,不越过 12 点) */
-  head0: number; head1: number;
+/** 蓄能技能的管数上限(config.skills.rage.pipes;当前唯一 charge 款是怒气重击) */
+export function chargePipesMax(): number {
+  return Math.max(1, Math.round(CFG.skills.rage.pipes ?? 1));
 }
 
-export function chargeArcs(ratio: number): ChargeArcs {
-  const v = clamp(ratio, 0, 1);
-  const full = Math.PI * 2;
-  const tip = CD_TOP - v * full;                 // 填充前沿 = 已充到的那一点
-  return {
-    track0: CD_TOP, track1: CD_TOP - full,
-    fill0: CD_TOP, fill1: tip,
-    // 亮头从"前沿往回 CH.headSpan"扫到前沿:fill0 一侧不收过头(不越过 12 点)。
-    head0: Math.min(tip + CH.headSpan, CD_TOP), head1: tip,
-  };
+/** 段间缺口(弧度):单管(pipes<=1)时强制 0 = 一条连续满环,旧读法原样保留 */
+export function chargeSegGap(pipes: number): number {
+  return pipes <= 1 ? 0 : (CH.segGap ?? 0.16);
+}
+
+/** 每段名义跨度(弧度):整圈减去段间缺口再均分 */
+export function chargeSegSpan(pipes: number): number {
+  return (Math.PI * 2 - chargeSegGap(pipes) * pipes) / pipes;
+}
+
+/**
+ * 第 seg 段(0 起)的起止角(全部递减序:a0 段顶在先、a1 段底在后,补集规矩见 cdArcs)。
+ * 0 号段从 12 点起顺时针;第 i 段的段顶 = 12 点 − i×(段跨度 + 缺口)。
+ */
+export function chargeSegArcs(seg: number, pipes: number): { a0: number; a1: number } {
+  const span = chargeSegSpan(pipes);
+  const a0 = CD_TOP - seg * (span + chargeSegGap(pipes));
+  return { a0, a1: a0 - span };
 }
 
 /** 蓄能环中心半径:与冷却环同一条内收式,环线整条落在键圆内侧、不啃描边 */
@@ -319,54 +335,83 @@ export function chargeFullR(r: number): number {
 }
 
 /**
- * 怒气百分比读数。0 充能**不印 "0%"** —— 空槽时环本来就没有,留一个字在键心
+ * 怒气读数(管量纲):pipesBanked = 已满的整管数、fill = 进行中那管的填充。
+ * 印的是**总充能百分比**(如 50% / 100% / 250% / 300%),与分段环读的是同一笔账
+ * (P + fill 恰 = rage/max)。0 充能**不印 "0%"** —— 空槽时环本来就没有,留一个字在键心
  * 反而像"坏了但还在报数"(同 cdText 不印 0.0 的那条理由:读数不许撒谎)。
  */
-export function chargeText(ratio: number): string {
-  const v = clamp(ratio, 0, 1);
-  if (v <= 0) return "";
-  const pct = Math.round(v * 100);
+export function chargeText(pipesBanked: number, fill: number): string {
+  const pipes = clamp(Math.round(pipesBanked), 0, chargePipesMax());
+  const total = pipes + clamp(fill, 0, 1);
+  if (total <= 0) return "";
+  const pct = Math.round(total * 100);
   return pct <= 0 ? "" : `${pct}%`;
 }
 
 /**
- * 画蓄能环:底槽满环 + 技能色已充弧 + 前沿白亮头 (+ 满怒那一圈外环)。
+ * 画蓄能环(多管分段版):未满管的底槽弧 + 已满管整段点亮 + 进行中管的填充弧与白亮头
+ * (+ 攒着至少一整管时的那圈满怒外环)。
  * 调用方只在 kind==="charge" 时调,且负责把 lineCap/lineJoin 设成 ROUND。
- * 一笔四画封顶(帧成本:这条键在 pad-cd-check 的笔数预算里按 ≤4 钉)。
+ * 笔画封顶 = 未满管底槽 + 已满管填充 + 亮头 + 外环(3 管 = 最多 8 笔;
+ * pad-cd-check 的笔数预算按这个口径钉)。空槽(P<=0 且 fill<=0)一笔不画 ——
+ * 旧口径:读数不许撒谎,环本来就没有。
  */
-export function drawCharge(pen: CdPen, color: CdColor, r: number, ratio: number, skillId: string, padAlpha: number): void {
-  const v = clamp(ratio, 0, 1);
-  if (v <= 0) return;
+export function drawCharge(pen: CdPen, color: CdColor, r: number, fill: number, skillId: string, padAlpha: number, pipesBanked = 0): void {
+  const pipesMax = chargePipesMax();
+  const P = clamp(Math.round(pipesBanked), 0, pipesMax);
+  const f = clamp(fill, 0, 1);
+  if (P <= 0 && f <= 0) return;
   const A = cdAlpha(padAlpha);
-  const arcs = chargeArcs(v);
   const ringR = chargeRingR(r);
   const accent = skillAccent(skillId);
+  const span = chargeSegSpan(pipesMax);
+  // 进行中那段的几何(P < pipesMax 才存在;P = pipesMax 时 fill 恒 0,由喂值端保证)
+  const cur = P < pipesMax ? chargeSegArcs(P, pipesMax) : null;
+  const tip = cur ? cur.a0 - f * span : 0;
 
-  // 1. 满环底槽:没有它玩家只看得见"有多少",看不见"离满还差多少"
-  pen.strokeColor = color(CH.head, CH.trackA * A);
-  pen.lineWidth = CH.ringW;
-  pen.arc(0, 0, ringR, arcs.track0, arcs.track1, false);
-  pen.stroke();
-
-  // 2. 已充能填充:技能专属色,顺时针从 12 点长出去
-  pen.strokeColor = color(accent, CH.ringA * A);
-  pen.lineWidth = CH.ringW;
-  pen.arc(0, 0, ringR, arcs.fill0, arcs.fill1, false);
-  pen.stroke();
-
-  // 3. 前沿白亮头:静态截图里也看得出"充到这儿了"(与冷却的前沿亮点同一条设计动机)
-  if (arcs.head1 < arcs.head0 - 1e-6) {
-    pen.strokeColor = color(CH.head, CH.headA * A);
-    pen.lineWidth = CH.headW;
-    pen.arc(0, 0, ringR, arcs.head0, arcs.head1, false);
-    pen.stroke();
+  // 1. 底槽:只描还没点亮的那几段(满管那几段会被填充整段盖住,重复描是白烧笔)
+  if (P < pipesMax) {
+    pen.strokeColor = color(CH.head, CH.trackA * A);
+    pen.lineWidth = CH.ringW;
+    for (let i = P; i < pipesMax; i++) {
+      const seg = chargeSegArcs(i, pipesMax);
+      pen.arc(0, 0, ringR, seg.a0, seg.a1, false);
+      pen.stroke();
+    }
   }
 
-  // 4. 满怒外环:满了就要在键上一眼分明(它同时是 syncReadyPulse 呼吸的那一层底)
-  if (v >= 1) {
+  // 2. 已满的管:整段点亮(技能专属色 —— 与冷却环同一条"谁的怒气一眼可辨"的规矩)
+  if (P > 0) {
+    pen.strokeColor = color(accent, CH.ringA * A);
+    pen.lineWidth = CH.ringW;
+    for (let i = 0; i < P; i++) {
+      const seg = chargeSegArcs(i, pipesMax);
+      pen.arc(0, 0, ringR, seg.a0, seg.a1, false);
+      pen.stroke();
+    }
+  }
+
+  // 3. 进行中那管:从段顶顺时针长出去 + 前沿白亮头(静态截图里也看得出"充到这儿了")
+  if (cur && f > 0) {
+    pen.strokeColor = color(accent, CH.ringA * A);
+    pen.lineWidth = CH.ringW;
+    pen.arc(0, 0, ringR, cur.a0, tip, false);
+    pen.stroke();
+
+    const head0 = Math.min(tip + CH.headSpan, cur.a0);
+    if (head0 > tip + 1e-6) {
+      pen.strokeColor = color(CH.head, CH.headA * A);
+      pen.lineWidth = CH.headW;
+      pen.arc(0, 0, ringR, head0, tip, false);
+      pen.stroke();
+    }
+  }
+
+  // 4. 满怒外环:至少攒着一整管就点亮(它同时是 syncReadyPulse 呼吸的那一层底)
+  if (P >= 1) {
     pen.strokeColor = color(accent, CH.fullRingA * A);
     pen.lineWidth = CH.fullRingW;
-    pen.arc(0, 0, chargeFullR(r), arcs.track0, arcs.track1, false);
+    pen.arc(0, 0, chargeFullR(r), CD_TOP, CD_TOP - Math.PI * 2, false);
     pen.stroke();
   }
 }

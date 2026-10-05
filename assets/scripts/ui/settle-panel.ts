@@ -415,7 +415,8 @@ export class SettlePanel {
   /** 战报六格:格数固定 6,节点复用,只换文案与颜色 */
   private renderStats(rows: SettleStat[]): void {
     const P = this.kit.pal;
-    const TONE: Record<string, string> = { gold: P.accent, hot: "#ff6a1f", cyan: P.cyan, plain: P.text };
+    // 打击橙走 ROLE.power(与商店履历格「扣杀终结」同一支笔);旧写法这里又抄一遍 #ff6a1f
+    const TONE: Record<string, string> = { gold: P.accent, hot: ROLE.power.face, cyan: P.cyan, plain: P.text };
     const cells = this.statLayer.children;
     for (let i = 0; i < 6; i++) {
       let cell = cells[i];

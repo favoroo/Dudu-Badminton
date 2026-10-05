@@ -153,7 +153,7 @@ export function solidTab(spec: TabSpec): TabHandle {
 
 /** role → 色键(在 p5-tokens.ROLE 里查,这里只是省掉调用方的 .face 一跳) */
 const ROLE_FACE: Record<Role, keyof typeof C> = {
-  primary: "slash", star: "acid", drill: "good", info: "cyan", record: "paper", off: "navy2",
+  primary: "slash", star: "acid", drill: "good", info: "cyan", record: "paper", power: "hot", off: "navy2",
 };
 
 /** 一个角色该用的面色 */

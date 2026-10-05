@@ -533,7 +533,7 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
       //
       // 今天这段到不了:aiSkillByDiff 四档恒 "lunge",关卡 aiSkill 只出现过 smash/magnet/flash。
       // 写它是因为**不该出现"装了 rage 的 AI 一声不吭"那种中间态** —— 要么给个明确策略,
-      // 要么别让它装上(rage-check ⑱ 钉住"rage 不在 AI 技能表里",这一句就是那条断言的注脚)。
+      // 要么别让它装上(rage-check ⑬ 钉住"rage 不在 AI 技能表里",这一句就是那条断言的注脚)。
       // AI 也永远拿不到 rageAutoT 代拍窗(activate 里按 !p.isAI 给零),它的准头归 diffs.* 管。
       if (Skills.rageRatioOf(p) >= 1) {
         inp.skillPressed = true;

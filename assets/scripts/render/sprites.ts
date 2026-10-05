@@ -32,7 +32,9 @@ import {
   runFoot, airFoot, lungeFoot, standFoot, swingFootLift,
 } from "./poses";
 import { ShuttleMotion, shuttleWobble, TIER_FIRE, TIER_SMASH, TIER_SWEET, TIER_SWEET_SMASH } from "./shuttle-motion";
+import { entityOf } from "./view-cache";
 import { drawFootSigil } from "./aura";
+import { drawSpikeRing, fillSpikes, SPIKE_VERTS } from "./p5kit";
 
 const LineCap = Graphics.LineCap;
 const LineJoin = Graphics.LineJoin;
@@ -599,10 +601,18 @@ function torsoBand(g: Graphics, f: Frame, t: Torso, v0: number, v1: number,
 
 export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, alpha: number, ball: Ball | null): void {
   const pp = p as RPlayer;
-  const isShadow = p.label === "影分身" || p.idx === -1;
+  // 判据只看 idx === -1(分身不占名单索引),**不再匹配 label 字符串** —— 从前那句
+  // `p.label === "影分身"` 是"改一句文案就改渲染"的隐式耦合;而 idx=-1 这条有守卫:
+  // shadow-check ④ 断言 R.players 里每个 idx >= 0,实名球员永远不会误落进剪影分支。
+  const isShadow = p.idx === -1;
   const t = animT;
   const x = pp.rx ?? pp.x, y = pp.ry ?? pp.y;
-  const th = isShadow ? { main: "#000000", dark: "#000000", glow: "#000000", name: "影分身" } : (p.theme ?? DEFAULT_THEME);
+  // 本体**恒纯黑**(那是"影"的身份);三色只走 shadowTint 这一条通道:头圈 / 拍框 /
+  // 头顶 pips / 粒子。颜色由 spawn 按槽位写进 entity.theme.glow,这里只读,不另存一份。
+  const shadowTint = (p.theme && p.theme.glow) || C.skills.shadow.slots[0].tint;
+  const th = isShadow
+    ? { main: "#000000", dark: "#000000", glow: shadowTint, name: "影分身" }
+    : (p.theme ?? DEFAULT_THEME);
   // 完整人物皮肤(发型/头饰/纹样/光环/体型/默认脸):影分身不吃皮肤(纯黑剪影);CPU/P2 没挂 → null 走原版画法
   const ps = isShadow ? null : (p.playerSkin ?? null);
   const H = C.player.h, W = C.player.w;
@@ -709,7 +719,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const weightShift = Math.sin(t * 0.012) * 1.0 * (1 - runAmt * 0.7) * idleWeight;
 
   // ---------- 发球等待:持球未挥拍 = 非持拍手后摆托球(远臂 serveHold 分支),球钉在 rules.handX/handY ----------
-  const serveHold = !!(ball && ball.held && ball.owner === p && !swinging);
+  // 身份比较走 viewSrc 那一跳:对局里 world 传的是**渲染副本**(≠ core 的 Player),
+  // 直接比 `ball.owner === p` 恒假 ⇒ 托球姿势只在商店/出图里出现过,真机从来没亮过。
+  const self = entityOf(p);
+  const serveHold = !!(ball && ball.held && ball.owner === self && !swinging);
 
   // 发球姿势权重 serveK:球飞回手时与球同步渐入(同款 ease-out)→ 持球=1 → 起拍后
   // 由挥拍动画接管。全部用现成信号,不需要渲染侧记忆。躯干/腿另用 serveBodyK:
@@ -718,7 +731,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   let serveK = 0;
   if (serveHold) {
     serveK = 1;
-  } else if (ball && ball.flying && ball.owner === p && !swinging) {
+  } else if (ball && ball.flying && ball.owner === self && !swinging) {
     const t01 = clamp((C.scoring.flyToHandFrames - ball.flyT + 1) / C.scoring.flyToHandFrames, 0, 1);
     serveK = 1 - (1 - t01) * (1 - t01) * (1 - t01);   // 与球落手的 ease-out 同步
   } else if (swinging && p.serveSwing) {
@@ -1367,6 +1380,87 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   }
 }
 
+/**
+ * 影分身的一帧 = 身份色轮廓尖刺辉光 + 纯黑无面剪影本体 + 头顶剩余次数 pips。
+ *
+ * 画法集中在 sprites 而不是 world,只有一个目的:`tools/frame-cost-check.ts` 量每帧笔数时
+ * 必须与真机走**同一个函数** —— 否则渲染改了而护栏还按老样子数,预算就白设了
+ * (aura.ts 是同一个先例:画法一处,调用点只有一处)。
+ *
+ * 三条口径:
+ *   · 本体恒纯黑 —— 那是"影"的身份;颜色只出现在辉光 / 头圈 / 拍框 / pips
+ *     (颜色沿 `p.theme.glow` 这条老通道传进来,由 spawn 按槽位写好,渲染不另存一份)
+ *   · 辉光形状**出生定形**:`fillSpikes` 吃这枚分身的 `seed`,逐帧只乘呼吸半径与 alpha,
+ *     禁止逐帧 rand(会抖成噪点)。三份顶点缓存按槽位复用,零 GC
+ *   · pips 按槽位错行 6px:三人同屏时三组片挤在同一水平线上会连成一条横杠,读不出"这是三组"
+ */
+export interface ShadowCloneView {
+  /** 身份色(调用方从 config 的 slots[slot].tint 取) */
+  tint: string;
+  /** 头顶还剩几球(接一球熄一枚) */
+  remaining: number;
+  /** 槽位号:错行与辉光缓存都按它 */
+  slot: number;
+  /** 出生定形种子 */
+  seed: number;
+  /** 渲染层自己的时钟(帧数),只喂辉光的呼吸,不参与任何判定 */
+  phase: number;
+  /** 两段演出不画 pips(成影期还没"凝实"、消散期正在化烟,次数读数在这两段都没意义) */
+  showPips: boolean;
+}
+
+const cloneRing: { seed: number; verts: Float32Array; count: number }[] = [];
+
+export function drawShadowClone(
+  g: Graphics, vp: Viewport, p: Player, animT: number, alpha: number,
+  ball: Ball | null, view: ShadowCloneView,
+): void {
+  const SHC = C.skills.shadow;
+  const vsx = Math.abs(vp.x(1) - vp.x(0));
+  // ① 辉光先画 ⇒ 黑剪影压在它前面,读作"边上一圈色",而不是整个人被涂色
+  let ring = cloneRing[view.slot];
+  if (!ring) {
+    ring = { seed: -1, verts: new Float32Array(SPIKE_VERTS), count: 0 };
+    cloneRing[view.slot] = ring;
+  }
+  if (ring.seed !== view.seed) {
+    ring.seed = view.seed;
+    ring.count = fillSpikes(ring.verts, 0, view.seed, SHC.glowSpikes, SHC.glowSpikes, 0.62, 0.2);
+  }
+  const pulse = 1 + 0.07 * Math.sin(view.phase * 0.09 + view.slot * 1.7);   // 只乘半径,不重掷形状
+  drawSpikeRing(
+    g, vp.x(p.x), vp.y(p.y - C.player.h * 0.52),
+    SHC.glowR * vsx * pulse, 1.15,
+    ring.verts, 0, ring.count, 0,
+    pal(view.tint), SHC.glowAlpha, 1.6 * vsx, 2.6, 0.42,
+  );
+  // ② 本体(纯黑剪影;插值由调用方摆进 p 的副本里,这里只画)
+  drawPlayer(g, vp, p, animT, alpha, ball);
+  // ③ 头顶剩余次数 pips(高度 = 身高 + 头顶余量,这个余量必须盖过①的头圈描边)
+  // 错行**朝上**走:Graphics 的 y 向上,而 vp.y 已经把世界 y 翻过来了 —— 取负号会把高槽位
+  // 压到头顶描边里(实测 2 号 61 < 头圈顶 62,三片又读成"头发上的三道杠")。
+  const total = SHC.maxHits;
+  const cy = vp.y(p.y - (C.player.h + SHC.pipLift)) + view.slot * 6;
+  for (let i = 0; i < total; i++) {
+    const px = vp.x(p.x) + (i - (total - 1) / 2) * 12;
+    const on = i < view.remaining;
+    // 灭片用同色相的低 alpha 档,而不是另抄一份灰紫 —— 三组分身各自读作一组
+    g.fillColor = on ? withAlpha(view.tint, 0.95) : withAlpha(view.tint, 0.22);
+    const w = 5, h = 10, k = 3;
+    g.moveTo(px - w / 2 + k, cy - h / 2);
+    g.lineTo(px + w / 2 + k, cy - h / 2);
+    g.lineTo(px + w / 2 - k, cy + h / 2);
+    g.lineTo(px - w / 2 - k, cy + h / 2);
+    g.close();
+    g.fill();   // 一片一次 fill:cc 的 fill() 不清路径,攒九片一次 fill 会连成一坨(AGENTS 坑 8)
+  }
+}
+
+/** pips 的"还剩几球"读数(单独一格,免得 view.remaining 被误当成已用数) */
+function remaining(v: ShadowCloneView): number {
+  return v.remaining;
+}
+
 // ---------- 角色头顶操控指示标: 主控玩家专属悬浮倒三角 ▼ ----------
 // 名字名牌(YOU / P1 / P2 / 搭档 / CPU 胶囊 + 表现层 Label)已取消,这里只剩光标。
 function drawPlayerCursor(g: Graphics, vp: Viewport, p: Player, x: number, y: number, t: number): void {
@@ -1402,11 +1496,18 @@ function drawPlayerCursor(g: Graphics, vp: Viewport, p: Player, x: number, y: nu
 function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
   opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number;
     skin?: SkinDef | null; faceStyle?: string; skinTone?: string; focusT?: number; isShadow?: boolean } = {}): void {
-  // 影分身纯黑无面剪影:零发带、零头饰、零高光、零五官,纯黑圆底一笔而成
+  // 影分身纯黑无面剪影:零发带、零头饰、零高光、零五官,纯黑圆底一笔而成。
+  // 2026-10-05 三色:黑底之外补**一圈身份色细描边** —— 无脸是这款的身份不能丢,
+  // 但三个剪影在同屏距离下必须一眼分得开,头上一圈是离脸最近、最不像"染色"的那一笔。
+  // 只多 1 笔,不吃 frame 预算的余量(3 分身档见 tools/frame-cost-check.ts)。
   if (opt.isShadow) {
     g.fillColor = pal("#000000");
     circleAA(g, f, cx, cy, hr);
     g.fill();
+    g.strokeColor = withAlpha(th.glow, 0.62);
+    g.lineWidth = f.lw(1.4);
+    circleAA(g, f, cx, cy, hr + 1.1);
+    g.stroke();
     return;
   }
 
@@ -2144,7 +2245,9 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   const headRx = 9.2, headRy = 11.5;
 
   if (isShadow) {
-    // 影分身专属纯黑剪影球拍:极简三段结构(拍柄/中杆/方头拍框),无金属反光与彩色
+    // 影分身专属剪影球拍:极简三段结构(拍柄/中杆/方头拍框),无金属反光。
+    // 2026-10-05 三色:**只有拍框吃身份色**,拍柄与中杆留黑 —— 拍框是场上最小也最孤立
+    // 的那一块,上色后"紫/青/金三把拍子"在远处仍然分得开,而 0 新增笔画(只是换色)。
     const buttEnd = -8.8;
     g.lineCap = LineCap.ROUND;
     g.strokeColor = pal("#000000");
@@ -2160,6 +2263,7 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
     const R = rotateFrame(f, hx + dx * len, hy + dy * len, -rad + Math.PI / 2);
     const head = isometricHeadPts(R, headRx, headRy, CIRCLE_SEGS);
     g.lineWidth = R.lw(1.8);
+    g.strokeColor = withAlpha(th.glow, 0.9);
     polyPath(g, head, true);
     g.stroke();
     return;

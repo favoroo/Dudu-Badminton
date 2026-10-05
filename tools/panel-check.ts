@@ -28,11 +28,14 @@ import {
 } from "../assets/scripts/ui/p5-tokens";
 import { DRILLS, RARITY_META } from "../assets/scripts/core/config";
 import type { DrillDef } from "../assets/scripts/core/types";
-import { halftoneCount } from "../assets/scripts/ui/p5-shapes";
-import { aboutLayout, assistCopyLines, assistLayout, assistTextOverflow, box, boxOverflow, boxesOverlap, doneBox, SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
+import { halftoneCount, type Paint } from "../assets/scripts/ui/p5-shapes";
+import { aboutLayout, assistCopyLines, assistLayout, assistTextOverflow, box, boxOverflow, boxesOverlap, doneBox, LEFT_W, SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
+import { AIR_FRAMES, DIAG, SEG, beatOf, cropHeightPx, padDiagramDL, type Beat } from "../assets/scripts/ui/pad-diagram";
+import { JOYSTICK_BASE, railGeo, type MoveMode } from "../assets/scripts/core/settings";
 import { campaignOverflow, campaignOverlaps, CMP } from "../assets/scripts/ui/campaign-layout";
 import { DRILL, drillOverflow, drillOverlaps, drillTouch } from "../assets/scripts/ui/drill-layout";
-import { SHOP, shopOverflow, shopOverlaps, shopTouch, TOAST, TOAST_FG, toastLane } from "../assets/scripts/ui/shop-shelf";
+import { SHOP, shopOverflow, shopOverlaps, shopTouch, statCardFits, statCells, TOAST, TOAST_FG, toastLane } from "../assets/scripts/ui/shop-shelf";
+import type { Profile } from "../assets/scripts/core/career";
 
 function findRoot(): string {
   let dir = __dirname;
@@ -108,9 +111,158 @@ export function checkCopy(src: string, fileLabel: string): string[] {
   return out;
 }
 
+/**
+ * ⑨ 移动方式图示:这一格坏法全都不崩、不报错、tsc 也不红 ——
+ *   · 取景比盒子高 → 起跳的顶点被上缘切掉(看着像"这人怎么只有一半")
+ *   · 滑块与人物不同 x → 「手指在哪人就在哪」当场变谎言(这是滑轨档唯一的卖点)
+ *   · knob 脱出底圈 → 摇杆画成了"一个球飞出去"
+ *   · 没越过判定就离地 / 越过了却不跳 → 教的和判的是两件事(与 drill-demo 同一类老病)
+ *   · 三档画出同一批多边形 → 切档没反应
+ *   · 整循环人物没挪过位置、没跳过 → 一格静帧,比没有图示更糟
+ *   · 一帧笔画失控 → 设置页也能耗 GPU
+ * 判据吃的是 probe(数据),所以 --selftest 能喂一份"改坏的"进来 —— 否则这套尺子没牙齿。
+ */
+export interface DiagramProbe {
+  /** 图示盒宽高(图示像素) */
+  w: number; h: number;
+  /** 内边距:画面比盒子小一圈 */
+  pad: number;
+  /** 取景折算成图示像素要多高 */
+  needH: number;
+  /** 循环帧数 */
+  loop: number;
+  /** 越过起跳判定那一帧 / 腾空帧数 */
+  takeoff: number;
+  airFrames: number;
+  /** 可达区间(与 railGeo 同源)与摇杆底圈半径(设计像素) */
+  minX: number; maxX: number; baseR: number;
+  /** 整循环的逐帧状态与显示列表 */
+  beats: (mode: MoveMode) => Beat[];
+  frames: (mode: MoveMode) => Paint[][];
+  /** 每帧笔画预算 */
+  strokeCap: number;
+}
+
+const DIAG_MODES: MoveMode[] = ["joystick", "slider", "buttons"];
+
+export function checkDiagram(p: DiagramProbe): string[] {
+  const out: string[] = [];
+  const push = (m: string): void => { if (!out.includes(m)) out.push(m); };
+  // 盒子先要装得下这块取景:装不下被切掉的是"起跳"那一下,而它正是这一格要教的东西
+  if (p.needH > p.h - p.pad * 2) {
+    push(`取景高 ${p.needH.toFixed(1)} > 盒内高 ${(p.h - p.pad * 2).toFixed(1)} —— 起跳顶点会被盒子上缘切掉`);
+  }
+  const sigs = new Map<MoveMode, string>();
+  for (const mode of DIAG_MODES) {
+    const beats = p.beats(mode);
+    const frames = p.frames(mode);
+    if (beats.length !== p.loop || frames.length !== p.loop) {
+      push(`${mode}:循环长度对不上(beats ${beats.length} / frames ${frames.length} / loop ${p.loop})`);
+      continue;
+    }
+    let maxStroke = 0, moved = 0, maxHop = 0, cued = 0;
+    const xs: number[] = [];
+    for (let t = 0; t < p.loop; t++) {
+      const b = beats[t];
+      const dl = frames[t];
+      maxStroke = Math.max(maxStroke, dl.length);
+      xs.push(b.personX);
+      maxHop = Math.max(maxHop, b.hop);
+      if (b.jumpCue) cued++;
+      // 人物只能站在够得着的地方(端点与真滑轨同源,越界就是图示在撒谎)
+      if (b.personX < p.minX - 0.6 || b.personX > p.maxX + 0.6) push(`${mode} 第 ${t} 帧:人物站到可达区间外 x=${b.personX.toFixed(1)}`);
+      // 滑轨的承诺:滑块与人物的 x 必须**恒等**,不是"差不多"
+      if (mode === "slider" && Math.abs(b.thumbX - b.personX) > 1e-6) {
+        push(`${mode} 第 ${t} 帧:滑块 x=${b.thumbX.toFixed(1)} ≠ 人物 x=${b.personX.toFixed(1)},「手指在哪人就在哪」破了`);
+      }
+      // 摇杆:knob 不许脱出底圈(脱出去画就成了"一个球飞走")
+      if (mode === "joystick" && Math.hypot(b.knobX, b.knobY) > p.baseR + 0.5) {
+        push(`${mode} 第 ${t} 帧:knob 离底圈心 ${Math.hypot(b.knobX, b.knobY).toFixed(1)} > 半径 ${p.baseR}`);
+      }
+      // 起跳:越过判定与真的离地必须是同一件事
+      const inWindow = t >= p.takeoff && t <= p.takeoff + p.airFrames;
+      if (b.jumpCue !== inWindow) push(`${mode} 第 ${t} 帧:起跳判定 ${b.jumpCue} 与腾空窗 ${inWindow} 不同源`);
+      if (b.hop > 0.5 && !inWindow) push(`${mode} 第 ${t} 帧:还没越过判定就已经离地 ${b.hop.toFixed(1)}`);
+      if (inWindow && t > p.takeoff + 2 && t < p.takeoff + p.airFrames - 2 && b.hop <= 0.5) {
+        push(`${mode} 第 ${t} 帧:越过了判定却没有离地(按了不跳 = 用户下一句就是「没反应」)`);
+      }
+      // 坐标健康 + 不许画出盒子(NaN 不崩,只会让那一笔消失或整块 Graphics 不上屏)
+      for (const pt of dl) {
+        const pts: Array<[number, number]> = pt.kind === "dot" ? [[pt.cx, pt.cy]] : pt.pts;
+        for (const [x, y] of pts) {
+          if (!Number.isFinite(x) || !Number.isFinite(y)) push(`${mode} 第 ${t} 帧:坐标 NaN/Infinity`);
+          else if (Math.abs(x) > p.w / 2 + 0.6 || Math.abs(y) > p.h / 2 + 0.6) {
+            push(`${mode} 第 ${t} 帧:笔画出框 (${x.toFixed(1)}, ${y.toFixed(1)}) 盒 ${p.w}×${p.h}`);
+          }
+        }
+        if (pt.kind !== "dot" && (pt.a < 0 || pt.a > 1)) push(`${mode} 第 ${t} 帧:alpha ${pt.a} 越界`);
+      }
+    }
+    if (maxStroke > p.strokeCap) push(`${mode}:一帧最多 ${maxStroke} 笔 > 预算 ${p.strokeCap}`);
+    moved = Math.max(...xs) - Math.min(...xs);
+    if (moved < 120) push(`${mode}:整循环人物只挪了 ${moved.toFixed(0)} 设计像素 —— 这一格等于没在演示走位`);
+    if (maxHop < 40) push(`${mode}:整循环最高只离地 ${maxHop.toFixed(0)} —— 起跳那一下没演出来`);
+    if (cued < 10) push(`${mode}:起跳判定只亮了 ${cued} 帧,肉眼扫不到`);
+    // 循环接缝:首尾都在中场,不然每 5 秒"瞬移"一次
+    if (Math.abs(beats[0].personX - beats[p.loop - 1].personX) > 8) {
+      push(`${mode}:循环接缝处人物从 ${beats[p.loop - 1].personX.toFixed(0)} 瞬移到 ${beats[0].personX.toFixed(0)}`);
+    }
+    sigs.set(mode, frames.map((f) => f.length).join(","));
+  }
+  // 三档必须画的是三件东西:整循环的笔画指纹两两不同
+  const list = [...sigs.entries()];
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      if (list[i][1] === list[j][1]) push(`图示分档失效:${list[i][0]} 与 ${list[j][0]} 整循环笔画指纹完全相同`);
+    }
+  }
+  return out;
+}
+
+/** ⑩ 从图示模块取一份真实探针(正题照它测,反例在它上面动一个字段) */
+function diagramProbe(over: Partial<DiagramProbe> = {}): DiagramProbe {
+  const D = controlLayout().diagram;
+  const w = D.right - D.left, h = D.h;
+  const cache = new Map<MoveMode, { beats: Beat[]; frames: Paint[][] }>();
+  const R = railGeo();
+  const get = (mode: MoveMode): { beats: Beat[]; frames: Paint[][] } => {
+    let c = cache.get(mode);
+    if (!c) {
+      c = {
+        beats: Array.from({ length: DIAG.loop }, (_, t) => beatOf(mode, t)),
+        frames: Array.from({ length: DIAG.loop }, (_, t) => padDiagramDL(mode, t, w, h)),
+      };
+      cache.set(mode, c);
+    }
+    return c;
+  };
+  return {
+    w, h, pad: DIAG.pad, needH: cropHeightPx(w, h), loop: DIAG.loop,
+    takeoff: SEG.prep1, airFrames: AIR_FRAMES,
+    minX: R.minX, maxX: R.maxX, baseR: JOYSTICK_BASE.r,
+    beats: (m) => get(m).beats, frames: (m) => get(m).frames,
+    strokeCap: 90,
+    ...over,
+  };
+}
+
 // ============================================================
 // 真实数据
 // ============================================================
+
+/**
+ * 履历页的摆拍存档:只喂 statCells 会读的那几个键。
+ * 版式与文案都取自 shop-shelf 的真函数,所以这里红 = 面板上也会红(不是预览另算一份)。
+ */
+function mockProfile(
+  stats: Partial<Profile["stats"]> = {}, endless = 0,
+): Profile {
+  return {
+    level: 4, exp: 77, coins: 1760, bestEndlessScore: endless,
+    drills: { a: { stars: 3, clears: 1, bestQ: 0, bestReps: 0, attempts: 1 }, b: { stars: 2, clears: 1, bestQ: 0, bestReps: 0, attempts: 1 } },
+    stats: { matches: 22, wins: 15, smashes: 662, sweets: 1173, perfects: 952, hits: 4982, maxRally: 46, ...stats },
+  } as unknown as Profile;
+}
 
 /** 角色表:每个角色的面上字色由 inkFor 算,这里核它过不过线 */
 function rolePairs(): Array<[string, string, string]> {
@@ -190,7 +342,7 @@ function copyTargets(): string[] {
     "campaign-panel.ts", "campaign-layout.ts",
     "drill-panel.ts", "drill-layout.ts",
     "career-panel.ts",
-    "widgets.ts", "ui-shell.ts", "p5-shapes.ts", "p5-tokens.ts",
+    "widgets.ts", "ui-shell.ts", "p5-shapes.ts", "p5-tokens.ts", "pad-diagram.ts",
   ];
   const have = new Set(readdirSync(UI));
   return want.filter((f) => have.has(f));
@@ -247,6 +399,53 @@ if (selftest) {
     ["辅助页说明行超长(CLAMP 静默截字)", assistTextOverflow([
       ["生效行", "生效:对练 · 闯关 · 无限练习 · 训练场与新手教学不代打 · 本地双打与网络对战同样不代打 · 训练与教学也不代打"],
     ])],
+    // ---------- 移动方式图示的七份反例 ----------
+    // 这一格的坏法全都不崩不报错(画歪、画成静帧、把承诺画成谎话),所以判据必须有牙齿。
+    // 探针只建一次(300 帧 × 3 档的显示列表),反例在它上面各动一个字段。
+    ...(() => {
+      const P = diagramProbe();
+      /** 在真实探针上改一个维度:beats/frames 各取一份包装 */
+      const withBeats = (fix: (m: MoveMode, b: Beat) => Beat): DiagramProbe => ({
+        ...P, beats: (m) => P.beats(m).map((b) => fix(m, b)),
+      });
+      const withFrames = (fix: (m: MoveMode, dl: Paint[], t: number) => Paint[]): DiagramProbe => ({
+        ...P, frames: (m) => P.frames(m).map((dl, t) => fix(m, dl, t)),
+      });
+      return [
+        // 盒子矮 40px:被上缘切掉的正好是「起跳」那一下 —— 这一格最该被看懂的一笔
+        ["图示盒太矮(装不下一次满跳)", checkDiagram({ ...P, h: 116 })],
+        // 滑轨的滑块按 0.9 缩:「手指在哪人就在哪」当场成为谎话(演示与判据不同源)
+        ["滑轨滑块与人物脱钩(0.9 倍)", checkDiagram(withBeats((m, b) =>
+          m === "slider" ? { ...b, thumbX: b.personX * 0.9 } : b))],
+        // 摇杆的 knob 推到圈外:画出来是"一个球飞走了"
+        ["摇杆 knob 脱出底圈", checkDiagram(withBeats((m, b) =>
+          m === "joystick" ? { ...b, knobX: b.knobX * 1.7, knobY: b.knobY * 1.7 } : b))],
+        // 离地比判定早 10 帧:教的是一回事、判的是另一回事(与 drill-demo 那次的假弹道同病)
+        ["提前离地(还没越过判定就跳了)", checkDiagram({
+          ...P,
+          beats: (m) => { const a = P.beats(m); return a.map((b, i) => ({ ...b, hop: a[(i + 10) % a.length].hop })); },
+        })],
+        // 三档画出同一批多边形:切档没反应(用户下一句就是「点了没用」)
+        ["三档画成同一件东西", checkDiagram({ ...P, frames: () => P.frames("slider") })],
+        // 整循环人物不动 + 不离地:一格静帧,比没有图示更糟
+        ["图示成了静帧(人物不挪不离地)", checkDiagram({
+          ...P,
+          beats: (m) => P.beats(m).map((b) => ({ ...b, personX: 257, thumbX: 257, hop: 0 })),
+        })],
+        // 一笔出框 / 一个 NaN:不崩,只是那一笔消失或整块画布不上屏
+        ["笔画出框 + NaN 坐标", checkDiagram(withFrames((m, dl, t) =>
+          t === 5 ? [...dl, { kind: "fill", hex: "#ffffff", a: 1, pts: [[400, 0]] },
+            { kind: "fill", hex: "#ffffff", a: 1, pts: [[Number.NaN, 3]] }] : dl))],
+      ] as Array<[string, string[]]>;
+    })(),
+    // ---------- 履历格的反例 ----------
+    // 版式判据吃的是 statCells 的真文案,所以「格子压矮 / 名字写长」这两条会在同一把尺上红。
+    ["履历格压回 100 高还留 40 号大数(大数顶到色签行)",
+      statCardFits(statCells(mockProfile(), 18), SHOP.stats.cw, 100)],
+    ["指标名写成一句话,引导线被吃光",
+      statCardFits([{ name: "生涯累计完美击球占比统计·全平台同步", num: "1", unit: "", sub: "", role: "star" }])],
+    ["大数涨到十一位(七位击球数再翻两档)",
+      statCardFits([{ name: "甜区命中", num: "12345678901", unit: "", sub: "", role: "drill" }])],
   ];
   for (const [nm, msgs] of cases) {
     ok(msgs.length > 0, `反例 ${nm}:应被拦下,实得 ${msgs.length} 条${msgs.length ? ` —— ${msgs[0]}` : ""}`);
@@ -289,10 +488,21 @@ for (const m of ov) ok(false, `重叠 ${m}`);
 ok(ov.length === 0, "设置页版式:左右子列、三选一、手感两行互不重叠");
 const of = settingsOverflow();
 for (const m of of) ok(false, `溢出 ${m}`);
-ok(of.length === 0, "设置页版式:没有块越出内容区,开关标签容得下「震动反馈」");
+ok(of.length === 0, "设置页版式:没有块越出内容区,开关标签容得下「震动反馈」,操控页左列没被图示挤出去");
 ok(K.tiers[1].y < K.tiers[0].y && K.tiers[0].y - K.tiers[1].y >= SET.rowH,
   `手感两行行距 ${K.tiers[0].y - K.tiers[1].y} ≥ 行高 ${SET.rowH}(滑杆抬到 44 之后这条才成立)`);
 ok(TOG_W - TOG_TAIL > 60, `开关可用标签宽 ${TOG_W - TOG_TAIL} 容得下四字标签`);
+
+// ---------- 移动方式图示(操控页右半格,三档 × 整循环) ----------
+{
+  const dm = checkDiagram(diagramProbe());
+  for (const m of dm) ok(false, `图示 ${m}`);
+  ok(dm.length === 0, `移动方式图示:${DIAG_MODES.length} 档 × ${DIAG.loop} 帧 —— 取景装得下盒子、`
+    + "滑轨滑块与人物同 x、摇杆 knob 不脱底圈、起跳与判定同一帧、笔画不出框也不 NaN、每帧在预算内");
+  const D = controlLayout().diagram;
+  ok(D.right <= SET.right + 0.5 && D.left > SET.colX + LEFT_W,
+    `图示盒在内容区右半(${D.left}..${D.right}),与左列之间留 ${D.left - (SET.colX + LEFT_W)}px 的缝`);
+}
 
 // ---------- 四块面板各自的版式判据(判据与面板同源,由各自 layout 模块导出) ----------
 type Boxes = () => string[];
@@ -321,8 +531,25 @@ for (const [nm, pw, ph] of [["闯关", CMP.pw, CMP.ph], ["训练场", DRILL.pw, 
   ok(ph + 20 <= SCREEN_H, `${nm} 面板高 ${ph} + 衬纸外溢 20 ≤ 屏高 ${SCREEN_H}`);
 }
 
-const c4: string[] = [];
-for (const f of copyTargets()) c4.push(...checkCopy(readFileSync(join(UI, f), "utf8"), f));
+// ---------- 履历页六格:版式判据与面板同源(statCells / statCardDL / statCardFits 全在 shop-shelf) ----------
+{
+  const cells = statCells(mockProfile(), 18);
+  const f = statCardFits(cells);
+  for (const m of f) ok(false, `履历格 ${m}`);
+  ok(f.length === 0, `履历格六格:色签 + 引导线 + 大数 + 副行装进 ${SHOP.stats.cw}×${SHOP.stats.ch},三行不叠字`);
+  // 六格六色:旧版 gold 用两次、cyan 用两次,「色是数据编码」当场失效(同色报两件不同的事)
+  const faces = cells.map((c) => ROLE[c.role].face);
+  ok(new Set(faces).size === faces.length, `履历格六格配色互不重复(${faces.join(" ")})—— 色即数据编码`);
+  // 存档涨上去不能把版式撑破:五位数 + 最长指标名 + 最长副行
+  const big = statCells(mockProfile({
+    matches: 9999, wins: 9999, smashes: 123456, sweets: 123456, perfects: 123456, hits: 1234567, maxRally: 999,
+  }, 999999), 18);
+  const bf = statCardFits(big);
+  for (const m of bf) ok(false, `履历格(满档数据)${m}`);
+  ok(bf.length === 0, "履历格六格:七位击球数 + 五位数 + 满星副行仍然装得下");
+}
+
+const c4: string[] = []; for (const f of copyTargets()) c4.push(...checkCopy(readFileSync(join(UI, f), "utf8"), f));
 const c5 = checkDrillCopy(DRILLS);
 for (const m of [...c4, ...c5]) ok(false, `文案 ${m}`);
 ok(c4.length === 0, `文案闸:${copyTargets().length} 个文件的字符串字面量里没有 emoji、★/☆ 与桌面键名`);

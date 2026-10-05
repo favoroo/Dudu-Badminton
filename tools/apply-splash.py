@@ -44,23 +44,24 @@ if not src_path.exists():
 # 生成 base64 logo
 # 尺寸/质量见上面两个常量。这里必须**保持长宽比**缩放:引擎按图片宽高比反算
 # logoWidth/logoHeight,拉成方的会把球压扁。
-# 采用无损 PNG 格式保存(消除 JPEG 宏块失真与量化阶跃)。
-img = Image.open(src_path).convert("RGB")
+# 采用无损 RGBA PNG 格式保存(消除 JPEG 宏块失真与量化阶跃):
+# 非主体区域 alpha=0,引擎淡入(percent 只乘 RGB)时混合结果恒等于整屏底色,
+# 方块贴片在任何时刻都不存在 —— 这是 0.0.29 修复的核心,别退回不透明底图。
+img = Image.open(src_path).convert("RGBA")
 img.thumbnail((LOGO_PX, LOGO_PX), Image.LANCZOS)
 buf = io.BytesIO()
 img.save(buf, "PNG", optimize=True)
 b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 data_uri = f"data:image/png;base64,{b64}"
 
-# 采样边缘色作为背景 —— 从**编码后的字节**取,确保绝对零色差:
-# 底色是整屏平铺的,logo 图边缘与它完全同色,
-# 彻底杜绝手机屏幕上的方框贴片与边缘切线。
-shown = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
-w, h = shown.size
-pad = max(1, min(w, h) // 128)
-corners = [shown.getpixel((x, y)) for x, y in
-           [(pad, pad), (w - 1 - pad, pad), (pad, h - 1 - pad), (w - 1 - pad, h - 1 - pad)]]
-avg = tuple(sum(c[i] for c in corners) / 4 / 255 for i in range(3))
+# 整屏底色来自 splash-config.json 的 bgColor(与游戏首帧相机清屏色一致)。
+# 透明底图上没法再从四角采样(四角是 alpha=0),颜色唯一事实源在配置里,
+# splash-check.py 负责把它与 config.ts 的 colors.ink 钉在一起。
+bg_hex = str(config.get("bgColor", "#0a0d18")).lstrip("#")
+if len(bg_hex) != 6:
+    print(f"bgColor 配置非法: {bg_hex!r}(需要 #RRGGBB)")
+    sys.exit(1)
+avg = tuple(int(bg_hex[i:i + 2], 16) / 255 for i in (0, 2, 4))
 
 # 注意: background.type 只能是 "custom"(必须带 base64 图片)或其它(用 color 纯色填充)。
 # 引擎启动链对 splash 图片加载失败没有任何兜底, Promise 会 reject 且永不恢复 → 游戏永久黑屏。
@@ -95,4 +96,4 @@ for pattern in patterns:
         updated += 1
         print(f"  ✓ {Path(path).relative_to(ROOT)}")
 
-print(f"\n完成: {updated} 个 settings.json 已注入自定义 splash (logo {len(buf.getvalue())} bytes)")
+print(f"\n完成: {updated} 个 settings.json 已注入自定义 splash (logo RGBA {len(buf.getvalue())} bytes, 底色 #{bg_hex})")

@@ -7,6 +7,7 @@ import { CFG } from "./config";
 import { clamp } from "./utils";
 import { Physics } from "./physics";
 import { Ball, HitOpt, Player, PlayerSkillState, SkillDef, SkillId } from "./types";
+import { ShadowGate } from "./shadow-gate";
 
 const C = CFG;
 const CO = C.court;
@@ -38,6 +39,7 @@ export function initSkillState(id: SkillId = "lunge"): PlayerSkillState {
 
 /** 每回合开球前复位技能临时状态 (保留冷却或就绪) */
 export function resetPoint(p: Player): void {
+  const SH = C.skills.shadow;
   if (!p.skill) p.skill = initSkillState("lunge");
   p.skill.activeT = -1;
   p.skill.buffT = 0;
@@ -56,12 +58,24 @@ export function resetPoint(p: Player): void {
   p.lungeAutoT = 0;   // 每分开新局不许留残窗:否则上一分没花掉的待发窗会给这一分的来球凭空补一拍
   p.smashAutoT = 0;   // 同一条规矩管重击的"代出一拍"窗(2026-10-04 一键化):残窗 = 凭空多打一拍
   p.rageAutoT = 0;    // 怒气重击的代拍窗同理:残窗跨分会让下一分的第一拍被系统替玩家轰出去。
-                      // **怒气本身不清**(p.rage):用户口径「只有释放才归零」,攒是整局的事。
-                      // buffT 上面已经归零(armed 窗跨分没有意义),所以这里只收代劳、不收资源。
-  // 影分身随每分清场:召唤标记归零(每分限召一次的闸重开),在场的分身就地散去 ——
-  // 分身是"这一分里的协防",跨分残留会让下一分开局平白多一个幽灵队友
+                      // **怒气本身不清**(p.rage,含已攒的多管):用户口径「只有释放才扣量」,
+                      // 攒是整局的事。buffT 上面已经归零(armed 窗跨分没有意义),所以这里只收代劳、不收资源。
+  // 影分身(2026-10-05 改口径):召唤标记每分重开(「一分之内只能释放一次」照旧),
+  // 但**在场的分身不再散去** —— 用户:「上一局的影分身可以保留到下一局,而不是会直接消失」。
+  // 只做一件事:带着未用满额度活过这一分的分身,**额度补满回 maxHits**。
+  // 两道闸缺一不可:
+  //   · `hits < maxHits` —— 已经接满的那个不许复活(否则等于把"接三球就消散"偷偷改掉)
+  //   · `despawnT <= 0` —— 正在播消散演出的那个也已经用满,同样不许复活
+  // 不落盘、也不跨对局:重开新局由 rules 的 R.players = [] 整批丢弃,这里**不要**去清它。
   p.shadowCast = false;
-  p.shadowClone = undefined;
+  if (SH.refillHits) {
+    for (const sc of ShadowGate.clonesOf(p)) {
+      if (sc.hits < SH.maxHits && sc.despawnT <= 0) {
+        sc.hits = 0;
+        sc.refillT = SH.refillFlashFrames;   // 只开个读数,亮片由渲染层读它,倒计时由 shadow.updateClones 递减
+      }
+    }
+  }
 }
 
 /**
@@ -76,11 +90,38 @@ export function isChargeSkill(id: SkillId): boolean {
   return defOf(id).kind === "charge";
 }
 
-/** 怒气存量 → 0..1 比例(唯一换算处:键面、分档演出、卡片文案全读它,不各自除 max) */
+/**
+ * 怒气存量 → 0..1 比例(唯一换算处:分档演出、兑现强度、AI 满怒判据全读它,不各自除 max)。
+ *
+ * 多管蓄力后的读法:存量 ≥ 一整管时 clamp 恒返回 1 —— 这正是想要的那条分流:
+ * `ratio >= 1`(modifyShot 的 forceSmash 支)与 `>= 1`(ai.ts 满怒才按)都等价于
+ * "至少攒着一整管",零头小释放(<一管)才按比例缩放。键面要的"第几管/管内填充"
+ * 是另一个量纲,走下面 ragePipesOf / ragePipeFillOf 两兄弟,别在这里塞。
+ */
 export function rageRatioOf(p: Player): number {
   const max = C.skills.rage.max;
   if (!(max > 0)) return 0;
   return clamp((p?.rage ?? 0) / max, 0, 1);
+}
+
+/** 怒气存量 → 已攒满的整管数(0..pipes)。键面"点亮几段"与满怒外环触发都吃它 */
+export function ragePipesOf(p: Player): number {
+  const RG = C.skills.rage;
+  const max = RG.max;
+  if (!(max > 0)) return 0;
+  const pipes = Math.max(1, Math.round(RG.pipes ?? 1));
+  return Math.min(Math.floor((p?.rage ?? 0) / max), pipes);
+}
+
+/**
+ * 怒气存量 → 进行中那管的填充(0..1)。
+ * 刻意的边界口径:恰好攒满 k 管(rage = k×max)时填充实战语义由 ragePipesOf 表达,
+ * 这里恒回 0 —— 键面画"两段满 + 第三段空"比"两段满 + 第三段 100%"少一根歧义弧。
+ */
+export function ragePipeFillOf(p: Player): number {
+  const max = C.skills.rage.max;
+  if (!(max > 0)) return 0;
+  return ((p?.rage ?? 0) % max) / max;
 }
 
 /**
@@ -88,14 +129,14 @@ export function rageRatioOf(p: Player): number {
  *
  * 【坑】必须**从高档往低档找**,返回第一个够得着的界。反过来从小往大找会永远落在第一档
  * —— 满怒读成 0 档,四档演出全被打成最低档,而它不崩、不报错,只是"攒了一整局结果毫无区别"。
- * (烟测现场抓到过这一条,rage-check ③ 把它钉住:档位必须随 ratio 单调不降。)
+ * (烟测现场抓到过这一条,rage-check ② 把它钉住:档位必须随 ratio 单调不降。)
  * 用 >= 比较:tierAt 末档恒为 1 ⇒ 满怒必落最后一档,不会出现"100% 却是第二档"的边角。
  */
 export function rageTierOf(ratio: number): number {
   const RG = C.skills.rage;
   const tiers = RG.tierAt;
   const r = clamp(ratio, 0, 1);
-  // 返回值再钳一次到演出表的最后一个下标:tierAt 与 tiers[] 等长是配置自洽判据(rage-check ⑱)
+  // 返回值再钳一次到演出表的最后一个下标:tierAt 与 tiers[] 等长是配置自洽判据(rage-check ②)
   // 该管的事,但这里越界会让表现层拿到 undefined 然后在 C 里炸,而这条路径只在改数值时才走到。
   const last = Math.min(tiers.length, RG.tiers.length) - 1;
   for (let i = tiers.length - 1; i >= 0; i--) {
@@ -125,7 +166,9 @@ export function gainRage(p: Player, f: { sweet: boolean; perfect: boolean; smash
   // 合并系数而非叠乘:bothMul 若不做成单独一档,1.8×2.0=3.6 ⇒ 一拍 18 点,六拍打穿上限
   const mul = hot && f.smash ? RG.bothMul : hot ? RG.sweetMul : f.smash ? RG.smashMul : 1;
   const gain = Math.round(RG.perHit * mul);
-  p.rage = Math.min((p.rage ?? 0) + gain, RG.max);
+  // 总上限 = max × pipes(氮气式多管):瓶满三管后溢出作废,像氮气瓶装不进第四瓶
+  const cap = RG.max * Math.max(1, Math.round(RG.pipes ?? 1));
+  p.rage = Math.min((p.rage ?? 0) + gain, cap);
   return gain;
 }
 
@@ -207,11 +250,14 @@ export function canActivate(p: Player, ball: Ball): boolean {
       if (!ball || !ball.live || ball.held || ball.flying) return false;
       return s.buffT <= 0;
 
-    case "shadow":
-      // 影分身: 本分没召过、场上没有分身、球不在得分飞回动画里。
-      // 刻意比别的技能宽:发球蓄力中(ball.held)也允许先召 —— "先布防再发球"是正当策略;
-      // 真闸是每分一次(shadowCast)+ 分身在场(shadowClone)两条,与球况无关。
-      return !p.shadowCast && !p.shadowClone && !!ball && !ball.flying;
+    case "shadow": {
+      // 影分身:三条闸 —— 模式合格、本分没召过、槽位没占满;外加球不在得分飞回动画里。
+      // 刻意比别的技能宽:发球蓄力中(ball.held)也允许先召 —— "先布防再发球"是正当策略。
+      // 满编判据用**占位数**而不是"活着的个数":正在播消散演出的那枚仍占着自己的槽位,
+      // 若按"活的"算就会出现 canActivate 说能召、freeSlotOf 说没位置 ⇒ 按了没反应(静默吞掉)。
+      if (!ShadowGate.on || !ShadowGate.canSummon(p)) return false;
+      return !p.shadowCast && !!ball && !ball.flying;
+    }
 
     default:
       return true;
@@ -265,11 +311,17 @@ export function skillBlockReason(p: Player, ball: Ball | null): string | null {
       return T.pulling;
     case "focus":
       return T.focusing;
-    case "shadow":
-      // 两态:分身还在场上(含消散演出)→ "在场";已消散但本分召过 → "已召唤"。
-      // 在场优先 —— 它才是"为什么现在不能召"的直观原因。
-      if (p.shadowClone) return T.shadowActive;
-      return T.shadowUsed;
+    case "shadow": {
+      // 四态,按"这条理由要占键面多久"排序(越耐久的越先说,玩家才知道该等帧数还是该换打法):
+      //   此地不召 = 整个模式都不给召(训练场/教学/本地对战),等多少帧都没用
+      //   分身满编 = 槽位占满了,得等谁接满三球散掉
+      //   已召唤   = 本分召过了,下一分自己就好
+      // 旧写法只有后两态,而且用 `p.shadowClone` 判在场 —— 多分身之后那个字段已经不存在了。
+      if (!ShadowGate.on) return T.shadowNoMode;
+      if (!ShadowGate.canSummon(p)) return T.shadowFull;
+      if (p.shadowCast) return T.shadowUsed;
+      return T.shadowActive;
+    }
     default:
       return null;
   }
@@ -434,8 +486,9 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
     case "shadow": {
       // 影分身: 只做"本分已召唤"的记账与按键反馈,分身实体不在这里建 ——
       // create() 工厂在 player.ts,而 skills 不能反向 import player(依赖方向:types←config←skills←player)。
-      // 真正的召唤在 player.update 的技能成功分支里调 spawnShadowClone(host) 完成。
-      p.shadowCast = true; // 每分限召一次的闸:resetPoint 才放开
+      // 真正的召唤在 player.update 的技能成功分支里调 spawnShadowClone(host) 完成;
+      // **占几号槽位(= 颜色 + 防区 + AI 档)全在那一步算**,这里连数组都不碰。
+      p.shadowCast = true; // 每分限召一次的闸:resetPoint 才放开(攒满三个要三分,限速靠的就是它)
       p.face = "happy";
       p.faceT = 36;
       return true;
@@ -628,7 +681,7 @@ export function modifyShot(p: Player, opt: HitOpt): {
     }
   }
 
-  // 6. 怒气重击:armed 窗内的那一拍把攒下的怒气全数砸出去,强度按怒气比例分档。
+  // 6. 怒气重击:armed 窗内的那一拍把这一管的怒气砸出去,强度按怒气比例分档。
   //
   //    与重击(#2)的分工是刻意的:重击 = 固定顶档暴扣(有冷却),怒气重击 = 强度换档位
   //    (没有冷却,资源就是门槛)。两者永不并存(一场只有一个 skill.id),所以这里不与 #2 抢。
@@ -640,7 +693,8 @@ export function modifyShot(p: Player, opt: HitOpt): {
   //    q/sweet/perfect 那三个回写会一路决定误差归零 + perfectBoost + perfect.powerDeg,
   //    等于把"按得一般"抬成"顶档",AI 的准头归 diffs.* 管,不许在这儿白送。
   //
-  //    怒气是**整局唯一的清零点**,而且只在真扣出去那一拍清:
+  //    怒气是**整局唯一的消耗点**,而且只在真扣出去那一拍扣(2026-10-05 多管蓄力:
+  //    整管兑现只扣一管,余管保留 —— 用户口径「按一下消耗一个百分之百」):
   //    - 预告通道(preview)一口都不吃 —— 那是每个真实帧最多 10 次的通道,漏一处就是
   //      "攒了一整局、按下去怒气凭空蒸发"(判据 rage-check ①,与 smash-check 同一条病)。
   //    - 挥空 / armed 窗自己走完 / 跨分都不扣一分(资源制下罚它等于白罚:那一拍本就没兑现)。
@@ -659,7 +713,11 @@ export function modifyShot(p: Player, opt: HitOpt): {
       forceSmash = true;                          // buildShot 那边夹 loft≤10 并钉 kind="smash"
     }
     if (!preview) {
-      p.rage = 0;                                 // 整局唯一清零点
+      // 整局唯一消耗点,两条路在这一个表达式里分流:
+      // ratio >= 1 ⟺ 存量至少一整管(rageRatioOf 的 clamp 性质)⇒ 只扣一管,
+      // 余管留到下一拍(250% 放完剩 150%);零头小释放(<一管)仍旧全放掉。
+      const banked = p.rage ?? 0;
+      p.rage = ratio >= 1 ? banked - RG.max : 0;
       p.rageAutoT = 0;                            // 代拍窗一并收掉,不留"收招后凭空补第二下"
       // armed 窗**必须一起关掉**(烟测抓到的一次施放吃掉多拍):留着它,下一拍仍然满足
       // `buffT > 0` 这条门,于是刚攒够一拍的怒气会被同一个承诺再兑现一次 —— 玩家看到的是
@@ -686,9 +744,13 @@ export const Skills = {
   update,
   modifyShot,
   magnetAimPoint,
-  // 怒气重击的四件套:判据只住这里,UI 与演出都读它们(散在各处比 id 会漏)
+  // 怒气重击的五件套:判据只住这里,UI 与演出都读它们(散在各处比 id 会漏)。
+  // ragePipesOf/ragePipeFillOf 是键面专用的"管"量纲(几段点亮/当前段填充),
+  // 强度与档位仍然只走 rageRatioOf —— 两个量纲不许混用。
   isChargeSkill,
   rageRatioOf,
+  ragePipesOf,
+  ragePipeFillOf,
   rageTierOf,
   gainRage,
 };

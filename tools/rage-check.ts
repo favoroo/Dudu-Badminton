@@ -1,8 +1,11 @@
 // ============================================================
-// 怒气重击(rage:整局攒怒气 + 分档兑现 + 一键代拍)回归 —— 2026-10-04 新增。
+// 怒气重击(rage:整局攒怒气 + 分档兑现 + 一键代拍 + 多管蓄力)回归 —— 2026-10-04 新增,
+// 2026-10-05 扩多管(氮气式:最多攒 3 管,按一下只消耗一整管;零头小释放口径不变)。
 //
 // 用户提的需求:「和百分百重击机制类似(也可以自动击球),但可以通过击打过程积攒怒气
-// (特殊击球怒气积攒得也快一点),攒得越多(有上限)释放时那一拍越强,放完归零。」
+// (特殊击球怒气积攒得也快一点),攒得越多(有上限)释放时那一拍越强。」
+// 多管扩判口径:「跟漂移攒氮气一样,攒完第一个百分之百之后,还可以继续攒第二个、第三个,
+// 最多三个。按下的话直接消耗一个百分之百的怒气。」
 //
 // 这款技能的坏法**全都不会崩、不会报错、tsc 也不报**,只会安静地不好用:
 //   ① 预告通道每真实帧最多跑 10 次 buildShot —— 消耗漏一个 !preview 闸,怒气就被无声抽干
@@ -15,6 +18,8 @@
 //   ⑧ 手动优先清多了(把 armed 一起清)⇒「我按了技能又自己挥一拍,怒气没了」
 //   ⑨ 给 AI 开代拍窗 ⇒ 白送一记永不失误的暴扣,而 serve-check/ai-check 的真人替身
 //      从不按技能键 —— 那两把尺子量不到,只能在这里钉死
+//   ⑰ 多管坏了:封顶不钳(第四管凭空多出来)/ 兑现扣多管或不清(攒三管按一下全没)
+//      / 键面管数与存量对不上账 / 零头小释放误吃顶档
 //
 // 反例靠"player.ts 经导出对象调用 Skills.modifyShot / Skills.activate / Player.autoSwingDue"
 // 这一点成立(属性赋值在调用期生效)。哪天改成具名 import 直调,这里的 patch 就失去牙齿。
@@ -34,6 +39,8 @@ import { makeChecker, Checker } from "./harness";
 const C = CFG;
 const CO = C.court, RG = C.skills.rage, SW = C.swing;
 const ARM = RG.releaseWindow;
+const PIPES = Math.max(1, Math.round(RG.pipes ?? 1));
+const CAP = RG.max * PIPES;                    // 多管总上限(氮气式三管 = 300)
 const CD = Skills.defOf("rage").cooldownFrames;
 const PERFECT_LEAD = SW.windup + 0.5 + (SW.active - 1) / 2;
 
@@ -171,15 +178,16 @@ function s1(ck: Checker): void {
   ck.ok(hero.stats.hits === 0, `① 预告不经过 settle ⇒ 一次命中都不记(实际 ${hero.stats.hits})`);
 }
 
-// ---------- ② 强度随怒气单调,且只有满怒才必暴扣 + 顶档 ----------
+// ---------- ② 强度随怒气单调,且只有满管才必暴扣 + 顶档 ----------
 function s2(ck: Checker): void {
   const rows: Array<{ rage: number; boost: number; deg: number; force: boolean; perfect: boolean; tier: number }> = [];
   // 从 rageMinRelease 起算,不含 0:0 怒气根本按不出去(⑤ 专管那条),放进这张表只会得到
   // "加成 0 < 满怒"这种废话断言,还会掩盖真正要量的单调性。
-  for (const r of [RG.rageMinRelease, 34, 35, 66, 67, 99, 100]) {
+  // 250 = 一管半:多管蓄力后存量可以越过一管,强度必须**封顶**在 ratio=1,不许继续涨。
+  for (const r of [RG.rageMinRelease, 34, 35, 66, 67, 99, 100, 2.5 * RG.max]) {
     const { hero, ball } = scene();
     hero.rage = r;
-    // 档位要在 modifyShot **之前**读:兑现会把怒气清零,之后再算就恒等于第 0 档
+    // 档位要在 modifyShot **之前**读:兑现会把怒气扣掉,之后再算就恒等于第 0 档
     // (第一版就栽在这儿 —— 断言"覆盖到 1 档",看着像演出表坏了,其实是读的时间点错了)
     const tier = Skills.rageTierOf(Skills.rageRatioOf(hero));
     Skills.activate(hero, ball);
@@ -194,27 +202,35 @@ function s2(ck: Checker): void {
   }
   const notFull = rows.filter((x) => x.rage < RG.max);
   ck.ok(notFull.every((x) => !x.force && !x.perfect),
-    `② 未满怒**绝不**强制暴扣/顶档(用户口径:攒得越足越狠,不是随时都必杀)`);
+    `② 未满一管**绝不**强制暴扣/顶档(用户口径:攒得越足越狠,不是随时都必杀)`);
   const full = rows[rows.length - 1];
-  ck.ok(full.force && full.perfect, "② 满怒:必暴扣 + 顶档质量改写(与重击同一条兑现路径)");
-  ck.ok(rows[0].boost > 0 && rows[0].boost < full.boost,
-    `② 空怒边缘仍有加成 ${rows[0].boost.toFixed(2)} < 满怒 ${full.boost.toFixed(2)}(读作"这是一记重击",但明显更弱)`);
+  const oneFull = rows.find((x) => x.rage === RG.max)!;
+  ck.ok(full.force && full.perfect, "② 满管:必暴扣 + 顶档质量改写(与重击同一条兑现路径)");
+  ck.ok(full.boost === oneFull.boost && full.deg === oneFull.deg,
+    `② 多管强度封顶:一管(${oneFull.boost.toFixed(2)})与一管半(${full.boost.toFixed(2)})逐位相等 —— 超过一管不许更狠`);
+  ck.ok(rows[0].boost > 0 && rows[0].boost < oneFull.boost,
+    `② 空怒边缘仍有加成 ${rows[0].boost.toFixed(2)} < 满管 ${oneFull.boost.toFixed(2)}(读作"这是一记重击",但明显更弱)`);
   // 档位四行都取到得到(0.34 与 0.5 必须不同档 ⇒ 曾经 tierAt 少一段,四档塌成三档)
   const tiers = new Set(rows.map((x) => x.tier));
   ck.ok(tiers.size === RG.tiers.length, `② ${rows.map(r => r.rage).join("/")} 怒气覆盖到 ${tiers.size} 档,演出表有 ${RG.tiers.length} 行`);
 }
 
-// ---------- ③ 一次施放只兑现一拍;兑现是整局唯一清零点 ----------
+// ---------- ③ 一次施放只兑现一拍;兑现是整局唯一消耗点 ----------
 function s3(ck: Checker): void {
   const one = flight({ late: 0, arm: true, charge: RG.max, previews: 3 });
   const shot = one.shot as ShotResult;
   ck.ok(!!one.shot, "③ 这一拍打出去了");
   ck.ok(shot.skillKind === "rage", `③ 上报 skillKind=rage(特效/飘字/震动认这个,实际 ${shot.skillKind})`);
-  ck.ok(shot.rageRatio === 1, `③ 结果带怒气比例快照(表现层只能吃这份 —— p.rage 同帧已清零,实际 ${shot.rageRatio})`);
-  ck.ok((one.hero.rage ?? 0) === 0, `③ 兑现即清空(实际 ${one.hero.rage})`);
+  ck.ok(shot.rageRatio === 1, `③ 结果带怒气比例快照(表现层只能吃这份 —— p.rage 同帧已扣掉,实际 ${shot.rageRatio})`);
+  ck.ok((one.hero.rage ?? 0) === 0, `③ 一管兑现即清空(100 − 100 = 0,实际 ${one.hero.rage})`);
   const s = one.hero.skill as NonNullable<PlayerEntity["skill"]>;
   ck.ok(s.buffT === 0, `③ armed 窗一并关掉:留着它下一拍会被同一个承诺再兑现(实际 ${s.buffT})`);
   ck.ok((one.hero.rageAutoT ?? 0) === 0, `③ 代拍窗收掉(实际 ${one.hero.rageAutoT})`);
+  // 多管:存量 250% 按一下只扣一管,余管保留到下一拍(用户口径「消耗一个百分之百」)
+  const banked = flight({ late: 0, arm: true, charge: 2.5 * RG.max, previews: 2 });
+  ck.ok(banked.shot!.rageRatio === 1, `③ 一管半存量照旧顶格快照(实际 ${banked.shot?.rageRatio})`);
+  ck.ok((banked.hero.rage ?? 0) === 1.5 * RG.max,
+    `③ 250% 兑现只扣一管(期望 ${1.5 * RG.max},实际 ${banked.hero.rage})—— 清零 = 攒三管按一下全没(⑰ 专管)`);
   // 再攒一拍、不再按技能:第二拍绝不能带 rage
   Skills.gainRage(one.hero, { sweet: false, perfect: false, smash: false });
   const second = flight({ late: 0, skill: "rage" });
@@ -256,7 +272,7 @@ function s5(ck: Checker): void {
   hero.rage = RG.rageMinRelease - 1;
   ck.ok(!Skills.canActivate(hero, ball), `⑤ 差一点也不行(门槛 ${RG.rageMinRelease})`);
   hero.rage = RG.rageMinRelease;
-  ck.ok(Skills.canActivate(hero, ball), "⑤ 攒满一拍就能放(用户口径:够一点就能放,不是 1/3 管)");
+  ck.ok(Skills.canActivate(hero, ball), "⑤ 攒满一拍就能放(用户口径:够一点就能放;多管后这条只管零头小释放,整管走顶格那路)");
   ck.ok(RG.rageMinRelease >= RG.perHit, `⑤ 门槛 ${RG.rageMinRelease} >= 每拍底数 ${RG.perHit} ⇒ 这条闸真的拦得住空按`);
 }
 
@@ -281,7 +297,7 @@ function s7(ck: Checker): void {
   Skills.activate(hero, ball);                 // 留一个 armed + 代拍窗跨分
   ck.ok((hero.rageAutoT ?? 0) > 0, "⑦ 前置:代拍窗确实开着");
   Skills.resetPoint(hero);
-  ck.ok((hero.rage ?? 0) === stored, `⑦ **怒气跨分保留**(用户口径:只有释放才归零;实际 ${hero.rage})`);
+  ck.ok((hero.rage ?? 0) === stored, `⑦ **怒气跨分保留**(用户口径:只有释放才扣量;实际 ${hero.rage})`);
   ck.ok((hero.rageAutoT ?? 0) === 0, `⑦ 代拍窗必须清:残窗 = 下一分凭空多打一拍(实际 ${hero.rageAutoT})`);
   ck.ok(hero.skill!.buffT === 0, `⑦ armed 窗归零(实际 ${hero.skill!.buffT})`);
   ck.ok(hero.skill!.cd === 0, `⑦ cd 归零是既有设计(每分都能放),它从来不是这款的门槛(实际 ${hero.skill!.cd})`);
@@ -339,7 +355,8 @@ function bench(side: TeamSide, h: number, dist: number, vx: number, vy: number):
   Rules.newMatch("1p", "normal");
   const hero = R.players[side === "left" ? 0 : 1];
   hero.skill = Skills.initSkillState("rage");
-  hero.rage = RG.max;
+  // 满槽(三管)进网格:一键兑现只许扣一管(300 → 200),把"多管只耗一管"也放进 300 格里量
+  hero.rage = CAP;
   Skills.resetPoint(hero);
   hero.x = heroAt(side); hero.y = CO.groundY;
   hero.vx = 0; hero.vy = 0; hero.onGround = true;
@@ -410,7 +427,7 @@ function run(side: TeamSide, h: number, dist: number, vx: number, vy: number, pl
   if (swingFrame < 0) {
     if ((hero.rageAutoT ?? 0) > 0) return acc("代拍窗还开着但择帧判据一直没点头(够不着/没过网/贴地)");
     if (hero.skill!.buffT > 0) return acc("armed 但代拍窗已走完");
-    if ((hero.rage ?? 0) === 0) return acc("怒气已清空(这一拍没有承诺要兑现)");
+    if ((hero.rage ?? 0) < RG.rageMinRelease) return acc("怒气不足门槛(这一拍没有承诺要兑现)");
     return acc("未归因");
   }
   return acc("起了拍但没接触(挥空/球先落地)");
@@ -519,10 +536,10 @@ function s10(ck: Checker): void {
       else if (!a.autoStarted) fail("这一拍不是系统代出的 —— 待发窗没起作用,一键化是假的");
       else if (a.swings !== 1) fail(`一次施放起了 ${a.swings} 次拍(该只代一拍)`);
       else if (a.skillKind !== "rage") fail(`skillKind=${a.skillKind}(飘字/特效/震动都认它)`);
-      else if (a.rageRatio === null || a.rageRatio < 1) fail(`满怒代拍却没带 ratio=1 快照(实际 ${a.rageRatio})`);
+      else if (a.rageRatio === null || a.rageRatio < 1) fail(`满管代拍却没带 ratio=1 快照(实际 ${a.rageRatio})`);
       else if (a.intoNet) fail("这拍下网");
       else if (!inOpponentCourt(g.side, a.landX)) fail(`落点 ${Math.round(a.landX)} 不在对方场内`);
-      else if (a.rageLeft !== 0) fail(`兑现后怒气没清空(还剩 ${a.rageLeft})`);
+      else if (a.rageLeft !== CAP - RG.max) fail(`兑现后没按「只扣一管」结账(期望 ${CAP - RG.max},实际 ${a.rageLeft})`);
       else if (a.buffLeft > 0) fail(`兑现后 armed 窗没关(还剩 ${a.buffLeft} 帧)⇒ 下一拍会被同一承诺再兑现`);
       else if (a.frames > RG.autoWindow + SW.windup + SW.active + 8) fail(`按完 ${a.frames} 帧才出球,太拖`);
       continue;
@@ -544,7 +561,7 @@ function s10(ck: Checker): void {
   for (const b of unexplained.slice(0, 8)) console.log(`  ✗ ${b}`);
   for (const b of gaveUp.slice(0, 8)) console.log(`  ✗ 放过一格该救的球:${b}`);
   ck.ok(hits > 60, `⑩ 只按一次技能键就代拍兑现 ${hits}/${grid.length} 格(太少 = 功能没生效)`);
-  ck.ok(dirty.length === 0, `⑩ 起拍的 ${hits} 格全部干净:系统代拍、带档位快照、命中即清空、只代一拍、不捞界外球`);
+  ck.ok(dirty.length === 0, `⑩ 起拍的 ${hits} 格全部干净:系统代拍、带档位快照、只扣一管、只代一拍、不捞界外球`);
   ck.ok(unexplained.length === 0, `⑩ ${unexplained.length} 次沉默说不出玩家认可的理由`);
   ck.ok(gaveUp.length === 0, `⑩ 界内"可及"的 ${playable} 格里放过了 ${gaveUp.length} 格;另有 ${doomed} 格连完美手动也救不到,不算账`);
   ck.ok(ghost === ghostDoomed,
@@ -683,19 +700,23 @@ function s14(ck: Checker): void {
   ck.ok(RG.releaseWindow > RG.autoWindow, `⑭ armed 窗(${RG.releaseWindow})比代拍窗(${RG.autoWindow})长:代劳交还手动之后,玩家自己那一拍仍然兑现`);
 }
 
-// ---------- ⑮ 定标:蓄满要几拍、一局放几次(与卡片文案同一把尺子) ----------
+// ---------- ⑮ 定标:蓄满一管要几拍、一局放几次(与卡片文案同一把尺子) ----------
 function s15(ck: Checker): void {
   const best = Math.ceil(RG.max / (RG.perHit * RG.bothMul));
   const worst = Math.ceil(RG.max / RG.perHit);
-  ck.ok(best === 8 && worst === 20, `⑮ 蓄满 ${best}~${worst} 拍(最好每拍又准又杀、最差全是普通拍)`);
-  // 期望值:真人整局约 55 拍,P(甜)≈0.35、P(杀)≈0.22 ⇒ 每拍约 7.5 点
+  ck.ok(best === 8 && worst === 20, `⑮ 蓄满**一管** ${best}~${worst} 拍(最好每拍又准又杀、最差全是普通拍;多管不改一管的经济)`);
+  // 期望值:真人整局约 55 拍,P(甜)≈0.35、P(杀)≈0.22 ⇒ 每拍约 7.5 点 ≈ 4 管出头 ——
+  // 攒着不放能存满一整条槽(CAP),连放三管是上限体验;期望释放次数口径不变
   const exp = RG.perHit * (1 + 0.28 + 0.22);
   const releases = Math.floor((55 * exp) / RG.max);
-  ck.ok(releases >= 3 && releases <= 6, `⑮ 一局约 ${releases} 次满怒释放(目标 3~5 次;越界就该动 max,不要动 perHit)`);
+  ck.ok(releases >= 3 && releases <= 6, `⑮ 一局约 ${releases} 管进账(目标 3~5;越界就该动 max,不要动 perHit)`);
+  ck.ok(Number.isInteger(RG.pipes) && RG.pipes >= 1,
+    `⑮ 管数 ${RG.pipes} 必须是正整数(键面按段画、卡片按管印,小数管不存在)`);
   ck.ok([RG.perHit, RG.perHit * RG.sweetMul, RG.perHit * RG.smashMul, RG.perHit * RG.bothMul]
-    .every((g) => Number.isInteger(g)), "⑮ 四档增益全整数 ⇒ 键面「1 点 = 1%」的读法不断");
+    .every((g) => Number.isInteger(g)), "⑮ 四档增益全整数 ⇒ 键面「1 点 = 一管的 1%」的读法不断");
   ck.ok(RG.bothMul < RG.sweetMul * RG.smashMul,
-    `⑮ bothMul ${RG.bothMul} 低于叠乘 ${(RG.sweetMul * RG.smashMul).toFixed(2)}(叠乘会一拍 18 点,六拍打穿上限)`);
+    `⑮ bothMul ${RG.bothMul} 低于叠乘 ${(RG.sweetMul * RG.smashMul).toFixed(2)}(叠乘会一拍 18 点,六拍打穿一管)`);
+  ck.ok(CAP >= RG.max * 2, `⑮ 多管蓄力真的开了:总上限 ${CAP} 至少两根管(退回单管 = 2026-10-05 的需求被撤)`);
 }
 
 // ---------- ⑯ 发球不涨怒气(设计后果,写死免得被当 bug 改回去) ----------
@@ -708,24 +729,83 @@ function s16(ck: Checker): void {
   ck.ok(hero.stats.hits === 0, `⑯ 发球也不算"接到的那一拍"(实际 hits=${hero.stats.hits})`);
 }
 
+// ---------- ⑰ 多管蓄力:氮气式三管(2026-10-05 用户口径) ----------
+function s17(ck: Checker): void {
+  // (a) 封顶:攒到 CAP 之后溢出作废(氮气瓶装不进第四瓶)
+  {
+    const { hero } = scene();
+    hero.rage = CAP - 3;
+    Skills.gainRage(hero, { sweet: true, perfect: true, smash: true });   // 一拍 +14
+    ck.ok((hero.rage ?? 0) === CAP, `⑰ 总上限 ${CAP} 封顶,溢出作废(实际 ${hero.rage})`);
+    ck.ok(Skills.ragePipesOf(hero) === PIPES, `⑰ 封顶时键面读满 ${PIPES} 管(实际 ${Skills.ragePipesOf(hero)})`);
+  }
+  // (b) 三连放:300 → 200 → 100 → 0,每一拍都顶格、每一拍只扣一管
+  let bank = CAP;
+  for (let i = 1; i <= PIPES; i++) {
+    const r = flight({ late: 0, arm: true, charge: bank, previews: 2 });
+    ck.ok(!!r.shot && r.shot.skillKind === "rage", `⑰ 第 ${i}/${PIPES} 管按得下去(存量 ${bank})`);
+    ck.ok(r.shot!.rageRatio === 1, `⑰ 第 ${i} 管快照 ratio=1(实际 ${r.shot?.rageRatio})`);
+    ck.ok((r.hero.rage ?? 0) === bank - RG.max,
+      `⑰ 第 ${i} 管兑现只扣一管(${bank} → ${bank - RG.max},实际 ${r.hero.rage})`);
+    bank -= RG.max;
+  }
+  ck.ok(bank === 0, `⑰ ${PIPES} 管连放后归零`);
+  // (c) 整管 + 零头并存:250 按 = 消耗一整管剩 150 的算术已在 ③;(c) 补 150(扣一管剩半管)
+  {
+    const r = flight({ late: 0, arm: true, charge: RG.max + RG.max / 2 });
+    ck.ok(r.shot!.rageRatio === 1, `⑰ 150% 按下吃的是整管(顶格快照,实际 ${r.shot?.rageRatio})`);
+    ck.ok((r.hero.rage ?? 0) === RG.max / 2, `⑰ 150% 放完剩 50%(实际 ${r.hero.rage})`);
+    ck.ok(!!r.shot!.perfect && r.shot!.rageRatio === 1, "⑰ 整管兑现吃顶档质量(满管才必杀的口径)");
+  }
+  // (d) 零头小释放(口径不变):不满一管按旧规则按比例、全放掉、不吃顶档
+  //     late 9 = 物理上不甜(s4 已证),把"perfect 必为 false"与物理档解耦
+  {
+    const r = flight({ late: 9, arm: true, charge: RG.max / 2 });
+    ck.ok(Math.abs((r.shot!.rageRatio ?? 0) - 0.5) < 1e-9, `⑰ 50% 零头释放按比例快照(实际 ${r.shot?.rageRatio})`);
+    ck.ok((r.hero.rage ?? 0) === 0, `⑰ 零头小释放放掉全部零头(实际 ${r.hero.rage})`);
+    ck.ok(!r.shot!.perfect, "⑰ 零头释放不吃顶档(没满一管就不是必杀)");
+  }
+  // (e) 键面量纲对账:管数/填充与存量逐笔对得上,强度量纲不被管数迷惑
+  {
+    const { hero } = scene();
+    hero.rage = 2 * RG.max + 40;
+    ck.ok(Skills.ragePipesOf(hero) === 2 && Math.abs(Skills.ragePipeFillOf(hero) - 0.4) < 1e-9,
+      `⑰ 240% = 2 管满 + 当前管 40%(实际 ${Skills.ragePipesOf(hero)} 管 + ${Skills.ragePipeFillOf(hero)})`);
+    ck.ok(Skills.rageRatioOf(hero) === 1, `⑰ 强度量纲不受管数迷惑:≥1 管恒读 1(实际 ${Skills.rageRatioOf(hero)})`);
+    hero.rage = RG.max / 2;
+    ck.ok(Skills.ragePipesOf(hero) === 0 && Math.abs(Skills.ragePipeFillOf(hero) - 0.5) < 1e-9,
+      "⑰ 半管:0 管满 + 50% 填充");
+    ck.ok(Skills.ragePipesOf(scene().hero) === 0, "⑰ 空槽:0 管");
+  }
+  // (f) 跨分保留整条槽(resetPoint 不清怒气,多管同样不清)
+  {
+    const { hero, ball } = scene();
+    hero.rage = CAP;
+    Skills.activate(hero, ball);
+    Skills.resetPoint(hero);
+    ck.ok((hero.rage ?? 0) === CAP, `⑰ 跨分保留整条槽 ${CAP}(实际 ${hero.rage})`);
+  }
+}
+
 interface Section { name: string; run: (ck: Checker) => void }
 const SECTIONS: Section[] = [
   { name: "① 球种预告是纯预览:怒气/armed/代拍窗一口不吃,徽标照旧说真话", run: s1 },
-  { name: "② 强度随怒气单调,只有满怒才必暴扣 + 顶档", run: s2 },
-  { name: "③ 一次施放只兑现一拍;兑现是整局唯一清零点", run: s3 },
+  { name: "② 强度随怒气单调且多管封顶,只有满管才必暴扣 + 顶档", run: s2 },
+  { name: "③ 一次施放只兑现一拍;整管兑现只扣一管,兑现是整局唯一消耗点", run: s3 },
   { name: "④ 攒怒气只吃物理档,释放那一拍不给自己充能", run: s4 },
   { name: "⑤ 释放门槛:空管按不出去(资源制的白嫖漏洞)", run: s5 },
   { name: "⑥ 怒气住 Player:换装整块换 skill 对象也不丢", run: s6 },
   { name: "⑦ resetPoint:资源跨分保留、临时窗一律清", run: s7 },
   { name: "⑧ 计时器每帧只减一次(armed 窗 / 代拍窗)", run: s8 },
   { name: "⑨ 释放失败不罚怒气(挥空 / 窗自己走完)", run: s9 },
-  { name: "⑩ 一键兑现:只按一次就把这一拍轰出去(6×5×5×两侧)", run: s10 },
+  { name: "⑩ 一键兑现:只按一次就把这一拍轰出去(6×5×5×两侧,只扣一管)", run: s10 },
   { name: "⑪ 该不出手一律不代拍,且每次沉默都说得出理由", run: s11 },
   { name: "⑫ 手动优先:代劳让位,但怒气照样砸进去", run: s12 },
   { name: "⑬ AI 侧口径:拿不到代拍窗、不吃顶档、判定区不放大", run: s13 },
   { name: "⑭ 一把尺子三份参数 + 窗覆盖度(预开启那一档)", run: s14 },
-  { name: "⑮ 定标:蓄满几拍、一局放几次(与卡片同一把尺子)", run: s15 },
+  { name: "⑮ 定标:蓄满一管几拍、一局放几次、管数自洽(与卡片同一把尺子)", run: s15 },
   { name: "⑯ 发球不涨怒气(设计后果,钉住别被当 bug 改回去)", run: s16 },
+  { name: "⑰ 多管蓄力:封顶/三连放/零头并存/键面量纲/跨分(氮气式)", run: s17 },
 ];
 
 // ============================================================
@@ -735,10 +815,12 @@ const originalModify = Skills.modifyShot;
 const originalActivate = Skills.activate;
 const originalReset = Skills.resetPoint;
 const originalDue = Pl.autoSwingDue;
+const originalGain = Skills.gainRage;
 type Modify = typeof Skills.modifyShot;
 type Activate = typeof Skills.activate;
 type Reset = typeof Skills.resetPoint;
 type Due = typeof Pl.autoSwingDue;
+type Gain = typeof Skills.gainRage;
 
 /** 反例:预告也清怒气(2026-10-03 重击现场的同一条病,换到资源上更致命) */
 const previewConsumesRage: Modify = (p, opt) => {
@@ -747,12 +829,25 @@ const previewConsumesRage: Modify = (p, opt) => {
   if (p && p.skill && p.skill.id === "rage") p.rage = 0;      // 无条件清 = 旧写法
   return r;
 };
-/** 反例:兑现不清怒气 —— "只有释放才归零"这条断了,它就退化成一条永久 buff */
+/** 反例:兑现不扣怒气 —— "只有释放才扣量"这条断了,它就退化成一条永久 buff */
 const rageNotCleared: Modify = (p, opt) => {
   const before = (p && p.rage) ?? 0;
   const r = originalModify(p, opt);
   if (p && p.skill && p.skill.id === "rage") p.rage = before;
   return r;
+};
+/** 反例:兑现把整条槽清空(旧"放完归零"装回来)⇒ 攒三管按一下全没,
+ *  多管蓄力整个被撤(2026-10-05 用户口径「按一下消耗一个百分之百」) */
+const consumesWholeBank: Modify = (p, opt) => {
+  const r = originalModify(p, opt);
+  if (p && p.skill && p.skill.id === "rage" && !opt.preview && r.skillKind === "rage") p.rage = 0;
+  return r;
+};
+/** 反例:封顶退回单管(旧钳制)⇒ 攒满一管后第二管永远攒不上,"最多三个"形同虚设 */
+const singlePipeCap: Gain = (p, f) => {
+  const g = originalGain(p, f);
+  if (p && p.skill && p.skill.id === "rage") p.rage = Math.min(p.rage ?? 0, RG.max);
+  return g;
 };
 /** 反例:在 activate 就清怒气 —— 满怒按下去,兑现的却是一记空手球 */
 const rageClearedAtPress: Activate = (p, ball, dir) => {
@@ -837,7 +932,9 @@ if (!selftest) {
   };
 
   withPatch(Skills, "modifyShot", previewConsumesRage as Modify, ["①", "③"], "previewConsumesRage(预告也清怒气)");
-  withPatch(Skills, "modifyShot", rageNotCleared as Modify, ["③"], "rageNotCleared(兑现不清怒气)");
+  withPatch(Skills, "modifyShot", rageNotCleared as Modify, ["③"], "rageNotCleared(兑现不扣怒气)");
+  withPatch(Skills, "modifyShot", consumesWholeBank as Modify, ["③", "⑰"], "consumesWholeBank(兑现清空整条槽)");
+  withPatch(Skills, "gainRage", singlePipeCap as Gain, ["⑰"], "singlePipeCap(封顶退回单管)");
   withPatch(Skills, "modifyShot", alwaysForceSmash as Modify, ["②"], "alwaysForceSmash(分档被抹平)");
   withPatch(Skills, "modifyShot", selfRefill as Modify, ["④"], "selfRefill(释放那一拍给自己充能)");
   withPatch(Skills, "activate", rageClearedAtPress as Activate, ["①", "②"], "rageClearedAtPress(按下就清怒气)");

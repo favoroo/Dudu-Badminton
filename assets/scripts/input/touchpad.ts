@@ -65,7 +65,7 @@
 // 摇杆与左右键是不同的节点结构,这时会拆左簇重建,同时清掉左半的 claim。
 // ============================================================
 import { Color, EventTouch, Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Vec3, Widget, sys, v3, view } from "cc";
-import { Pad, press, release, cancelJump, resetPadHolds, setMoveAxis, setTargetX } from "./pad";
+import { Pad, press, release, cancelJump, resetPadHolds, setMoveAxis, setTargetX, lockSwingAxis } from "./pad";
 import {
   PAD_BASE, PAD_LABEL, Settings,
   JOYSTICK_BASE,
@@ -74,7 +74,7 @@ import {
 } from "../core/settings";
 import { CFG } from "../core/config";
 import { clamp } from "../core/utils";
-import { cdAlpha, cdText, drawCooldown, drawBlockedSlash, drawBlockedTape, makeCdGate, skillAccent, chargeText, drawCharge, CH, type CdGate } from "./pad-cd";
+import { cdAlpha, alphaFloor, cdText, drawCooldown, drawBlockedSlash, drawBlockedTape, makeCdGate, skillAccent, chargeText, drawCharge, CH, type CdGate } from "./pad-cd";
 // 判据唯一真话在 core/skills(哪款技能走充能读数 / 怒气比例怎么算),这里只照它执行。
 // 不在 touchpad 里写 `skillId === "rage"`:那样多一款充能技能就会有一处漏一处。
 import { isChargeSkill } from "../core/skills";
@@ -94,6 +94,11 @@ const SWIPE_THRESHOLD = CFG.touchAim.commitPx;
 /** 纵向手势阈值(像素):比横轴紧一档 —— 纵向曾是有意无语义区(防纯纵向晃动误触),
  *  给了语义(上滑挑高/下滑平抽)后仍要压住点按时的上下漂移。见 config.touchAim.commitPxY。 */
 const SWIPE_THRESHOLD_Y = CFG.touchAim.commitPxY;
+/** 长滑锁定阈值(像素):滑过这个距离 = 把该轴方向锁成默认(短滑管一拍,长滑管到取消)。
+ *  必须远大于短滑阈值,两个动作段之间留足安全带 —— 见 config.touchAim.lockPx 注释。 */
+const LOCK_PX = CFG.touchAim.lockPx;
+/** 纵轴长滑阈值:与 commitPxY 同比例(3 倍)且保持纵轴整体更紧的档位关系。 */
+const LOCK_PX_Y = CFG.touchAim.lockPxY;
 
 /**
  * 每一簇的建键顺序(照改造前的书写序,别顺手改成 PAD_ACTIONS 的顺序):
@@ -155,6 +160,28 @@ interface BtnRec {
   swipeDir: number;
   /** 纵向手势(仅 swing 键用):0=未提交, 1=上滑(挑高), -1=下滑(平抽)。与 swipeDir 两轴独立、可组合 */
   swipeDirY: number;
+  /**
+   * 长滑锁定去重门(仅 swing 键):本次手势(按下→松手)里该轴**已经处理过的长滑方向**。
+   * trackSwingSwipe 每个 MOVE 事件都跑,没有这道门,手指停在长滑阈值外的事件流会把
+   * lockSwingAxis 的 toggle 连打两遍(锁上又立刻解锁)。同方向只触发一次;按下时清 0
+   * —— 「同向再长滑 = 取消」的心智按**手势**计,不在一次手势内来回刷。
+   */
+  lockDirX: number;
+  lockDirY: number;
+  /**
+   * 「欠着一拍的瞄准」(仅 swing 键):辅助开着时玩家滑了但那一拍还没打出去,
+   * game 层每帧把 pad 上的提交值喂进来。手指抬起来后 swipeDir 归 0,靠它把方向继续
+   * 亮在键缘上 —— 否则"滑一次只管一拍"这件事没有任何读数(判据 auto-hit-check ⑩ + 肉眼验收)。
+   * 只在**没被按住**时接管画面(见 paint 的 shownSwipe):按着的时候手势自己说话,两者不打架。
+   */
+  aimEcho: number;
+  aimEchoY: number;
+  /**
+   * 自动击打(辅助模式)开着 = 把击球键的键名换成「自动」(config.autoHit.padLabel)。
+   * 由 game 层喂进来(setAutoMark),这个文件不 import core/auto-hit:模式判定留在逻辑侧,
+   * 按键只照参数画 —— 与 setShotPreview/setSkillState 同一个形状。
+   */
+  autoMark: boolean;
   /** 键名文字的透明度节点(仅 swing/lunge 有):apply 里随 padAlpha 同步,不参与 paint 重画 */
   labelOp: UIOpacity | null;
   /** 键名文本组件引用(用于动态更新技能名称) */
@@ -169,11 +196,18 @@ interface BtnRec {
   /** 技能剩余冷却秒数(与 cdRatio 同源,给键心读数用) */
   cdSec?: number;
   /**
-   * 充能比例 0..1(仅 kind==="charge" 的技能喂,当前 = 怒气重击)。
+   * 充能比例 0..1(仅 kind==="charge" 的技能喂,当前 = 怒气重击):**进行中那管**的填充。
    * 与 cdRatio 是**两个反向的量**:cd 越大越不能用、充能越大越能用,所以它绝不许
    * 借用 cdRatio(那会立刻得到"怒气越满键越暗"),也不许借用 cdGate(见 chargeGate 注)。
+   * 多管蓄力后它只表达"当前管充到哪了",已满几管走 chargePipes —— 两个量纲各管各的。
    */
   chargeRatio?: number;
+  /**
+   * 已攒满的整管数 0..pipes(仅充能款喂;多管蓄力的"点亮几段/满怒外环"判据)。
+   * 满管判据从旧的 chargeRatio>=1 迁到这里:恰好攒满一管时 fill 恒 0(见
+   * Skills.ragePipeFillOf 的边界口径),靠 ratio>=1 判满会在整管边界上闪瞎。
+   */
+  chargePipes?: number;
   /**
    * 充能环的重画门控。**必须是独立一个 gate**,不能复用 cdGate:
    * 一个 gate 只能记一个基准,两层共用就会互相顶掉基准 —— 谁后画,另一层从此冻住
@@ -281,7 +315,8 @@ function paint(rec: BtnRec, edit: boolean): void {
   // 满怒 = 充能款自己的"就绪发亮"态。与 isFlashReady **分开两个变量、共用同一套画法**
   // (双白环 + 图标提亮):两态的成因不同(一个是 CD 走完 + 球够高,一个是攒满资源),
   // 合并成一个变量将来就拆不开,而拆不开迟早演变成"给闪现也开一管怒气"这种事故。
-  const isRageFull = isCharge && (rec.chargeRatio ?? 0) >= 1 && rec.skillReady === true;
+  // 多管蓄力后判"满"看整管数(>=1 管就能顶格放),不看当前段填充 —— 见 BtnRec.chargePipes 注。
+  const isRageFull = isCharge && (rec.chargePipes ?? 0) >= 1 && rec.skillReady === true;
   // 冷却读数的浓度:滑杆压到最低时也留得下对比(算法与理由见 input/pad-cd.ts)
   const Acd = cdAlpha(A);
 
@@ -319,11 +354,12 @@ function paint(rec: BtnRec, edit: boolean): void {
     drawCooldown(g, skinColor, rec.r, rec.cdRatio ?? 0, rec.skillId ?? "lunge", A);
   }
   // 蓄能环:与冷却层同一条内收几何、同一套补集规矩,但**它是进度不是惩罚** ——
-  // 所以充能款永远不吃上面那个 cooling 分支(见本节头注)。笔画在 pad-cd.ts,node 侧同源断言。
+  // 所以充能款永远不吃上面那个 cooling 分支(见本节头注)。多管分段版:
+  // 喂「当前管填充 + 已满管数」两个量纲,笔画在 pad-cd.ts,node 侧同源断言。
   if (isCharge) {
     g.lineCap = Graphics.LineCap.ROUND;
     g.lineJoin = Graphics.LineJoin.ROUND;
-    drawCharge(g, skinColor, rec.r, rec.chargeRatio ?? 0, rec.skillId ?? "lunge", A);
+    drawCharge(g, skinColor, rec.r, rec.chargeRatio ?? 0, rec.skillId ?? "lunge", A, rec.chargePipes ?? 0);
   }
   // 门槛未满足(非冷却):斜切灰杠,同一笔画源在 pad-cd.ts,node 侧可断言
   if (isBlocked) {
@@ -352,10 +388,15 @@ function paint(rec: BtnRec, edit: boolean): void {
     iconCol = skinColor(skillAccent(rec.skillId ?? "lunge"), 0.98 * A);
   }
 
+  // 键面上"当前瞄准哪一档"的读数:按住中 = 手指这次滑的;抬起后 = 还欠着一拍的那次滑动
+  // (rec.aimEcho,game 层每帧从 pad 喂)。今天旧写法抬起即熄,于是"滑一次只管一拍"这件事
+  // 在键上读不出来 —— 而辅助开着时击球键**只会**被滑、不会被按,抬起就是常态。
+  const shownSwipe = rec.action === "swing" ? (rec.pressed ? rec.swipeDir : rec.aimEcho) : 0;
+  const shownSwipeY = rec.action === "swing" ? (rec.pressed ? rec.swipeDirY : rec.aimEchoY) : 0;
+
   // 图标跟随按下/选中/技能态变色;冷却中让位给键心的剩余秒数(键名标签还在,不会认错键)
   if (!cooling) {
-    drawIcon(g, rec.action, rec.r, iconCol,
-      rec.action === "swing" ? rec.swipeDir : 0, rec.skillId);
+    drawIcon(g, rec.action, rec.r, iconCol, shownSwipe, rec.skillId);
   }
 
   // 门槛未满足:P5 动感斜切封条底衬盖在水印图标与斜杠上方,保证中央干净平整
@@ -366,12 +407,13 @@ function paint(rec: BtnRec, edit: boolean): void {
   }
   // 纵向手势的常驻提示(仅 swing 键):键缘 12 点/6 点方向的两枚小箭头,比左右大箭头
   // 淡一档 —— 横轴是教学在先的主手势;提交哪一档,那一档提亮到满(方向色弧同时在键缘亮起)。
-  // 画在键缘而不是图标旁:键内下方是键名标签「击球」(0.62r 处),放不下第四枚箭头。
+  // 画在键缘而不是图标旁:键内下方是键名标签(0.62r 处),放不下第四枚箭头。
+  // 取值与那两道弧同一个 shownSwipeY —— 箭头与弧不许各说一套(出图肉眼判抓到过)。
   if (rec.action === "swing") {
     const tickW = Math.max(4, rec.r * 0.11);
     const tickLen = Math.max(5, rec.r * 0.14);
-    const upA = rec.swipeDirY > 0 ? 0.95 : 0.45;
-    const dnA = rec.swipeDirY < 0 ? 0.95 : 0.45;
+    const upA = shownSwipeY > 0 ? 0.95 : 0.45;
+    const dnA = shownSwipeY < 0 ? 0.95 : 0.45;
     g.lineWidth = 3;
     g.strokeColor = skinColor(CFG.colors.sweet.lob, A * upA);
     g.moveTo(-tickW, rec.r - 2 - tickLen);
@@ -386,19 +428,19 @@ function paint(rec: BtnRec, edit: boolean): void {
   }
 
   // 滑动手势反馈(仅 swing 键):已提交方向时画一道方向色弧
-  if (rec.action === "swing" && rec.swipeDir !== 0) {
-    const hex = rec.swipeDir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan;
+  if (rec.action === "swing" && shownSwipe !== 0) {
+    const hex = shownSwipe > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan;
     g.strokeColor = skinColor(hex, 0.9 * A);
     g.lineWidth = 5;
-    const a0 = rec.swipeDir > 0 ? -0.9 : Math.PI - 0.9;
-    const a1 = rec.swipeDir > 0 ? 0.9 : Math.PI + 0.9;
+    const a0 = shownSwipe > 0 ? -0.9 : Math.PI - 0.9;
+    const a1 = shownSwipe > 0 ? 0.9 : Math.PI + 0.9;
     g.arc(0, 0, rec.r - 4, a0, a1, false);
     g.stroke();
   }
   // 纵向手势的方向弧:与横轴同一套画法,圆心角分别对准 12 点(+π/2,挑高)与 6 点(-π/2,平抽);
   // UI 本地 y 向上,两轴同时提交时两道弧并存(上+右 = 一眼读出「挑高到后场」)
-  if (rec.action === "swing" && rec.swipeDirY !== 0) {
-    const hex = rec.swipeDirY > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive;
+  if (rec.action === "swing" && shownSwipeY !== 0) {
+    const hex = shownSwipeY > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive;
     g.strokeColor = skinColor(hex, 0.9 * A);
     g.lineWidth = 5;
     const c = rec.swipeDirY > 0 ? Math.PI / 2 : -Math.PI / 2;
@@ -987,15 +1029,20 @@ export interface TouchPadHandle {
    * 键上方常驻显示;null = 完全就绪或冷却中。
    * chargeRatio = 充能比例 0..1,**只有 kind==="charge" 的技能(怒气重击)会被读**:
    * 它画在环上、印在键心,与 cdRatio 各走一条通道(两者语义相反,不许互相顶替)。
+   * 多管蓄力后 chargeRatio 是「进行中那管」的填充,chargePipes = 已满的整管数 ——
+   * 两个量纲各管各的,键面分段环与总百分比读数都从这一对值折算。
    * 参数放最后且带默认值 ⇒ 现有六个技能的调用点一行都不用改。
    */
-  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number): void;
+  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number, chargePipes?: number): void;
   /**
    * 球种预告徽标(击球键上方):game-root 每帧喂 Player.previewKind 的结果;
-   * null = 无来球,隐藏。
+   * null = 无来球,隐藏。只报球种 —— 自动这个模式读数在键名上(见 setAutoMark)。
    */
-  /** 球种预告徽标(击球键上方):传 null 隐藏。`auto` = 自动击打开着,徽标后面缀「· 自动」 */
-  setShotPreview(kind: string | null, auto?: boolean): void;
+  setShotPreview(kind: string | null): void;
+  /** 自动击打(辅助模式)的键面读数:开 = 击球键键名换成「自动」(config.autoHit.padLabel) */
+  setAutoMark(on: boolean): void;
+  /** 「已经瞄准、还没用掉」的方向回显(-1|0|1 两轴);那一拍打出去后由 game-root 喂 0 熄灭 */
+  setAimEcho(x: number, y: number): void;
   /** 当前生效的移动方式(便于面板判断要不要显示摇杆的 chip) */
   readonly moveMode: MoveMode;
   /** 清触摸 claim 与按下的视觉状态(层被隐藏时 TOUCH_END 送不到,必须主动清) */
@@ -1169,11 +1216,12 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
 
   const rec: BtnRec = {
     action, node, ut, g, cluster, r, pressed: false, selected: false, glow: 0,
-    flash, flashG, flashOp, swipeDir: 0, swipeDirY: 0, labelOp, labelComp, cdOp, cdComp,
+    flash, flashG, flashOp, swipeDir: 0, swipeDirY: 0, lockDirX: 0, lockDirY: 0, aimEcho: 0, aimEchoY: 0, autoMark: false,
+    labelOp, labelComp, cdOp, cdComp,
     badgeComp, badgeOp, hintComp, hintOp,
     cdRatio: 0, cdGate: makeCdGate(), cdSec: 0, skillReady: true, skillId: "lunge", skillBlock: null, readyPulsing: false,
     // 充能层自带一个 gate:与 cdGate 各记各的基准,两层互不顶掉(见 BtnRec.chargeGate 注)
-    chargeRatio: 0, chargeGate: makeCdGate(),
+    chargeRatio: 0, chargePipes: 0, chargeGate: makeCdGate(),
   };
   paint(rec, !!opts.edit);
 
@@ -1559,7 +1607,12 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
         }
       }
       rec.pressed = true;
-      if (rec.action === "swing") { rec.swipeDir = 0; rec.swipeDirY = 0; }  // 新按下重置手势(两轴)
+      if (rec.action === "swing") {
+        // 新手势开始:视觉初始化为**锁定值**(有锁时键缘弧当场亮起 = 「这一拍会往这个方向打」,
+        // 与 pad 侧 press 恢复锁值同一帧语义),同时清长滑去重门 —— 去重按手势计。
+        rec.swipeDir = pad.swingLockX; rec.swipeDirY = pad.swingLockY;
+        rec.lockDirX = 0; rec.lockDirY = 0;
+      }
       paint(rec, false);
       Tween.stopAllByTarget(rec.node);
       rec.node.setScale(CFG.padSkin.pressScale, CFG.padSkin.pressScale, 1);
@@ -1587,6 +1640,13 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
      * 下滑 → 平抽(-1)。两轴分别写入 pad.swingSwipe / pad.swingSwipeY,player.ts 在命中前
      * 读取;同一轴反向滑过阈值即改写(与横滑的「中途反悔」同构),斜上右滑一个动作即可
      * 组合出「挑高到后场」。同时更新 rec.swipeDir / rec.swipeDirY 触发方向色弧视觉反馈。
+     *
+     * 长滑锁定(参考和平精英长滑锁定端口):位移继续越过 lockPx / lockPxY(远大于短滑
+     * 阈值)= 把该轴方向锁成默认 —— 短滑管一拍,长滑管到取消。沿当前锁向**再长滑一次**
+     * = 取消(toggle,pad.lockSwingAxis),反向长滑 = 换向;键值照常按短滑语义写,所以
+     * 取消的那一拍仍按该方向打,下一拍起 press/restoreSwingAim 才回到未锁的 mid。
+     * 同方向在同一手势内只触发一次(lockDirX/Y 门)—— 手指停在阈值外的事件流不许把
+     * toggle 连打成锁上又解锁。
      */
     const trackSwingSwipe = (rec: BtnRec, sx: number, sy: number, e: EventTouch): void => {
       const u = e.getUILocation();
@@ -1603,6 +1663,14 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
           // 在拇指底下说清楚,不等命中才知道。色值与中性图标的滑动箭头同源。
           triggerFlash(rec, dir > 0 ? CFG.colors.sweet.gold : CFG.colors.sweet.neonCyan);
         }
+        // 长滑锁定:越过 lockPx 且本手势还没处理过这个方向 → toggle 该轴锁。
+        // 荧光黄 = 锁上(downEdge,「这一下算数」的确认色),白 = 解锁(回到 mid 的中性色)。
+        if (Math.abs(dx) >= LOCK_PX && rec.lockDirX !== dir) {
+          rec.lockDirX = dir;
+          const on = lockSwingAxis(pad, "x", dir);
+          triggerFlash(rec, on ? CFG.padSkin.downEdge : "#ffffff");
+          paint(rec, false);
+        }
       }
       if (Math.abs(dy) >= SWIPE_THRESHOLD_Y) {
         const dir = dy > 0 ? 1 : -1;
@@ -1612,6 +1680,13 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
           paint(rec, false);
           // 纵轴方向色:挑高绿/平抽蓝(与 shotBadge 徽标同源,徽标会同步预告真实球种)
           triggerFlash(rec, dir > 0 ? CFG.colors.sweet.lob : CFG.colors.sweet.drive);
+        }
+        // 纵轴长滑锁定:与横轴同构,阈值用更紧的 lockPxY(锁定是更重的承诺,见 config 注释)。
+        if (Math.abs(dy) >= LOCK_PX_Y && rec.lockDirY !== dir) {
+          rec.lockDirY = dir;
+          const on = lockSwingAxis(pad, "y", dir);
+          triggerFlash(rec, on ? CFG.padSkin.downEdge : "#ffffff");
+          paint(rec, false);
         }
       }
     };
@@ -1873,12 +1948,42 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     };
   };
 
+  /**
+   * 击球键的键名读数:自动击打开着 ⇒ 「自动」,否则「击球」。
+   * **那个字符串只在这一条路上决定**(syncLabel 与 setAutoMark 都调它):两条路径各写一次
+   * 就是"徽标一套判定、实球另一套"的键名版,而 apply() 每次重排都会走 syncLabel。
+   * 为什么改键名而不是在球种徽标后面缀「· 自动」(旧写法):那个 Label 只在**有来球**时才有
+   * 内容,发球/死球/暂停时整颗键看不出"这键不由你按" —— 玩家恰恰在这几拍最容易困惑,
+   * 而同一信息也只该说一次(徽标现在只报球种,config.shotBadge.autoSuffix 已删)。
+   * 透明度不吃滑杆原值而是 alphaFloor(keep):淡出的是按键,不是"这颗键现在归谁按"这条
+   * 状态读数(同一套理由见 input/pad-cd.ts 的 cdAlpha)。判据 pad-cd-check ⑩。
+   */
+  const syncAutoLabel = (rec: BtnRec): void => {
+    if (rec.action !== "swing" || !rec.labelComp || !rec.labelOp) return;
+    const PL = CFG.autoHit.padLabel;
+    const txt = rec.autoMark ? PL.text : PAD_LABEL.swing;
+    if (rec.labelComp.string !== txt) rec.labelComp.string = txt;
+    // 色即功能:「自动」这两个字用全站说"自动"这个概念的那个色(与场边飘字同源),
+    // 关掉就换回键名原本的白字 —— 两条都是一颗 Label 的两个状态,不是两个节点。
+    const hex = rec.autoMark ? PL.color : CFG.padSkin.label;
+    const want = skinColor(hex, 1);
+    const cur = rec.labelComp.color;
+    if (cur.r !== want.r || cur.g !== want.g || cur.b !== want.b) rec.labelComp.color = want;
+    const A = rec.autoMark
+      ? CFG.padSkin.labelA * alphaFloor(Settings.padAlpha, PL.keep)
+      : CFG.padSkin.labelA * Settings.padAlpha;
+    const op = Math.round(A * 255);
+    if (rec.labelOp.opacity !== op) rec.labelOp.opacity = op;
+  };
+
   /** 键名标签跟随半径与透明度(仅 swing/lunge 两键有标签;半径变、padAlpha 变都要刷) */
   const syncLabel = (rec: BtnRec): void => {
     if (rec.labelOp) {
       rec.labelOp.node.setPosition(0, -rec.r * 0.62);
       rec.labelOp.opacity = Math.round(CFG.padSkin.labelA * Settings.padAlpha * 255);
     }
+    // 击球键那一层的透明度由 syncAutoLabel 覆写(它给状态读数留了下限)
+    syncAutoLabel(rec);
     syncCdLabel(rec);
     syncHintLabel(rec);
   };
@@ -1899,7 +2004,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     // 充能款不一样:armed 那 240 帧里怒气还挂在管上(那一拍没打出去),读数是非空的"100%",
     // 于是"100%"与「重击中」直接糊成"1重击中%"(出图肉眼判抓到的现场)。
     const txt = rec.skillBlock ? ""
-      : (charge ? chargeText(rec.chargeRatio ?? 0) : cdText(rec.cdSec ?? 0));
+      : (charge ? chargeText(rec.chargePipes ?? 0, rec.chargeRatio ?? 0) : cdText(rec.cdSec ?? 0));
     if (rec.cdComp.string !== txt) rec.cdComp.string = txt;
     rec.cdOp.opacity = Math.round((txt ? CFG.padSkin.cd.numA * cdAlpha(Settings.padAlpha) : 0) * 255);
   };
@@ -2041,13 +2146,15 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
    * triggerFlash/triggerGlow 与它共用 flash 子节点,会先打断置 readyPulsing=false,
    * 下一帧这里发现状态仍是就绪就重新起呼吸。
    *
-   * 「就绪」在两条通道下定义不同,必须分流:冷却款 = 倒计时走完;充能款 = **攒满**。
+   * 「就绪」在两条通道下定义不同,必须分流:冷却款 = 倒计时走完;充能款 = **攒着至少一整管**。
    * 照旧用 cdRatio<=0 判充能款的话,空槽那根管会在"随时能按但没怒气"时无限呼吸,
    * 而按下去只得到一句「怒气未聚」—— 那正是本文件存在要防的"读数撒谎"(见 pad-cd.ts 头注)。
+   * 多管后判据走 chargePipes>=1 而不是 chargeRatio>=1:恰好攒满一管时当前段填充恒 0
+   * (Skills.ragePipeFillOf 的边界口径),看填充会在整管边界上漏掉呼吸。
    */
   const syncReadyPulse = (rec: BtnRec): void => {
     const charge = isChargeSkill((rec.skillId ?? "lunge") as SkillId);
-    const metered = charge ? (rec.chargeRatio ?? 0) >= 1 : (rec.cdRatio ?? 0) <= 0;
+    const metered = charge ? (rec.chargePipes ?? 0) >= 1 : (rec.cdRatio ?? 0) <= 0;
     const on = rec.action === "lunge" && metered
       && rec.skillReady === true && !rec.skillBlock;
     if (on === !!rec.readyPulsing) return;
@@ -2070,21 +2177,26 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     }
   };
 
-  const setSkillState = (cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec = 0, blockReason?: string | null, chargeRatio = 0): void => {
+  const setSkillState = (cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec = 0, blockReason?: string | null, chargeRatio = 0, chargePipes = 0): void => {
     for (const rec of recs) {
       if (rec.action !== "lunge") continue;
       const block = blockReason ?? null;
       // 比例项走 gate:基准是「上一次画上屏的值」。直接比 rec.cdRatio 的旧写法基准每帧被
       // 覆盖,阈值退化成相邻帧增量(= 1/maxCd),长 CD 的扫掠会整段冻结(见 pad-cd.makeCdGate)
       // 充能层用它**自己那一个** gate:一个 gate 只记得住一个基准,共用就会互相顶掉。
+      // 门控量纲 = pipes + fill(合成后恰是 rage/max,0..3 单调):单看 fill 也会在
+      // 整管边界上撞出大跳(0.99 → 0)必重画,但合成值把"跨过一段"与"段内长了一点"
+      // 统成同一把尺,顺带让 keys 外的读数工具能直接对账。
+      const chargeMeter = chargePipes + chargeRatio;
       const changed = (rec.cdGate?.step(cdRatio) ?? true)
-        || (rec.chargeGate?.step(chargeRatio) ?? true)
+        || (rec.chargeGate?.step(chargeMeter) ?? true)
         || rec.skillReady !== ready
         || rec.skillId !== skillId
         || rec.skillBlock !== block;
       rec.cdRatio = cdRatio;
       rec.cdSec = cdSec;
       rec.chargeRatio = chargeRatio;
+      rec.chargePipes = chargePipes;
       rec.skillReady = ready;
       rec.skillId = skillId;
       rec.skillBlock = block;
@@ -2100,27 +2212,64 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
         // 这一句在充能层是新加的,在冷却层是补上的:changed 也可能只由 skillReady/skillBlock
         // 触发(那几条不跨过 stepTol),此时整键其实已经重画、扫掠也按当前 ratio 画过了,
         // 基准却还停在旧值 ⇒ 下一帧又会因为"累计变化"白白重画一次。
-        rec.chargeGate?.sync(chargeRatio);
+        rec.chargeGate?.sync(chargeMeter);
         rec.cdGate?.sync(cdRatio);
       }
     }
   };
 
   /** 球种预告徽标(击球键上方):传 null 隐藏。game-root 每帧喂 previewKind 的结果。
-   *  `auto` = 自动击打开着:同一个 Label 后面缀「· 自动」当模式读数(零新节点、零新增绘制)。
-   *  不覆盖球种色 —— 覆盖就把「这一拍是什么球」的读数洗成一片红,那两个字的任务只是说"这拍不是你按的"。 */
-  const setShotPreview = (kind: string | null, auto?: boolean): void => {
-    const suffix = auto ? CFG.shotBadge.autoSuffix.text : "";
+   *  只报球种,**不再缀「· 自动」**:模式读数搬到键名上了(syncAutoLabel,常亮且发球/死球
+   *  时也在),同一信息不在一颗键上说两遍。颜色也绝不覆盖球种色 —— 那会把"这一拍是什么球"
+   *  洗成一片红。 */
+  const setShotPreview = (kind: string | null): void => {
     for (const rec of recs) {
       if (rec.action !== "swing" || !rec.badgeComp || !rec.badgeOp) continue;
       const def = kind ? (CFG.shotBadge.kinds as Record<string, { text: string; color: string }>)[kind] : undefined;
-      const txt = def ? def.text + suffix : "";
+      const txt = def ? def.text : "";
       if (rec.badgeComp.string !== txt) {
         rec.badgeComp.string = txt;
         if (def) rec.badgeComp.color = skinColor(def.color, 1);
       }
       const target = txt ? Math.round(CFG.shotBadge.a * 255) : 0;
       if (rec.badgeOp.opacity !== target) rec.badgeOp.opacity = target;
+    }
+  };
+
+  /**
+   * 自动击打(辅助模式)的键面读数:开 = 击球键键名变「自动」(文案/配色/浓度下限都在
+   * config.autoHit.padLabel)。game-root 每真实帧喂 `AutoHit.on`,变化才刷 —— 这个文件不
+   * import core/auto-hit:模式判定留在逻辑侧,按键只照参数画(与 setShotPreview 同一个形状)。
+   * 只在 swing 键生效;lunge 那颗的键名归 setSkillState(技能名)。
+   */
+  const setAutoMark = (on: boolean): void => {
+    for (const rec of recs) {
+      if (rec.action !== "swing" || rec.autoMark === on) continue;
+      rec.autoMark = on;
+      syncAutoLabel(rec);
+    }
+  };
+
+  /**
+   * 「已经瞄准、还没用掉」的键缘回显:辅助开着(或长滑锁定中)时把 pad 上那次提交喂进来,
+   * 让深浅/高低两道方向弧在手指抬起之后继续亮着 —— 没锁时亮到那一拍真打出去
+   * (restoreSwingAim ⇒ 没锁归 0,当场熄灭),有锁时一直亮 = 「之后每一拍都往这个方向打」。
+   * 这是"欠着一拍的瞄准/锁定中"唯一看得见的证据:没有它,玩家滑完什么也没发生,下一拍才突然变向。
+   *
+   * 按住中不改(rec.pressed 时手势自己拥有那两个字段,两边抢同一字段就是画面与意图打架;
+   * 锁定态的按下视觉由 down() 用锁值初始化 swipeDir,弧照样当场亮);
+   * 但**归零时连 rec.swipeDir 一起清** —— 外部把 pad 清了而手指还压着,不去清的话
+   * trackSwingSwipe 的同方向去重会让画面上留着一道已经作废的弧。
+   */
+  const setAimEcho = (x: number, y: number): void => {
+    for (const rec of recs) {
+      if (rec.action !== "swing") continue;
+      if (rec.aimEcho === x && rec.aimEchoY === y) continue;
+      rec.aimEcho = x;
+      rec.aimEchoY = y;
+      if (x === 0 && y === 0) { rec.swipeDir = 0; rec.swipeDirY = 0; }
+      if (rec.pressed) continue;            // 按住中由手势说话,paint 现读 rec.swipeDir
+      paint(rec, !!opts.edit);
     }
   };
 
@@ -2138,6 +2287,8 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     setSwingGlow,
     setSkillState,
     setShotPreview,
+    setAutoMark,
+    setAimEcho,
     get moveMode(): MoveMode { return currentMode; },
     clearPressed(): void {
       claims.clear();
@@ -2195,6 +2346,13 @@ class TouchPadController {
   private handle: TouchPadHandle | null = null;
   private pad: Pad | null = null;
   private playing = false;
+  // 两条"模式/意图"读数存在 controller 上而不是存在按钮实例里:
+  // game-root 是每帧喂一次(edge-sync),而 handle 可能在两次喂之间被重建(mount 晚于第一次
+  // update,或将来重挂),把状态留在这里重建后就能立刻补回,不必要求调用方"重建后再喂一次"。
+  // 编辑态那个实例(settings-panel 的「调整位置」)根本不走 controller ⇒ 天然不会显示「自动」。
+  private autoMark = false;
+  private echoX = 0;
+  private echoY = 0;
 
   /** GameRoot.start 调一次;重复调用是 no-op */
   mount(root: Node, pad: Pad): void {
@@ -2202,6 +2360,10 @@ class TouchPadController {
     this.pad = pad;
     this.handle = buildTouchPad(root, pad);
     this.handle.root.active = false;
+    // 重建后立刻补两条读数:否则挂载那一帧之后的第一次 setAutoMark 会被 handle 的
+    // `rec.autoMark === on` 短路掉,键名停在「击球」直到下一次开关才变。
+    this.handle.setAutoMark(this.autoMark);
+    this.handle.setAimEcho(this.echoX, this.echoY);
   }
 
   /** GameRoot.update 每帧调:值没变就直接返回,不改 active */
@@ -2237,13 +2399,28 @@ class TouchPadController {
     this.handle?.setSwingGlow(level);
   }
 
-  /** 设置技能按键运行时状态 (CD、就绪、技能名、剩余秒、充能比例);未挂载时静默忽略 */
-  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number): void {
-    this.handle?.setSkillState(cdRatio, ready, skillId, skillName, cdSec, blockReason, chargeRatio);
+  /** 设置技能按键运行时状态 (CD、就绪、技能名、剩余秒、充能比例与管数);未挂载时静默忽略 */
+  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number, chargePipes?: number): void {
+    this.handle?.setSkillState(cdRatio, ready, skillId, skillName, cdSec, blockReason, chargeRatio, chargePipes);
   }
 
-  setShotPreview(kind: string | null, auto?: boolean): void {
-    this.handle?.setShotPreview(kind, auto);
+  setShotPreview(kind: string | null): void {
+    this.handle?.setShotPreview(kind);
+  }
+
+  /** 自动击打(辅助模式)开着 = 击球键键名换成「自动」;未挂载(桌面纯键盘)时静默忽略 */
+  setAutoMark(on: boolean): void {
+    if (this.autoMark === on) return;
+    this.autoMark = on;
+    this.handle?.setAutoMark(on);
+  }
+
+  /** 「已经瞄准、还没用掉」的键缘回显;值没变就不进 handle(它每真实帧被调) */
+  setAimEcho(x: number, y: number): void {
+    if (this.echoX === x && this.echoY === y) return;
+    this.echoX = x;
+    this.echoY = y;
+    this.handle?.setAimEcho(x, y);
   }
 }
 

@@ -13,8 +13,9 @@ import { clamp, lerp, rand } from "../core/utils";
 import { Ball, GameEvent, Player, SkinDef } from "../core/types";
 import type { StageDef } from "../core/campaign";
 import { Rules } from "../core/rules";
+import { ShadowGate } from "../core/shadow-gate";
 import { Physics } from "../core/physics";
-import { drawPlayer, drawShuttle, setSwingArcSink, drawSwingArcGhost, SwingArcFx, LungeGhost, drawLungeGhost, FlashGhost, drawFlashGhost } from "./sprites";
+import { drawPlayer, drawShadowClone, drawShuttle, setSwingArcSink, drawSwingArcGhost, SwingArcFx, LungeGhost, drawLungeGhost, FlashGhost, drawFlashGhost } from "./sprites";
 import { pal, withAlpha } from "./palette";
 import { courtRenderer, CourtThemeItem } from "./court";
 import { mulberry32, drawStarburst, drawCrossMark } from "./p5kit";
@@ -22,6 +23,7 @@ import { FXSystem } from "./fx";
 import { HudOverlay } from "./hud-overlay";
 import { Ribbon } from "./ribbon";
 import { advanceShuttle, makeShuttleMotion, shuttleImpact } from "./shuttle-motion";
+import { viewOf, type BallView, type View } from "./view-cache";
 import { easeOutBack, fadePow } from "./easing";
 import { drawFloatPlate, FloatPlateStyle, measureTextW } from "./p5kit";
 import { layoutLanes, type LaneMember } from "./float-lane";
@@ -193,13 +195,16 @@ export class WorldView {
   private ribbon = new Ribbon();
   /** 球体运动学外观(滞后角/翻滚/裙摆颤动)—— 只住渲染层,不回写 ball */
   private shuttleMot = makeShuttleMotion();
-  /** drawShuttle 的入参副本:每帧 Object.assign 复用同一对象,不再 spread 出垃圾。
+  /** drawShuttle 的入参副本:每帧复用,不再 spread 出垃圾。**按球各存一份**(见 render/view-cache)
    *  sqR 是渲染层算的形变插值值(Ball 上没有,drawShuttle 按内部 RBall 读) */
-  private ballView = {} as Ball & { sqR?: number };
-  /** drawPlayer 的入参副本:同 ballView 手法(旧版每帧每人 spread 一个完整 Player) */
-  private playerView = {} as Player;
+  private ballViews = new WeakMap<Ball, BallView>();
+  /** drawPlayer 的入参副本:同 ballView 手法(旧版每帧每人 spread 一个完整 Player)。
+   *  ⚠ 这里**必须按球员各存一份**:从前整个球场共用一个对象,而 Object.assign 只拷
+   *  源对象自己有的键 ⇒ CPU 身上没有的 playerSkin/racketSkin/faceSkin 会留着上一名
+   *  球员的,蓝球衣顶着一头烈焰少年的橙发(判据 tools/view-leak-check)。 */
+  private playerViews = new WeakMap<Player, View<Player>>();
   /** 影分身绘制副本:同一手法(影分身是挂在宿主身上的独立 Player,见 core/shadow.ts) */
-  private cloneView = {} as Player;
+  private cloneViews = new WeakMap<Player, View<Player>>();
   /** 帧内持久数组:绘制排序(旧版每帧 slice()+sort() 出新数组) */
   private readonly drawOrder: Player[] = [];
   private swingArcs: SwingArcGhost[] = [];
@@ -852,7 +857,7 @@ export class WorldView {
     }
 
     // 影分身(「影分身」技能):画在实名球员**下层** —— 影子垫底,真身压前。
-    // 成影/消散两段演出与剩余次数 pips 都在这里读 p.shadowClone 的纯状态(渲染只读不算)。
+    // 成影/消散两段演出、身份色辉光与剩余次数 pips 都只读 p.shadowClones 的纯状态(渲染只读不算)。
     this.drawShadowClones(g, players, ball, animT, alpha);
 
     // 插值:120Hz 屏也不见阶梯;离网远的先画,近网压前(与老 render 同序)
@@ -861,11 +866,10 @@ export class WorldView {
     order.length = 0;
     for (const p of players) order.push(p);
     order.sort(byNetDist);
-    const pv = this.playerView;
     for (const p of order) {
       const rx = lerp(p.px, p.x, alpha);
       const ry = lerp(p.py, p.y, alpha);
-      Object.assign(pv, p);
+      const pv = viewOf(this.playerViews, p);
       pv.x = rx; pv.y = ry;
       drawPlayer(g, this.vp, pv, animT, alpha, ball);
       if (p.stamina !== undefined) {
@@ -954,9 +958,8 @@ export class WorldView {
       if (!inSunGlare && !inFog) {
         // sqR:形变的帧间插值(drawShuttle 无 alpha 参数,渲染前补进副本)
         const sqR = lerp(ball.sqPrev ?? ball.sq, ball.sq ?? 1, alpha);
-        // 复用同一个视图对象(老写法每次 spread 一个新 Ball,每帧一个垃圾)
-        const bv = this.ballView;
-        Object.assign(bv, ball);
+        // 复用**这只球自己的**视图对象(老写法每次 spread 一个新 Ball,每帧一个垃圾)
+        const bv = viewOf(this.ballViews, ball);
         bv.x = bx; bv.y = by; bv.sqR = sqR;
         drawShuttle(g, this.vp, bv, skin, this.swingCue, this.shuttleMot);
         // 破损球(第 8/19 关):抖的是 physics 真实施加的那一下,失速段再补一道撕口
@@ -1283,54 +1286,50 @@ export class WorldView {
   }
 
   // ==============================================================
-  // 影分身渲染(「影分身」技能,2026-10-04)。全部只读 p.shadowClone 的纯状态
-  // (逻辑帧由 core/shadow.ts 推进),这里只画不算:
+  // 影分身渲染调度(「影分身」技能,2026-10-04;2026-10-05 同场最多三个 + 三色)。
+  // 全部只读 p.shadowClones 的纯状态(逻辑帧由 core/shadow.ts 推进),这里只摆坐标不算画法:
   //   · 成影期(spawnT):隔帧闪烁 —— 经典分身演出,出生那几帧"还没凝实"
-  //   · 消散期(despawnT):隔帧闪烁 + 逐帧上飘,首帧边缘触发一次墨紫收束环
-  //   · 在场:本体走 drawPlayer(纯黑剪影无面之影,零头饰发带),
-  //     头顶剩余次数斜切 pips(接一球熄一枚,清爽无飘墨)
+  //   · 消散期(despawnT):隔帧闪烁 + 逐帧上飘,首帧边缘触发一次身份色收束环
+  //   · 跨回合补满(refillT):首帧在头顶 pips 那一排的高度来一次亮片 —— 机制发生在开球前的
+  //     死球段,不响一下没人知道额度回来了(看不见的状态会被读成 bug)
+  // 本体保持纯黑是这款的身份("影"),颜色只出现在辉光 / pips / 头圈 / 拍框 / 粒子;
+  // 色的唯一真话是 config 的 skills.shadow.slots[].tint,由 spawn 写进 entity.theme.glow。
+  // 一帧的三层(辉光 + 剪影 + pips)在 sprites.drawShadowClone 里 —— 画法和 frame-cost
+  // 护栏共用同一个函数,才不会各数各的。
   // ==============================================================
   private drawShadowClones(g: Graphics, players: Player[], ball: Ball | null, animT: number, alpha: number): void {
     const SHC = C.skills.shadow;
     for (const host of players) {
-      const sc = host.shadowClone;
-      if (!sc) continue;
-      const c = sc.entity;
-      // 消散首帧:一次墨紫收束环 + 墨粒(边缘触发;updateClones 已把满值递减过 1)
-      if (sc.despawnT === SHC.despawnFrames - 1) {
-        this.fx.shadowDissolve(c.x, C.court.groundY - 14);
+      const arr = host.shadowClones;
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i++) {
+        const sc = arr[i];
+        const c = sc.entity;
+        // 消散首帧:一次身份色收束环 + 墨粒(边缘触发;updateClones 已把满值递减过 1)
+        if (sc.despawnT === SHC.despawnFrames - 1) {
+          this.fx.shadowDissolve(c.x, C.court.groundY - 14, sc.slot);
+        }
+        // 补满首帧:同一手法取边沿,一帧一次(高度与头顶 pips 同一格,亮片才读成"是给这排牌补的")
+        if (sc.refillT === SHC.refillFlashFrames - 1) {
+          this.fx.shadowRefill(c.x, C.court.groundY - C.player.h - SHC.pipLift, sc.slot);
+        }
+        // 成影/消散期隔帧闪烁:只画偶数帧
+        if ((sc.spawnT > 0 || sc.despawnT > 0) && this.frameT % 2 === 1) continue;
+        // 消散上飘:进度把人往上抬(世界 y 向下,减 y = 升),读作"化烟而去"
+        const rise = sc.despawnT > 0 ? (1 - sc.despawnT / SHC.despawnFrames) * SHC.despawnRise : 0;
+        const cv = viewOf(this.cloneViews, c);
+        cv.x = lerp(c.px, c.x, alpha);
+        cv.y = lerp(c.py, c.y, alpha) - rise;
+        drawShadowClone(g, this.vp, cv, animT, alpha, ball, {
+          tint: ShadowGate.slotTint(sc.slot),
+          remaining: SHC.maxHits - sc.hits,
+          slot: sc.slot,
+          seed: sc.seed,
+          phase: this.frameT,
+          // 两段演出期不画头顶 pips(人还在闪,牌也跟着闪会读成花屏)
+          showPips: sc.spawnT <= 0 && sc.despawnT <= 0,
+        });
       }
-      // 成影/消散期隔帧闪烁:只画偶数帧
-      if ((sc.spawnT > 0 || sc.despawnT > 0) && this.frameT % 2 === 1) continue;
-      // 消散上飘:进度把人往上抬(世界 y 向下,减 y = 升),读作"化烟而去"
-      const rise = sc.despawnT > 0 ? (1 - sc.despawnT / SHC.despawnFrames) * 26 : 0;
-      const cv = this.cloneView;
-      Object.assign(cv, c);
-      cv.x = lerp(c.px, c.x, alpha);
-      cv.y = lerp(c.py, c.y, alpha) - rise;
-      drawPlayer(g, this.vp, cv, animT, alpha, ball);
-      // 在场常态:头顶保留剩余 pips 指示(两段演出期不画)
-      if (sc.spawnT <= 0 && sc.despawnT <= 0) {
-        this.drawClonePips(g, cv, SHC.maxHits - sc.hits);
-      }
-    }
-  }
-
-  /** 影分身头顶剩余次数:斜切小片 pips,接一球熄一枚 —— 平行四边形,P5 拒绝光滑圆点 */
-  private drawClonePips(g: Graphics, cv: Player, remaining: number): void {
-    const total = C.skills.shadow.maxHits;
-    const cy = this.vp.y(cv.y - C.player.h - 16);
-    for (let i = 0; i < total; i++) {
-      const px = this.vp.x(cv.x) + (i - (total - 1) / 2) * 12;
-      const on = i < remaining;
-      g.fillColor = on ? withAlpha("#8b5cf6", 0.95) : withAlpha("#392f52", 0.5);
-      const w = 5, h = 10, k = 3;
-      g.moveTo(px - w / 2 + k, cy - h / 2);
-      g.lineTo(px + w / 2 + k, cy - h / 2);
-      g.lineTo(px + w / 2 - k, cy + h / 2);
-      g.lineTo(px - w / 2 - k, cy + h / 2);
-      g.close();
-      g.fill();
     }
   }
 

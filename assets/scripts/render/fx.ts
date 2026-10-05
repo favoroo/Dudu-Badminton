@@ -56,6 +56,25 @@ const CLUT: Color[] = [
   new Color(230,   0,  18, 255),  // 10 slash #e60012
 ];
 
+// ---------- 影分身三色(2026-10-05 多分身)----------
+// **从 config 的 skills.shadow.slots[].tint 现取,不在这里抄 hex。** 旧写法就是把影分身的粒子
+// 画成 COL_PURPLE(#a855f7 —— 那是**吸球**那颗紫),而分身主题/pips/飘字用的是 #8b5cf6:
+// 同一款技能在两层里各有一种紫,谁也没报错。现在三色的唯一真话在 config,渲染只查表。
+// 冰青与 COL_TEAL(#06b6d4)同值也**不复用那个槽位** —— 那是时空减速在调的语义色,
+// 将来谁改时空就把影分身顺手改了。槽位号 = CLUT 下标 - SHADE_BASE,与 core/shadow-gate.ts 同源。
+const SHADE_BASE = CLUT.length;
+const COL_SHADE: number[] = [];
+for (let i = 0; i < C.skills.shadow.slots.length; i++) {
+  CLUT.push(new Color().fromHEX(C.skills.shadow.slots[i].tint));
+  COL_SHADE.push(SHADE_BASE + i);
+}
+
+/** 槽位号 → CLUT 下标(越界钳到首末,配置被改短时不许炸特效) */
+function shadeCol(slot: number): number {
+  const n = COL_SHADE.length;
+  return COL_SHADE[Math.max(0, Math.min(n - 1, slot | 0))];
+}
+
 // ---------- 形状枚举 ----------
 const SH_SQUARE = 0;
 const SH_STAR   = 1;
@@ -484,27 +503,44 @@ export class FXSystem {
   }
 
   /**
-   * 影分身召唤:墨紫尖刺星芒 + 锯齿烟环 + 撕纸碎片 + 上扬墨尘(2026-10-04 影分身)。
+   * 影分身召唤:身份色尖刺星芒 + 锯齿烟环 + 撕纸碎片 + 上扬墨尘(2026-10-04 影分身)。
    * 打击=尖刺、场控=平滑圆 —— 召唤是"凝形"不是场控,全走 P5 锯齿语汇,拒绝光滑圆圈。
+   *
+   * 2026-10-05 多分身:主色按 **slot** 取(紫/冰青/赤金),白衬与墨尘不动 ——
+   * 三色只换主色才分得清,一起换会把亮球场糊成一团噪点(shadow-preview 的反例钉这条)。
    */
-  shadowSummon(x: number, y: number): void {
-    // 双层爆裂锯齿烟环(内紫外暗白):从脚下扩散,读作"影子被撕开"
-    this._ring(x, y, 4, 56, 16, 2.6, COL_PURPLE, false, true);
+  shadowSummon(x: number, y: number, slot = 0): void {
+    const tint = shadeCol(slot);
+    // 双层爆裂锯齿烟环(内层身份色,外层暗白):从脚下扩散,读作"影子被撕开"
+    this._ring(x, y, 4, 56, 16, 2.6, tint, false, true);
     this._ring(x, y, 2, 92, 22, 1.8, COL_WHITE, false, true);
-    // 凝形星芒两颗:紫为主,白为衬
-    this._sparkle(x, y, COL_PURPLE, 30, 18);
+    // 凝形星芒两颗:身份色为主,白为衬
+    this._sparkle(x, y, tint, 30, 18);
     this._sparkle(x, y - 26, COL_WHITE, 16, 12);
-    // 墨紫碎片全向爆散(撕纸语汇)+ 贴地上半扇墨尘(影子被扬起)
-    this._burst(x, y, 14, COL_PURPLE, 6, 22);
+    // 碎片全向爆散(撕纸语汇)+ 贴地上半扇墨尘(影子被扬起)
+    this._burst(x, y, 14, tint, 6, 22);
     this._burst(x, y, 8, COL_WHITE, 8, 16);
-    this._dust(x, y, 10, COL_PURPLE, 4.5);
+    this._dust(x, y, 10, tint, 4.5);
   }
 
   /** 影分身消散:锯齿环收束 + 墨粒上飘(配合 world 层的剪影残影一起读) */
-  shadowDissolve(x: number, y: number): void {
-    this._ring(x, y, 40, 8, 16, 2.2, COL_PURPLE, false, true);
-    this._burst(x, y - 18, 10, COL_PURPLE, 3.2, 20);
+  shadowDissolve(x: number, y: number, slot = 0): void {
+    const tint = shadeCol(slot);
+    this._ring(x, y, 40, 8, 16, 2.2, tint, false, true);
+    this._burst(x, y - 18, 10, tint, 3.2, 20);
     this._dust(x, y, 6, COL_WHITE, 2.6);
+  }
+
+  /**
+   * 影分身跨回合补满额度(2026-10-05):两枚小星芒 + 一撮上扬的亮片,打在头顶 pips 那一排的高度。
+   * 为什么要有这一笔:"额度回满"是这次改动的核心机制,而它发生在**开球之前**的死球段 ——
+   * 没有这一笔,玩家只会看见亮片莫名其妙又满格,读成 bug(看不见的状态会被读成坏了)。
+   */
+  shadowRefill(x: number, y: number, slot = 0): void {
+    const tint = shadeCol(slot);
+    this._sparkle(x, y, tint, 18, 12);
+    this._sparkle(x + 12, y - 6, COL_WHITE, 10, 8);
+    this._dust(x, y + 8, 5, tint, 2.2);
   }
 
   /** 羽毛飘落:count 片白羽从 (x,y) 散落,重力+风阻+湍流 */

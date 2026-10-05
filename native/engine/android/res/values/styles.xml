@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动窗口背景色: 引擎 GL 起来之前 Activity 窗口画的就是它。
+     必须与启动图整屏底色(splash-config.json bgColor / config.ts colors.ink)一致,
+     否则冷启动第一瞬间会有 黑 → 深底 的一次闪变。闸门 tools/splash-check.py 校验底色链。 -->
+<resources>
+    <color name="dudu_window_bg">#0A0D18</color>
+
+    <style name="DuduAppTheme" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@color/dudu_window_bg</item>
+    </style>
+</resources>

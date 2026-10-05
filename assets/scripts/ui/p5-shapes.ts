@@ -22,6 +22,7 @@
 // 顶点顺序一律**逆时针**(与 ui-arcade.slantPath 一致);y 向上(UI 本地坐标)。
 // ============================================================
 import { C, HALFTONE, INK_TEXT, ROLE, SLANT, halftoneDots, inkFor } from "./p5-tokens";
+import { textW } from "../core/text-metrics";
 
 export type Pt = [number, number];
 
@@ -67,6 +68,65 @@ export function slantQuad(w: number, h: number, skew: number, cx = 0, cy = 0): P
 /** 轴对齐矩形四点(中心在 cx,cy) */
 export function rectQuad(w: number, h: number, cx = 0, cy = 0): Pt[] {
   return slantQuad(w, h, 0, cx, cy);
+}
+
+/** 高 h、斜切 skew 的平行四边形**左缘**在给定 y 处的 x(右缘 = 本函数结果 + w) */
+export function slantEdgeX(w: number, h: number, skew: number, y: number): number {
+  return -w / 2 + skew / 2 - skew * (y + h / 2) / h;
+}
+
+/**
+ * 从平行四边形里沿水平线**切一片**(yBot..yTop),左右两边严格贴卡框的斜边。
+ *
+ * 为什么不能图省事用 `slantQuad(w, bandH, skewOf(bandH))`:斜切量是按**自己的高**算的,
+ * 26 高的色带 skew≈2.3,而 136 高的卡片 skew≈11.9 —— 两条边根本不平行。出图实测
+ * 色带在一侧戳出卡框 4px、另一侧留 4px 缝,读出来就是「这条带贴歪了」(用户截图里
+ * 「那个条形底板不太对」)。切片的四边与卡框同式,才谈得上「带子是卡上印出来的一条」。
+ */
+export function sliceQuad(w: number, h: number, skew: number, yBot: number, yTop: number): Pt[] {
+  const xb = slantEdgeX(w, h, skew, yBot);
+  const xt = slantEdgeX(w, h, skew, yTop);
+  return [[xb, yBot], [xb + w, yBot], [xt + w, yTop], [xt, yTop]];
+}
+
+/**
+ * 平行四边形在给定 y 处的**一条内缩横线**(顶缘高光、上缘压暗、下缘接光都用它)。
+ *
+ * 旧写法四处都是「两端 = ∓w/2 + skew/2 ± inset, y = ±h/2」,
+ * 而 slantQuad 的上缘是 `-skew/2`、下缘才是 `+skew/2` —— 于是**上缘**那根线整体右偏一个
+ * skew:136 高的卡偏 11.9,右端直接戳出卡框、左端又缩进 15,读出来是「右上角掉了一截白边」。
+ * 44 高的 tab 只偏 3.8,所以一直没被发现。走这条函数后上下缘同式,不再靠手挑符号。
+ */
+export function sliceLine(w: number, h: number, skew: number, y: number, inset: number): Pt[] {
+  const x = slantEdgeX(w, h, skew, y);
+  return [[x + inset, y], [x + w - inset, y]];
+}
+
+// ---------- 色签 / 角签(chip)----------
+
+/** chip 的高:字号 + 上下各 5 的呼吸(与 ui-arcade.makeChip 同一把尺) */
+export function chipHeight(size: number): number {
+  return Math.round(size + 10);
+}
+
+/**
+ * chip 底块宽度:量字宽 → 加左右内边距 → 再留斜切溢出。
+ *
+ * 为什么从 makeChip 里搬出来:履历格要把「指标名色签」当标题行,签子右边还得接一条
+ * 引导线,而线的起点必须知道签子有多宽。在面板那边算一份、这边再猜一份,就是
+ * 「线压住字」的来路 —— 一把尺,两边都读它。
+ */
+export function chipWidth(text: string, size: number, slantDeg = SLANT.band): number {
+  const h = chipHeight(size);
+  return Math.max(size * 2 + 16, textW(text, size) + 16)
+    + (slantDeg !== 0 ? Math.abs(skewOf(h, slantDeg)) : 0);
+}
+
+/** 色签底块本身(斜切实色片):真机与出图都画这一份,不再「同形不同源」 */
+export function chipDL(text: string, size: number, faceHex: string, slantDeg = SLANT.band): Paint[] {
+  const h = chipHeight(size);
+  const w = chipWidth(text, size, slantDeg);
+  return [{ kind: "fill", hex: faceHex, a: 1, pts: slantQuad(w, h, skewOf(h, slantDeg)) }];
 }
 
 /**
@@ -218,7 +278,7 @@ export function blockDL(w: number, h: number, accent: string, slantDeg = SLANT.b
     { kind: "fill", hex: "#000000", a: 0.55, pts: slantQuad(w, h, skew, 5, -8) },
     { kind: "fill", hex: shadeHex(accent, 0.4), a: 1, pts: slantQuad(w, h + 5, skewOf(h + 5, slantDeg), 0, -2.5) },
     { kind: "fill", hex: accent, a: 0.97, pts: slantQuad(w, h, skew) },
-    { kind: "stroke", hex: "#ffffff", a: 0.25, lw: 1, close: false, pts: [[-w / 2 + skew / 2 + 3, h / 2], [w / 2 + skew / 2 - 3, h / 2]] },
+    { kind: "stroke", hex: "#ffffff", a: 0.25, lw: 1, close: false, pts: sliceLine(w, h, skew, h / 2, 3) },
     { kind: "stroke", hex: shadeHex(accent, 0.62), a: 0.9, lw: 2, pts: slantQuad(w, h, skew) },
   ];
 }
@@ -231,7 +291,7 @@ export function bandDL(w: number, h: number, faceHex: string): Paint[] {
 // ---------- 卡片:深底 + 一条 accent 色带 ----------
 
 export interface CardOpts {
-  /** 顶部色带高,默认 h 的 0.2(不小于 22) */
+  /** 顶部色带高,默认 h 的 0.2(不小于 22);**0 = 不画色带**(标题另有色签时用) */
   bandH?: number;
   /** 整卡不透明度,默认 0.97 */
   alpha?: number;
@@ -253,6 +313,8 @@ export interface CardOpts {
  * 大色块要留给少数几块大面(首页五入口、继续闯关条、选中的 tab),
  * 卡片这种「一屏十几张」的表面,色只能占一条带 + 一圈描边,
  * 信息层级反而更清楚:色带报「这卡是什么属性」,墨面承载文字。
+ *
+ * `bandH: 0` = 不要色带(履历格那种「标题自己就是一枚色签」的版式,色只走 keyline)。
  */
 export function cardDL(w: number, h: number, accent: string, o: CardOpts = {}): Paint[] {
   const deg = o.slant ?? SLANT.block;
@@ -261,23 +323,25 @@ export function cardDL(w: number, h: number, accent: string, o: CardOpts = {}): 
   const face = o.locked ? C.navy : C.navy2;
   const band = o.locked ? C.line : accent;
   const bandH = o.bandH ?? Math.max(22, h * 0.2);
-  const bandSkew = skewOf(bandH, deg);
-  const bandCy = h / 2 - bandH / 2;
   const out: Paint[] = [
     { kind: "fill", hex: "#000000", a: 0.5, pts: slantQuad(w, h, skew, 5, -7) },
     { kind: "fill", hex: face, a, pts: slantQuad(w, h, skew) },
-    // 顶部色带:同斜率内接,压在墨面上
-    { kind: "fill", hex: band, a: o.locked ? 0.7 : 0.96, pts: slantQuad(w, bandH, bandSkew, 0, bandCy) },
   ];
-  // 色带下缘平直收边:历史撕纸写法保留参数兼容,默认不撕
-  const teeth = o.teeth ?? 0;
-  if (teeth > 0 && !o.locked) {
-    for (const t of tearPolys(w - 16, bandCy - bandH / 2, teeth, 5, "down")) {
-      out.push({ kind: "fill", hex: band, a: 0.96, pts: t });
+  if (bandH > 0) {
+    // 色带 = 卡框上端切下来的一片,左右两边严格贴着卡的斜边(见 sliceQuad)
+    out.push({ kind: "fill", hex: band, a: o.locked ? 0.7 : 0.96, pts: sliceQuad(w, h, skew, h / 2 - bandH, h / 2) });
+    // 色带下缘平直收边:历史撕纸写法保留参数兼容,默认不撕
+    const teeth = o.teeth ?? 0;
+    if (teeth > 0 && !o.locked) {
+      const yB = h / 2 - bandH;
+      const dx = slantEdgeX(w, h, skew, yB) + w / 2;   // 撕口跟着这一行的中心走
+      for (const t of tearPolys(w - 16, yB, teeth, 5, "down")) {
+        out.push({ kind: "fill", hex: band, a: 0.96, pts: t.map(([x, y]) => [x + dx, y] as Pt) });
+      }
     }
   }
   out.push({ kind: "stroke", hex: band, a: o.glow ? 0.95 : (o.locked ? 0.4 : 0.55), lw: o.glow ? 3 : 2, pts: slantQuad(w, h, skew) });
-  out.push({ kind: "stroke", hex: "#ffffff", a: 0.14, lw: 1, close: false, pts: [[-w / 2 + skew / 2 + 3, h / 2], [w / 2 + skew / 2 - 3, h / 2]] });
+  out.push({ kind: "stroke", hex: "#ffffff", a: 0.14, lw: 1, close: false, pts: sliceLine(w, h, skew, h / 2, 3) });
   return out;
 }
 
@@ -297,9 +361,9 @@ export function slotDL(w: number, h: number, slantDeg = SLANT.block, o: { face?:
     // 补一圈 line —— 仍是「凹」,但轮廓在。故意比 block 的描边暗一个档,别抢凸的立体感。
     { kind: "stroke", hex: C.line, a: 0.9, lw: 1.5, pts: slantQuad(w, h, skew) },
     // 上缘内阴影
-    { kind: "stroke", hex: "#000000", a: 0.55, lw: 2, close: false, pts: [[-w / 2 + skew / 2 + 2, h / 2 - 1], [w / 2 + skew / 2 - 2, h / 2 - 1]] },
+    { kind: "stroke", hex: "#000000", a: 0.55, lw: 2, close: false, pts: sliceLine(w, h, skew, h / 2 - 1, 2) },
     // 下缘接光
-    { kind: "stroke", hex: "#ffffff", a: 0.09, lw: 1, close: false, pts: [[-w / 2 + skew / 2 + 2, -h / 2 + 1], [w / 2 + skew / 2 - 2, -h / 2 + 1]] },
+    { kind: "stroke", hex: "#ffffff", a: 0.09, lw: 1, close: false, pts: sliceLine(w, h, skew, -h / 2 + 1, 2) },
   ];
 }
 
@@ -363,7 +427,7 @@ export function knobDL(s: number, faceHex: string, cx = 0, cy = 0, slantDeg = SL
     { kind: "fill", hex: "#000000", a: 0.5, pts: slantQuad(s, s, skew, cx + 2, cy - 2) },
     { kind: "fill", hex: shadeHex(faceHex, 0.45), a: 1, pts: slantQuad(s, s, skew, cx, cy - 1.5) },
     { kind: "fill", hex: faceHex, a: 1, pts: slantQuad(s, s, skew, cx, cy) },
-    { kind: "stroke", hex: "#ffffff", a: 0.3, lw: 1, close: false, pts: [[cx - s / 2 + skew / 2 + 2, cy + s / 2 - 1], [cx + s / 2 + skew / 2 - 2, cy + s / 2 - 1]] },
+    { kind: "stroke", hex: "#ffffff", a: 0.3, lw: 1, close: false, pts: sliceLine(s, s, skew, s / 2 - 1, 2).map(([x, y]) => [x + cx, y + cy] as Pt) },
   ];
 }
 

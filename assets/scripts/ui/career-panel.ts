@@ -21,14 +21,14 @@ import { clamp } from "../core/utils";
 import {
   ac, applyFont, drawBevelSlot, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
   drawSlantPanel, drawSlantShadow, drawSawtooth, drawStarGlyph, fadeOutHide,
-  gridCenters, hbox, inkFor, makeChip, makeCoinIcon, mkLabel as uiMkLabel, pressFx,
-  retainedDraw, ROLE, skewOf, slamIn, SLANT, slantPath, textW, TOUCH_MIN, uiIconButton,
+  gridCenters, hbox, inkFor, makeChip, makeCoinIcon, mkLabel as uiMkLabel, paintP5, pressFx,
+  progressDL, retainedDraw, ROLE, skewOf, slamIn, SLANT, textW, TOUCH_MIN, uiIconButton,
 } from "./ui-arcade";
 import { C } from "./p5-tokens";
 import { clearKids, solidTab, type TabHandle } from "./ui-shell";
 import {
   SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, SHOP,
-  shopContent, shopStats, shopTabs, shopTopBar, thumbCenterY, thumbHeight,
+  shopContent, shopStats, shopTabs, shopTopBar, STAT, statCardDL, statCells, thumbCenterY, thumbHeight,
   TOAST, TOAST_FG, toastWidth,
 } from "./shop-shelf";
 import type { ScrollMotion } from "./shop-shelf";
@@ -88,7 +88,7 @@ const COL = {
   cardLock: ac(C.navy, 0.67),
   accent: ac(C.acid),
   gold: ac(C.acid),
-  hot: ac("#ff6a1f"),
+  hot: ac(C.hot),
   cyan: ac(C.cyan),
   green: ac(C.good),
   white: ac(C.paper),
@@ -111,7 +111,7 @@ function mkNode(name: string, parent: Node, w: number, h: number): Node {
 function mkLabel(
   parent: Node, name: string, text: string,
   size: number, color: Color = COL.white,
-  opts?: { x?: number; y?: number; w?: number; align?: number; lines?: number },
+  opts?: { x?: number; y?: number; w?: number; align?: number; lines?: number; disp?: boolean },
 ): Label {
   const o = opts ?? {};
   // 委托权威 mkLabel:align→锚点映射与旧行为逐位一致(现役调用只用 align 0/1;
@@ -122,6 +122,7 @@ function mkLabel(
     contentH: size * 1.4 * (o.lines ?? 1),
     align: (o.align ?? 0) as 0 | 1 | 2,
     anchor: "align",
+    disp: o.disp,
   });
 }
 
@@ -135,12 +136,6 @@ function parseColor(s: string, fallback: Color): Color {
   try { return new Color().fromHEX(s); } catch { return fallback; }
 }
 
-/** Color → hex 串:p5-shapes 吃 hex(零 cc),而履历格的颜色是从 COL 的 Color 来的 */
-function hexOf(c: Color): string {
-  const h2 = (v: number): string => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
-  return `#${h2(c.r)}${h2(c.g)}${h2(c.b)}`;
-}
-
 /** 传说款的四尖星印章:同色实心 + 墨圆心(与首页标题右上角那枚同一画法) */
 function drawStarSeal(g: Graphics, cx: number, cy: number, r: number, hex: string): void {
   drawStarGlyph(g, cx, cy, r, true, hex);
@@ -149,8 +144,12 @@ function drawStarSeal(g: Graphics, cx: number, cy: number, r: number, hex: strin
   g.fill();
 }
 
-// ---------- 预览辅助 ----------
+/**
+ * 履历页六格的数据与版式同住在 shop-shelf(statCells / statCardDL / statCardFits),
+ * 出图与判据吃的是同一份 —— 这里只递上存档和「六关满星」这把尺。
+ */
 
+// ---------- 预览辅助 ----------
 function themeOf(s: SkinDef): Theme {
   return { main: s.main ?? "#ff4d4d", dark: s.dark ?? "#a8202c", glow: s.glow ?? "#ff8a6a", name: s.name };
 }
@@ -297,7 +296,7 @@ export class CareerPanel extends Component {
     this._lvLabel = null;
     this._lvNameLabel = null;
     this._expLabel = null;
-    this._expFill = null;
+    this._expBarG = null;
     this._coinsLabel = null;
     this._hintLabel = null;
     this._previewGfx = null;
@@ -375,7 +374,10 @@ export class CareerPanel extends Component {
   private _lvLabel: Label | null = null;
   private _lvNameLabel: Label | null = null;
   private _expLabel: Label | null = null;
-  private _expFill: Graphics | null = null;
+  /** 经验条:轨道 + 填充同一个 Graphics(progressDL 一次画完,两者斜率必然同式) */
+  private _expBarG: Graphics | null = null;
+  private _expW = 0;
+  private _expH = 0;
   private _coinsLabel: Label | null = null;
   private _hintLabel: Label | null = null;
   /** 底部提示行**该写什么**:与提示带共用一条车道,提示带在屏的 1.7s 里先让位 */
@@ -475,13 +477,15 @@ export class CareerPanel extends Component {
   }
 
   // ----- 顶部状态栏 -----
-  // 五件的位置全部由 shop-shelf.shopTopBar() 给(一条从左到右的轨道)。
+  // 六件的位置全部由 shop-shelf.shopTopBar() 给(一条从左到右的轨道)。
   // 以前这里每件各拍一个 x,给 Lv 加斜切牌之后牌就盖住了等级名 —— 判据见 shopOverlaps()。
   private _buildTopBar(panel: Node) {
     const T = shopTopBar();
     const bar = mkNode("topBar", panel, PW - 20, SHOP.topBar.h);
     bar.setPosition(0, SHOP.topBar.cy, 0);
     const cx = (b: { left: number; right: number }): number => (b.left + b.right) / 2;
+    /** 顶栏节点的原点在 topBar.cy,盒子的 cy 是面板坐标 → 落位要减一次 */
+    const ly = (cy: number): number => cy - SHOP.topBar.cy;
 
     // Lv. 牌:斜切红底 + 右缘撕纸(抄 main-menu 左上那枚,同一语汇)
     const lvW = T.lv.right - T.lv.left, lvH = T.lv.h;
@@ -494,33 +498,35 @@ export class CareerPanel extends Component {
       drawSlantPanel(lpg, lvW, lvH, lvSkew, { face: C.slash, alpha: 0.97, edge: ROLE.primary.edge, edgeA: 0.8 });
       drawSawtooth(lpg, 8, lvH - 16, 3, C.slashDk, 0.95, "right", lvW / 2 + 4, 0);
     });
-    this._lvLabel = mkLabel(bar, "lv", "Lv.1", 20, ac(C.paper), { x: cx(T.lv), y: 0, w: lvW - 16 });
-
-    // 等级名
-    this._lvNameLabel = mkLabel(bar, "lvName", LV_NAMES[0], 13, COL.dimWhite, {
-      x: cx(T.lvName), y: 0, w: T.lvName.right - T.lvName.left,
+    // 旧写法没传 align ⇒ align 0 = 左锚,而 x 给的是**牌心** → 「Lv.4」整串字挂在中心
+    // 往右跑,压住右缘那排撕纸齿。牌上的字当然该居中,补 align 1(锚点随之回到 0.5)。
+    this._lvLabel = mkLabel(bar, "lv", "Lv.1", 20, ac(C.paper), {
+      x: cx(T.lv), y: ly(T.lv.cy), w: lvW - 16, align: 1, disp: true,
     });
 
-    // 经验条:槽 = 凹陷槽(上缘压暗、下缘接光,读作「挖进去的一条」,不描边)
-    const expW = T.exp.right - T.exp.left;
-    const expBg = mkNode("expBg", bar, expW, T.exp.h);
-    expBg.setPosition(cx(T.exp), 0, 0);
-    const expBgG = expBg.addComponent(Graphics);
-    retainedDraw(expBgG, () => drawBevelSlot(expBgG, expW, T.exp.h, SLANT.block));
-
-    const expFillNode = mkNode("expFill", bar, expW - 4, 10);
-    expFillNode.setPosition(cx(T.exp), 0, 0);
-    this._expFill = expFillNode.addComponent(Graphics);
-
-    this._expLabel = mkLabel(bar, "expNum", "0 / 80 EXP", 12, COL.dimWhite, {
-      x: cx(T.exp), y: -18, w: expW, align: 1,
+    // 等级块第一行:左=称号,右=EXP 读数(读数与它下面的条子配成一对,不再隔一行)
+    this._lvNameLabel = mkLabel(bar, "lvName", LV_NAMES[0], 14, ac(C.paperDim), {
+      x: T.lvName.left, y: ly(T.lvName.cy), w: T.lvName.right - T.lvName.left, align: 0, disp: true,
     });
+    this._expLabel = mkLabel(bar, "expNum", "0 / 80 EXP", 11, COL.dimWhite, {
+      x: T.expNum.right, y: ly(T.expNum.cy), w: T.expNum.right - T.expNum.left, align: 2,
+    });
+
+    // 经验条:轨道 + 填充走 progressDL —— 与结算屏那条 EXP 条**同一把尺**。
+    // 旧写法是槽画 14 高、填充另起一个 10 高的块,两者斜切量按各自的高算(14→1.22、10→0.88),
+    // 于是填充的左沿与槽的左沿既不重合也不平行:用户截图里「那个条形底板不太对」就是它。
+    this._expW = T.exp.right - T.exp.left;
+    this._expH = T.exp.h;
+    const expBar = mkNode("expBar", bar, this._expW, this._expH);
+    expBar.setPosition(cx(T.exp), ly(T.exp.cy), 0);
+    this._expBarG = expBar.addComponent(Graphics);
+    this._drawExpBar(0);
 
     // 金币(Graphics 图标 + 数字,替代 🪙 emoji)
     const coinW = T.coins.right - T.coins.left;
     makeCoinIcon(bar, T.coins.left + 10, 0, 9);
     this._coinsLabel = mkLabel(bar, "coins", "50", 18, COL.gold, {
-      x: T.coins.left + 26 + (coinW - 26) / 2, y: 0, w: coinW - 26, align: 1,
+      x: T.coins.left + 26 + (coinW - 26) / 2, y: ly(T.coins.cy), w: coinW - 26, align: 1, disp: true,
     });
 
     // 返回按钮:命中区 56(视觉斜方底 44),Button.CLICK 自带按压反馈
@@ -1055,42 +1061,58 @@ export class CareerPanel extends Component {
     // 清空旧统计卡片
     clearKids(this._statsNode)
 
-    const p = Career.profile();
-    const st = p.stats;
-    const matches = st.matches;
-    const wins = st.wins;
-    const winRate = matches > 0 ? Math.round((wins / matches) * 100) : 0;
-    const totalStars = Object.values(p.drills).reduce((a, d) => a + (d.stars || 0), 0);
+    const cells = statCells(Career.profile(), DRILL_STARS_MAX);
 
-    const cards = [
-      { num: `${winRate}%`, label: "生涯胜率", sub: `${wins} 胜 / ${matches} 战`, color: COL.gold },
-      { num: `${st.smashes}`, label: "扣杀终结", sub: "", color: COL.hot },
-      { num: `${st.perfects}`, label: "完美击球", sub: "", color: COL.cyan },
-      { num: `${st.sweets}`, label: "甜区命中", sub: "", color: COL.gold },
-      { num: `${st.maxRally} 拍`, label: "最长相持", sub: "", color: COL.white },
-      { num: `${p.bestEndlessScore || 0} 分`, label: "无限模式纪录", sub: `训练 ${totalStars}/${DRILL_STARS_MAX} ★`, color: COL.cyan },
-    ];
-
-    // 六格的格位由 shopStats() 给(与 shopOverlaps/shopOverflow 同一套数)
+    // 六格的格位与格内排版都由 shop-shelf 给(与 shopOverlaps / shopOverflow / statCardFits 同一套数)
     const boxes = shopStats(CONTENT_H);
+    const gridCy = shopContent(CONTENT_H).grid.cy;
 
-    cards.forEach((c, i) => {
+    cells.forEach((c, i) => {
       const b = boxes[i];
-      const x = (b.left + b.right) / 2, y = b.cy - shopContent(CONTENT_H).grid.cy;
-
       const cw = b.right - b.left, ch = b.h;
       const node = mkNode(`stat-${i}`, this._statsNode!, cw, ch);
-      node.setPosition(x, y, 0);
-      const g = node.addComponent(Graphics);
-      // 六格统计:墨面 + 一条该数据的色带,数字仍用色带同色 —— 色是数据编码,不是墙漆
-      retainedDraw(g, () => drawP5Card(g, cw, ch, hexOf(c.color), { bandH: 26, teeth: 0 }));
+      node.setPosition((b.left + b.right) / 2, b.cy - gridCy, 0);
+      const d = statCardDL(cw, ch, c);
+      const face = ROLE[c.role].face;
 
-      // 数值
-      mkLabel(node, "num", c.num, 30, c.color, { y: 20, w: cw - 16, align: 1 });
-      // 标题
-      mkLabel(node, "label", c.label, 15, COL.white, { y: -12, w: cw - 16, align: 1 });
-      // 副标题:只有真数据才占位(装饰性口号已删)
-      if (c.sub) mkLabel(node, "sub", c.sub, 12, COL.dimGray, { y: -36, w: cw - 16, align: 1 });
+      const g = node.addComponent(Graphics);
+      // 墨面 + 同色 keyline。**不再压一条通宽实心色带**:那条带子和它下面的数字同色,
+      // 什么也没报(装饰),而且它的斜切量按自己的 26 高算、卡框按 136 高算,两边不平行
+      // ⇒ 一侧戳出卡框、一侧留缝,就是用户说的「那个条形底板不太对」。
+      retainedDraw(g, () => drawP5Card(g, cw, ch, face, { bandH: 0 }));
+
+      // 引导线**另起一个节点**:cc 的 Graphics 上 stroke() 不清路径(AGENTS.md 坑 8),
+      // 画在同一张画布上会把卡框 keyline 再描一遍,0.55 的边被叠成 0.78 —— 一条线的钱,
+      // 不该由整圈框来付。子节点自己 retainedDraw,切页回来照样重画。
+      const ruleNode = mkNode("rule", node, cw, STAT.ruleW + 2);
+      const rg = ruleNode.addComponent(Graphics);
+      retainedDraw(rg, () => {
+        rg.strokeColor = ac(face, 0.5);
+        rg.lineWidth = STAT.ruleW;
+        rg.moveTo(d.rule.x0, d.rule.y);
+        rg.lineTo(d.rule.x1, d.rule.y);
+        rg.stroke();
+      });
+
+      // 标题 = 一枚包住指标名的色签(与货架卡右上角那枚稀有度角签**同一件工具**、同一份
+      // chipDL 点列),字色由面色亮度推(亮面墨黑、暗面纸白),不硬写。
+      makeChip(node, c.name, STAT.chipSize, face, inkFor(face), SLANT.band)
+        .setPosition(d.chip.x, d.chip.y, 0);
+
+      // 大数 + 小单位:两个 Label 按量出来的宽度配成一对整体居中;大字走 MiSans-Heavy,
+      // 与 HUD 比分、结算大数同一支笔(旧版 30 号正文白字,压在墨面上毫无分量)。
+      // **数不跟着角色走色**:斩劈红 #e60012 压在 navy2 墨面上只有 3.5:1,过不了
+      // CONTRAST_FLOOR —— 卡片语法自己的口径就是「色报档位,墨面承载文字」。
+      // 所以色留在色签 / 引导线 / keyline 三处,数字一律纸白,六格读起来反而更齐。
+      mkLabel(node, "num", c.num, STAT.numSize, ac(C.paper), {
+        x: d.num.x, y: d.num.y, w: d.num.w + 8, align: 0, disp: true,
+      });
+      if (c.unit) mkLabel(node, "unit", c.unit, STAT.unitSize, COL.dimWhite, {
+        x: d.unit.x, y: d.unit.y, w: d.unit.w + 8, align: 0, disp: true,
+      });
+      if (c.sub) mkLabel(node, "sub", c.sub, STAT.subSize, COL.dimGray, {
+        x: d.sub.x, y: d.sub.y, w: cw - STAT.padX * 2, align: 1,
+      });
     });
   }
 
@@ -1257,17 +1279,14 @@ export class CareerPanel extends Component {
     this._drawLivePreview();
   }
 
+  /** 经验条:轨道与填充一次画完,两边都出自 progressDL ⇒ 左沿严格重合 */
   private _drawExpBar(ratio: number) {
-    if (!this._expFill) return;
-    const g = this._expFill;
+    const g = this._expBarG;
+    if (!g || !g.isValid || this._expW <= 0) return;
     g.clear();
-    const w = 196 * clamp(ratio, 0, 1);
-    if (w > 0) {
-      // 进度是同斜率的实底块 —— 槽是凹的、进度是凸出来的那截,立体关系才成立
-      g.fillColor = ac(C.acid, 0.96);
-      slantPath(g, w, 10, skewOf(10, SLANT.block), -98 + w / 2, 0);
-      g.fill();
-    }
+    const dl = progressDL(this._expW, this._expH, clamp(ratio, 0, 1), C.acid);
+    paintP5(g, dl.track);
+    paintP5(g, dl.fill);
   }
 
   // ========== 键盘 ==========

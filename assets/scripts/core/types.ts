@@ -192,6 +192,15 @@ export interface PlayerInput {
   /** 「自动击打(辅助模式)」真替玩家起手那一帧的钩子(只在起手的当帧调一次,不是每帧轮询)。
    *  表现层用它飘「自动」;规则/训练/教学走不到这条分支,所以训练工具不接也不报错。 */
   onAutoSwing?(p: Player, ball: Ball): void;
+  /**
+   * 「这一次滑动用掉了」的钩子 —— 只在**自动击打开着**且这一拍**真把球打出去**时调一次
+   * (core/player.ts 的 consumeAutoAim,收招那一帧)。表现层拿它把 pad 的瞄准存储恢复成
+   * 锁定值(input/pad.ts 的 restoreSwingAim):没锁时击球键横滑/纵滑只管一拍而不进锁定态,
+   * 长滑锁定的方向(pad.swingLockX/Y)经同一条路回锁向。
+   * 挥空不调(瞄准留给下一拍,不许白罚);AI/喂球机/影分身不调(这套 hooks 会铺给所有球员,
+   * 漏了 !isAI 那道闸就是 CPU 打一拍吃掉玩家的瞄准)。可选:各工具的合成输入不接也不报错。
+   */
+  onAimConsume?(p: Player): void;
 }
 
 // ---------- 实体 ----------
@@ -304,17 +313,27 @@ export interface HitCostInput {
  * **刻意不进 RulesState.players** —— 发球轮转(mates[serveIdx % length])、计分名单、
  * game-root 的 R.players[0]=真人假设都不许被凭空多出的第三名球员污染;
  * 它由 AI.think 出输入、Pl.update/Pl.tryHit 跑完整套移动+挥拍机器,rules 只挂两个钩子。
+ *
+ * 同场可以有好几个(shadowClones 是数组),身份看 **slot**,不看数组下标(下标会随消散而漂)。
  */
 export interface ShadowCloneState {
   /** 分身本体(isAI=true,side 与宿主同侧,idx=-1 不占名单索引) */
   entity: Player;
+  /**
+   * 槽位号(0..slots.length-1):这一号分身的**身份** —— 颜色、防区、AI 档全由它索引 config。
+   * 0 号消散后 1/2 号的颜色不许变;新召的填回最低空位(于是又是 0 号紫)。
+   * 用它而不是数组长度当号,是因为"用 length 当 slot"会让死一个之后的分身集体变色。
+   */
+  slot: number;
   /** 已替宿主接住的球数(玩家自己接球不计数,见 shadow.noteHit) */
   hits: number;
   /** 召唤演出剩余帧(>0 期间闪烁成影,不接球 —— 演出期来球归玩家) */
   spawnT: number;
-  /** 消散演出剩余帧(>0 期间不再接球,演完整个状态清空) */
+  /** 消散演出剩余帧(>0 期间不再接球,演完从数组里摘掉) */
   despawnT: number;
-  /** 出生定形种子:渲染层 mulberry32(seed) 定星芒/墨粒形状,逐帧只衰减不重掷 */
+  /** 跨回合补满额度的那一下亮片演出剩余帧(纯表现,渲染只读它) */
+  refillT: number;
+  /** 出生定形种子:渲染层 mulberry32(seed) 定轮廓辉光的尖刺形状,逐帧只缩放与衰减不重掷 */
   seed: number;
 }
 
@@ -415,14 +434,17 @@ export interface Player {
    */
   smashAutoT?: number;
   /**
-   * 「怒气重击」整局累积的怒气(0..C.skills.rage.max,刻意用整数 ⇒ 1 点 = 1% 读得通)。
+   * 「怒气重击」整局累积的怒气(0..C.skills.rage.max × pipes,刻意用整数 ⇒ 1 点 = 一管的 1%)。
    *
    * 为什么住 Player 而不是 PlayerSkillState:后者会被 Career.applyToMatch() **整块对象替换**
    * (me.skill = Skills.initSkillState(...)),而它在 equipSkill() 与每次开赛都会跑 ——
    * 怒气放进技能状态对象,玩家换个技能就把攒了半管的东西无声抹掉。Player 只在 Rules.newMatch
    * 重建,那正好是「每局清零」想要的生命周期(先例:p.zenMeter 同样是 Player 上的累积计量)。
    *
-   * 生命周期:只有**释放兑现的那一拍**归零(modifyShot 的 !preview 分支)。
+   * 多管蓄力(氮气式):攒满一管(max)不清零、继续攒第二三管,总上限 max×pipes;
+   * 兑现那一拍只**扣一管**(ratio>=1 ⟺ 至少一整管),零头小释放(<一管)才全放掉。
+   *
+   * 生命周期:只有**释放兑现的那一拍**扣量(modifyShot 的 !preview 分支)。
    * Skills.resetPoint 每分不清它 —— 用户口径「只有释放才归零」,攒是整局的事。
    * 挥空、待发窗走完、跨分都不扣怒气(资源制下罚它等于白罚:那一拍本来就没兑现)。
    */
@@ -456,10 +478,23 @@ export interface Player {
   /**
    * 「影分身」技能的本分召唤标记:true = 本分已召过(canActivate 据此拒绝再次释放)。
    * 每分由 Skills.resetPoint 清零 —— 用户口径:「一分之内只能释放一次」。
+   * 这是攒满三个的天然限速器:**要三分才攒得满**,别把它去掉。
    */
   shadowCast?: boolean;
-  /** 影分身召唤物(「影分身」技能):在场时非空,随每分 resetPoint 清空 */
-  shadowClone?: ShadowCloneState;
+  /**
+   * 影分身召唤物(「影分身」技能)。**恒按 slot 升序的密集数组**,只装活着的分身,
+   * 同场最多 CFG.skills.shadow.slots.length 个(数组长度就是上限,不单开 maxClones 键)。
+   *
+   * 生命周期三条,一条都别"顺手改回去":
+   *   · **跨回合(一分)保留**:resetPoint 不再清空,只把未耗尽额度的分身补满回 maxHits
+   *     (用户 2026-10-05:「上一局的影分身可以保留到下一局,而不是会直接消失」)
+   *   · **不跨对局、不落盘**:重开新局由 rules 的 R.players = [] 整批丢弃,Pl.create() 的
+   *     字面量不带这个字段 ⇒ 天然 undefined。不动 Career.profile,关掉应用也没有影子军团
+   *   · **住 Player 而不是 p.skill**:同 p.rage 那条先例 —— Career.applyToMatch() 每次开赛与
+   *     每次换装都 `me.skill = Skills.initSkillState(...)` **整块换对象**,住技能状态里就是
+   *     "换个技能分身全没了"
+   */
+  shadowClones?: ShadowCloneState[];
   /** 球员当前技能系统状态 */
   skill?: PlayerSkillState;
   /** 闪现扣杀残影与电光倒计时(纯视觉,渲染层读它画雷光/蓄力环) */
@@ -627,8 +662,10 @@ export interface ShotResult {
   skillKind?: SkillId;
   /**
    * 「怒气重击」兑现那一刻释放的怒气比例(0..1)。**只在这一拍是怒气重击时非空。**
-   * 为什么要把一个已经清零的东西抄进结果里:怒气在兑现当帧就归零了,而表现层(game-root 的
-   * drain)跑在事件排空时,那时读 p.rage 永远是 0 ⇒ 四档演出全被打成最低档。
+   * 多管蓄力后语义:存量至少一整管时恒快照 1(那一拍吃的是整管,强度顶格);
+   * 只有零头小释放(<一管)才快照零头的比例。
+   * 为什么要把一个已经扣掉的东西抄进结果里:怒气在兑现当帧就扣掉了,而表现层(game-root 的
+   * drain)跑在事件排空时,那时读 p.rage 已经是扣完的值 ⇒ 四档演出全被打成最低档。
    * 档位不在这里重复存一份:表现层用 Skills.rageTierOf(rageRatio) 现推 —— 两个数迟早会分叉。
    */
   rageRatio?: number;

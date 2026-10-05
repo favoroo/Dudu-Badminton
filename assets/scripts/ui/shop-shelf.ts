@@ -141,7 +141,12 @@ export function advanceScroll(m: ScrollMotion, maxScroll: number, dt: number): S
 //
 // 零 cc:只有数字与字符串。
 // ============================================================
-import { inkFor, ROLE, TOUCH } from "./p5-tokens";
+import { inkFor, ROLE, SLANT, TOUCH } from "./p5-tokens";
+import type { Role } from "./p5-tokens";
+import { chipHeight, chipWidth, skewOf, slantEdgeX } from "./p5-shapes";
+import { textW } from "../core/text-metrics";
+// 只取类型:履历格的内容函数要吃什么数据,不该把 core/career 的运行时代码拖进排版层
+import type { Profile } from "../core/career";
 
 export const SHOP = {
   pw: 880, ph: 470,
@@ -162,7 +167,12 @@ export const SHOP = {
   content: { topPad: 113 },
   previewW: 320,
   action: { w: 260, h: TOUCH.min },
-  stats: { cw: 268, ch: 120, gap: 16, cols: 3 },
+  /**
+   * 履历页六格。ch 从 120 抬到 136 是因为新版一行要装三件事(色签标题行 / 大数 / 副行),
+   * 而 120 高时副行会顶到卡的斜下缘。两行 + 缝 = 288,内容区 330 高上下各剩 21/22,
+   * 由 shopOverflow 兜住不出面板。
+   */
+  stats: { cw: 268, ch: 136, gap: 16, cols: 3 },
 } as const;
 
 export interface SBox { left: number; right: number; cy: number; h: number }
@@ -175,28 +185,36 @@ export const sTop = (b: SBox): number => b.cy + b.h / 2;
 export const sBottom = (b: SBox): number => b.cy - b.h / 2;
 
 /**
- * 顶栏五件:Lv 牌、等级名、经验槽、金币、关闭 —— **从左到右排一条轨道**。
+ * 顶栏六件:Lv 牌、等级块(两行:等级名 + 经验数字 / 经验条)、金币、关闭
+ * —— **从左到右排一条轨道**。
  *
  * 为什么要改成算出来的:这五件原来是各拍一个 x(-390 / -310 / -130 / 304 / 400),
  * 给 Lv 加上 108 宽的斜切牌之后,牌的右缘(-336)直接盖进等级名的文本框(-360 起),
  * 而牌本身还戳出面板左缘 4px。旧写法没暴露它,是因为那位置只有一行 60 宽的字、
  * 刚好与等级名接上 —— 换形状不换算术就撞。现在一条轨道排完,加宽任何一件都自动顺延。
+ *
+ * 为什么等级块要**两行**:旧版是「等级名 ∥ 经验条」并排一行、「77 / 215 EXP」单独
+ * 悬在条子底下 —— 条子和它的读数隔着一整行,读出来是两块互不相干的板(用户截图里
+ * 「这个条形底板不太对」)。现在等级名与 EXP 数字同占一行(一左一右),条子铺在它们
+ * 正下方、与整块同宽:数字是这条槽的读数,一眼就配对。
  */
-export function shopTopBar(): { lv: SBox; lvName: SBox; exp: SBox; coins: SBox; close: SBox } {
+export function shopTopBar(): { lv: SBox; lvName: SBox; expNum: SBox; exp: SBox; coins: SBox; close: SBox } {
   const y = SHOP.topBar.cy;
   const gap = 14;
-  const closeW = 56, coinW = 130, expW = 200, lvW = 108, nameW = 96;
+  const closeW = 56, coinW = 130, lvW = 108;
+  const blockW = 330;                       // 等级块:上行 等级名 | EXP 读数,下行 同宽经验条
+  const nameW = blockW - 112;               // 右边让给 "77 / 215 EXP"(11px 约 78 宽)
   // 等级信息从左边铺,货币与关闭从右边铺 —— 中间留白是有意的(旧版就是这个格局)
   const lvLeft = SHOP.colX + 10;
-  const nameLeft = lvLeft + lvW + gap;
-  const expLeft = nameLeft + nameW + 16;
+  const blockLeft = lvLeft + lvW + gap;
   const closeLeft = SHOP.right - closeW;
   const coinLeft = closeLeft - gap - coinW;
-  if (expLeft + expW > coinLeft) throw new Error("shopTopBar:经验槽与金币撞上,顶栏放不下");
+  if (blockLeft + blockW > coinLeft) throw new Error("shopTopBar:经验槽与金币撞上,顶栏放不下");
   return {
     lv: sbox(lvLeft, lvW, y, 40),
-    lvName: sbox(nameLeft, nameW, y, 18),
-    exp: sbox(expLeft, expW, y, 14),
+    lvName: sbox(blockLeft, nameW, y + 10, 16),
+    expNum: sbox(blockLeft + nameW, blockW - nameW, y + 10, 16),
+    exp: sbox(blockLeft, blockW, y - 10, 12),
     coins: sbox(coinLeft, coinW, y, 20),
     close: sbox(closeLeft, closeW, y, TOUCH.min),
   };
@@ -234,6 +252,144 @@ export function shopStats(gridH: number): SBox[] {
     const col = i % cols, row = Math.floor(i / cols);
     return sbox(-totalW / 2 + col * (cw + gap), cw, top - row * (ch + gap) - ch / 2, ch);
   });
+}
+
+// ============================================================
+// 履历格内部排版 —— 「色签当标题 + 引导线 + 大数带单位 + 真数据副行」
+//
+// 为什么单独算:旧版一格只有三样东西 —— 一条通宽的实心色带、一个 30 号数、一行标题,
+// 于是两个毛病同时犯:
+//   ① 那条色带是**装饰**(它和下面的数字同色,什么也没报),还因为斜切量按自己的高算
+//      而与卡框不平行,一侧戳出卡框、一侧留缝 —— 用户截图里「那个条形底板不太对」;
+//   ② 标题在数字下面重复了一次,而 120 高的格子下半截空着,六格里有四格是空的。
+// 现在色带换成**一枚包住指标名的色签**(fit-content,与货架卡右上角那枚稀有度角签同一件
+// 工具),右边接一条同色引导线把这一行拉到卡右缘;数字升到 40 号标题字、单位退回 16 号,
+// 副行只放**真从存档里算出来的数**(占比、胜负场、训练星),没有装饰口号。
+//
+// 坐标全在这里、且**随行重算斜边位置**(slantEdgeX):平行四边形里每一条水平行的左右缘
+// 都在挪,手拍一个 x 就是「上半格贴边、下半格悬空」。判据见 statCardFits。
+// ============================================================
+
+export const STAT = {
+  padX: 14, padTop: 12, padBot: 12,
+  /** 标题色签(与货架卡稀有度角签同一件:字号 → chipHeight/chipWidth) */
+  chipSize: 12, ruleGap: 10, ruleMin: 40, ruleW: 2,
+  numSize: 40, unitSize: 16, numGap: 3,
+  subSize: 11,
+} as const;
+
+export interface StatCell {
+  /** 指标名(印在色签上) */
+  name: string;
+  /** 主数值,已格式化好的字符串 */
+  num: string;
+  /** 单位(「%」「拍」「分」);空串 = 不带单位 */
+  unit: string;
+  /** 副行:必须是真数据,空串 = 这一行不占位 */
+  sub: string;
+  /** 这一格的角色色(色签面 / 引导线 / 数字 / 卡框 keyline 全读它) */
+  role: Role;
+}
+
+export interface StatCardDL {
+  /** 色签:节点中心 */
+  chip: { x: number; y: number; w: number; h: number };
+  /** 引导线:两端 x 与中线 y */
+  rule: { x0: number; x1: number; y: number };
+  /** 大数:左缘 x(左锚 Label)与基线中心 y */
+  num: { x: number; y: number; w: number };
+  /** 单位:左缘 x */
+  unit: { x: number; y: number; w: number };
+  /** 副行:中心 x(居中 Label)与 y */
+  sub: { x: number; y: number; w: number };
+}
+
+/** 一格怎么摆。w/h 传 SHOP.stats 的格位尺寸,坐标以卡中心为原点(y 向上) */
+export function statCardDL(w: number, h: number, c: StatCell): StatCardDL {
+  const skew = skewOf(h, SLANT.block);
+  /** 平行四边形在给定 y 处的左缘(斜切 ⇒ 每一行的左右缘都在挪,不能只算一次) */
+  const edge = (y: number): number => slantEdgeX(w, h, skew, y);
+  const mid = (y: number): number => edge(y) + w / 2;
+
+  const chipH = chipHeight(STAT.chipSize);
+  const chipW = chipWidth(c.name, STAT.chipSize);
+  const chipY = h / 2 - STAT.padTop - chipH / 2;
+  const chipX = edge(chipY) + STAT.padX + chipW / 2;
+
+  const subH = Math.round(STAT.subSize * 1.35);
+  const subY = -h / 2 + STAT.padBot + subH / 2;
+  // 大数落在「色签行下沿 ↔ 副行上沿」的正中,格子越高它越居中,不会顶到上面那行
+  const numY = (chipY - chipH / 2 + subY + subH / 2) / 2;
+
+  const numW = textW(c.num, STAT.numSize);
+  const unitW = c.unit ? textW(c.unit, STAT.unitSize) : 0;
+  const pairW = numW + (unitW ? STAT.numGap + unitW : 0);
+  const cx = mid(numY);
+
+  return {
+    chip: { x: chipX, y: chipY, w: chipW, h: chipH },
+    rule: { x0: chipX + chipW / 2 + STAT.ruleGap, x1: edge(chipY) + w - STAT.padX, y: chipY },
+    num: { x: cx - pairW / 2, y: numY, w: numW },
+    // 单位沉到数字的基线附近:两个中心对齐的 Label 并排读起来是「46 拍」两坨一样大的字,
+    // 而单位该是**跟着读**的次要件 —— 降一档、下移一档,主数才立得住。
+    unit: { x: cx - pairW / 2 + numW + STAT.numGap, y: numY - (STAT.numSize - STAT.unitSize) * 0.28, w: unitW },
+    sub: { x: mid(subY), y: subY, w: textW(c.sub, STAT.subSize) },
+  };
+}
+
+/** 六格装得下装不下:字溢出、线被吃光、三行叠字,全在这里判(panel-check 喂真实文案) */
+export function statCardFits(cells: StatCell[], w: number = SHOP.stats.cw, h: number = SHOP.stats.ch): string[] {
+  const out: string[] = [];
+  const inner = w - STAT.padX * 2;
+  const numHalf = STAT.numSize * 0.55;          // 大数的视觉半高(含降部留量)
+  for (const c of cells) {
+    const d = statCardDL(w, h, c);
+    const tag = `履历格「${c.name}」`;
+    if (d.rule.x1 - d.rule.x0 < STAT.ruleMin) {
+      out.push(`${tag} 引导线只剩 ${(d.rule.x1 - d.rule.x0).toFixed(0)}px,不到 ${STAT.ruleMin}`);
+    }
+    const pairW = d.num.w + (d.unit.w ? STAT.numGap + d.unit.w : 0);
+    if (pairW > inner) out.push(`${tag} 大数「${c.num}${c.unit}」宽 ${pairW.toFixed(0)} > 内宽 ${inner}`);
+    if (c.sub && d.sub.w > inner) out.push(`${tag} 副行「${c.sub}」宽 ${d.sub.w.toFixed(0)} > 内宽 ${inner}`);
+    // 三行不许叠:色签行 → 大数 → 副行
+    if (d.chip.y - d.chip.h / 2 <= d.num.y + numHalf) out.push(`${tag} 大数顶到色签行`);
+    if (c.sub && d.num.y - numHalf <= d.sub.y + Math.round(STAT.subSize * 1.35) / 2) out.push(`${tag} 大数压住副行`);
+    if (d.chip.y + d.chip.h / 2 > h / 2 - STAT.padTop + 0.5) out.push(`${tag} 色签戳出卡上缘`);
+    if (d.sub.y - Math.round(STAT.subSize * 1.35) / 2 < -h / 2 + STAT.padBot - 0.5) out.push(`${tag} 副行戳出卡下缘`);
+    // 斜切卡里越往上左右缘越往左:内缩给得太少,第一行的色签就会骑在卡的斜边上
+    if (STAT.padX < 8) out.push(`履历格内缩 padX=${STAT.padX} 小于 8,色签会骑上卡的斜边`);
+    if (d.chip.w > inner - STAT.ruleGap - STAT.ruleMin) {
+      out.push(`${tag} 指标名色签宽 ${d.chip.w.toFixed(0)} 挤掉引导线(内宽 ${inner})`);
+    }
+    // 一格只报一次色:色签面 / 引导线 / 大数 / keyline 全读同一个角色,角色表里查不到就是错字
+    if (!ROLE[c.role]) out.push(`${tag} 角色「${c.role}」不在 ROLE 表里`);
+  }
+  return out;
+}
+
+/**
+ * 履历页六格的内容。**版式与文案同处一地**,所以 tools/panel-preview 出的是这一页、
+ * panel-check 断言的也是这一页,而 career-panel 摆的还是同一份数据 —— 预览不再「另抄一份」
+ * (AGENTS.md 对 brief-preview 的批评就在这)。
+ *
+ * **副行只写真从存档里算出来的数** —— 旧版六格里有四格下半截是空的,而空出来的地方一旦
+ * 填上「手感火热」这类装饰口号,就成了「不报数据的漂亮话」。`hits` 为 0(新档没打过)时
+ * 占比无意义,宁可不写。
+ */
+export function statCells(p: Profile, drillStarsMax: number): StatCell[] {
+  const st = p.stats;
+  const winRate = st.matches > 0 ? Math.round((st.wins / st.matches) * 100) : 0;
+  const share = (n: number): string => (st.hits > 0 ? `占击球 ${Math.round((n / st.hits) * 100)}%` : "");
+  const stars = Object.values(p.drills).reduce((a, d) => a + ((d && d.stars) || 0), 0);
+  return [
+    { name: "生涯胜率", num: `${winRate}`, unit: "%", sub: `${st.wins} 胜 / ${st.matches} 战`, role: "primary" },
+    { name: "扣杀终结", num: `${st.smashes}`, unit: "", sub: share(st.smashes), role: "power" },
+    { name: "完美击球", num: `${st.perfects}`, unit: "", sub: share(st.perfects), role: "star" },
+    { name: "甜区命中", num: `${st.sweets}`, unit: "", sub: share(st.sweets), role: "drill" },
+    { name: "最长相持", num: `${st.maxRally}`, unit: "拍", sub: `累计击球 ${st.hits} 拍`, role: "info" },
+    { name: "无限模式纪录", num: `${p.bestEndlessScore || 0}`, unit: "分",
+      sub: `训练 ${stars}/${drillStarsMax} ★`, role: "record" },
+  ];
 }
 
 // ============================================================
@@ -293,14 +449,14 @@ const hit = (a: SBox, b: SBox): boolean =>
 /** 顶栏四件、tab 五格、内容区三件各自不许压字 */
 export function shopOverlaps(gridH = SHELF.h): string[] {
   const out: string[] = [];
+  // 顶栏六件两两不压(等级块改成两行后,「谁挨着谁」不再是线性相邻关系,全对扫一遍)
+  const top = Object.entries(shopTopBar()) as Array<[string, SBox]>;
+  for (let i = 0; i < top.length; i++) {
+    for (let j = i + 1; j < top.length; j++) {
+      if (hit(top[i][1], top[j][1])) out.push(`顶栏:${top[i][0]} 压住 ${top[j][0]}`);
+    }
+  }
   const T = shopTopBar();
-  const topPairs: Array<[string, SBox, string, SBox]> = [
-    ["Lv牌", T.lv, "等级名", T.lvName],
-    ["等级名", T.lvName, "经验槽", T.exp],
-    ["经验槽", T.exp, "金币", T.coins],
-    ["金币", T.coins, "关闭", T.close],
-  ];
-  for (const [an, a, bn, b] of topPairs) if (hit(a, b)) out.push(`顶栏:${an} 压住 ${bn}`);
 
   const tabs = shopTabs();
   for (let i = 0; i < tabs.length; i++) {

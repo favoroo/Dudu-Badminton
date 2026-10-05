@@ -28,7 +28,7 @@
 import { makeChecker } from "./harness";
 import {
   CD, CD_TOP, cdAlpha, cdArcs, cdRingR, cdText, makeCdGate, skillAccent, blockedTapeVertices,
-  CH, chargeArcs, chargeRingR, chargeFullR, chargeText, drawCharge, type CdPen,
+  CH, chargePipesMax, chargeSegArcs, chargeSegSpan, chargeSegGap, chargeRingR, chargeFullR, chargeText, drawCharge, type CdPen,
 } from "../assets/scripts/input/pad-cd";
 import { CFG } from "../assets/scripts/core/config";
 import { PAD_BASE, PAD_LIMIT } from "../assets/scripts/core/settings";
@@ -371,36 +371,70 @@ console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 
   ok(contrast >= 7.0, `受阻文字在封条墨底上的对比度达到 ${contrast.toFixed(1)}:1 (≥ 7.0:1 保证亮场下极佳可读性)`);
 }
 
-// ---------- ⑧ 蓄能环(充能款技能:怒气重击)----------
+// ---------- ⑧ 蓄能环(充能款技能:怒气重击,多管分段版)----------
 // 这一整段是新增件专用的判据,但钉的是三条**旧**规矩有没有在新代码里复发:
 // 补集角序(坑 8)、透明度下限(用户原话「透明度调低之后冷却都看不太清了」)、排版不撞键名。
+// 2026-10-05 多管蓄力:环改成 N 段管,判据跟着走"记录笔"路线 —— 把 drawCharge 真正
+// 画出的每一笔弧记下来逐笔对账(名义跨度/递减序/笔数),不再只测纯函数。
 {
   const TAU = Math.PI * 2;
-  // (a) 补集规矩:每一段的"实际跨度"必须等于"名义跨度",一段都不许多画出来。
-  const RATIOS = [0, 0.01, 0.05, 0.12, 0.34, 0.5, 0.66, 0.67, 0.99, 1];
+  const PIPES = chargePipesMax();
+  const SPAN = chargeSegSpan(PIPES);
+  const ACCENT = skillAccent("rage");
+  /** 记录笔:把 drawCharge 画出的每笔弧(角度 + 色相 + 浓度)抓下来逐笔断言 */
+  interface ArcRec { a0: number; a1: number; hex: string; a: number }
+  const record = (fill: number, pipes: number): ArcRec[] => {
+    const arcs: ArcRec[] = [];
+    const pen: CdPen = {
+      fillColor: null, strokeColor: null, lineWidth: 0,
+      moveTo() {}, lineTo() {}, close() {}, fill() {},
+      arc(_cx, _cy, _r, a0, a1) {
+        const c = pen.strokeColor as { hex: string; a: number } | null;
+        arcs.push({ a0, a1, hex: c?.hex ?? "", a: c?.a ?? 0 });
+      },
+      stroke() {},
+    };
+    drawCharge(pen, (hex, a) => ({ hex, a }), 30, fill, "rage", 1, pipes);
+    return arcs;
+  };
+  const kindOf = (r: ArcRec): "track" | "fill" | "head" | "full" => {
+    if (r.hex === ACCENT) return Math.abs(r.a - CH.ringA) < 1e-9 ? "fill" : "full";
+    if (Math.abs(r.a - CH.trackA) < 1e-9) return "track";
+    return "head";
+  };
+  const spanOf = (r: ArcRec): number => Math.abs(r.a0 - r.a1);
+
+  // (a) 补集规矩 + 名义跨度:每一笔的"实际跨度"必须等于"名义跨度",一段都不许多画出来。
+  const FILLS = [0.01, 0.05, 0.12, 0.34, 0.5, 0.66, 0.67, 0.99, 1];
   let spanBad = "";
-  for (const v of RATIOS) {
-    const a = chargeArcs(v);
-    // 排成递减序是硬要求(a1 < a0),否则 cc 画的是补集
-    const decreasing = a.track1 < a.track0 && (v <= 0 || a.fill1 < a.fill0) && a.head1 <= a.head0;
-    if (!decreasing) spanBad = spanBad || `r=${v}:角度不是递减序`;
-    const track = ccSpan(a.track0, a.track1);
-    const fill = ccSpan(a.fill0, a.fill1);
-    const head = ccSpan(a.head0, a.head1);
-    if (Math.abs(track - TAU) > 1e-9) spanBad = spanBad || `r=${v}:底槽实际 ${track.toFixed(3)} ≠ 整圈`;
-    if (Math.abs(fill - v * TAU) > 1e-9) spanBad = spanBad || `r=${v}:填充实际 ${(fill / TAU * 360).toFixed(1)}° ≠ 名义 ${(v * 360).toFixed(1)}°`;
-    if (head > v * TAU + 1e-9) spanBad = spanBad || `r=${v}:亮头 ${head.toFixed(3)} 越过已充那一段`;
-    if (fill > TAU + 1e-9) spanBad = spanBad || `r=${v}:填充超出一圈`;
+  for (let P = 0; P <= PIPES; P++) {
+    for (const f of FILLS) {
+      // 满槽时喂值端保证 fill=0(ragePipeFillOf 在整管边界恒 0):P=PIPES 且 f>0 是病态输入,不测
+      if (P === PIPES && f > 0) continue;
+      for (const r of record(f, P)) {
+        if (!(r.a1 < r.a0)) spanBad = spanBad || `P=${P} f=${f}:有弧不是递减序(引擎会画成补集)`;
+        const k = kindOf(r);
+        const s = spanOf(r);
+        if (k === "track" && Math.abs(s - SPAN) > 1e-9) spanBad = spanBad || `P=${P} f=${f}:底槽 ${s.toFixed(3)} ≠ 段名义 ${SPAN.toFixed(3)}`;
+        if (k === "full" && Math.abs(s - TAU) > 1e-9) spanBad = spanBad || `P=${P} f=${f}:满怒外环 ${s.toFixed(3)} ≠ 整圈`;
+        if (k === "head" && s > CH.headSpan + 1e-9) spanBad = spanBad || `P=${P} f=${f}:亮头 ${s.toFixed(3)} 越过 headSpan`;
+      }
+      // 填充总量:accent 弧的总跨度必须 = (P + f) × 段名义跨度 —— 环上读出的总量与存量一笔账
+      const fillTotal = record(f, P).filter((r) => kindOf(r) === "fill").reduce((acc, r) => acc + spanOf(r), 0);
+      const want = (P + f) * SPAN;
+      if (Math.abs(fillTotal - want) > 1e-9) spanBad = spanBad || `P=${P} f=${f}:填充总跨 ${fillTotal.toFixed(3)} ≠ 名义 ${want.toFixed(3)}`;
+      // 段数对账:已满管每段整段,进行中那管恰一段(填多少算多少)
+      const fillArcs = record(f, P).filter((r) => kindOf(r) === "fill");
+      const wantArcs = P + (f > 0 && P < PIPES ? 1 : 0);
+      if (fillArcs.length !== wantArcs) spanBad = spanBad || `P=${P} f=${f}:填充笔数 ${fillArcs.length} ≠ ${wantArcs}`;
+    }
   }
-  ok(spanBad === "", `蓄能环角度全程走补集规矩(底槽整圈 / 填充 = ratio×360° / 亮头不越界)${spanBad ? ` → ${spanBad}` : ""}`);
-  // 单调:充得越多、弧越长 —— 这条断了就是"越打越少"那种读起来像坏了的 bug
-  let prev = -1, monoBad = "";
-  for (const v of RATIOS) {
-    const s = ccSpan(chargeArcs(v).fill0, chargeArcs(v).fill1);
-    if (s < prev - 1e-9) monoBad = monoBad || `r=${v} 比上一档短`;
-    prev = s;
+  // 段间缺口:相邻段顶之间必须留出缺口(单管时为 0,连续环)
+  if (PIPES > 1) {
+    const g0 = chargeSegArcs(0, PIPES), g1 = chargeSegArcs(1, PIPES);
+    if (Math.abs(g0.a1 - g1.a0 - chargeSegGap(PIPES)) > 1e-9) spanBad = spanBad || "段间缺口宽度与名义不符";
   }
-  ok(monoBad === "", `填充弧随充能单调不减${monoBad ? ` → ${monoBad}` : ""}`);
+  ok(spanBad === "", `分段蓄能环逐笔对账(${PIPES} 管,段名义 ${(SPAN / TAU * 360).toFixed(1)}°,缺口 ${(chargeSegGap(PIPES) / TAU * 360).toFixed(1)}°)${spanBad ? ` → ${spanBad}` : ""}`);
 
   // (b) 环必须整条在键圆里,最小档也不例外(与冷却环同一条判据)
   const rLo = PAD_LIMIT.rMin * CFG.padSkin.scaleMin;
@@ -420,18 +454,24 @@ console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 
   const readyLum = lum(over(rgbOf(CFG.padSkin.idleFill), CFG.padSkin.idleFillA * PAD_LIMIT.alphaMin, BG));
   ok(Math.abs(darkLum - readyLum) > 0.02, `最低滑杆下底槽与就绪态亮度差 ${Math.abs(darkLum - readyLum).toFixed(3)} > 0.02(读得出"在充能")`);
 
-  // (d) 读数内容:空槽不印 0%、满槽印 100%、单调不降
-  ok(chargeText(0) === "", "空槽不印「0%」(环本来就没有,留个字反而像坏了还在报数)");
-  ok(chargeText(1) === "100%", `满槽印「${chargeText(1)}」(不是 1、不是 99%)`);
+  // (d) 读数内容:空槽不印 0%、按"管"印总百分比、单调不降
+  ok(chargeText(0, 0) === "", "空槽不印「0%」(环本来就没有,留个字反而像坏了还在报数)");
+  ok(chargeText(1, 0) === "100%", `一管满印「${chargeText(1, 0)}」(不是 1、不是 99%)`);
+  ok(chargeText(0, 0.5) === "50%", `半管印「${chargeText(0, 0.5)}」`);
+  ok(chargeText(2, 0.5) === "250%", `两管半印「${chargeText(2, 0.5)}」(多管读法:管数 + 当前管填充)`);
+  ok(chargeText(PIPES, 0) === `${PIPES * 100}%`, `满槽印「${chargeText(PIPES, 0)}」`);
   let txtPrev = -1, txtBad = "";
-  for (const v of RATIOS) {
-    const num = Number((chargeText(v) || "0").replace("%", ""));
-    if (num < txtPrev - 1e-9) txtBad = txtBad || `r=${v}:读数倒退`;
-    txtPrev = num;
+  for (let P = 0; P <= PIPES; P++) {
+    for (const f of [0, 0.25, 0.5, 0.75, 0.999]) {
+      const num = Number((chargeText(P, f) || "0").replace("%", ""));
+      if (num < txtPrev - 1e-9) txtBad = txtBad || `P=${P} f=${f}:读数倒退`;
+      txtPrev = num;
+    }
   }
   ok(txtBad === "", `百分比单调不降${txtBad ? ` → ${txtBad}` : ""}`);
 
-  // (e) 排版:百分比比倒计时宽("100%" 4 字 vs "3.5" 3 字),所以字号另收一档(pctK)
+  // (e) 排版:百分比比倒计时宽("300%" 4 字 vs "3.5" 3 字),所以字号另收一档(pctK)
+  const widest = `${PIPES * 100}%`;
   const nameLH = Math.round(CFG.padSkin.labelSize * 1.22);
   let gapMin = Infinity, fitMin = Infinity, overRound = "";
   for (let r = rLo; r <= rHi; r += 0.5) {
@@ -440,10 +480,10 @@ console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 
     const nameTop = -r * 0.62 + nameLH / 2;
     gapMin = Math.min(gapMin, bottom - nameTop);
     if (CD.numY * r + fs * 1.1 / 2 > r - 2) overRound = overRound || `r=${r.toFixed(1)}`;
-    fitMin = Math.min(fitMin, (1.6 * r) / textW("100%", fs));
+    fitMin = Math.min(fitMin, (1.6 * r) / textW(widest, fs));
   }
   ok(gapMin >= 1, `百分比底边与键名标签顶边全程留缝 >= 1px(最窄 ${gapMin.toFixed(1)}px @ r=${rLo.toFixed(1)})`);
-  ok(fitMin >= 1, `「100%」放得进 1.6r 的弦(最小档余量 ${((fitMin - 1) * 100).toFixed(0)}%)`);
+  ok(fitMin >= 1, `「${widest}」放得进 1.6r 的弦(最小档余量 ${((fitMin - 1) * 100).toFixed(0)}%)`);
   ok(!overRound, `百分比不出键圆${overRound ? ` → ${overRound}` : ""}`);
   ok(CH.pctK <= CD.numK, `充能字号系数 ${CH.pctK} <= 倒计时 ${CD.numK}(那句更宽,必须收着摆)`);
   // 键心读数与受阻封条**同住一个腰位**(numY === hintY)⇒ 同屏只能有一个有字。
@@ -452,23 +492,18 @@ console.log("技能键冷却读数:浓度下限 / 亮度对比 / 扫掠几何 / 
   // (出图肉眼判抓到的真实现场)。这条判据钉的是"那个几何耦合仍然存在",
   // 让字的行为在 touchpad.syncCdLabel(它读 skillBlock),两边一缺一多都会红。
   ok(CD.numY === (CD.hintY ?? 0.08), `读数腰位 numY ${CD.numY} == 封条腰位 hintY ${CD.hintY}(同位 ⇒ 必须互斥让字)`);
-  ok(chargeText(1) !== "" && chargeText(0.5) !== "", "充能款受阻时读数本身是非空的(所以互斥只能靠调用方)");
+  ok(chargeText(1, 0) !== "" && chargeText(0, 0.5) !== "", "充能款受阻时读数本身是非空的(所以互斥只能靠调用方)");
   ok(cdText(0) === "", "冷却款走完时读数自然为空 ⇒ 旧技能从来不会撞,这条改动不影响它们");
 
-  // (f) 笔数预算:满怒那一帧最多 4 笔(这条键在彩带/礼花之外还挂着图标与呼吸,帧成本要数得过来)
-  const strokes = (ratio: number): number => {
-    let n = 0;
-    const pen: CdPen = {
-      fillColor: null, strokeColor: null, lineWidth: 0,
-      moveTo() {}, lineTo() {}, close() {},
-      arc() {}, fill() { n++; }, stroke() { n++; },
-    };
-    drawCharge(pen, () => null, 30, ratio, "rage", 1);
-    return n;
-  };
-  ok(strokes(0.5) === 3, `半管 3 笔(底槽 + 填充 + 亮头),实测 ${strokes(0.5)}`);
-  ok(strokes(1) === 4, `满怒 4 笔(多一圈外环),实测 ${strokes(1)}`);
-  ok(strokes(0) === 0, "空槽一笔不画(不留一个孤零零的底槽圈,那会被读成坏了)");
+  // (f) 笔数预算:多管分段后封顶 = 未满管底槽 + 已满管填充 + 亮头 + 外环
+  //     (3 管 = 6 笔最忙帧;这条键在彩带/礼花之外还挂着图标与呼吸,帧成本要数得过来)
+  const strokes = (fill: number, pipes: number): number => record(fill, pipes).length;
+  ok(strokes(0, 0) === 0, "空槽一笔不画(不留一个孤零零的底槽圈,那会被读成坏了)");
+  ok(strokes(0.5, 0) === PIPES + 2, `半管 ${PIPES + 2} 笔(${PIPES} 段底槽 + 填充 + 亮头),实测 ${strokes(0.5, 0)}`);
+  ok(strokes(0, 1) === (PIPES - 1) + 1 + 1, `整管 ${((PIPES - 1) + 1 + 1)} 笔(未满管底槽 + 该管填充 + 外环),实测 ${strokes(0, 1)}`);
+  ok(strokes(0.5, PIPES - 1) === 1 + (PIPES - 1) + 1 + 1 + 1, `两管半 6 笔(底槽 + 满管×2 + 半管 + 亮头 + 外环),实测 ${strokes(0.5, PIPES - 1)}`);
+  ok(strokes(0, PIPES) === PIPES + 1, `满槽 ${PIPES + 1} 笔(${PIPES} 段填充 + 外环,底槽被填满不必再描),实测 ${strokes(0, PIPES)}`);
+  ok(strokes(0.5, PIPES - 1) <= 2 * PIPES + 2, `最忙帧笔数 ${strokes(0.5, PIPES - 1)} 不越预算 2×${PIPES}+2`);
 }
 
 // ---------- selftest:修好之前的真实写法必须被报警 ----------
@@ -571,9 +606,14 @@ if (process.argv.includes("--selftest")) {
   const ascNominal = ascendingFill1 - ascendingFill0;
   ok(Math.abs(ascActual - ascNominal) > 1,
     `递增角序反例:名义 ${(ascNominal / 6.283 * 360).toFixed(0)}° 实际画出 ${(ascActual / 6.283 * 360).toFixed(0)}°(补集)—— ⑧(a) 拦得住`);
-  // 现写法必须没有这个毛病(同一条判据在正向样本上放行,否则判据是摆设)
-  ok(Math.abs(ccSpan(chargeArcs(0.2).fill0, chargeArcs(0.2).fill1) - 0.2 * Math.PI * 2) < 1e-9,
-    "现写法的 20% 填充实际就是 72°,不是它的补集");
+  // 现写法必须没有这个毛病(同一条判据在正向样本上放行,否则判据是摆设):
+  // 多管分段后,取 0 号段内 20% 填充的那笔弧 —— 记录笔抓的是 drawCharge 真画的角度。
+  {
+    const seg = chargeSegArcs(0, chargePipesMax());
+    const tip = seg.a0 - 0.2 * chargeSegSpan(chargePipesMax());
+    ok(Math.abs(ccSpan(seg.a0, tip) - 0.2 * chargeSegSpan(chargePipesMax())) < 1e-9,
+      "现写法的 20% 段内填充实际就是名义跨度,不是它的补集");
+  }
 
   /** 反例 2:浓度直接乘滑杆原值(旧冷却就是这么被透明度抹掉的)。
    *  滑杆最低 0.2 时环只剩 0.19 浓度,合成到亮场上与就绪态差不到 0.02 亮度 ⇒ 看不见。 */

@@ -14,12 +14,17 @@
 #   1. 从母版直接提取羽毛球发光主体(球头、网线、折纸羽翼、三道动感速度拖尾),
 #      完全剔除桌面图标的圆角矩形外框与灰底残余。
 #   2. 顺应羽毛球与速度流线外形构建多尺度羽化光晕场(Multi-tier Streamlined Glow),
-#      让金色辉光以自然光滑曲线平滑消散,并在距离边缘前 100% 衰减为统一背景底色。
+#      让金色辉光以自然光滑曲线平滑消散,并在距离边缘前 100% 衰减为完全透明。
 #   3. 输出 1024x1024 高分辨率 RGBA PNG,四周至少 180px 绝对纯净:
 #      - Alpha 通道严格为 0(完全透明);
-#      - RGB 通道严格等于统一背景色 TARGET_BG(13, 17, 21 / #0d1115);
+#      - RGB 通道严格等于统一背景色 TARGET_BG(10, 13, 24 / #0a0d18);
 #      双重绝对保险:无论引擎是否开启 Alpha 混合,屏幕上都只有金色羽毛球悬浮发光,
 #      绝对没有任何方框、切边或色差!
+#
+#   4. 为什么必须是真透明(0.0.29 现场):引擎 util/splash-screen 特效的淡入是
+#      `color.xyz *= percent` 且 alpha 不变 —— 不透明底图的整个方块会跟着一起被乘暗,
+#      而整屏 clearColor 不淡入,于是 2 秒淡入期间方块边界始终可见(实测暗 ~22%)。
+#      只有把非主体区域做成 alpha=0,混合结果才在任何 percent 下恒等于整屏底色。
 #
 # 用法: python3 tools/make-splash.py        # → tools/splash-source.png
 #       生成后联动运行 python3 tools/apply-splash.py 注入各端构建。
@@ -38,16 +43,24 @@ ICON_MASTER = ROOT / 'tools' / 'app-icon-source.png'
 OUT = ROOT / 'tools' / 'splash-source.png'
 
 SIZE = 1024
-# 统一标准背景底色: 深邃墨色 #0d1115 (与 P5 暗调及全屏清屏底色 100% 同色)
-TARGET_BG = np.array([13, 17, 21], dtype=np.float32)
-TARGET_BG_HEX = '#0d1115'
+# 统一标准背景底色: 深邃蓝黑 #0a0d18 —— 必须与游戏首帧相机清屏色一致
+# (assets/scenes/main.scene 相机 _color 与 config.ts colors.ink),splash-check.py 会对照校验。
+TARGET_BG = np.array([10, 13, 24], dtype=np.float32)
+TARGET_BG_HEX = '#0a0d18'
 
 # 原桌面图标内部深色底基准 (用于消除原图底色差)
 RAW_BG = np.array([21.0, 25.0, 29.0], dtype=np.float32)
 
 
 def extract_shuttle_artwork(raw_img: Image.Image) -> tuple[np.ndarray, np.ndarray]:
-    """从母版中提取羽毛球主体与流线羽化遮罩。"""
+    """从母版中提取羽毛球主体与流线羽化遮罩。
+
+    返回 (rgb, mask):
+      rgb   — 满能量发光色(TARGET_BG + 置换差),供引擎 straight-alpha 混合用:
+              out = rgb*alpha*percent + 屏底*(1-alpha),屏底==TARGET_BG 时
+              恰好还原 TARGET_BG + diff*mask 的传统合成结果。
+      mask  — 羽化遮罩,直接作为 PNG 的 alpha 通道。
+    """
     w_raw, h_raw = raw_img.size
     if w_raw == 1024 and h_raw == 1024:
         # 裁剪出包含图标的主体区域 (219, 219, 805, 805)
@@ -79,12 +92,17 @@ def extract_shuttle_artwork(raw_img: Image.Image) -> tuple[np.ndarray, np.ndarra
     mask = np.clip((glow_mask - 0.03) / 0.85, 0.0, 1.0)
     mask = mask * mask * (3.0 - 2.0 * mask)
 
-    # 3. 颜色置换与基底平移: 纯前景能量 + 目标统一底色
+    # 3. 颜色置换与基底平移: 满能量前景色 + 底色基底
+    #    rgb 里携带的是「满能量」色(TARGET_BG + diff),亮度由 alpha 通道负责,
+    #    引擎按 straight-alpha 混合后与旧版「diff*mask 直接画在底色上」逐像素等价。
+    #    lift 窄带(0→0.06)把远场噪声收回纯底色,兼顾 PNG 体积与边缘绝对纯净。
     diff = icon - RAW_BG
-    synthesized = TARGET_BG + diff * mask[..., None]
-    synthesized = np.clip(synthesized, 0, 255)
+    lift = np.clip(mask / 0.06, 0.0, 1.0)
+    lift = lift * lift * (3.0 - 2.0 * lift)
+    energy = TARGET_BG + diff * lift[..., None]
+    energy = np.clip(energy, 0, 255)
 
-    return synthesized, mask
+    return energy, mask
 
 
 def main() -> int:
@@ -127,29 +145,40 @@ def main() -> int:
     off_y = (SIZE - new_h) // 2
 
     canvas_rgb[off_y:off_y + new_h, off_x:off_x + new_w] = np.array(art_img, dtype=np.float32)
+    canvas_alpha[off_y:off_y + new_h, off_x:off_x + new_w] = np.array(mask_img, dtype=np.float32)
 
-    # 保存为高质量无损 RGB PNG (避免 JPEG 宏块伪影与 Alpha 预乘漂移)
-    out_img = Image.fromarray(np.clip(canvas_rgb, 0, 255).astype(np.uint8))
+    # 保存为高质量无损 RGBA PNG (避免 JPEG 宏块伪影;非主体区域 alpha=0,淡入不产生方块)
+    out_img = Image.fromarray(
+        np.dstack([
+            np.clip(canvas_rgb, 0, 255),
+            np.clip(canvas_alpha, 0, 255),
+        ]).astype(np.uint8),
+    )
     out_img.save(OUT, optimize=True)
 
-    # 严苛自检断言
+    # 严苛自检断言: 边缘 120px 必须 alpha==0 且 rgb==TARGET_BG 双重纯净
     arr_out = np.array(out_img, dtype=np.float32)
-    rgb_diff = np.abs(arr_out - TARGET_BG).max(axis=2)
+    rgb_diff = np.abs(arr_out[:, :, :3] - TARGET_BG).max(axis=2)
+    alpha_band = arr_out[:, :, 3]
 
-    # 1. 边缘 120px 纯色断言 (最大色差必须为 0.0)
-    edge_diff = max(
-        rgb_diff[:120, :].max(), rgb_diff[-120:, :].max(),
-        rgb_diff[:, :120].max(), rgb_diff[:, -120:].max()
+    m = 120
+    edge_rgb = max(
+        rgb_diff[:m, :].max(), rgb_diff[-m:, :].max(),
+        rgb_diff[:, :m].max(), rgb_diff[:, -m:].max()
+    )
+    edge_a = max(
+        alpha_band[:m, :].max(), alpha_band[-m:, :].max(),
+        alpha_band[:, :m].max(), alpha_band[:, -m:].max()
     )
 
-    if edge_diff > 0.0:
-        print(f'❌ 纯度自检失败: 边缘存在色差 (diff={edge_diff})')
+    if edge_rgb > 0.0 or edge_a > 0.0:
+        print(f'❌ 纯度自检失败: 边缘存在色差或非透明 (rgb diff={edge_rgb}, alpha={edge_a})')
         return 1
 
-    print(f'  ✓ {OUT.relative_to(ROOT)} ({SIZE}x{SIZE} RGB PNG)')
-    print(f'  统一背景色: {tuple(int(v) for v in TARGET_BG)} ({TARGET_BG_HEX}) | 四角边缘色差: 0.0')
-    print(f'  主体缩放跨度: {new_w}x{new_h}px (画布占比 ~{round(target_span/SIZE, 2)}), 四周纯色留白: {min(off_x, off_y)}px')
-    print('  ✓ 纯净发光羽毛球已生成,圆角方块贴片与切边彻底消除')
+    print(f'  ✓ {OUT.relative_to(ROOT)} ({SIZE}x{SIZE} RGBA PNG)')
+    print(f'  统一背景色: {tuple(int(v) for v in TARGET_BG)} ({TARGET_BG_HEX}) | 边缘 {m}px alpha=0 且色差 0.0')
+    print(f'  主体缩放跨度: {new_w}x{new_h}px (画布占比 ~{round(target_span/SIZE, 2)}), 四周透明留白: {min(off_x, off_y)}px')
+    print('  ✓ 纯净发光羽毛球已生成,透明底保证淡入全程无方块贴片')
     return 0
 
 

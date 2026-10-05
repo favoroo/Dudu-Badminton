@@ -24,22 +24,25 @@ import "./cc-stub";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { Graphics } from "cc";
-import type { CardOpts } from "../assets/scripts/ui/p5-shapes";
+import type { CardOpts, Paint } from "../assets/scripts/ui/p5-shapes";
 import { Graphics as StubGraphics, opsToSvg } from "./cc-stub";
 import { C, ROLE, SLANT, inkFor } from "../assets/scripts/ui/p5-tokens";
 import { RARITY_META } from "../assets/scripts/core/config";
 import { textW } from "../assets/scripts/core/text-metrics";
 import { APP_VERSION_NAME } from "../assets/scripts/core/version";
-import { ASSIST_COPY, ASSIST_COPY_SIZE, assistLayout, SET, aboutLayout, controlLayout, donePos, mediaLayout, SETTINGS_TABS, tabBoxes } from "../assets/scripts/ui/settings-layout";
+import { ASSIST_COPY, ASSIST_COPY_SIZE, assistLayout, SET, aboutLayout, controlLayout, donePos, mediaLayout, MODE_TIP_SIZE, MOVE_MODES, SETTINGS_TABS, tabBoxes } from "../assets/scripts/ui/settings-layout";
+import { padDiagramDL } from "../assets/scripts/ui/pad-diagram";
 import {
   cardRow, cardRows, CMP, resumeRow as cmpResume, tabRow as campTabRow,
 } from "../assets/scripts/ui/campaign-layout";
 import { cardBoxes as drillCardBoxes, DRILL } from "../assets/scripts/ui/drill-layout";
-import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopTabs, shopTopBar, TOAST, toastBox, toastWidth } from "../assets/scripts/ui/shop-shelf";
+import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopStats, shopTabs, shopTopBar, STAT, statCardDL, statCells, TOAST, toastBox, toastWidth } from "../assets/scripts/ui/shop-shelf";
+import type { Profile } from "../assets/scripts/core/career";
 import {
   drawBevelSlot, drawHalftone, drawIconBtn, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
-  drawSliderFace, drawStarGlyph, drawToggleFace, sliderDL,
+  drawSliderFace, drawStarGlyph, drawToggleFace, paintP5, progressDL, sliderDL,
 } from "../assets/scripts/ui/p5-paint";
+import { chipDL, chipHeight, chipWidth } from "../assets/scripts/ui/p5-shapes";
 
 const FONT = "'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif";
 const SHEET_W = 1360, SHEET_H = 1140;
@@ -217,9 +220,30 @@ function block(c: { X: (v: number) => number; Y: (v: number) => number }, b: { l
     + txt(c.X(cx), c.Y(b.cy), text, size, face ? inkFor(face) : C.dim, { bold: !!face });
 }
 
+/** 色签(fit-content 斜切片):与 makeChip 走同一份 chipDL,出图与真机同形同源 */
+function chip(c: { X: (v: number) => number; Y: (v: number) => number }, x: number, y: number,
+  text: string, size: number, face: string): string {
+  return shape(c.X(x), c.Y(y), (g) => paintP5(g, chipDL(text, size, face)))
+    + txt(c.X(x), c.Y(y), text, size, inkFor(face), { bold: true });
+}
+
+/** 商店/履历两页共用的顶栏(与 career-panel._buildTopBar 取同一批数) */
+function shopTopRow(c: { X: (v: number) => number; Y: (v: number) => number }): string {
+  const T = shopTopBar();
+  return [
+    block(c, T.lv, ROLE.primary.face, "Lv.4", 20, SLANT.band),
+    txt(c.X(T.lvName.left), c.Y(T.lvName.cy), "业余好手", 14, C.paperDim, { anchor: "start", bold: true }),
+    txt(c.X(T.expNum.right), c.Y(T.expNum.cy), "77 / 215 EXP", 11, C.dim, { anchor: "end" }),
+    shape(c.X((T.exp.left + T.exp.right) / 2), c.Y(T.exp.cy), (g) => {
+      const dl = progressDL(T.exp.right - T.exp.left, T.exp.h, 77 / 215, C.acid);
+      paintP5(g, dl.track); paintP5(g, dl.fill);
+    }),
+    txt(c.X((T.coins.left + T.coins.right) / 2), c.Y(T.coins.cy), "1760", 18, C.acid, { bold: true }),
+  ].join("\n");
+}
+
 function panelsSheet(): string {
   const out: string[] = [];
-
   // ---------- ① 设置(760×424)----------
   {
     const c = cell(40, 40, SET.pw, SET.ph, ROLE.primary.face, "设置");
@@ -230,7 +254,15 @@ function panelsSheet(): string {
     const K = controlLayout();
     out.push(block(c, K.sectionMove, ROLE.star.face, "移动方式", 13, SLANT.band));
     K.modes.forEach((b, i) => out.push(block(c, b, i === 1 ? ROLE.primary.face : null, ["摇杆", "滑轨", "按键"][i], 15)));
+    out.push(txt(c.X(K.modeTip.left), c.Y(K.modeTip.cy), MOVE_MODES[1].tip, MODE_TIP_SIZE, C.paperDim, { anchor: "start" }));
     K.actions.forEach((b, i) => out.push(block(c, b, i === 0 ? ROLE.primary.face : null, i === 0 ? "调整位置" : "重置默认", 16, SLANT.button)));
+    // 移动方式图示:与真机**同一批多边形**(pad-diagram 出点列 → paintP5 落笔),
+    // 这张样张画歪了就是真机画歪了,不是"工具里另摆一遍"。
+    {
+      const D = K.diagram, dw = D.right - D.left, dx = (D.left + D.right) / 2;
+      out.push(shape(c.X(dx), c.Y(D.cy), (g) => drawBevelSlot(g, dw, D.h, SLANT.block, C.ink)));
+      out.push(shape(c.X(dx), c.Y(D.cy), (g) => paintP5(g, padDiagramDL("slider", 112, dw, D.h))));
+    }
     out.push(block(c, K.sectionFeel, ROLE.drill.face, "手感", 13, SLANT.band));
     K.tiers.forEach((t, i) => {
       out.push(txt(c.X(t.name.left), c.Y(t.y), i === 0 ? "球速" : "移速", 14, C.paper, { anchor: "start" }));
@@ -350,12 +382,7 @@ function panelsSheet(): string {
   // ---------- ④ 商店(880×470)----------
   {
     const c = cell(40 + DRILL.pw + 80, 40 + SET.ph + 90 + SET.ph + 90, SHOP.pw, SHOP.ph, ROLE.star.face, "生涯与商店");
-    const T = shopTopBar();
-    out.push(block(c, T.lv, ROLE.primary.face, "Lv.4", 18, SLANT.band));
-    out.push(txt(c.X((T.lvName.left + T.lvName.right) / 2), c.Y(T.lvName.cy), "业余好手", 13, C.dim));
-    out.push(shape(c.X((T.exp.left + T.exp.right) / 2), c.Y(T.exp.cy),
-      (g) => { drawBevelSlot(g, T.exp.right - T.exp.left, T.exp.h, SLANT.block); }));
-    out.push(txt(c.X((T.coins.left + T.coins.right) / 2), c.Y(T.coins.cy), "700", 18, C.acid, { bold: true }));
+    out.push(shopTopRow(c));
     shopTabs().forEach((b, i) => out.push(block(c, b, i === 0 ? ROLE.star.face : null,
       ["角色皮肤", "球拍皮肤", "羽毛球皮肤", "面部皮肤", "生涯战绩"][i], 15)));
     const K = shopContent(330);
@@ -382,13 +409,47 @@ function panelsSheet(): string {
       out.push(block(c, toastBox(toastWidth(textW(msg, TOAST.size))), TOAST.face, msg, TOAST.size, SLANT.band));
     }
   }
+
+  // ---------- ⑤ 生涯战绩(履历页:与货架页共用衬纸与 tab,互斥显示)----------
+  {
+    const c = cell(40 + DRILL.pw + 80 + SHOP.pw + 80, 40 + SET.ph + 90 + SET.ph + 90, SHOP.pw, SHOP.ph, ROLE.record.face, "生涯战绩");
+    out.push(shopTopRow(c));
+    shopTabs().forEach((b, i) => out.push(block(c, b, i === 4 ? ROLE.star.face : null,
+      ["角色皮肤", "球拍皮肤", "羽毛球皮肤", "面部皮肤", "生涯战绩"][i], 15)));
+    // 只喂 statCells 会读的那几个键(版式与文案都是真函数出的,数字是摆拍的)
+    const mock = {
+      level: 4, exp: 77, coins: 1760, bestEndlessScore: 0, drills: {},
+      stats: { matches: 22, wins: 15, smashes: 662, sweets: 1173, perfects: 952, hits: 4982, maxRally: 46 },
+    } as unknown as Profile;
+    const boxes = shopStats(330);
+    const gridCy = shopContent(330).grid.cy;
+    statCells(mock, 18).forEach((s, i) => {
+      const b = boxes[i];
+      const cw = b.right - b.left, ch = b.h;
+      const x = (b.left + b.right) / 2, y = b.cy - gridCy;
+      const d = statCardDL(cw, ch, s);
+      const face = ROLE[s.role].face;
+      const rule: Paint[] = [{ kind: "stroke", hex: face, a: 0.5, lw: STAT.ruleW,
+        pts: [[d.rule.x0, d.rule.y], [d.rule.x1, d.rule.y]] }];
+      out.push(shape(c.X(x), c.Y(y), (g) => {
+        drawP5Card(g, cw, ch, face, { bandH: 0 });
+        paintP5(g, rule);
+      }));
+      out.push(chip(c, x + d.chip.x, y + d.chip.y, s.name, STAT.chipSize, face));
+      const numCx = x + d.num.x + d.num.w / 2;
+      out.push(txt(c.X(numCx), c.Y(y + d.num.y), s.num, STAT.numSize, C.paper, { bold: true }));
+      if (s.unit) out.push(txt(c.X(x + d.unit.x + d.unit.w / 2), c.Y(y + d.unit.y), s.unit, STAT.unitSize, C.paperDim));
+      if (s.sub) out.push(txt(c.X(x + d.sub.x), c.Y(y + d.sub.y), s.sub, STAT.subSize, C.dimDeep));
+    });
+  }
   return out.join("\n");
 }
 
 const SYNTAX_H = 1100;
 // 拼装图 1:1:宽 = 40 + 880 + 80 + 880 + 80 + 设置(辅助页 760) + 40
 // 行 1:设置(操控页) + 闯关大厅;行 2:设置(声音画面) + 设置(关于) + 设置(辅助);行 3:训练场 + 商店
-const PANELS_W = 40 + 880 + 80 + 880 + 80 + 760 + 40;
+// 行 3 现在是三格:训练场 + 商店 + 履历页(与商店共用衬纸的另一面)
+const PANELS_W = 40 + 880 + 80 + 880 + 80 + 880 + 40;
 const PANELS_H = 1068 + 470 + 60;
 
 function sheet(body: string, w: number, h: number, bg: string): string {
