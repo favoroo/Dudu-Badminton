@@ -231,10 +231,14 @@ export class GameRoot extends Component {
     // 若跟着模拟帧放,恢复的那一瞬间会一口气震一串
     hapticTick();
     this.updateSwingCue();
-    // 同步玩家技能按键状态至触屏
+    // 同步玩家技能按键状态至触屏(双槽 2026-10-06:技能1 键 + 技能2 键各喂各的,空槽画空态)
     const human = R.players[0];
-    if (human && human.skill) {
-      const s = human.skill;
+    const feedSkillKey = (target: "lunge" | "skill2", s: typeof human.skill): void => {
+      if (!s) {
+        // 空槽:键面画空槽横杠 + 「未携带」封条,按下走 down() 的拒按抖动(ready=false)
+        touchPad.setSkillState(target, 0, false, "", "空", 0, C.skills.blockText.emptySlot, 0, 0);
+        return;
+      }
       const cdRatio = s.maxCd > 0 ? clamp(s.cd / s.maxCd, 0, 1) : 0;
       const def = Skills.defOf(s.id);
       // 充能款(怒气重击):键面画的是"攒了多少",所以 cdRatio 对它没有任何意义 ——
@@ -244,16 +248,18 @@ export class GameRoot extends Component {
       // cd 是世界步帧数(60Hz 递减),换算成秒给键心当倒计时;
       // 冷却之外还差一道门槛时,把可读原因一并喂给键上方当提示
       const blockReason = (cdRatio <= 0 || charge)
-        ? Skills.skillBlockReason(human, R.ball) : null;
+        ? Skills.skillBlockReason(human, R.ball, target === "lunge" ? 1 : 2) : null;
       // chargeRatio 只在充能款下有值(其余技能恒 0 ⇒ 键上不会多画一圈莫名其妙的环)。
       // 多管蓄力后这里喂的是"管"量纲:chargeRatio = 进行中那管的填充、chargePipes =
       // 已攒满的整管数(键面画 N 段点亮 + 当前段弧),强度/档位仍走 rageRatioOf 那条线。
       // 倒数第二参 cdSec 对充能款恒传 0:它读的是 s.cd 那 20 帧防连点,画出来是个骗人的"0.3"
-      touchPad.setSkillState(cdRatio, s.ready, s.id, def.shortName,
+      touchPad.setSkillState(target, cdRatio, s.ready, s.id, def.shortName,
         charge ? 0 : s.cd / 60, blockReason,
         charge ? Skills.ragePipeFillOf(human) : 0,
         charge ? Skills.ragePipesOf(human) : 0);
-    }
+    };
+    feedSkillKey("lunge", human?.skill);
+    feedSkillKey("skill2", human?.skill2);
     const animT = (R.state === "RALLY" || R.state === "POINT" || R.state === "SERVE") ? this.worldT : this.frameT;
     // 氛围暗角输入(长回合金晕/赛点红晕在渲染层只读消费)
     this.world.setAtmo(R.state, R.rally, Rules.isMatchPoint());
@@ -733,7 +739,7 @@ export class GameRoot extends Component {
             const K = C.fx as unknown as Record<string, FloatLabel>;
             const sLab = skillKind === "lunge" ? K.floatSkillLunge
               : skillKind === "smash" ? K.floatSkillSmash
-              : skillKind === "flash" ? K.floatSkillFlash
+              : skillKind === "flash" ? (e.flashApex === true ? K.floatSkillFlashHigh : K.floatSkillFlash)
               : skillKind === "magnet" ? ((e.kind as string) === "smash" ? K.floatSkillMagnetAir : K.floatSkillMagnet)
               : skillKind === "focus" ? K.floatSkillFocus
               // 怒气的场边字跟着档位走(tiers[].lab,与起手字同一行、同一张表),
@@ -758,14 +764,22 @@ export class GameRoot extends Component {
             } else if (skillKind === "flash") {
               // 闪现扣杀命中那一下:定格刚刚收,接着给一记短慢放,让"时停 → 出刀 → 慢放"
               // 三段读得出先后(慢放仍受 fx.slowmoEnabled 总闸约束,关了只剩顿帧)
+              // 顶点天雷(e.flashApex,接触点 ≥ skills.flash.apexHeight)整体再升一档:
+              // 连环落雷 + 更重震屏/推镜/慢放 + 专属震动 —— 高球喂到这份上就该被制裁,
+              // 数值全在 config.fx.flashApex*,别在这里另抄一份
               const ang = hitAng ?? this.hitAngOf(e);
+              const apex = e.flashApex === true;
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_FIRE);
-              this.world.fx.skyThunder(e.x as number, e.y as number);
-              this.world.shake(20, 0, ang);
-              this.world.punch(e.x as number, e.y as number, (C.fx.flashCastPunch || 1.05) + 0.05);
+              this.world.fx.skyThunder(e.x as number, e.y as number, apex);
+              this.world.shake(apex ? (C.fx.flashApexShake || 26) : 20, 0, ang);
+              this.world.punch(e.x as number, e.y as number,
+                apex ? (C.fx.flashApexPunch || 1.12) : (C.fx.flashCastPunch || 1.05) + 0.05);
               if (this.slowmoOn) {
-                this.world.slowmo(C.fx.flashSmashSlowmo || 14, C.fx.flashSmashSlowFac || 0.32);
+                this.world.slowmo(
+                  apex ? (C.fx.flashApexSlowmo || 16) : (C.fx.flashSmashSlowmo || 14),
+                  apex ? (C.fx.flashApexSlowFac || 0.4) : (C.fx.flashSmashSlowFac || 0.32));
               }
+              if (apex && !hitterIsAI) haptic("perfectSmash");
             } else if (skillKind === "magnet") {
               const ang = hitAng ?? this.hitAngOf(e);
               // 空中收拍的引力跳杀(modifyShot 里 forceSmash 兑现):特效/震屏/推镜升一档;
@@ -821,12 +835,6 @@ export class GameRoot extends Component {
           if (praise && e.jumpSmash && !hitterIsAI) {
             const K = C.fx as unknown as Record<string, FloatLabel>;
             this.floatSideLab(K.floatJumpSmash, e.x as number);
-          }
-          // 量化时机条:真人每拍命中都在击球点上方画一拍(grade 带符号,早=左 晚=右)。
-          // **自动那一拍不画**:那两样教的是"你按得准不准",而机器挑的就是时机环教人的那一帧,
-          // 张张满分 ⇒ 留着只会变成"它比我打得好"的噪声。玩家自己点回去的那拍照旧教(手动优先)。
-          if (praise && !hitterIsAI && !e.autoHit && typeof e.timingGrade === "number") {
-            this.world.hudOverlay.showTimingBar(e.x as number, (e.y as number) - 64, e.timingGrade);
           }
           // 放网提示 + 球种标签:非扣杀类技术球一闪即逝的类型提示(老 game.js#L308-313)
           if (e.kind === "netshot") this.world.float(e.x as number, (e.y as number) - 22, "放网", "#cfe0ff", 13, 28);

@@ -8,11 +8,14 @@
 //   ③ 该拒绝的场合照旧拒绝(自家球 / 低球 / 隔网球)
 //   ④ 蓄力期球与人都不动(时停在机制上真的成立)
 //   ⑤ 落位本来就在判定区圆心里 —— 保底窗口只是兜底,不是唯一支柱
+//   ⑥ 高度威力曲线 + 顶点天雷(2026-10-06):出球矢量随接触高度乘算,与基线的比值单调、
+//      低球逐位不变、apexHeight 台阶踩在真实接触高度上、乘后真实弹道仍落对方场内不下网
 //
 // 用法:node .tools-build/tools/flash-check.js
 import { Rules } from "../assets/scripts/core/rules";
 import { Player as Pl } from "../assets/scripts/core/player";
 import { Skills } from "../assets/scripts/core/skills";
+import { Physics } from "../assets/scripts/core/physics";
 import { CFG } from "../assets/scripts/core/config";
 import { Ball, PlayerInput, TeamSide, Player as PlayerEntity } from "../assets/scripts/core/types";
 
@@ -83,6 +86,11 @@ interface Cast {
   landX: number;
   whiffed: boolean;
   strikeLeft: number;
+  contactX: number;
+  contactY: number;
+  vx: number;
+  vy: number;
+  flashApex: boolean;
 }
 
 /** 按一次技能,看这一拍到底成没成(返回 null = 一记都没扣出去) */
@@ -104,6 +112,11 @@ function cast(side: TeamSide, h: number, x: number, vx: number, vy: number): Cas
         landX: hit.landX as number,
         whiffed: hero.stats.whiffs > 0,
         strikeLeft: hero.flashStrikeT ?? 0,
+        contactX: hit.x as number,
+        contactY: hit.y as number,
+        vx: hit.vx as number,
+        vy: hit.vy as number,
+        flashApex: hit.flashApex === true,
       };
     }
     if (hero.stats.whiffs > 0) return null;   // 挥空了,不用再等
@@ -226,6 +239,74 @@ console.log(`① 必中网格:${ok}/${grid} 格全部扣杀成功、落在对方
   assert((hero.flashHoldT ?? 0) === 0, "命中后还在蓄力");
   assert(hero.swingT >= 0, "闪现后根本没起拍");
   console.log("⑤ 消耗:命中即关闭保底窗口,随挥照常走完");
+}
+
+// ---------- ⑥ 高度威力曲线 + 顶点天雷(2026-10-06) ----------
+// 接触点越高劈扣越狠:buildShot 在解出弹道后按接触高度对出球矢量乘算(iaiStrike 同一
+// 先例 —— speedBoost 池封顶 5、powerDeg 在球高 ≥200px 顶 -24° 地板,老杠杆全是死的)。
+// 本段钉死五件事:
+//   a) 乘算真实生效且曲线单调:同一 h 下与「乘数清零」的基线对比,vx 比值随接触高度
+//      单调不降。尺子必须是**与基线的比值**,不能跨高度裸比 —— 基准解算的 vx 本身随
+//      接触高度变(高点更省力),裸比量的是几何不是曲线
+//   b) 低球维持现状:minHeight 那格乘后矢量与基线逐位相等(t=0 恒不乘算)
+//   c) 顶点档台阶踩在**真实接触高度**上:起摆高度要先按 Δ 校准 —— 球解冻后到接触点
+//      还要坠 ~1 步(实测恒定 ~5px),不校准的话 ±1 两格会双双落进门槛以下
+//   d) flashApex 判定只认真实接触高度
+//   e) 乘后真实弹道仍落对方场内、不下网 —— 用事件里的(乘后)矢量重飞一遍;老网格 ①
+//      的 landX 读的是 solveShot trace(乘算前),量不到乘算,这里补上
+{
+  const FL = C.skills.flash;
+  // 探针:量「起摆高度 → 真实接触高度」的恒定落差
+  const probe = cast("left", 260, CO.netX - 200, 2, 5);
+  assert(!!probe, "⑥ 探针格没扣出去");
+  const delta = probe ? 260 - (CO.groundY - probe.contactY) : 0;
+  const HS = [FL.minHeight, 150, 200, FL.apexHeight - 1 + delta, FL.apexHeight + 1 + delta, 300 + delta];
+  const run = (withMuls: boolean): Array<{ h: number; r: Cast }> => {
+    const keep = [FL.curveVxMul, FL.curveVyMul, FL.apexVxMul, FL.apexVyMul];
+    if (!withMuls) { FL.curveVxMul = 1; FL.curveVyMul = 1; FL.apexVxMul = 1; FL.apexVyMul = 1; }
+    const out: Array<{ h: number; r: Cast }> = [];
+    for (const h of HS) {
+      const r = cast("left", h, CO.netX - 200, 2, 5);
+      assert(!!r, `⑥ h=${h.toFixed(1)}(${withMuls ? "乘算" : "基线"}) → 一记都没扣出去`);
+      if (r) out.push({ h, r });
+    }
+    FL.curveVxMul = keep[0]; FL.curveVyMul = keep[1]; FL.apexVxMul = keep[2]; FL.apexVyMul = keep[3];
+    return out;
+  };
+  const base = run(false);
+  const rows = run(true);
+  // d) 档位判定只认真实接触高度;e) 乘后真实弹道不出界不下网
+  for (const { h, r } of rows) {
+    const contactH = CO.groundY - r.contactY;
+    assert(r.flashApex === (contactH >= FL.apexHeight),
+      `⑥ h=${h.toFixed(1)}(接触 ${contactH.toFixed(0)}px) 顶点档判定与接触高度不符`);
+    const tr = Physics.trace(r.contactX, r.contactY, r.vx, r.vy);
+    assert(tr.landX > CO.netX && tr.landX <= CO.right && !tr.hitNet,
+      `⑥ h=${h.toFixed(1)} 乘后真实弹道落点 ${Math.round(tr.landX)}${tr.hitNet ? "(下网)" : "(出界/不及网)"}`);
+  }
+  // a) 乘算比值单调;b) 低球逐位相等
+  let prevRatio = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const ratio = rows[i].r.vx / base[i].r.vx;
+    assert(ratio >= prevRatio - 1e-6,
+      `⑥ 乘算比值不单调:${rows[i].h.toFixed(0)}px 比值 ${ratio.toFixed(4)} < 前格 ${prevRatio.toFixed(4)}`);
+    prevRatio = ratio;
+  }
+  assert(Math.abs(rows[0].r.vx - base[0].r.vx) < 1e-9 && Math.abs(rows[0].r.vy - base[0].r.vy) < 1e-9,
+    "⑥ 低球(minHeight)矢量被乘算改动 —— 「低球维持现状」被破坏");
+  // c) 台阶:校准后的两格必须一无有一有,且 vx 真跳档
+  const below = rows.find((x) => Math.abs(x.h - (FL.apexHeight - 1 + delta)) < 1e-6);
+  const above = rows.find((x) => Math.abs(x.h - (FL.apexHeight + 1 + delta)) < 1e-6);
+  if (below && above) {
+    assert(!below.r.flashApex && above.r.flashApex, "⑥ 顶点档台阶没踩准(校准后 −1 应无档、+1 应有档)");
+    assert(above.r.vx > below.r.vx,
+      `⑥ 顶点档没跳档:vx ${below.r.vx.toFixed(2)} → ${above.r.vx.toFixed(2)}`);
+  }
+  const ratios = rows.map((x, i) => (x.r.vx / base[i].r.vx).toFixed(3)).join(" → ");
+  const apexRow = rows[rows.length - 1];
+  console.log(`⑥ 高度威力:乘算比值 ${ratios}(单调)` +
+    `${below && above ? `,顶点跳档 vx ${below.r.vx.toFixed(1)}→${above.r.vx.toFixed(1)}` : ""}` +
+    `;顶点合速 ${Math.hypot(apexRow.r.vx, apexRow.r.vy).toFixed(1)} vs 低球 ${Math.hypot(rows[0].r.vx, rows[0].r.vy).toFixed(1)},乘后弹道全部落对方场内`);
 }
 
 console.log(failures ? `\n✗ flash-check 失败 ${failures} 项` : "\n✓ flash-check 全绿");

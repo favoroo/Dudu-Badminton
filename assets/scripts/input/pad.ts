@@ -46,6 +46,13 @@ export interface Pad {
   lungePressed: boolean;
   /** 跨步方向:-1=向左, 1=向右(按下跨步键那一刻从方向意图解出) */
   lungeDir?: number;
+  /**
+   * 技能2 键(双技能槽 2026-10-06):与 lungePressed 完全同构的边沿 + 方向。
+   * 键名 "lunge" 是技能1 的历史遗留动作名,技能2 起的是正名 —— 两颗键语义一致:
+   * 按下那一刻从方向意图现解方向(摇杆 > 左右键 > lastDir),player.ts 按槽路由。
+   */
+  skill2Pressed: boolean;
+  skill2Dir?: number;
   /** 最近一次方向键意图:-1=左, 1=右, 0=这局还没碰过方向键 */
   lastDir: number;
   /**
@@ -81,24 +88,28 @@ export function newPad(): Pad {
     left: false, right: false, moveAxis: 0, targetX: undefined, jump: false,
     jumpPressed: false, jumpSteps: 0, jumpTail: 0,
     lungePressed: false, lungeDir: 0, lastDir: 0,
+    skill2Pressed: false, skill2Dir: 0,
     swingPressed: false, swingHeld: false, swingSwipe: 0, swingSwipeY: 0,
     swingLockX: 0, swingLockY: 0,
   };
 }
 
 export function clearEdges(pad: Pad): void {
-  // 若本步内发生了跨步触发,消费掉前序 targetX,避免跨步爆发后角色又被自动拉回旧目标
-  if (pad.lungePressed && pad.targetX !== undefined) {
+  // 若本步内发生了技能键触发,消费掉前序 targetX,避免跨步爆发后角色又被自动拉回旧目标
+  // (双槽:技能2 键装的跨步同样接管滑轨,与技能1 键同一条规矩)
+  if ((pad.lungePressed || pad.skill2Pressed) && pad.targetX !== undefined) {
     pad.targetX = undefined;
   }
   pad.jumpPressed = false;
   pad.lungePressed = false;
   pad.lungeDir = 0;
+  pad.skill2Pressed = false;
+  pad.skill2Dir = 0;
   pad.swingPressed = false;
 }
 
 /** 按下(边沿 + 状态),由各输入源调用 */
-export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "swing" | "swingFar" | "swingNear" | "swingUp" | "swingDown"): void {
+export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "skill2" | "swing" | "swingFar" | "swingNear" | "swingUp" | "swingDown"): void {
   switch (action) {
     case "left": pad.left = true; pad.lastDir = -1; break;
     case "right": pad.right = true; pad.lastDir = 1; break;
@@ -113,6 +124,19 @@ export function press(pad: Pad, action: "left" | "right" | "jump" | "lunge" | "s
         pad.lungeDir = pad.left ? -1 : 1;
       } else {
         pad.lungeDir = pad.lastDir;
+      }
+      break;
+    }
+    case "skill2": {
+      // 技能2 键:方向解析与 lunge 同一条优先级(摇杆 > 左右键 > lastDir),见 lunge case。
+      // 两颗键各持各的边沿,同帧都按就各触发各的槽(player.ts 的双槽路由)。
+      pad.skill2Pressed = true;
+      if (Math.abs(pad.moveAxis) > JOYSTICK_DEADZONE) {
+        pad.skill2Dir = pad.moveAxis < 0 ? -1 : 1;
+      } else if (pad.left !== pad.right) {
+        pad.skill2Dir = pad.left ? -1 : 1;
+      } else {
+        pad.skill2Dir = pad.lastDir;
       }
       break;
     }
@@ -268,6 +292,8 @@ export function resetPadHolds(pad: Pad): void {
   pad.targetX = undefined;
   pad.lungePressed = false;
   pad.lungeDir = 0;
+  pad.skill2Pressed = false;
+  pad.skill2Dir = 0;
   pad.swingPressed = false;
   pad.swingHeld = false;
   pad.swingSwipe = 0;
@@ -290,6 +316,8 @@ export function buildIntent(pad: Pad, hooks: Partial<PlayerInput>): PlayerInput 
     jumpHeld: pad.jump || pad.jumpTail > 0,
     lungePressed: pad.lungePressed,
     lungeDir: pad.lungeDir,
+    skill2Pressed: pad.skill2Pressed,
+    skill2Dir: pad.skill2Dir,
     // 击球:按下边沿触发,初始 depth=mid;滑动方向在挥拍期间由 player.ts 读取 swingSwipe 覆盖。
     // swingSwipe 持续输出(不依赖边沿),保证挥拍中提交的方向能到达 buildShot。
     // swingSwipeY 同构:纵轴弧线意图(挑高/平抽),持续输出。
@@ -303,4 +331,5 @@ export function buildIntent(pad: Pad, hooks: Partial<PlayerInput>): PlayerInput 
 export const emptyIntent = (): PlayerInput => ({
   left: false, right: false, moveAxis: 0, targetX: undefined, jumpPressed: false, jumpHeld: false,
   swingAim: null, swingSwipe: 0, swingSwipeY: 0, lungePressed: false, lungeDir: 0,
+  skill2Pressed: false, skill2Dir: 0,
 });

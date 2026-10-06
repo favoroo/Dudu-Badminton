@@ -339,10 +339,13 @@ export class CampaignPanel {
     });
   }
 
-  /** 宽随技能名走:每次 clear + 重画,三块文字按 campaign-layout 量出来的格子倒推 */
+  /** 宽随技能名走:每次 clear + 重画,三块文字按 campaign-layout 量出来的格子倒推。
+   *  双槽(2026-10-06):两个技能名用「 + 」并列量宽(headerBoxes 同吃这一串),空槽只显槽1 */
   private paintSkillChip(): void {
     const def = Skills.defOf(Career.equippedSkill());
-    const S = skillChip(def.name);
+    const id2 = Career.equippedSkill2();
+    const name = id2 ? `${def.name} + ${Skills.defOf(id2).name}` : def.name;
+    const S = skillChip(name);
     repaint(this.skillChipGfx, () => {
       // 凹陷槽当胶囊底(与未选中的 tab 同一画法),不占亮面
       drawBevelSlot(this.skillChipGfx, S.w, CMP.skill.h, SLANT.block);
@@ -356,7 +359,7 @@ export class CampaignPanel {
     place(this.skillChipTag, S.tag, 0);
     place(this.skillChipName, S.name, 0);
     place(this.skillChipGo, S.go, 0);
-    this.skillChipName.string = def.name;
+    this.skillChipName.string = name;
     this.skillChipName.color = ac(def.accent);
   }
 
@@ -374,7 +377,12 @@ export class CampaignPanel {
       : "20 道场景挑战已全部拿下,挑一关再冲三星";
     this.paintSkillChip();
     // 星数与胶囊互相让位:两个盒子的宽度都由实测倒推,撞了就是版式错(campaignOverlaps)
-    place(this.totalStarsLabel, headerBoxes(starsText, Skills.defOf(Career.equippedSkill()).name).stars, 2);
+    const skillName = (() => {
+      const id2 = Career.equippedSkill2();
+      const d1 = Skills.defOf(Career.equippedSkill());
+      return id2 ? `${d1.name} + ${Skills.defOf(id2).name}` : d1.name;
+    })();
+    place(this.totalStarsLabel, headerBoxes(starsText, skillName).stars, 2);
     this.resumeHint.string = hint;
     this.paintResume(label, hint);
   }

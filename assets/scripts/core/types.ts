@@ -183,6 +183,13 @@ export interface PlayerInput {
   /** 动态技能按键按下 (兼容 lungePressed) */
   skillPressed?: boolean;
   skillDir?: number;
+  /**
+   * 第二技能键(技能2 槽)按下边沿。真人与 AI 共用形状,但 AI 决策链只走 skillPressed
+   * (槽1)—— 双技能是玩家侧增强,AI 不吃(与「只帮真人不帮电脑」同一条口径)。
+   * 方向解析与 lungeDir 同式:Pad 端按最近的方向键解出,滑轨模式下 player.ts 用 targetX 覆盖。
+   */
+  skill2Pressed?: boolean;
+  skill2Dir?: number;
   onJump?(p: Player): void;
   onLand?(p: Player, vy: number): void;
   onFootstep?(p: Player): void;
@@ -495,8 +502,15 @@ export interface Player {
    *     "换个技能分身全没了"
    */
   shadowClones?: ShadowCloneState[];
-  /** 球员当前技能系统状态 */
+  /** 球员当前技能系统状态(技能1 槽;AI 与关卡对手只有这一槽) */
   skill?: PlayerSkillState;
+  /**
+   * 技能2 槽(2026-10-06 双技能槽):只挂真人(applyToMatch),AI/分身恒 undefined。
+   * 与 p.skill 同构、互不知晓:两槽各自的 cd/buffT/magnetPulling 独立递减(skills.update 遍历),
+   * 效果状态(lungeT/flash 系/focusT/rage/shadow 系)仍住 Player 本体 —— 两槽装同名效果字段
+   * 不会打架,因为「同一款技能不许装两槽」由装备层(Career.equipSkill 互换)保证。
+   */
+  skill2?: PlayerSkillState;
   /** 闪现扣杀残影与电光倒计时(纯视觉,渲染层读它画雷光/蓄力环) */
   flashT?: number;
   /** 闪现折跃后悬空蓄力剩余帧:>0 期间不吃重力、不接受移动输入(球在那一拍被扣出去之前人是定住的) */
@@ -586,6 +600,12 @@ export interface HitOpt {
   /** 发球等场景直接指定落点深度(绕过瞄准表) */
   forced?: { depth: number };
   /**
+   * 接触点离地高度(px,buildShot 现算塞入,调用方不用给):settle 在出手前已把球钉回
+   * 记账帧接触点,所以 modifyShot 读到的就是真实击球高度;预告通道用实时球位,徽标不撒谎。
+   * 闪现的高度威力曲线(apexHeight 档)按它插值,其余技能不读。
+   */
+  contactH?: number;
+  /**
    * 瞄准 hint:把"还没起拍的玩家意图"(击球键上粘住的那次滑动)喂给一次解算。
    * 只有球种预告 player.previewKind 用它,实打路径不传 ⇒ 逐字等于旧行为。
    * 为什么需要:自动击打开起来后玩家不再起拍,p.swingAim 停在上一拍的旧值,
@@ -642,6 +662,11 @@ export interface ShotResult {
   lungeShot?: boolean;
   /** 跳杀:空中 + 击球点够高触发的必然扣杀(飘字/专属特效读它) */
   jumpSmash?: boolean;
+  /**
+   * 闪现顶点天雷:接触点 ≥ C.skills.flash.apexHeight 的闪现扣杀(飘字/升档演出读它)。
+   * 威力部分(求解后速度乘算)不在此曝光 —— shot.vx/vy 本身已带,表现层只认档位。
+   */
+  flashApex?: boolean;
   /**
    * 这一拍由「自动击打(辅助模式)」替玩家起手。表现层只有两处读它:量化时机条与「早了/晚了」
    * —— 那两样教的是"你按得准不准",而机器挑的就是时机环教人的那一帧,张张满分,留着只是噪声。

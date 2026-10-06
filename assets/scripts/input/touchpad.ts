@@ -14,7 +14,7 @@
 // 专管出拍,跳杀这两个必须同时发生的动作终于分到两只手上。判据是 CFG.stickJump
 // 的两档迟滞(upHi 起跳 / upLo 松手),细节见 makeJoystick 里的 evalStickJump。
 //
-// 右侧两键:swing 击球键(合并版,滑动手势区分深浅) + lunge 跨步。
+// 右侧三键:swing 击球键(合并版,滑动手势区分深浅)+ lunge 技能1键(历史遗留动作名)+ skill2 技能2键(双技能槽,2026-10-06)。
 // 兄弟序即绘制/命中序,层级命中从最上层往回找,不能每次启动都变。
 //
 // 对局态的触摸命中收在**层节点**统一裁决(编辑态仍是逐键拖动):
@@ -117,8 +117,13 @@ const SWIPE_LOCK_CONE = 0.5;
  */
 const CLUSTER_ORDER: Record<"left" | "right", PadAction[]> = {
   left: ["left", "right", "jump"],
-  right: ["swing", "lunge"],
+  // 双技能槽(2026-10-06):右簇加技能2键。skill2 建在最后(兄弟序最上),
+  // 与 swing/lunge 拖到重叠时它抢命中 —— 三颗键同属"拇指起手区",后建的压前面是既有规矩。
+  right: ["swing", "lunge", "skill2"],
 };
+
+/** 技能键(冷却/充能读数、门槛封条、就绪呼吸都挂这类键):技能1(lunge,历史遗留名)与技能2 */
+const isSkillAction = (a: PadAction): boolean => a === "lunge" || a === "skill2";
 
 /** 摇杆满舵阈值:|moveAxis| 越过这个视觉与触觉都会给一次额外反馈 */
 const FULL_DEFLECT = 0.85;
@@ -311,17 +316,17 @@ function paint(rec: BtnRec, edit: boolean): void {
     return c;
   };
   g.clear();
-  const isLunge = rec.action === "lunge";
+  const isSkillKey = isSkillAction(rec.action);
   // 充能款(kind==="charge"):键面读的是"攒了多少",不是"还剩几秒"。
   // 它**永远不该吃 cooling 那张脸** —— cooling 会把键压成暗底 + 藏图标 + 印秒数,
   // 而"怒气越满键越暗"是把奖励画成惩罚。判据只在 core/skills.isChargeSkill 一份。
-  const isCharge = isLunge && isChargeSkill((rec.skillId ?? "lunge") as SkillId);
-  const cooling = isLunge && !isCharge && (rec.cdRatio ?? 0) > 0;
-  const isSkillDisabled = isLunge && (rec.skillReady === false || cooling);
+  const isCharge = isSkillKey && isChargeSkill((rec.skillId ?? "lunge") as SkillId);
+  const cooling = isSkillKey && !isCharge && (rec.cdRatio ?? 0) > 0;
+  const isSkillDisabled = isSkillKey && (rec.skillReady === false || cooling);
   // 冷却走完但仍不放 = 门槛未满足(人在空中/挥拍中/球没过来),键面画一道斜切灰杠。
   // 视觉上必须与冷却扇形区分:「等 CD 会自己好」vs「得改站位」,这是两个决策。
-  const isBlocked = isLunge && !cooling && rec.skillReady === false && !!rec.skillBlock;
-  const isFlashReady = isLunge && rec.skillId === "flash" && rec.skillReady && !cooling;
+  const isBlocked = isSkillKey && !cooling && rec.skillReady === false && !!rec.skillBlock;
+  const isFlashReady = isSkillKey && rec.skillId === "flash" && rec.skillReady && !cooling;
   // 满怒 = 充能款自己的"就绪发亮"态。与 isFlashReady **分开两个变量、共用同一套画法**
   // (双白环 + 图标提亮):两态的成因不同(一个是 CD 走完 + 球够高,一个是攒满资源),
   // 合并成一个变量将来就拆不开,而拆不开迟早演变成"给闪现也开一管怒气"这种事故。
@@ -764,7 +769,18 @@ function drawIcon(g: Graphics, action: PadAction, r: number, color: Color, varia
       break;
     }
 
-    case "lunge": {
+    case "lunge":
+    case "skill2": {
+      // 空槽(双技能槽 2026-10-06,skillId=""):画一道短横杠 —— "这颗键没带技能"。
+      // 不借用任何技能图标(那是撒谎),也不走默认人形(会被读成"装备了跨步")。
+      if (skillId === "") {
+        const s = r * 0.42;
+        g.lineWidth = 5;
+        g.moveTo(-s * 0.55, 0);
+        g.lineTo(s * 0.55, 0);
+        g.stroke();
+        break;
+      }
       const sId = skillId || "lunge";
       if (sId === "smash") {
         // 百分百重击: 倾斜斩击巨剑 + 爆星
@@ -1157,7 +1173,8 @@ export interface TouchPadHandle {
    * 两个量纲各管各的,键面分段环与总百分比读数都从这一对值折算。
    * 参数放最后且带默认值 ⇒ 现有六个技能的调用点一行都不用改。
    */
-  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number, chargePipes?: number): void;
+  /** 双槽(2026-10-06):target 指定技能1("lunge")或技能2("skill2")那颗键 */
+  setSkillState(target: "lunge" | "skill2", cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number, chargePipes?: number): void;
   /**
    * 球种预告徽标(击球键上方):game-root 每帧喂 Player.previewKind 的结果;
    * null = 无来球,隐藏。只报球种 —— 自动这个模式读数在键名上(见 setAutoMark)。
@@ -1230,7 +1247,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
   // 挂在按钮圆内底部,不参与 paint 重画;透明度随 padAlpha,由 apply() 同步。
   let labelOp: UIOpacity | null = null;
   let labelComp: Label | null = null;
-  if (action === "swing" || action === "lunge") {
+  if (action === "swing" || isSkillAction(action)) {
     const PS = CFG.padSkin;
     const ln = new Node(`label-${action}`);
     ln.layer = Layers.Enum.UI_2D;
@@ -1259,7 +1276,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
   // (滑杆最低时读数仍要读得出来,理由见 input/pad-cd.ts)。圆心抬高 numY·r 让开键名标签。
   let cdOp: UIOpacity | null = null;
   let cdComp: Label | null = null;
-  if (action === "lunge") {
+  if (isSkillAction(action)) {
     const cn = new Node(`cd-${action}`);
     cn.layer = Layers.Enum.UI_2D;
     cn.addComponent(UITransform);
@@ -1311,7 +1328,7 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
   // (「球没过来」「挥拍中」「球不够高」…判据在 skills.skillBlockReason,文案在 config.skills.blockText)
   let hintOp: UIOpacity | null = null;
   let hintComp: Label | null = null;
-  if (action === "lunge") {
+  if (isSkillAction(action)) {
     const CDK = CFG.padSkin.cd;
     const hn = new Node(`hint-${action}`);
     hn.layer = Layers.Enum.UI_2D;
@@ -1357,7 +1374,8 @@ function makeButton(action: PadAction, cluster: Node, opts: TouchPadOpts, recs: 
     aimEcho: 0, aimEchoY: 0, autoMark: false,
     labelOp, labelComp, cdOp, cdComp,
     badgeComp, badgeOp, hintComp, hintOp,
-    cdRatio: 0, cdGate: makeCdGate(), cdSec: 0, skillReady: true, skillId: "lunge", skillBlock: null, readyPulsing: false,
+    cdRatio: 0, cdGate: makeCdGate(), cdSec: 0, skillReady: true,
+    skillId: action === "lunge" ? "lunge" : "", skillBlock: null, readyPulsing: false,
     // 充能层自带一个 gate:与 cdGate 各记各的基准,两层互不顶掉(见 BtnRec.chargeGate 注)
     chargeRatio: 0, chargePipes: 0, chargeGate: makeCdGate(),
   };
@@ -1610,7 +1628,8 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   rightCluster.layer = Layers.Enum.UI_2D;
   const rightTrans = rightCluster.addComponent(UITransform);
   rightTrans.setAnchorPoint(1, 0); // 以右下角为锚点
-  // 跨步 (-235,50)+r40 伸到 x=-275、击球 (-135,140)+r46 伸到 y=186,取 280×200(同上,只算包围盒)
+  // 跨步 (-235,50)+r40 伸到 x=-275、击球 (-135,140)+r46 伸到 y=186,取 280×200(同上,只算包围盒);
+  // 技能2 (-235,140)+r34 伸到 (-269..-201, 106..174),落在同一包围盒内,尺寸不动。
   rightTrans.setContentSize(280, 200);
   rightCluster.setParent(layer);
 
@@ -1725,7 +1744,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
       // 技能按钮处于 CD 中或不满足释放门槛时拒绝触发:
       // 静默轻震曾是老写法 —— 玩家只觉得「按了没反应」。现在抖动 + 红环 + 键内封条微弹,
       // 按错时因果清晰、反馈强烈。
-      if (rec.action === "lunge") {
+      if (isSkillAction(rec.action)) {
         if ((rec.cdRatio ?? 0) > 0 || rec.skillReady === false) {
           Tween.stopAllByTarget(rec.node);
           tween(rec.node)
@@ -2347,7 +2366,7 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   const syncReadyPulse = (rec: BtnRec): void => {
     const charge = isChargeSkill((rec.skillId ?? "lunge") as SkillId);
     const metered = charge ? (rec.chargePipes ?? 0) >= 1 : (rec.cdRatio ?? 0) <= 0;
-    const on = rec.action === "lunge" && metered
+    const on = isSkillAction(rec.action) && metered
       && rec.skillReady === true && !rec.skillBlock;
     if (on === !!rec.readyPulsing) return;
     rec.readyPulsing = on;
@@ -2369,9 +2388,14 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
     }
   };
 
-  const setSkillState = (cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec = 0, blockReason?: string | null, chargeRatio = 0, chargePipes = 0): void => {
+  /**
+   * 技能键运行时状态(双槽 2026-10-06):target 指定喂哪颗键 —— "lunge" = 技能1 键
+   * (历史遗留动作名),"skill2" = 技能2 键。两颗键各喂各的,参数语义完全一致;
+   * 空槽喂 skillId=""(键面画空槽横杠)+ blockReason(config.skills.blockText.emptySlot)。
+   */
+  const setSkillState = (target: "lunge" | "skill2", cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec = 0, blockReason?: string | null, chargeRatio = 0, chargePipes = 0): void => {
     for (const rec of recs) {
-      if (rec.action !== "lunge") continue;
+      if (rec.action !== target) continue;
       const block = blockReason ?? null;
       // 比例项走 gate:基准是「上一次画上屏的值」。直接比 rec.cdRatio 的旧写法基准每帧被
       // 覆盖,阈值退化成相邻帧增量(= 1/maxCd),长 CD 的扫掠会整段冻结(见 pad-cd.makeCdGate)
@@ -2597,9 +2621,10 @@ class TouchPadController {
     this.handle?.setSwingGlow(level);
   }
 
-  /** 设置技能按键运行时状态 (CD、就绪、技能名、剩余秒、充能比例与管数);未挂载时静默忽略 */
-  setSkillState(cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number, chargePipes?: number): void {
-    this.handle?.setSkillState(cdRatio, ready, skillId, skillName, cdSec, blockReason, chargeRatio, chargePipes);
+  /** 设置技能按键运行时状态 (CD、就绪、技能名、剩余秒、充能比例与管数);未挂载时静默忽略。
+   *  双槽(2026-10-06):target 指定技能1("lunge")或技能2("skill2")那颗键。 */
+  setSkillState(target: "lunge" | "skill2", cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec?: number, blockReason?: string | null, chargeRatio?: number, chargePipes?: number): void {
+    this.handle?.setSkillState(target, cdRatio, ready, skillId, skillName, cdSec, blockReason, chargeRatio, chargePipes);
   }
 
   setShotPreview(kind: string | null): void {

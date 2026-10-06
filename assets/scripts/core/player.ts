@@ -3,7 +3,7 @@
 // 手感要点集中在这里,数值全在 config.ts
 // ============================================================
 import { CFG } from "./config";
-import { clamp, lerp, approach, sweptHit } from "./utils";
+import { clamp, lerp, approach, sweptHit, inv } from "./utils";
 import { Physics, FuturePt, flightFramesToClosest } from "./physics";
 import { Gait } from "./gait";
 import { Pace } from "./pace";
@@ -357,31 +357,38 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
   p.px = p.x; p.py = p.y; p.sqPrev = p.sq;
 
   // ---------- 动态技能与跨步救球状态机 ----------
-  // 触发判断放在持续推进之前:按下当帧立即爆发
-  const skillHit = inp.skillPressed || inp.lungePressed;
-  // 滑轨模式下方向解析:若 targetX 存在且与当前位置有明显位移,以目标几何方位为最高优先级(身后往后,身前往前);
-  // 否则取明确传入的 skillDir/lungeDir(来自滑轨最后滑动手势或摇杆/按键);全无则兜底 undefined 由各技能决定
-  let dir = inp.skillDir ?? inp.lungeDir;
-  if (inp.targetX !== undefined && Math.abs(inp.targetX - p.x) > 4) {
-    dir = inp.targetX > p.x ? 1 : -1;
-  }
-  if (skillHit && ball && Skills.canActivate(p, ball)) {
-    const success = Skills.activate(p, ball, dir);
-    if (success && p.skill) {
-      p.stats.skillCasts++;             // 三星判据「释放技能 N 次」:lunge 也是五技能之一,计入
-      // 影分身**先落地再播起手**:onSkill 那条链要读"刚出生的是几号分身"(取身份色做粒子与辉光)
-      // 和"在场几个"(飘字)。旧写法把召唤排在 onSkill 之后 —— 单分身时无所谓,多分身之后起手字会
-      // 少报一个、爆开的还是上一号的色(症状:召第二个时字写「已在场 1 个」、脚下炸的是紫)。
-      if (p.skill.id === "shadow") {
-        // 影分身实体落点:skills.activate 只记账(shadowCast),create() 工厂在本模块,
-        // 所以召唤在这里完成 —— AI 状态由 core/shadow.ts 首次驱动时懒初始化(避免 player→ai 成环)
-        spawnShadowClone(p);
-      }
-      inp.onSkill && inp.onSkill(p, p.skill.id);
-      if (p.skill.id === "lunge") {
-        if (inp.onLunge) inp.onLunge(p);
-        inp.targetX = undefined; // 跨步冲量接管,清空当帧定点避免与跨步初速度竞争
-      }
+  // 触发判断放在持续推进之前:按下当帧立即爆发。
+  // 双槽路由(2026-10-06):槽1 = 兼容位 skillPressed/lungePressed(AI 决策与全部回归工具
+  // 只走这里),槽2 = skill2Pressed(真人第二技能键)。两槽同帧都按就各试各的,互不挤兑 ——
+  // 各槽的 canActivate/activate 本来就按槽寻址(skills.ts 的 slot 参数)。
+  // 方向解析:滑轨模式下 targetX 与当前位置有明显位移时,以目标几何方位为最高优先级
+  // (身后往后,身前往前),对两槽一视同仁;否则取各自键面的方向(滑轨最后滑动手势或摇杆/按键)。
+  const sliderDir = inp.targetX !== undefined && Math.abs(inp.targetX - p.x) > 4
+    ? (inp.targetX > p.x ? 1 : -1)
+    : undefined;
+  const slotHits: Array<{ slot: 1 | 2; hit: boolean; dir?: number }> = [
+    { slot: 1, hit: !!(inp.skillPressed || inp.lungePressed), dir: sliderDir ?? inp.skillDir ?? inp.lungeDir },
+    { slot: 2, hit: !!inp.skill2Pressed, dir: sliderDir ?? inp.skill2Dir },
+  ];
+  for (const { slot, hit, dir } of slotHits) {
+    if (!hit || !ball || !Skills.canActivate(p, ball, slot)) continue;
+    const success = Skills.activate(p, ball, dir, slot);
+    if (!success) continue;
+    const castId = Skills.slotState(p, slot)!.id;
+    p.stats.skillCasts++;             // 三星判据「释放技能 N 次」:lunge 也是五技能之一,计入
+    // 影分身**先落地再播起手**:onSkill 那条链要读"刚出生的是几号分身"(取身份色做粒子与辉光)
+    // 和"在场几个"(飘字)。旧写法把召唤排在 onSkill 之后 —— 单分身时无所谓,多分身之后起手字会
+    // 少报一个、爆开的还是上一号的色(症状:召第二个时字写「已在场 1 个」、脚下炸的是紫)。
+    // 判据按 id 不按槽:影分身装在槽2照样走同一条召唤路。
+    if (castId === "shadow") {
+      // 影分身实体落点:skills.activate 只记账(shadowCast),create() 工厂在本模块,
+      // 所以召唤在这里完成 —— AI 状态由 core/shadow.ts 首次驱动时懒初始化(避免 player→ai 成环)
+      spawnShadowClone(p);
+    }
+    inp.onSkill && inp.onSkill(p, castId);
+    if (castId === "lunge") {
+      if (inp.onLunge) inp.onLunge(p);
+      inp.targetX = undefined; // 跨步冲量接管,清空当帧定点避免与跨步初速度竞争(哪槽装的都一样)
     }
   }
 
@@ -399,7 +406,9 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 跨步中:vx 在触发帧已锁定(含跑速+爆发),这里只推进帧数与判定区扩大
     if (p.lungeT >= LG.duration) {
       p.lungeT = -1;
-      p.lungeCd = p.skill ? p.skill.cd : LG.cooldownFrames;
+      // 双槽:冷却读装着 lunge 的那一槽(slotOfSkill 判,槽2装的跨步同样同步)
+      const ls = Skills.slotOfSkill(p, "lunge");
+      p.lungeCd = ls ? ls.cd : LG.cooldownFrames;
     }
   } else if (p.lungeCd > 0) {
     p.lungeCd--;
@@ -647,8 +656,8 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 那一拍反而够不着刚才自己判成"该打"的球。不重复出拍由 p.swingT < 0(整条 else-if 链)
     // 与 ball.lastHitter(打完就是自家球)两头钉死。
     startSwing(p, ball, LG.autoAim);
-  } else if ((p.smashAutoT ?? 0) > 0 && !p.isAI && SM.autoReturn && p.skill
-    && p.skill.id === "smash" && p.skill.buffT > 0 && ball && Player.autoSwingDue(p, ball, "smash")) {
+  } else if ((p.smashAutoT ?? 0) > 0 && !p.isAI && SM.autoReturn
+    && (Skills.slotOfSkill(p, "smash")?.buffT ?? 0) > 0 && ball && Player.autoSwingDue(p, ball, "smash")) {
     // 重击一键化(2026-10-04):上弦之后到点替玩家把那一记暴扣轰出去 —— 择帧与跨步共用同一条
     // autoSwingDue(够不着/界外/将死/隔网/自家球一律不起手),不另编一套时机,免得两处跑偏。
     // 排在跨步那一支之后是有意的:两扇窗同时开着时先让跨步代拍,因为它自带判定区尾段倍率,
@@ -657,14 +666,16 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     // 隔二十帧再代一下、又代一下,读起来就是"人物自己乱挥半天"。一次施放最多代一拍。
     // 不加必中:不碰 flashStrikeT,那一拍的"必定暴扣"由 modifyShot 在真打时兑现,
     // 走位误差照样决定这一拍能不能碰到球 —— 代劳的是时机,不是判定。
+    // 双槽(2026-10-06):armed 门读装着 smash 的那一槽(slotOfSkill),不认 p.skill.id。
     p.smashAutoT = 0;
     startSwing(p, ball, SM.autoAim);
-  } else if ((p.rageAutoT ?? 0) > 0 && !p.isAI && RG.autoReturn && p.skill
-    && p.skill.id === "rage" && p.skill.buffT > 0 && ball && Player.autoSwingDue(p, ball, "rage")) {
+  } else if ((p.rageAutoT ?? 0) > 0 && !p.isAI && RG.autoReturn
+    && (Skills.slotOfSkill(p, "rage")?.buffT ?? 0) > 0 && ball && Player.autoSwingDue(p, ball, "rage")) {
     // 怒气重击一键化(2026-10-04):按下之后到点替玩家把这一拍轰出去 —— 与跨步/重击**共用同一条**
     // autoSwingDue 择帧尺子(够不着/界外/将死/隔网/自家球一律不起手),只是门控数值各取一份 config。
-    // 三条一键化永不并存(一场只有一个 skill.id,canActivate 互斥),这个次序只是把同一把尺子
-    // 写成同一条链;新增第四条判据之前先问:能不能复用这三条。
+    // 单槽时代三窗永不并存;双槽起(2026-10-06)两技能的待发窗可以同开,链序(跨步>重击>怒气)
+    // 即优先级:排前面的窗先代拍,排后面的窗留着下一拍 —— 与 modifyShot 的组合语义同一条规矩,
+    // 谁兑现谁结账,不会有"两个技能抢同一拍各打一遍"的事(swingT<0 与 else-if 链两头钉死)。
     // 起手**当场清窗**(与 smashAutoT 同侧,与 lungeAutoT 相反):它不兼判定区开关。
     // 不加必中:不碰 flashStrikeT,强度由 modifyShot 在真打时按怒气比例兑现 —— 代劳的是时机,不是判定。
     p.rageAutoT = 0;
@@ -1067,6 +1078,9 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   // perfectBoost/perfect.powerDeg 不生效,ShotResult 还按旧档上报,于是「下次挥击必定暴扣」
   // 的技能永远拿不到顶档反馈(晚按 9 帧的附魔拍实测 q=0.30、8 次同参 8 个落点)。
   // 钩子只读球员状态 + opt.lungeShot/opt.q,不依赖误差计算,前置安全。
+  // contactH 一并前置塞入(此时球还没被本函数改动):settle 已把球钉回记账帧接触点,
+  // 所以 modifyShot 读到的就是真实击球高度;预告通道用实时球位 —— 徽标不撒谎。
+  opt.contactH = CO.groundY - ball.y;
   const sm = Skills.modifyShot(p, opt);
   // 瞄准读数从哪儿来:实打读球员身上的 p.swingAim / p.swingLoft(由 update 的 aimOverride
   // 每步覆盖);球种预告可以把「还没起拍的玩家意图」(击球键上粘住的那次滑动)当 hint 传进来,
@@ -1132,6 +1146,26 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
   if (sm.forceSmash || jm) {
     shot.kind = "smash";
   }
+  // 闪现高度威力曲线(2026-10-06):接触点越高劈扣越狠。两条老杠杆都是死的 ——
+  // speedBoost 池封顶 5(30−25)早已被 perfect3+flash3.8 塞满;powerDeg 在球高 ≥200px
+  // 顶到 -24° 弧角地板。求解后乘算是唯一真实生效的"威力"(iaiStrike 同一先例:
+  // 飞行积分器不夹球速)。乘积≈1(vx 提速靠 vy 压平换)保证落点基本不动 ——
+  // 球更快更平,但不因快而出界。曲线 [minHeight, apexHeight] 从 (1,1) 升到 curve*;
+  // ≥apexHeight 整体跳到 apex*(威力台阶,演出档 flashApex 已在 modifyShot 判好)。
+  // 预告通道同算(徽标不撒谎);低球(≤minHeight)恒不乘算 = 维持现状。
+  // speed/deg 随乘后矢量重算:hit 事件的 power 读数与丝带/球种分类才不会报旧账。
+  let flashApex = false;
+  if (sm.skillKind === "flash") {
+    const FL = C.skills.flash;
+    const t = inv(FL.minHeight, FL.apexHeight, opt.contactH ?? 0);
+    const kx = t >= 1 ? FL.apexVxMul : 1 + (FL.curveVxMul - 1) * t;
+    const ky = t >= 1 ? FL.apexVyMul : 1 + (FL.curveVyMul - 1) * t;
+    shot.vx *= kx;
+    shot.vy *= ky;
+    shot.speed = Math.hypot(shot.vx, shot.vy);
+    shot.deg = Math.atan2(-shot.vy, Math.abs(shot.vx)) * 180 / Math.PI;
+    flashApex = !!sm.flashApex;
+  }
   if (shot.kind === "smash" && !opt.preview) p.stats.smashes++;
   return {
     kind: shot.kind, q, sweet, perfect,
@@ -1145,6 +1179,7 @@ function buildShot(p: PlayerEntity, ball: Ball, opt: HitOpt = {}): ShotResult {
     heat: p.heat,
     lungeShot,
     jumpSmash: jm,
+    flashApex,
     // 瞄准档位只在字符串瞄准(真人路径 mid/deep/near)时有意义;AI 直接给数值深度,不上报
     aim: typeof swingAim === "string" ? swingAim : undefined,
     skillKind: sm.skillKind,

@@ -26,7 +26,8 @@ import { textW, wrapText } from "../assets/scripts/core/text-metrics";
 import { CAMPAIGN_STAGES } from "../assets/scripts/core/campaign";
 import { Skills } from "../assets/scripts/core/skills";
 import {
-  SK, layoutSkillPlate, plateOverlaps, plateOverflow, skillCardX, skillStatus, skillMeter,
+  SK, layoutSkillPlate, panelStackFits, plateOverlaps, plateOverflow, skillBtnLabel,
+  skillCardX, skillStatus, skillMeter, slotChipText,
   type PlateItem, type PlateLayout, type SkillLike,
 } from "../assets/scripts/ui/skill-layout";
 
@@ -34,27 +35,6 @@ const h = makeChecker({});
 const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
 
 const LIST = CFG.skills.list as unknown as SkillLike[];
-
-/** 面板那一竖排:每一项都按 skill-dialog 实际会摆的位置算 */
-function panelStackFits(panelH: number): string[] {
-  const bad: string[] = [];
-  const half = panelH / 2;
-  const MARGIN = 10;
-  const titleTop = SK.titleY + 24 / 2 + 4;            // 24 号标题 + 投影
-  const hintBot = SK.hintY - SK.hintSize / 2;
-  const cardsTop = SK.cardsY + SK.cardH / 2;
-  const cardsBot = SK.cardsY - SK.cardH / 2 - SK.cardEdge;   // 厚底边探出卡外
-  const plateTop = SK.plateY + SK.plateH / 2;
-  const plateBot = SK.plateY - SK.plateH / 2;
-  const finTop = SK.finY + SK.finH / 2;
-  const finBot = SK.finY - SK.finH / 2 - SK.finShadow;       // uiButton 斜切阴影再探 4
-  if (titleTop > half - MARGIN) bad.push(`标题探出面板上缘(${titleTop} > ${half - MARGIN})`);
-  if (hintBot <= cardsTop) bad.push(`提示压到卡片行(${hintBot} <= ${cardsTop})`);
-  if (cardsBot <= plateTop) bad.push(`卡片压到详情板(${cardsBot} <= ${plateTop})`);
-  if (plateBot <= finTop) bad.push(`详情板压到完成按钮(${plateBot} <= ${finTop})`);
-  if (finBot < -half + MARGIN) bad.push(`完成按钮探出面板下缘(${finBot} < ${-half + MARGIN})`);
-  return bad;
-}
 
 /**
  * 卡片内部那一竖排 —— 这条就是「说明为什么必须搬出卡片」的算术证据:
@@ -107,7 +87,11 @@ console.log("技能配置弹窗:面板竖排不撞、详情板不出列不压字
 // ---------- A) 面板竖排 ----------
 {
   const bad = panelStackFits(SK.panelH);
-  ok(bad.length === 0, `竖排(标题/卡片/详情板/完成)互不压字、全在面板内${bad.length ? ` → ${bad.join(" / ")}` : ""}`);
+  ok(bad.length === 0, `竖排(标题/槽位行/卡片/详情板/完成)互不压字、全在面板内${bad.length ? ` → ${bad.join(" / ")}` : ""}`);
+  // 槽位行自身:两颗 chip 不出面板、高度够拇指(TOUCH_MIN)
+  ok(SK.slotH >= 44, `槽位 chip 高 ${SK.slotH} >= TOUCH_MIN 44`);
+  ok(SK.slotW * 2 + SK.slotGap <= SK.panelW - 32, `两颗槽位 chip 总宽 ${SK.slotW * 2 + SK.slotGap} <= 面板宽 ${SK.panelW} 减边距`);
+  ok(slotChipText(1, "时空") === "技能1 · 时空" && slotChipText(2, null) === "技能2 · 空", `槽位读数 =「${slotChipText(1, "时空")} / ${slotChipText(2, null)}」`);
   ok(SK.panelH <= 540 - 2 * 50, `面板高 ${SK.panelH} <= 屏幕 540 减上下各 50 留白`);
   const cbad = cardStackFits();
   ok(cbad.length === 0, `卡片内竖排(标签/名字/CD/装备按钮)各留其位${cbad.length ? ` → ${cbad.join(" / ")}` : ""}`);
@@ -128,9 +112,9 @@ console.log("技能配置弹窗:面板竖排不撞、详情板不出列不压字
   let worstStack = 0, worstDesc = 0, maxLines = 1;
   for (const def of LIST) {
     for (const unlocked of [true, false]) {
-      for (const equipped of [true, false]) {
-        const L = layoutSkillPlate(def, unlocked, equipped);
-        const tag = `${def.shortName}/${unlocked ? "解锁" : "锁定"}/${equipped ? "已装" : "未装"}`;
+      for (const equipSlot of [0, 1, 2] as const) {
+        const L = layoutSkillPlate(def, unlocked, equipSlot);
+        const tag = `${def.shortName}/${unlocked ? "解锁" : "锁定"}/槽${equipSlot}`;
         const of = plateOverflow(L);
         ok(of.length === 0, `${tag}:详情板不出内容列、板高够用${of.length ? ` → ${of.join(" / ")}` : ""}`);
         const ov = plateOverlaps(L);
@@ -143,20 +127,30 @@ console.log("技能配置弹窗:面板竖排不撞、详情板不出列不压字
       }
     }
   }
-  console.log(`\n  参照:最需要 ${worstStack.toFixed(1)} 高的板(现有 ${SK.plateH})、说明最宽一行 ${worstDesc}px(可用 ${layoutSkillPlate(LIST[0], true, false).availW})、最多 ${maxLines} 行`);
+  console.log(`\n  参照:最需要 ${worstStack.toFixed(1)} 高的板(现有 ${SK.plateH})、说明最宽一行 ${worstDesc}px(可用 ${layoutSkillPlate(LIST[0], true, 0).availW})、最多 ${maxLines} 行`);
   // 今天的文案必须全是单行 —— 变成多行是允许的下限,但先钉住「一行放得下」这个事实
   for (const def of LIST) {
-    const L = layoutSkillPlate(def, true, false);
+    const L = layoutSkillPlate(def, true, 0);
     ok(L.descLines === 1, `${def.shortName}:说明在 ${SK.descSize} 号下 ${L.descLines} 行(读得完整)`);
   }
-  // 状态三态文案钉住:改的人只可能改 config.ts 的技能表
-  ok(skillStatus(LIST[4], false, false) === "未解锁 · Lv.5", `锁定态文案 =「${skillStatus(LIST[4], false, false)}」`);
-  ok(skillStatus(LIST[0], true, true) === "已装备" && skillStatus(LIST[0], true, false) === "可装备", "解锁态文案 =「已装备 / 可装备」");
+  // 状态四态文案钉住(双技能槽):改的人只可能改 skill-layout
+  ok(skillStatus(LIST[4], false, 0) === "未解锁 · Lv.5", `锁定态文案 =「${skillStatus(LIST[4], false, 0)}」`);
+  ok(skillStatus(LIST[0], true, 1) === "已装槽1" && skillStatus(LIST[0], true, 2) === "已装槽2"
+    && skillStatus(LIST[0], true, 0) === "可装备", "解锁态文案 =「已装槽1 / 已装槽2 / 可装备」");
+
+  // 卡片动作按钮的文案真值表:跟着「选中槽 × 装备位置 × 槽2有没有货」走
+  // (槽1恒有技能的口径在这张表里读得出来:槽1那款挪不进空槽2 = 惰性「已装槽1」)
+  const lbl = (sel: 1 | 2, eq: 0 | 1 | 2, occ: boolean): string => skillBtnLabel(LIST[0], true, sel, eq, occ);
+  ok(lbl(1, 0, false) === "装入槽1" && lbl(2, 0, false) === "装入槽2", `未装 →「装入槽N」(${lbl(1, 0, false)} / ${lbl(2, 0, false)})`);
+  ok(lbl(1, 1, true) === "已装槽1" && lbl(2, 2, true) === "卸下槽2", `装在选中槽 → 槽1惰性「已装槽1」、槽2「卸下槽2」(${lbl(1, 1, true)} / ${lbl(2, 2, true)})`);
+  ok(lbl(1, 2, true) === "换到槽1" && lbl(2, 1, true) === "换到槽2", `装在另一槽且槽2有货 →「换到槽N」(${lbl(1, 2, true)} / ${lbl(2, 1, true)})`);
+  ok(lbl(2, 1, false) === "已装槽1", `槽1那款挪不进空槽2 → 惰性「已装槽1」(${lbl(2, 1, false)})`);
+  ok(skillBtnLabel(LIST[4], false, 1, 0, false) === "Lv.5 解锁", "未解锁 →「Lv.N 解锁」");
 }
 
 // ---------- C) 折行本身:任何输入都不横向溢出 ----------
 {
-  const avail = layoutSkillPlate(LIST[0], true, false).availW;
+  const avail = layoutSkillPlate(LIST[0], true, 0).availW;
   const cases = [
     ["纯中文长句", "开启一点五秒子弹时间球速与对手大幅减慢自身高速敏捷穿梭从容反击完成一次完美的场地控制"],
     ["中英混排", "折跃瞬间时停悬空,闪至 shuttlecock 下方高点,必定凌空劈扣 100%"],
@@ -238,7 +232,7 @@ console.log("技能配置弹窗:面板竖排不撞、详情板不出列不压字
 // ---------- F) selftest:反例必须被报警 ----------
 if (process.argv.includes("--selftest")) {
   console.log("\nselftest:拿人造反例验判据有没有牙齿");
-  const base = layoutSkillPlate(LIST[0], true, true);
+  const base = layoutSkillPlate(LIST[0], true, 1);
   const mk = (key: string, left: number, w: number, cy: number, h: number, size = 9): PlateItem =>
     ({ key, role: "desc", lines: ["x"], size, lineH: h, h, w, left, x: left, cy, align: 0 });
 
@@ -267,14 +261,15 @@ if (process.argv.includes("--selftest")) {
 
   // (c) 超长文案:说明把详情板撑爆
   const bloatedDef: SkillLike = { ...LIST[0], desc: "快速滑步".repeat(20) };
-  const BL = layoutSkillPlate(bloatedDef, true, false);
+  const BL = layoutSkillPlate(bloatedDef, true, 0);
   const of = plateOverflow(BL);
   ok(of.some((s) => s.startsWith("stackH")), `60 字说明把需求板高顶到 ${BL.stackH.toFixed(1)},红线 ${SK.plateH} 拦得住`);
   ok(of.some((s) => s.startsWith("说明折")), `同时被报「说明折 ${BL.descLines} 行 > 上限 ${SK.descMaxLines}」`);
 
-  // (d) 面板缩回旧高度:完成按钮被裁出面板
-  const tight = panelStackFits(370);
-  ok(tight.length > 0, `面板退回 370 高会被报警(${tight[0] ?? "无"})`);
+  // (d) 面板缩回旧高度(424 = 双槽加高前)或更矮:槽位行/完成按钮被裁出面板
+  const tight = panelStackFits(424);
+  ok(tight.length > 0, `面板退回加槽位行前的 424 高会被报警(${tight[0] ?? "无"})`);
+  ok(panelStackFits(370).length > 0, "更矮的 370 也拦得住");
   ok(panelStackFits(SK.panelH).length === 0, "同一个判据下现面板高度干净");
 
   // (e) 七张卡沿用六张那一轮的 104/112 间距:整排直接出面板。
@@ -314,7 +309,7 @@ if (process.argv.includes("--selftest")) {
 // ---------- E) --preview:把排版打成行表,不开编辑器也能 eyeball ----------
 if (process.argv.includes("--preview")) {
   for (const def of LIST) {
-    const L = layoutSkillPlate(def, true, false);
+    const L = layoutSkillPlate(def, true, 0);
     console.log(`\n预览 ${def.shortName}(${def.name}):板 ${L.plateW}×${L.plateH},内容列 ${L.innerL.toFixed(0)}…${L.innerR.toFixed(0)},需求高 ${L.stackH.toFixed(1)}`);
     const rows: { cy: number; tag: string; text: string }[] = [];
     for (const it of L.items) {

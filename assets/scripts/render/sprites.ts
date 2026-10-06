@@ -21,6 +21,7 @@
 // ============================================================
 import { Color, Graphics } from "cc";
 import { CFG } from "../core/config";
+import { Skills } from "../core/skills";
 import { Player, Ball, FaceKind, SkinDef, SwingStyle, Theme } from "../core/types";
 import { Physics } from "../core/physics";
 import { lerp, clamp, TAU, D2R } from "../core/utils";
@@ -1122,8 +1123,8 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     g.stroke();
   }
 
-  // 引力吸球向心涡旋力场
-  if (p.skill && p.skill.magnetPulling) {
+  // 引力吸球向心涡旋力场(双槽:装在哪槽都画,slotOfSkill 判,不认 p.skill.id)
+  if (Skills.slotOfSkill(p, "magnet")?.magnetPulling) {
     const rot = t * 0.18;
     const cx = tx + tw * 0.5 + 14, cy = bodyTop + bodyH * 0.45;
     // 双层向心旋转吸积环
@@ -1143,9 +1144,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     g.fill();
   }
 
-  // 百分百重击聚能暴气:全身升腾烈焰斗气与火浪
-  if (p.skill && p.skill.id === "smash" && p.skill.buffT > 0) {
-    const buffK = clamp(p.skill.buffT / C.skills.smash.buffDuration, 0.2, 1);
+  // 百分百重击聚能暴气:全身升腾烈焰斗气与火浪(双槽:装在哪槽都画)
+  const smashSlot = Skills.slotOfSkill(p, "smash");
+  if (smashSlot && smashSlot.buffT > 0) {
+    const buffK = clamp(smashSlot.buffT / C.skills.smash.buffDuration, 0.2, 1);
     const flameCycle = t * 0.24;
     // 脚底烈焰脉冲光环
     const pulseR = 16 + Math.sin(flameCycle * 1.6) * 4.5;
@@ -2488,10 +2490,11 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   g.stroke();
 
   // ---------- 9. 命中与击球反馈辉光 ----------
-  // 百分百重击技能蓄力附魔:炽热金红与烈焰高光外晕与翻滚火舌
-  const isPowerSmashBuff = !!(p.skill && p.skill.id === "smash" && p.skill.buffT > 0);
-  if (isPowerSmashBuff && p.skill) {
-    const flameU = Math.sin((p.skill.buffT || 0) * 0.28);
+  // 百分百重击技能蓄力附魔:炽热金红与烈焰高光外晕与翻滚火舌(双槽:装在哪槽都画)
+  const smashBuff = Skills.slotOfSkill(p, "smash");
+  const isPowerSmashBuff = !!(smashBuff && smashBuff.buffT > 0);
+  if (isPowerSmashBuff && smashBuff) {
+    const flameU = Math.sin((smashBuff.buffT || 0) * 0.28);
     const outer = isometricHeadPts(R, headRx + 4.5 + flameU * 1.5, headRy + 5.0 + flameU * 1.5, CIRCLE_SEGS);
     glowStroke(g, R, outer, "#f43f5e", 4.2 + 8);
     glowStroke(g, R, head, "#ffe14d", 3.6 + 6);
@@ -2502,7 +2505,7 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
       const angF = (i / 6) * TAU + flameU * 0.4;
       const hx0 = Math.cos(angF) * headRx;
       const hy0 = Math.sin(angF) * headRy;
-      const tongueLen = 5 + Math.sin(angF * 3 + (p.skill.buffT || 0) * 0.4) * 3.5;
+      const tongueLen = 5 + Math.sin(angF * 3 + (smashBuff!.buffT || 0) * 0.4) * 3.5;
       lineSeg(g, R, hx0, hy0, hx0 + Math.cos(angF) * tongueLen, hy0 + Math.sin(angF) * tongueLen);
     }
     g.stroke();

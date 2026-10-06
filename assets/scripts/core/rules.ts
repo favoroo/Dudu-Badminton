@@ -354,9 +354,12 @@ function startCampaign(stage: StageDef): void {
   if (stage.modifiers.player?.cooldownMul) {
     const cMul = stage.modifiers.player.cooldownMul;
     for (const p of R.players) {
-      if (p.skill) {
-        p.skill.maxCd = Math.round(p.skill.maxCd * cMul);
-        p.skill.cd = 0;
+      // 双槽(2026-10-06):关卡减免对两个技能槽一视同仁(槽2 是玩家侧增强,同一条关卡规则管)
+      for (const s of [p.skill, p.skill2]) {
+        if (s) {
+          s.maxCd = Math.round(s.maxCd * cMul);
+          s.cd = 0;
+        }
       }
     }
   }
@@ -472,6 +475,8 @@ function applyShot(ball: Ball, shot: ShotLike): void {
     // 怒气在兑现当帧就归零了,事件排空时读到的永远是 0 —— 四档演出会全打成最低档。
     rageRatio: shot.rageRatio ?? null,
     jumpSmash: !!shot.jumpSmash,
+    // 闪现顶点天雷档(接触点 ≥ skills.flash.apexHeight):表现层升档演出读它
+    flashApex: !!shot.flashApex,
     timingGrade: shot.timingGrade,
     // 这一拍是不是「自动击打」替玩家起的手:表现层只有早/晚时机教学读它(机器按的帧恒是
     // 时机环教人的那一帧,再教就是噪声)。质量/档位/怒气**一律不看来路** —— 代劳的是时机不是判定。

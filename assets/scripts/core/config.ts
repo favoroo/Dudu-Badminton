@@ -1013,6 +1013,13 @@ export const CFG = {
     // 0.45 而不是更低:整段只有 ~0.37s 真实时间。曾经给到 0.32×14 帧(≈0.73s),
     // 用户已经说过"重击卡住不好操控" —— 时停的爽点由前面那记定格负责,尾巴要短。
     flashSmashSlowFac: 0.45,  // 短慢放的时间缩放
+    // 顶点天雷(闪现扣杀命中接触点 ≥ skills.flash.apexHeight 的那一拍,game-root drain 升档):
+    // 在普通闪现命中(TIER_FIRE + skyThunder + shake20)之上再加一档。
+    flashApexShake: 26,       // 顶点档震屏(普通闪现命中 20)
+    flashApexPunch: 1.12,     // 顶点档推镜(普通 = flashCastPunch+0.05)
+    flashApexSlowmo: 16,      // 顶点档慢放时长(普通 flashSmashSlowmo=10;仍守上面"尾巴要短"的教训)
+    flashApexSlowFac: 0.4,    // 顶点档慢放缩放
+    flashApexBolts: 3,        // 顶点档天雷道数(普通 1 道;各道横向错位,读作"连环落雷")
 
     // 二、方向性击球火花
     sparkFanCount: 12,        // 扇形火花粒子数
@@ -1223,6 +1230,8 @@ export const CFG = {
     floatSkillLunge:       { text: "疾风重击!!", color: "#38bdf8", size: 26, life: 48, plate: "slant" },
     floatSkillSmash:       { text: "必杀重扣!!", color: "#f43f5e", size: 30, life: 54, plate: "star" },
     floatSkillFlash:       { text: "闪现扣杀!!", color: "#eab308", size: 32, life: 58, plate: "star" },
+    // 顶点天雷(接触点 ≥ skills.flash.apexHeight 的闪现扣杀)专属:比 floatSkillFlash 更顶一档
+    floatSkillFlashHigh:   { text: "苍穹制裁!!", color: "#facc15", size: 34, life: 64, plate: "star" },
     floatSkillMagnet:      { text: "引力回击!!", color: "#a855f7", size: 28, life: 50, plate: "slant" },
     floatSkillMagnetAir:   { text: "引力跳杀!!", color: "#a855f7", size: 30, life: 54, plate: "star" },
     floatSkillFocus:       { text: "时空贯穿!!", color: "#00f0ff", size: 28, life: 52, plate: "star" },
@@ -1394,7 +1403,10 @@ export const CFG = {
     maxQueued: 3,       // 待发放上限:同帧涌进三件事(重扣+落地+得分)也不至于排成一串礼花
     preemptRatio: 1.5,  // 队列已满时,来者 power 需 ≥ 队内最弱 × 此倍率才挤掉它
     gapMs: 26,          // 多段脉冲/排队段之间的间隔:短到读成一串、长到不糊成一坨
-    default: "standard",
+    // 出货默认 = 轻(用户口径 2026-10-06):震动这件事在饭桌上/外放场景里更容易是打扰,
+    // 想更狠的人会在设置页自己往右拖 —— 与球速默认走慢档同一套「默认偏保守」的取舍。
+    // 只影响没存过这一项的存档(老档已显式存 standard 的照读,见 settings-check ⑭)。
+    default: "low",
     // 表序必须从弱到强单调(haptic-check 有断言):设置页滑杆按下标定位。
     // 存 id 不存索引,与 pace/gait 同一套语义。
     levels: [
@@ -1591,9 +1603,11 @@ export const CFG = {
   // 旧的「双击方向键跨步」已删 —— 对拉时快速换向会稳定凑成双击,误触代价是一次带恢复期的爆发位移。
   // 触屏端的虚拟按键在输入适配层映射到同一套语义,不另立第二张表
   keys: {
-    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], lunge: ["KeyL"], swingFar: ["KeyJ"], swingNear: ["KeyK"], swingUp: ["KeyU"], swingDown: ["KeyI"] },
+    // 双技能槽(2026-10-06):lunge = 技能1 键(历史遗留名),skill2 = 技能2 键。
+    // p1 用 O(紧邻 U/I 击球三连),p2 用 \(紧邻 ;/' 与 p1 对称)。
+    p1: { left: ["KeyA"], right: ["KeyD"], jump: ["KeyW"], lunge: ["KeyL"], skill2: ["KeyO"], swingFar: ["KeyJ"], swingNear: ["KeyK"], swingUp: ["KeyU"], swingDown: ["KeyI"] },
     p2: {
-      left: ["ArrowLeft"], right: ["ArrowRight"], jump: ["ArrowUp"], lunge: ["Comma"],
+      left: ["ArrowLeft"], right: ["ArrowRight"], jump: ["ArrowUp"], lunge: ["Comma"], skill2: ["Backslash"],
       swingFar: ["Slash"], swingNear: ["Period"], swingUp: ["Semicolon"], swingDown: ["Quote"],
     },
     sys: {
@@ -1798,6 +1812,9 @@ export const CFG = {
       shadowUsed: "已召唤",
       rageArmed: "重击中",
       rageLow: "怒气未聚",
+      // 双技能槽(2026-10-06):技能2 键没带技能时的空槽封条(skillBlockReason 不判它,
+      // game-root 喂键面状态时直接给这条 —— 它不是"门槛没满足",是"根本没装")
+      emptySlot: "未携带",
     },
     // 各技能专属机制数值
     smash: {
@@ -1851,6 +1868,17 @@ export const CFG = {
       guaranteedQ: 0.95,    // 保底接触上报的击球质量:直接吃到 sweet+perfect 那套反馈
       maxHover: 118,        // 悬空离地高度上限(px):比跳跃顶点(~92)略高,是"跃至空中"不是浮在三层楼
       ghostFrames: 22,      // 人物身上雷光/残影停留帧数(纯视觉,不参与判定)
+      // ===== 2026-10-06 高度威力曲线 + 顶点天雷 =====
+      // 接触点越高劈扣越狠:求解后对出球矢量乘算(iaiStrike 同一先例 —— speedBoost 池封顶 5
+      // 早已被 perfect3+flash3.8 塞满、powerDeg 在球高 ≥200px 顶到 -24° 弧角地板,都是死杠杆;
+      // 乘算是唯一真实生效的"威力")。乘积≈1 保证落点基本不动:球更快更平,但不因快而出界。
+      // 曲线:contactH ∈ [minHeight, apexHeight] 从 (1,1) 插值到 curve*;≥apexHeight 整体
+      // 跳到 apex*(威力台阶 + 专属演出)。低球(≤minHeight)恒不乘算 = 维持现状。
+      apexHeight: 240,      // 顶点档门槛(px,约 3 倍网高):曲线终点+跳档点+演出门槛共用这一个数
+      curveVxMul: 1.15,     // 曲线顶值·水平(到 apexHeight 时达到;低球 1.0 = 不加)
+      curveVyMul: 0.88,     // 曲线顶值·垂直(<1 = 压平:水平提速靠削垂直滞空换,落点不漂)
+      apexVxMul: 1.30,      // 顶点档·水平终值(跳档:比曲线顶再快一截,真·天雷一击)
+      apexVyMul: 0.78,      // 顶点档·垂直终值(与 apexVxMul 乘积≈1.01,出界了先调这一对)
     },
     magnet: {
       pullFrames: 9,        // 吸球牵引时长 (约 0.15s 迅速吸至身前)

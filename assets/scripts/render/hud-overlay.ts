@@ -1,5 +1,5 @@
 // ============================================================
-// 画布内世界提示:落点预测圈、时机环(球上收缩环)、量化时机条、
+// 画布内世界提示:落点预测圈、时机环(球上收缩环)、
 // 热手火苗刻度、训练头顶时机条、赛点霓虹旗标。
 // 自老版 canvas 工程 src/render/hud.js 逐行移植 —— 比分/发球权等 DOM 层信息
 // 在 ui/hud.ts,这里只画「长在球场上」的东西。
@@ -10,7 +10,6 @@
 // ============================================================
 import { Color, Graphics, Label, Layers, Node, Tween, tween, UIOpacity, UITransform, Vec3 } from "cc";
 import { CFG } from "../core/config";
-import { clamp } from "../core/utils";
 import type { Ball } from "../core/types";
 import { Physics } from "../core/physics";
 import { Settings } from "../core/settings";
@@ -81,8 +80,6 @@ export class HudOverlay {
   // ---------- 时机环状态(game-root.updateSwingCue 每帧喂;null = 无来球不画)----------
   // progress: 收缩进度 0..1(1 = 收满贴球);locked: fc ≤ 最佳按拍帧的白闪档
   private ring: { progress: number; locked: boolean } | null = null;
-  // ---------- 量化时机条(真人每拍命中后短暂显示;grade 带符号,-=早 +=晚)----------
-  private timingBars: { x: number; y: number; grade: number; life: number; max: number }[] = [];
 
   constructor(parent: Node, vp: Viewport) {
     this.vp = vp;
@@ -163,8 +160,6 @@ export class HudOverlay {
     if (b && b.live && !b.held && this.ring && Settings.hintLanding) {
       this.timingRingDraw(b);
     }
-    // ---------- 量化时机条(真人命中后短暂显示,自带寿命)----------
-    this.timingBarDraw();
     // ---------- 热手火苗刻度(左上角,点火才出现)----------
     this.heatGauge(R);
   }
@@ -172,12 +167,6 @@ export class HudOverlay {
   /** game-root.updateSwingCue 每帧喂时机环状态;null = 无来球 */
   setTimingRing(s: { progress: number; locked: boolean } | null): void {
     this.ring = s;
-  }
-
-  /** 真人命中后在击球点上方画一拍量化时机条(grade ∈ [-1,1],负=早 正=晚) */
-  showTimingBar(wx: number, wy: number, grade: number): void {
-    this.timingBars.push({ x: wx, y: wy, grade, life: 40, max: 40 });
-    if (this.timingBars.length > 4) this.timingBars.shift();
   }
 
   // ---------- 时机环:球上收缩环(该什么时候按)----------
@@ -203,48 +192,6 @@ export class HudOverlay {
       g.circle(cx, cy, r);
       g.stroke();
     }
-  }
-
-  // ---------- 量化时机条:左右 = 早/晚,中央白段 = 完美,金段 = 甜蜜 ----------
-  // 命中后挂在击球点上方淡出 —— 「这一拍差在哪」用位置说话,不用读字。
-  private timingBarDraw(): void {
-    if (!this.timingBars.length) return;
-    const g = this.g;
-    const w = 64;
-    const h = 7;
-    const goldHalf = C.sweet.coreRatio / 2;   // 甜蜜段半宽(条的比例坐标,1 = 半条)
-    const whiteHalf = C.perfect.coreRatio / 2; // 完美段半宽
-    for (const tb of this.timingBars) {
-      tb.life--;
-      const a = Math.min(1, tb.life / (tb.max * 0.4));
-      const cx = this.vp.x(tb.x);
-      const cy = this.vp.y(tb.y);
-      g.fillColor = withAlpha("#000000", 0.55 * a);
-      g.rect(cx - w / 2 - 2, cy - h / 2 - 2, w + 4, h + 4);
-      g.fill();
-      g.fillColor = withAlpha(pal("#ffe14d"), 0.5 * a);
-      g.rect(cx - w * goldHalf, cy - h / 2, w * goldHalf * 2, h);
-      g.fill();
-      g.fillColor = withAlpha("#ffffff", 0.78 * a);
-      g.rect(cx - w * whiteHalf, cy - h / 2, w * whiteHalf * 2, h);
-      g.fill();
-      g.strokeColor = withAlpha("#ffffff", 0.5 * a);
-      g.lineWidth = 1;
-      g.rect(cx - w / 2, cy - h / 2, w, h);
-      g.stroke();
-      const mx = cx + w / 2 * clamp(tb.grade, -1, 1);
-      const inSweet = Math.abs(tb.grade) <= C.sweet.coreRatio;
-      g.fillColor = withAlpha(inSweet ? "#00f0ff" : "#ff8a8a", 0.95 * a);
-      g.rect(mx - 1.6, cy - h / 2 - 3, 3.2, h + 6);
-      g.fill();
-    }
-    // 过期条原地压缩(同 world.compactGhosts 的写法):这行曾在有存活条时每帧 filter 出新数组
-    let alive = 0;
-    for (let i = 0; i < this.timingBars.length; i++) {
-      const tb = this.timingBars[i];
-      if (tb.life > 0) this.timingBars[alive++] = tb;
-    }
-    this.timingBars.length = alive;
   }
 
   // ---------- 热手火苗刻度:左上角一排锯齿小火苗,亮格数 = 当前连击热度 ----------

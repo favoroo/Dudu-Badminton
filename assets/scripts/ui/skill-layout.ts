@@ -33,11 +33,15 @@ function shearOf(h: number, deg: number): number {
  * 坐标一律以「面板中心」为原点(cc 的 y 朝上),详情板内的项以「板中心」为原点。
  */
 export const SK = {
-  panelW: 700, panelH: 424,
+  // 双技能槽(2026-10-06):面板加高到 440(判据上限 540-100)给槽位行腾地方,
+  // 英文副标与提示行删去(解锁提示卡片按钮上本就有「Lv.N 解锁」,点卡看说明是通用直觉)
+  panelW: 700, panelH: 440,
   /** 面板斜切角:kit.panel 的默认值,内容边界要按斜切后的最坏边算 */
   slantDeg: 3,
 
-  titleY: 182, subY: 156, hintY: 132, hintSize: 12,
+  titleY: 192,
+  /** 槽位行:技能1/技能2 两颗等宽槽位 chip(≥ TOUCH_MIN),点选 = 选定「往哪一槽装」 */
+  slotW: 250, slotH: 48, slotGap: 24, slotY: 147,
 
   /** 卡片:瘦成「标签 + 名字 + CD + 装备」,说明整条搬进详情板。
    *  0.0.25 起 6 款技能:118/128 是按 5 张横排定的,6 张总半宽 384 直接出 700 面板 ——
@@ -47,7 +51,7 @@ export const SK = {
    *  面板宽度**不动**(700):设计分辨率是 FIXED_HEIGHT,4:3 平板的可视宽度会掉到 ~720,
    *  把面板加宽到 800 在这种屏上直接出画。加第八款时这条路就到头了 ——
    *  那时该改成两行 4+3 栅格,而不是继续把卡压到 88 以下(名字两字 + 装备键已经贴边)。 */
-  cardW: 88, cardH: 126, cardPitch: 96, cardsY: 47,
+  cardW: 88, cardH: 126, cardPitch: 96, cardsY: 27,
   /** drawMenuCard 的厚底边探出卡外这么多;竖排判据要连着它一起量 */
   cardEdge: 4,
   chipY: 48, chipSize: 9,
@@ -57,7 +61,7 @@ export const SK = {
   btnW: 80, btnH: 44, btnY: -34,
 
   /** 详情板 */
-  plateW: 652, plateH: 104, plateY: -84, platePad: 14,
+  plateW: 652, plateH: 104, plateY: -105, platePad: 14,
   /** 内容列半宽:比「板宽/2 - 内边距」再收一点,给斜切和拇指留余量 */
   contentHalf: 300,
   headSize: 17, headH: 22,
@@ -65,7 +69,7 @@ export const SK = {
   descSize: 15, descLineH: 20, descLead: 8, descMaxLines: 2,
   padBottom: 14,
 
-  finW: 140, finH: 46, finY: -171,
+  finW: 140, finH: 46, finY: -186,
   /** uiButton 的斜切阴影向下探这么多 */
   finShadow: 4,
 } as const;
@@ -161,14 +165,82 @@ export function skillMeter(def: SkillLike): string {
   return def.kind === "charge" ? skillFillShots(def) : skillCd(def);
 }
 
-/** 详情板右上角那一格状态:三态只留一条文案,不再拆成「CD + Lv」两块(那正是压字来路) */
-export function skillStatus(def: SkillLike, unlocked: boolean, equipped: boolean): string {
+/** 详情板右上角那一格状态:四态(双技能槽 2026-10-06 起)。slot:0=未装备 / 1=装在槽1 / 2=装在槽2 */
+export function skillStatus(def: SkillLike, unlocked: boolean, slot: 0 | 1 | 2): string {
   if (!unlocked) return `未解锁 · Lv.${def.unlockLevel}`;
-  return equipped ? "已装备" : "可装备";
+  if (slot === 1) return "已装槽1";
+  if (slot === 2) return "已装槽2";
+  return "可装备";
 }
 
-/** 说明会跟着换」的操作提示并进面板副标里,详情板只留「全名 + 冷却 + 状态 + 说明」 */
-export const SK_HINT_LINE = "提升生涯等级解锁更强技能 · 点击下方卡片查看完整说明";
+/**
+ * 卡片底部那颗操作按钮的文案:跟着「选中槽」与这张卡的装备位置走 ——
+ * 按钮语义 = 对选中槽执行这个动作(装入/换到/卸下),不再是单纯的"装备"。
+ * slotSel:当前选中的目标槽(1/2);equipSlot:这张卡现在装在哪(0=没装);slot2Occupied:槽2有没有货。
+ * 惯例:槽1 恒有技能(equipSkill 口径②),所以「槽1那款挪进空槽2」不存在 —— 按钮给惰性的"已装槽1"。
+ */
+export function skillBtnLabel(
+  def: SkillLike, unlocked: boolean, slotSel: 1 | 2, equipSlot: 0 | 1 | 2, slot2Occupied: boolean,
+): string {
+  if (!unlocked) return `Lv.${def.unlockLevel} 解锁`;
+  if (equipSlot === slotSel) return slotSel === 2 ? "卸下槽2" : "已装槽1";
+  if (equipSlot !== 0) {
+    // 装在另一槽:目标是槽1 → 换到槽1(互换后槽1 照旧有货);目标是槽2 → 槽2有货才换
+    if (slotSel === 1) return "换到槽1";
+    return slot2Occupied ? "换到槽2" : "已装槽1";
+  }
+  return slotSel === 1 ? "装入槽1" : "装入槽2";
+}
+
+/** 槽位 chip 的读数:装备了显技能短名,空槽显「空」 */
+export function slotChipText(slot: 1 | 2, shortName: string | null): string {
+  return `技能${slot} · ${shortName ?? "空"}`;
+}
+
+/** 槽位 chip 的中心 x:两颗等宽整体居中 */
+export function slotChipX(slot: 1 | 2): number {
+  return (slot === 1 ? -1 : 1) * (SK.slotW + SK.slotGap) / 2;
+}
+
+// ---------- 面板竖排判据(双槽版) ----------
+
+export interface StackItem { key: string; cy: number; h: number; }
+
+/** 标题 / 槽位行 / 卡片行 / 详情板 / 完成按钮,自上而下五个盒子(渲染层与判据共用同一份几何) */
+export function panelStack(): StackItem[] {
+  return [
+    { key: "title", cy: SK.titleY, h: 30 },
+    { key: "slots", cy: SK.slotY, h: SK.slotH },
+    { key: "cards", cy: SK.cardsY, h: SK.cardH + SK.cardEdge },
+    { key: "plate", cy: SK.plateY, h: SK.plateH },
+    { key: "fin", cy: SK.finY, h: SK.finH + SK.finShadow },
+  ];
+}
+
+/**
+ * 竖排不撞、不出面板。倒三角住在「卡片行底缘(含厚底边)与详情板上缘」那条缝里,
+ * 这里一并量:缝宽不够装 caret(10 高)也算犯规。
+ */
+export function panelStackFits(panelH: number = SK.panelH, margin = 6): string[] {
+  const bad: string[] = [];
+  const half = panelH / 2;
+  const items = panelStack();
+  for (const it of items) {
+    if (it.cy + it.h / 2 > half - margin) bad.push(`${it.key}:上缘 ${it.cy + it.h / 2} 越过面板上界 ${half - margin}`);
+    if (it.cy - it.h / 2 < -half + margin) bad.push(`${it.key}:下缘 ${it.cy - it.h / 2} 越过面板下界 ${-half + margin}`);
+  }
+  // items 恒按自上而下摆(cy 递减,UI 本地 y 向上):A 在上、B 在下,缝 = A 底缘 - B 顶缘
+  for (let i = 0; i + 1 < items.length; i++) {
+    const A = items[i], B = items[i + 1];
+    const gap = (A.cy - A.h / 2) - (B.cy + B.h / 2);
+    if (gap < 2) bad.push(`${A.key} 与 ${B.key} 相撞(缝 ${gap.toFixed(1)})`);
+  }
+  // 倒三角那条缝:cards 底缘(含厚底边)→ plate 顶缘
+  const cards = items[2], plate = items[3];
+  const gap2 = (cards.cy - cards.h / 2) - (plate.cy + plate.h / 2);
+  if (gap2 < 12) bad.push(`卡片与详情板之间的缝 ${gap2.toFixed(1)} 装不下倒三角(需 12)`);
+  return bad;
+}
 
 /** 第 i 张卡的中心 x:n 张横排整体居中 */
 export function skillCardX(i: number, n: number = 5): number {
@@ -184,7 +256,7 @@ export function skillCardX(i: number, n: number = 5): number {
  * 2 行都不会把别的项挤走,面板尺寸恒定这件事是结构给的。
  */
 export function layoutSkillPlate(
-  def: SkillLike, unlocked: boolean, equipped: boolean, measure: Measure = textW,
+  def: SkillLike, unlocked: boolean, equipSlot: 0 | 1 | 2, measure: Measure = textW,
 ): PlateLayout {
   const shear = shearOf(SK.plateH, SK.slantDeg) / 2;
   const half = Math.min(SK.plateW / 2 - SK.platePad - shear, SK.contentHalf);
@@ -194,7 +266,7 @@ export function layoutSkillPlate(
   // 头部:全名左起,状态贴右,冷却排在状态左边 —— 三个 x 全是量出来的
   const nameLines = [def.name];
   const nameW = measure(def.name, SK.headSize);
-  const statusText = skillStatus(def, unlocked, equipped);
+  const statusText = skillStatus(def, unlocked, equipSlot);
   const statusW = measure(statusText, SK.metaSize);
   // 项的 key/role 仍叫 "cd":它是「这一格读数是技能可用性」这个**版式位置**的名字,
   // 不是秒数的名字(skill-dialog 的 plateLbl[role] 映射按它取键)。内容换成了蓄满拍数,

@@ -194,12 +194,13 @@ export abstract class ModeScreen {
     this.pushExtra(skill);
   }
 
-  /** 胶囊读数跟着当前装备走(名字与配色都来自技能表) */
+  /** 胶囊读数跟着当前装备走(双槽 2026-10-06:两技能用「 + 」并列,空槽只显槽1;配色取槽1) */
   protected paintSkillBadge(): void {
     const lbl = this.skillNameLabel;
     if (!lbl) return;
     const def = Skills.defOf(Career.equippedSkill());
-    lbl.string = def.name;
+    const id2 = Career.equippedSkill2();
+    lbl.string = id2 ? `${def.name} + ${Skills.defOf(id2).name}` : def.name;
     lbl.color = col(def.accent);
   }
 

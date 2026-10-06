@@ -395,8 +395,24 @@ export class FXSystem {
     // (预览图实测:定格那一帧正是全场最安静的一帧,越克制越读得出"时停")
   }
 
-  /** 闪现扣杀命中苍穹天雷:天际直贯击球点的纵向雷光轰击与地面雷暴 */
-  skyThunder(x: number, y: number): void {
+  /** 闪现扣杀命中苍穹天雷:天际直贯击球点的纵向雷光轰击与地面雷暴。
+   *  apex = 顶点天雷档(接触点 ≥ skills.flash.apexHeight,game-root drain 升档传入):
+   *  连环落雷(道数读 fx.flashApexBolts,各道横向错开)+ 雷暴外扩一环,复用既有池不新增管线。 */
+  skyThunder(x: number, y: number, apex = false): void {
+    const bolts = apex ? Math.max(1, C.fx.flashApexBolts || 3) : 1;
+    for (let b = 0; b < bolts; b++) {
+      this._bolt(apex ? x + (b - (bolts - 1) / 2) * 34 : x, y);
+    }
+    this.thunderBurst(x, y);
+    if (apex) {
+      // 顶点档在雷暴双层环之外再扩一圈白环:三环套叠读作"雷云整个压下来"
+      this._ring(x, y, 14, 122, 23, 2.2, COL_WHITE, false);
+      this._burst(x, y, 12, COL_WHITE, 12, 26);
+    }
+  }
+
+  /** 单道纵向雷光(主干 + 随机侧枝):skyThunder 的基本单元,别单独调用 */
+  private _bolt(x: number, y: number): void {
     const topY = 20;
     const dy = y - topY;
     const steps = 8;
@@ -413,7 +429,6 @@ export class FXSystem {
           0.04, 0.92, randi(8, 14), 14, 2.0, 0, 0, COL_CYAN, SH_STREAK);
       }
     }
-    this.thunderBurst(x, y);
   }
 
   /** 闪现雷暴冲击波:金白双层雷环与雷离子爆散 */

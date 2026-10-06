@@ -26,7 +26,7 @@ import { CFG } from "./config";
  *   左滑     = near(短球/放网)
  * swingFar / swingNear 保留给键盘专用(两键天然不冲突),旧存档也仍含这两个字段。
  */
-export type PadAction = "left" | "right" | "jump" | "swing" | "swingFar" | "swingNear" | "lunge";
+export type PadAction = "left" | "right" | "jump" | "swing" | "swingFar" | "swingNear" | "lunge" | "skill2";
 
 /**
  * 6 个虚拟键的默认布局(数值来源:input/touchpad.ts 原来的字面量)
@@ -52,13 +52,18 @@ export const PAD_BASE: Record<PadAction, PadBase> = {
   swingFar: { x: -48, y: 48, r: 38, cluster: "right" },
   swingNear: { x: -146, y: 48, r: 38, cluster: "right" },
   lunge: { x: -235, y: 50, r: 40, cluster: "right" },
+  // 技能2 键(双技能槽 2026-10-06):技能1(lunge)键的正上方,与 swing / lunge 两键
+  // 圆心距都满足 r1+r2 + 余量,不挤拇指活动区;用户可在「调整位置」里随便拖。
+  skill2: { x: -235, y: 140, r: 34, cluster: "right" },
 };
 /** 键名(设置面板与编辑器 chip 共用;文案只写触屏向,不出现键位名) */
 export const PAD_LABEL: Record<PadAction, string> = {
-  left: "左", right: "右", jump: "跳", swing: "击球", swingFar: "深球", swingNear: "短球", lunge: "跨步",
+  left: "左", right: "右", jump: "跳", swing: "击球", swingFar: "深球", swingNear: "短球",
+  // 双技能槽起 "lunge" 正名为「技能1」(键面仍随装备显示技能短名,这里是设置页/编辑器的键名)
+  lunge: "技能1", skill2: "技能2",
 };
 /** 存档/重置的遍历序:左簇(摇杆模式下的回退键) → 右簇 */
-export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swing", "swingFar", "swingNear", "lunge"];
+export const PAD_ACTIONS: PadAction[] = ["left", "right", "jump", "swing", "swingFar", "swingNear", "lunge", "skill2"];
 
 /**
  * 触屏移动方式:

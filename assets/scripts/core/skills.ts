@@ -37,21 +37,48 @@ export function initSkillState(id: SkillId = "lunge"): PlayerSkillState {
   };
 }
 
+// ---------- 双槽寻址(2026-10-06 双技能槽) ----------
+//
+// 槽1 = p.skill(老槽,AI/关卡对手/全部回归工具只有这一槽),槽2 = p.skill2(只挂真人)。
+// 所有"按 id 找技能状态"的判据都走 slotOfSkill,不许再写 `p.skill.id === "xxx"` ——
+// 那是单槽假设的形状,技能装进槽2之后判据就静默失明(键亮着按了没反应的那类病)。
+
+/** 槽位 → 运行时状态(1=主槽,2=副槽;空槽返回 undefined) */
+export function slotState(p: Player, slot: 1 | 2): PlayerSkillState | undefined {
+  return slot === 1 ? p?.skill : p?.skill2;
+}
+
+/** 这款技能装在哪一槽(同一款不许装两槽,装备层保证),没装返回 undefined */
+export function slotOfSkill(p: Player, id: SkillId): PlayerSkillState | undefined {
+  if (p?.skill?.id === id) return p.skill;
+  if (p?.skill2?.id === id) return p.skill2;
+  return undefined;
+}
+
+/** 是否携带这款技能(任一槽) */
+export function hasSkill(p: Player, id: SkillId): boolean {
+  return !!slotOfSkill(p, id);
+}
+
 /** 每回合开球前复位技能临时状态 (保留冷却或就绪) */
 export function resetPoint(p: Player): void {
   const SH = C.skills.shadow;
+  // 双槽同规:每分开始时重置冷却至就绪, 让每回合开局都可施展策略。
+  // 槽1 缺失照旧兜底(老工具/半成品人物字面量不带 skill 字段)。
   if (!p.skill) p.skill = initSkillState("lunge");
-  p.skill.activeT = -1;
-  p.skill.buffT = 0;
-  p.skill.magnetPulling = false;
+  for (const s of [p.skill, p.skill2]) {
+    if (!s) continue;
+    s.activeT = -1;
+    s.buffT = 0;
+    s.magnetPulling = false;
+    s.cd = 0;
+  }
   p.flashT = 0;
   p.flashHoldT = 0;
   p.flashStrikeT = 0;
   p.flashFrom = null;
   p.focusT = 0;
   p.focusHit = false;
-  // 每分开始时重置冷却至就绪, 让每回合开局都可施展策略
-  p.skill.cd = 0;
   p.lungeCd = 0;
   p.lungeT = -1;
   p.lungeShotT = 0;
@@ -160,7 +187,7 @@ export function rageTierOf(ratio: number): number {
  * ③ 没装这款技能一律不涨:资源不该在看不见的地方积累,换装回来也不该白得一管。
  */
 export function gainRage(p: Player, f: { sweet: boolean; perfect: boolean; smash: boolean }): number {
-  if (!p || !p.skill || p.skill.id !== "rage") return 0;
+  if (!p || !hasSkill(p, "rage")) return 0;   // 双槽:怒气装在槽2也要能攒(slotOfSkill 判,不认 p.skill.id)
   const RG = C.skills.rage;
   const hot = f.sweet || f.perfect;
   // 合并系数而非叠乘:bothMul 若不做成单独一档,1.8×2.0=3.6 ⇒ 一拍 18 点,六拍打穿上限
@@ -181,12 +208,18 @@ export function gainRage(p: Player, f: { sweet: boolean; perfect: boolean; smash
  * 不给 AI 开:它的技能循环强度归 diffs.* 那根旋钮管,放宽冷却等于偷偷改难度 —— 而
  * serve-check / ai-check 的真人替身从不按技能键,那两把尺子量不到这条,只能在这里钉死。
  * activate 与 modifyShot 两端共用这一个判据,别在调用点各写一份条件(写漏一侧就是白嫖)。
+ *
+ * 双槽(2026-10-06):推迟是**槽上技能**的属性,不是全人的属性 —— 槽1 跨步 + 槽2 重击时,
+ * 激活跨步必须照常付冷却,只有激活重击那一槽才推迟。所以 activate / modifyShot 一律传
+ * 具体的槽状态 `s` 进来按它的 id 判;不传 s 的旧口径(任一槽有推迟款就算)只留给
+ * 单槽时代的旧调用方,双槽玩家身上它的语义是"并集",别拿它做付钱决定。
  */
-export function defersCooldownToConsume(p: Player): boolean {
-  return !!p && !p.isAI && !!p.skill && (
-    (p.skill.id === "smash" && C.skills.smash.cdOnConsume) ||
-    (p.skill.id === "focus")
-  );
+export function defersCooldownToConsume(p: Player, s?: PlayerSkillState): boolean {
+  if (!p || p.isAI) return false;
+  const check = (st: PlayerSkillState): boolean =>
+    (st.id === "smash" && C.skills.smash.cdOnConsume) || st.id === "focus";
+  if (s) return check(s);
+  return !!p.skill && check(p.skill) || !!p.skill2 && check(p.skill2);
 }
 
 /**
@@ -213,10 +246,13 @@ function magnetSwingGated(p: Player): boolean {
   return p.isAI && p.swingT >= 0;
 }
 
-/** 当前局势下是否满足激活门槛 (供 UI 按钮点亮/置灰与 AI 决策使用) */
-export function canActivate(p: Player, ball: Ball): boolean {
-  if (!p || !p.skill) return false;
-  const s = p.skill;
+/**
+ * 当前局势下是否满足激活门槛 (供 UI 按钮点亮/置灰与 AI 决策使用)。
+ * 双槽(2026-10-06):slot 指定问哪一槽(缺省 1 = 旧口径,AI 与全部旧调用方不动)。
+ */
+export function canActivate(p: Player, ball: Ball, slot: 1 | 2 = 1): boolean {
+  const s = slotState(p, slot);
+  if (!p || !s) return false;
   if (s.cd > 0) return false;
 
   switch (s.id) {
@@ -292,10 +328,11 @@ export function canActivate(p: Player, ball: Ball): boolean {
  * 技能键「就绪但门槛未满足」的可读原因(冷却是另一态,走倒计时,不在这里报)。
  * 文案住在 config.skills.blockText —— UI 只显示,不自己猜判据。
  * 返回 null = 无需解释(完全就绪 / 还在冷却)。
+ * 双槽(2026-10-06):slot 指定问哪一槽(缺省 1),game-root 每颗技能键各喂一份。
  */
-export function skillBlockReason(p: Player, ball: Ball | null): string | null {
-  if (!p || !p.skill) return null;
-  const s = p.skill;
+export function skillBlockReason(p: Player, ball: Ball | null, slot: 1 | 2 = 1): string | null {
+  const s = slotState(p, slot);
+  if (!p || !s) return null;
   // 冷却中不报门槛(键面正在倒计时,那是另一种、更该先看见的理由)。
   // **但充能款例外**:它的键面从来不画倒计时(20 帧、0.33 秒,画不出也读不出),
   // 于是 cd>0 时若不落到下面的分支,就会出现"按下毫无反应、一个字都不说"——
@@ -303,7 +340,7 @@ export function skillBlockReason(p: Player, ball: Ball | null): string | null {
   // 核过的可达性:按下即武装 buffT=240,而 cd 只有 20 帧,所以 cd>0 且 buffT<=0 只可能
   // 发生在"按下后 20 帧内就兑现了"(此时 rage 必为 0 ⇒ 报「怒气未聚」为真),不会撒谎。
   if (s.cd > 0 && !isChargeSkill(s.id)) return null;
-  if (canActivate(p, ball as Ball)) return null;
+  if (canActivate(p, ball as Ball, slot)) return null;
   const T = C.skills.blockText as Record<string, string>;
   switch (s.id) {
     case "lunge":
@@ -363,18 +400,24 @@ export function magnetAimPoint(p: Player): { x: number; y: number } {
   return { x: p.x + p.facing * 34, y: Math.min(p.y - 42, CO.groundY - 60) };
 }
 
-/** 触发技能激活, 返回是否成功 */
-export function activate(p: Player, ball: Ball, dir?: number): boolean {
-  if (!p || !p.skill) return false;
-  if (!canActivate(p, ball)) return false;
+/**
+ * 触发技能激活, 返回是否成功。
+ * 双槽(2026-10-06):slot 指定激活哪一槽(缺省 1 = AI 与全部旧调用方的旧口径),
+ * 冷却与 buffT 记在**那一槽**的状态上;散装效果(lungeT/flash 系/focusT/rage/shadow 系)照旧写 Player 本体。
+ */
+export function activate(p: Player, ball: Ball, dir?: number, slot: 1 | 2 = 1): boolean {
+  const s = slotState(p, slot);
+  if (!p || !s) return false;
+  if (!canActivate(p, ball, slot)) return false;
 
-  const def = defOf(p.skill.id);
-  p.skill.maxCd = def.cooldownFrames;
+  const def = defOf(s.id);
+  s.maxCd = def.cooldownFrames;
   // 冷却何时开跑:瞬发的四个技能按下即付;重击(真人)按下只上弦,真正扣出去那一拍才付
   // (判据与原因见 defersCooldownToConsume —— 两端共用,不许在这里再写一遍条件)。
-  p.skill.cd = defersCooldownToConsume(p) ? 0 : def.cooldownFrames;
+  // 双槽口径:推迟与否按**这一槽**的技能判,槽里装着跨步就照常付,别被另一槽的重击连坐。
+  s.cd = defersCooldownToConsume(p, s) ? 0 : def.cooldownFrames;
 
-  switch (p.skill.id) {
+  switch (s.id) {
     case "lunge": {
       // 强力跨步: 原有跨步冲量强化, 开启 1 秒流风动画与暴击窗口
       // 空中按下 = 空中突进:冲量照给、重力不动,冲量期走 player 的 lunge 专用分支不受
@@ -394,7 +437,7 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
       p.lungeAutoT = (!p.isAI && LG.autoReturn) ? LG.autoWindow : 0;
       p.sq = 0.85;
       p.vx += p.lungeDir * LG.speed;
-      p.skill.activeT = LG.duration;
+      s.activeT = LG.duration;
       return true;
     }
 
@@ -407,7 +450,7 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
       // 窗长必须 ≤ buffDuration:超出去就会在附魔已经过期的帧上代出一记普通球,
       // 玩家读到的是"我按了重击,它给我回了个高远球"。
       const SM = C.skills.smash;
-      p.skill.buffT = SM.buffDuration;
+      s.buffT = SM.buffDuration;
       // 待发窗**只给真人**(同 lungeAutoT 的口径):AI 也会自己按这个键(ai.ts:502-506),
       // 给它开就等于白送一记"永远踩在最佳帧"的暴扣,而它的准头归 diffs 管。
       p.smashAutoT = (!p.isAI && SM.autoReturn) ? Math.min(SM.autoWindow, SM.buffDuration) : 0;
@@ -428,7 +471,7 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
       // armed 窗落进 s.buffT(与重击附魔同一个字段位、同一处递减:Skills.update),
       // 不另起计时器 —— 计时器多一处就多一处「两处各减一次」的风险(lungeShotT 真栽过)。
       const RG = C.skills.rage;
-      p.skill.buffT = RG.releaseWindow;
+      s.buffT = RG.releaseWindow;
       // 代拍窗**只给真人**(与 lungeAutoT / smashAutoT 完全同一条口径):AI 也装 rage、
       // 也会自己按这个键(ai.ts),给它开就等于白送一记"永远踩在最佳帧"的暴扣,
       // 而它的准头归 diffs.* 那根旋钮管 —— serve-check / ai-check 的真人替身从不按技能键,
@@ -481,7 +524,7 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
     case "magnet": {
       // 引力吸球: 展开引力力场, 羽毛球高速牵引至身前(吸附点只定初值,牵引期间
       // rules 每帧重算 magnetAimPoint 跟着人走 —— 跳跃中不吸到"按下时的旧位置")
-      p.skill.magnetPulling = true;
+      s.magnetPulling = true;
       const aim = magnetAimPoint(p);
       const total = C.skills.magnet.pullFrames;
       ball.magnetPull = {
@@ -527,7 +570,7 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
 
     case "focus": {
       // 时空减速: 开启子弹时间, 接球后强力反击并脱离领域
-      p.skill.buffT = C.skills.focus.duration;
+      s.buffT = C.skills.focus.duration;
       p.focusT = C.skills.focus.duration;
       p.focusHit = false;
       return true;
@@ -548,19 +591,21 @@ export function activate(p: Player, ball: Ball, dir?: number): boolean {
   return false;
 }
 
-/** 每帧驱动技能状态机 */
+/** 每帧驱动技能状态机(双槽:两槽的 cd/buffT/activeT 各减各的,互不挤兑) */
 export function update(p: Player, ball: Ball): void {
-  if (!p || !p.skill) return;
-  const s = p.skill;
+  if (!p || (!p.skill && !p.skill2)) return;
 
-  // 冷却计时
-  if (s.cd > 0) s.cd--;
-  // 增益状态计时
-  if (s.buffT > 0) s.buffT--;
-  // 执行期计时
-  if (s.activeT >= 0) {
-    s.activeT--;
-    if (s.activeT < 0) s.activeT = -1;
+  // 冷却计时 / 增益状态计时 / 执行期计时:双槽遍历,同名计时器本来就是两份状态
+  for (const s of [p.skill, p.skill2]) {
+    if (!s) continue;
+    if (s.cd > 0) s.cd--;
+    // 增益状态计时
+    if (s.buffT > 0) s.buffT--;
+    // 执行期计时
+    if (s.activeT >= 0) {
+      s.activeT--;
+      if (s.activeT < 0) s.activeT = -1;
+    }
   }
   // 闪现折跃特效衰减
   if (p.flashT && p.flashT > 0) p.flashT--;
@@ -568,11 +613,15 @@ export function update(p: Player, ball: Ball): void {
   // 时空减速衰减与冷却触发
   const prevFocus = p.focusT ?? 0;
   if (p.focusT && p.focusT > 0) p.focusT--;
-  // 时空领域效果刚刚自然结束(接球缓释到期或超时到期): 正式启动冷却倒计时
-  if (prevFocus > 0 && (p.focusT ?? 0) <= 0 && s.id === "focus") {
-    p.focusHit = false;
-    if (s.cd <= 0) {
-      s.cd = s.maxCd > 0 ? s.maxCd : defOf("focus").cooldownFrames;
+  // 时空领域效果刚刚自然结束(接球缓释到期或超时到期): 正式启动冷却倒计时。
+  // 双槽:focusT 是全人唯一的领域时钟,到期冷却开在**装着 focus 的那一槽**。
+  if (prevFocus > 0 && (p.focusT ?? 0) <= 0) {
+    const fs = slotOfSkill(p, "focus");
+    if (fs) {
+      p.focusHit = false;
+      if (fs.cd <= 0) {
+        fs.cd = fs.maxCd > 0 ? fs.maxCd : defOf("focus").cooldownFrames;
+      }
     }
   }
 
@@ -585,7 +634,7 @@ export function update(p: Player, ball: Ball): void {
     p.flashHoldT = (p.flashHoldT ?? 0) - 1;
     if (p.flashHoldT <= 0) {
       p.flashHoldT = 0;
-      if (s.id === "flash") {              // 中途被换装摘掉技能就只排空蓄力,不再凭空补一拍
+      if (hasSkill(p, "flash")) {          // 双槽:flash 装在哪槽都行,起拍判据认"有没有装"(其余同旧口径)
         p.swingT = C.swing.windup;                  // 本帧末尾 player 的挥拍机器 +1,正好落进命中窗口
         p.swingHit = false;
         p.swingQ = 0;
@@ -599,13 +648,15 @@ export function update(p: Player, ball: Ball): void {
   }
   if (p.flashStrikeT && p.flashStrikeT > 0) p.flashStrikeT--;
 
-  // 保持同步 lungeCd 字段兼容现有逻辑
-  if (s.id === "lunge") {
-    p.lungeCd = s.cd;
+  // 保持同步 lungeCd 字段兼容现有逻辑(双槽:lunge 装在哪槽就同步哪槽的 cd)
+  const ls = slotOfSkill(p, "lunge");
+  if (ls) {
+    p.lungeCd = ls.cd;
   }
 
-  // 动态评估就绪状态
-  s.ready = canActivate(p, ball);
+  // 动态评估就绪状态(双槽各评各的:两槽的门槛本来就不必同时成立)
+  if (p.skill) p.skill.ready = canActivate(p, ball, 1);
+  if (p.skill2) p.skill2.ready = canActivate(p, ball, 2);
 }
 
 /**
@@ -623,6 +674,19 @@ export function update(p: Player, ball: Ball): void {
  * 实测真人得分率 easy 60%→46%、normal 39%→15%,相当于把技能 buff 当成难度补丁偷偷加给
  * 对手。AI 的准头归 diffs.* 那根旋钮管,技能不该覆盖它;forceSmash/speedBoost/powerDeg
  * 照旧两侧都吃(那本来就是旧代码里唯一真正生效的部分,行为与修前一致)。
+ *
+ * ---------- 双槽组合语义(2026-10-06 双技能槽,口径用户拍板:数值直接叠加) ----------
+ *
+ * 每个分支的判据从 `p.skill.id === X` 改成 `slotOfSkill(p, X)`(装在哪槽都认),
+ * 于是两个技能的增益可以同拍全成立。成立时的合成规则:
+ *   · speedBoost / powerDeg **直接相加**(重击+怒气同拍 = 4.0+4.8=8.8 —— 用户要的火力;
+ *     平衡风险已知,真超了先削 RG/SM 数值,别改回"取最大",那会动单技能手感);
+ *   · forceSmash 任一满足(布尔,天然可叠);
+ *   · 品质改写(sweet/perfect/q)同向幂等,多分支重复写同一结果无害;
+ *   · skillKind(飘字/音效)按分支顺序后者赢 —— 优先级 lunge < smash < flash < magnet < focus < rage,
+ *     与单槽时代一致;
+ *   · **消耗各源各自结清**:两个技能都兑现就都进冷却/都扣资源,不含糊。
+ * 旧注释里「重击与怒气永不并存」的契约随双槽作废 —— 现在它们同拍就是相加,各自付账。
  */
 export function modifyShot(p: Player, opt: HitOpt): {
   speedBoost: number;
@@ -633,6 +697,9 @@ export function modifyShot(p: Player, opt: HitOpt): {
    *  只带比例、不带档位:档位由 rageTierOf 现推,两个数迟早分叉。
    *  为什么要把已经清零的量抄进结果:见 types.ts 的 ShotResult.rageRatio。 */
   rageRatio?: number;
+  /** 闪现顶点天雷:接触点 ≥ C.skills.flash.apexHeight(飘字/升档演出读它)。
+   *  威力部分的速度乘算不在这里 —— modifyShot 碰不到解算矢量,那一步在 buildShot。 */
+  flashApex?: boolean;
 } {
   const preview = !!opt.preview;   // 预告通道:只算不花
   const applyQuality = !!p && !p.isAI;   // 顶档改写只给真人:AI 的强度归 diffs 管
@@ -641,8 +708,9 @@ export function modifyShot(p: Player, opt: HitOpt): {
   let forceSmash = false;
   let skillKind: SkillId | undefined = undefined;
   let rageRatio: number | undefined = undefined;
+  let flashApex: boolean | undefined = undefined;
 
-  if (!p || !p.skill) {
+  if (!p || (!p.skill && !p.skill2)) {
     return { speedBoost, powerDeg, forceSmash };
   }
 
@@ -650,6 +718,7 @@ export function modifyShot(p: Player, opt: HitOpt): {
   //    旧写法只读不写:一次跨步的 buff 能吃好几拍(窗口 0.5~1 秒内对手若很快回球就是白嫖第二记
   //    重击)。与其余四技能同口径「一次施放兑现一拍」。消耗必须挂 !preview 闸 ——
   //    球种预告与实打共用这条通道,漏一处就是"按了没反应"(2026-10-03 重击现场)。
+  //    窗口(lungeShotT)是 Player 级的,与槽位无关 —— 双槽下它天然与另一槽的增益叠加。
   if (opt.lungeShot && p.lungeShotT > 0) {
     if (!preview) p.lungeShotT = 0;
     speedBoost += C.lunge.shotBoost;
@@ -657,8 +726,9 @@ export function modifyShot(p: Player, opt: HitOpt): {
     skillKind = "lunge";
   }
 
-  // 2. 百分百重击 (消耗附魔)
-  if (p.skill.id === "smash" && p.skill.buffT > 0) {
+  // 2. 百分百重击 (消耗附魔) —— 双槽:装在哪槽就消耗哪槽的附魔与冷却
+  const sm = slotOfSkill(p, "smash");
+  if (sm && sm.buffT > 0) {
     if (applyQuality) {
       opt.sweet = true;
       opt.perfect = true;
@@ -671,11 +741,11 @@ export function modifyShot(p: Player, opt: HitOpt): {
     // 待发窗一并收掉 —— 附魔已经花掉了,再留一个"待发的自动拍"就是收招后凭空补第二下。
     // 预告通道一口都不能吃(下面整块挂在 !preview 闸里)—— 那是 2026-10-03 的真机现场。
     if (!preview) {
-      p.skill.buffT = 0;
+      sm.buffT = 0;
       p.smashAutoT = 0;
-      if (defersCooldownToConsume(p)) {
+      if (defersCooldownToConsume(p, sm)) {
         // maxCd 是 activate 刚写的诚实值,也带着关卡的 cooldownMul —— 照它付,不另抄一份数字
-        p.skill.cd = p.skill.maxCd > 0 ? p.skill.maxCd : defOf("smash").cooldownFrames;
+        sm.cd = sm.maxCd > 0 ? sm.maxCd : defOf("smash").cooldownFrames;
       }
     }
     skillKind = "smash";
@@ -683,7 +753,7 @@ export function modifyShot(p: Player, opt: HitOpt): {
 
   // 3. 闪现扣杀:只在保底接触窗口内兑现,命中即消耗
   //    (旧版拿 flashT 那 20 帧当 buff,漏球之后随手一拍还能白嫖一记必杀)
-  if (p.skill.id === "flash" && (p.flashStrikeT ?? 0) > 0) {
+  if (hasSkill(p, "flash") && (p.flashStrikeT ?? 0) > 0) {
     if (applyQuality) {
       opt.sweet = true;
       opt.perfect = true;
@@ -695,6 +765,9 @@ export function modifyShot(p: Player, opt: HitOpt): {
     speedBoost += C.skills.flash.speedBoost;
     powerDeg += C.skills.flash.powerDeg;
     skillKind = "flash";
+    // 顶点天雷档:接触点 ≥ apexHeight(opt.contactH 由 buildShot 现算塞入)。
+    // 纯读数不消耗 —— 预告通道同算,徽标才不撒谎;威力乘算在 buildShot 解出矢量之后。
+    flashApex = (opt.contactH ?? 0) >= C.skills.flash.apexHeight;
   }
 
   // 4. 引力吸球回击
@@ -702,9 +775,10 @@ export function modifyShot(p: Player, opt: HitOpt): {
   //    永远差 6px 够不到 jumpSmash.minHeight(140),所以这里不比高度 —— 跳起来释放
   //    就直接兑现扣杀,不许出现"跳了却没触发"的中间态。走 forceSmash(与 smash/flash
   //    同口径的技能强杀:loft ≤10 + kind="smash"),preview 同样返回,击球键徽标自动一致。
-  if (p.skill.id === "magnet" && p.skill.magnetPulling) {
+  const mg = slotOfSkill(p, "magnet");
+  if (mg && mg.magnetPulling) {
     if (!p.onGround) forceSmash = true;
-    if (!preview) p.skill.magnetPulling = false;   // 回击窗口只由真正那一拍关闭(否则回球加成被预告偷走)
+    if (!preview) mg.magnetPulling = false;   // 回击窗口只由真正那一拍关闭(否则回球加成被预告偷走)
     speedBoost += C.skills.magnet.speedBoost;
     powerDeg += 6;
     skillKind = "magnet";
@@ -713,7 +787,8 @@ export function modifyShot(p: Player, opt: HitOpt): {
   // 5. 时空领域反击: 领域持续期内击球, 赋予顶档甜区品质、初速大幅加成与压弧下压。
   //    接完一个球过一会就可以结束: 真正击球(!preview)时将领域时间收缩至 postHitFrames (缓释收尾),
   //    出球破空特写后自然脱离领域并进入冷却。
-  if (p.skill.id === "focus" && ((p.focusT ?? 0) > 0 || p.skill.buffT > 0)) {
+  const fc = slotOfSkill(p, "focus");
+  if (fc && ((p.focusT ?? 0) > 0 || fc.buffT > 0)) {
     if (applyQuality) {
       opt.sweet = true;
       opt.perfect = true;
@@ -727,14 +802,15 @@ export function modifyShot(p: Player, opt: HitOpt): {
       p.focusHit = true;
       const postHit = C.skills.focus.postHitFrames ?? 22;
       p.focusT = Math.min(p.focusT ?? postHit, postHit);
-      p.skill.buffT = Math.min(p.skill.buffT, postHit);
+      fc.buffT = Math.min(fc.buffT, postHit);
     }
   }
 
   // 6. 怒气重击:armed 窗内的那一拍把这一管的怒气砸出去,强度按怒气比例分档。
   //
-  //    与重击(#2)的分工是刻意的:重击 = 固定顶档暴扣(有冷却),怒气重击 = 强度换档位
-  //    (没有冷却,资源就是门槛)。两者永不并存(一场只有一个 skill.id),所以这里不与 #2 抢。
+  //    与重击(#2)的分工:重击 = 固定顶档暴扣(有冷却),怒气重击 = 强度换档位
+  //    (没有冷却,资源就是门槛)。单槽时代两者永不并存;双槽起(2026-10-06)同拍
+  //    就是**数值直接相加**(见函数头组合语义),消耗各付各的 —— 怒气扣一管、重击进冷却。
   //
   //    **只有满怒那一档**才吃 forceSmash + 顶档质量改写(用户口径「怒气够一点就能放、
   //    攒得越足越狠」)。把 forceSmash 挪到 ratio>=1 之外 = 分档被抹平,这款立刻退化成
@@ -748,7 +824,8 @@ export function modifyShot(p: Player, opt: HitOpt): {
   //    - 预告通道(preview)一口都不吃 —— 那是每个真实帧最多 10 次的通道,漏一处就是
   //      "攒了一整局、按下去怒气凭空蒸发"(判据 rage-check ①,与 smash-check 同一条病)。
   //    - 挥空 / armed 窗自己走完 / 跨分都不扣一分(资源制下罚它等于白罚:那一拍本就没兑现)。
-  if (p.skill.id === "rage" && p.skill.buffT > 0) {
+  const rg = slotOfSkill(p, "rage");
+  if (rg && rg.buffT > 0) {
     const RG = C.skills.rage;
     const ratio = rageRatioOf(p);                 // 读**清零之前**的怒气:这就是这一拍的强度
     speedBoost += RG.speedMin + (RG.speedMax - RG.speedMin) * ratio;
@@ -774,12 +851,12 @@ export function modifyShot(p: Player, opt: HitOpt): {
       // "按一次、连响两下"。与重击收 buffT 同口径:承诺兑现了就该收回。
       // 注意「手动优先」那条(player.ts 的手动分支)清的是代劳窗、**不清这里**,
       // 因为玩家自己挥的那一拍正是这个承诺要兑现的对象。
-      p.skill.buffT = 0;
+      rg.buffT = 0;
     }
     skillKind = "rage";
   }
 
-  return { speedBoost, powerDeg, forceSmash, skillKind, rageRatio };
+  return { speedBoost, powerDeg, forceSmash, skillKind, rageRatio, flashApex };
 }
 
 export const Skills = {
@@ -787,6 +864,10 @@ export const Skills = {
   defOf,
   initSkillState,
   resetPoint,
+  // 双槽寻址三件套:所有"这款技能在不在/在哪槽"的判据都走这里,别再直读 p.skill.id
+  slotState,
+  slotOfSkill,
+  hasSkill,
   canActivate,
   skillBlockReason,
   defersCooldownToConsume,

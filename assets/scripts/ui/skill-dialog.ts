@@ -1,15 +1,21 @@
 // ============================================================
 // 赛前技能配置弹窗 (SkillDialog):
-// 街机风格居中面板 + 5 个技能卡片横排 + 底部一条详情板
+// 街机风格居中面板 + 顶部「技能1/技能2」槽位行 + 7 张技能卡片横排 + 底部一条详情板
 //
-// 为什么说明不在卡片里:卡片只有 118 宽,而五句说明实测 198~321 px(9 号字),
-// 硬塞进去就是用户拍的那张图 —— 五句糊成一排互相盖字。何况那颗「装备」按钮被
+// 双技能槽(2026-10-06):顶部两颗槽位 chip 就是「往哪一槽装」的选择器 —— 先点槽位,
+// 再点卡片上的动作按钮(装入槽N / 换到槽N / 卸下槽N / 已装槽N)。点卡片本身仍然是
+// "选中看说明",与槽位选择互不干扰:选槽决定按钮对谁动手,选卡决定详情板说谁。
+// 两条装备口径(判据在 Career.equipSkill):同一款技能撞槽即互换;槽1 恒有技能,
+// 卸下只对槽2开放 —— 所以槽1 那格按钮是惰性的「已装槽1」,不存在"把技能1 卸空"。
+//
+// 为什么说明不在卡片里:卡片只有 88 宽,而说明实测 198~321 px(9 号字),
+// 硬塞进去就是用户拍的那张图 —— 五句糊成一排互相盖字。何况那颗动作按钮被
 // uiButton 的 TOUCH_MIN 抬到 44 高之后,卡里连第三样东西的缝都不剩(见 skill-check
-// 的 cardStackFits)。所以卡片只留「标签 + 名字 + CD + 装备」,完整说明整条搬到
+// 的 cardStackFits)。所以卡片只留「标签 + 名字 + CD + 动作」,完整说明整条搬到
 // 面板底部那条 652 宽的详情板:15 号字下最长一句 535 px,一行就读得完。
 //
 // 排版一个坐标都不手调 —— 全问 ui/skill-layout.ts(折行、右对齐块按实测宽倒推、
-// 竖排留缝),5 个技能全组合在 node 下回归:tools/skill-check.ts。
+// 竖排留缝),7 个技能 × 解锁 × 双槽全组合在 node 下回归:tools/skill-check.ts。
 //
 // ⚠ 整卡可点,但 Button 不挂在卡片节点上:见下面 hit 垫那段注释。
 // ============================================================
@@ -18,12 +24,14 @@ import { Skills } from "../core/skills";
 import { Career } from "../core/career";
 import { SkillId } from "../core/types";
 import type { UiKit } from "./ui-manager";
+import type { TabHandle } from "./ui-shell";
 import {
   ac, ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide,
   makeChip, retainedDraw, ROLE, SLANT, slamIn, skewOf, slantPath,
 } from "./ui-arcade";
 import {
-  layoutSkillPlate, SK, SK_HINT_LINE, skillCardX, skillMeter,
+  layoutSkillPlate, SK, skillBtnLabel, skillCardX, skillMeter, skillStatus,
+  slotChipText, slotChipX,
   type PlateItem, type PlateRole, type SkillLike,
 } from "./skill-layout";
 
@@ -44,6 +52,10 @@ export class SkillDialog {
   private card: Graphics;
   private dim: Node;
   private skillCards: CardRec[] = [];
+  /** 顶部槽位行:两颗 tab,点选 = 选定目标槽(往哪一槽装) */
+  private slotTabs: Partial<Record<1 | 2, TabHandle>> = {};
+  /** 当前选中的目标槽(缺省 1;show() 每次回 1,别记着上次的槽让人懵) */
+  private selectedSlot: 1 | 2 = 1;
   /** 底部详情板:节点与 Label 建一次就长期复用,切换技能只改 string / 位置 / 颜色 */
   private plate!: Node;
   private plateG!: Graphics;
@@ -84,16 +96,27 @@ export class SkillDialog {
     title.shadowColor = ac("#000000", 0.55);
     title.shadowOffset = new Vec2(0, -4);
 
-    const sub = kit.label(this.card.node, "S K I L L   C O N F I G U R A T I O N", 10, P.dim);
-    sub.node.setPosition(0, SK.subY, 0);
-
-    // 操作提示并进这一行:详情板里就不再重复摆一条(同一件事只说一次)
-    const hint = kit.label(this.card.node, SK_HINT_LINE, SK.hintSize, P.text);
-    hint.node.setPosition(0, SK.hintY, 0);
+    // 槽位行:技能1 / 技能2 两颗 tab(≥ TOUCH_MIN),点选 = 换目标槽
+    for (const slot of [1, 2] as const) {
+      const tab = kit.tab({
+        name: `skill-slot${slot}`,
+        label: slotChipText(slot, null),
+        parent: this.card.node,
+        w: SK.slotW, h: SK.slotH,
+        role: "info",
+        size: 13,
+      });
+      tab.node.setPosition(slotChipX(slot), SK.slotY, 0);
+      // 借一个临时名再挂 CLICK:接收者名必须别与文件里手搓的 `new Node` 撞名,
+      // 否则 ui-click-check 会把「工厂节点的 tab.node.on」误判成手搓裸节点(它看不见 solidTab 内部的 pressable)。
+      const chip = tab.node;
+      chip.on(Button.EventType.CLICK, () => this.selectSlot(slot));
+      this.slotTabs[slot] = tab;
+    }
 
     this.buildPlate();
 
-    // 5 张横排技能卡片
+    // 7 张横排技能卡片
     const all = Skills.allSkills();
     all.forEach((item, i) => {
       const w = SK.cardW;
@@ -109,8 +132,8 @@ export class SkillDialog {
 
       // 整卡可点 = 选中看说明。但 Button 挂在**兄弟节点**上而不是卡片节点上:
       // Cocos 的 UI 触摸沿「命中节点 → 祖先」冒泡,兄弟不在链上。挂在卡片上的话,
-      // 点底下那颗「装备」会同时触发装备 + 选中(两次音效、0.96×0.94 两层挤压)。
-      // 摆在这里(装备按钮之前)就是让装备按钮渲染在它上面、先接走那一笔触摸。
+      // 点底下那颗「动作」会同时触发动作 + 选中(两次音效、0.96×0.94 两层挤压)。
+      // 摆在这里(动作按钮之前)就是让动作按钮渲染在它上面、先接走那一笔触摸。
       const hit = new Node("hit");
       hit.layer = this.root.layer;
       hit.addComponent(UITransform).setContentSize(w, h);
@@ -132,27 +155,12 @@ export class SkillDialog {
       const cdText = kit.label(node, skillMeter(item), SK.cdSize, ARCADE.dim);
       cdText.node.setPosition(0, SK.cdY, 0);
 
-      // 底部操作状态按钮 —— 必须最后 add,才排在 hit 之上、抢得到这一格的触摸
-      const sBtn = kit.button(node, "装备", SK.btnW, SK.btnH, { size: 11, fg: ARCADE.ink, bg: item.accent });
+      // 底部动作状态按钮 —— 必须最后 add,才排在 hit 之上、抢得到这一格的触摸
+      const sBtn = kit.button(node, "装入槽1", SK.btnW, SK.btnH, { size: 11, fg: ARCADE.ink, bg: item.accent });
       sBtn.setPosition(0, SK.btnY, 0);
       const btnLabel = sBtn.getComponent(Label) || sBtn.getComponentsInChildren(Label)[0];
 
-      sBtn.on(Button.EventType.CLICK, () => {
-        const unlocked = Career.isSkillUnlocked(item.id);
-        if (!unlocked) {
-          kit.sfx.play("ui");
-          kit.toast(`需达到生涯等级 Lv.${item.unlockLevel} 解锁`);
-          // 点不动也要把说明翻过来:玩家最该读到的正是没解锁的那款
-          this.select(item.id);
-          return;
-        }
-        kit.sfx.play("ui");
-        Career.equipSkill(item.id);
-        this.selectedId = item.id;
-        this.repaint();
-        kit.toast(`已装备技能 · ${item.name}`);
-        this.onEquipCallback && this.onEquipCallback(item.id);
-      });
+      sBtn.on(Button.EventType.CLICK, () => this.onCardAction(item));
 
       this.skillCards.push({
         node,
@@ -174,6 +182,61 @@ export class SkillDialog {
       kit.sfx.play("ui");
       this.hide();
     });
+  }
+
+  /** 卡片动作按钮:对「当前选中槽」执行 装入/换到/卸下,失败给可读 toast */
+  private onCardAction(item: SkillLike & { id: SkillId }): void {
+    const unlocked = Career.isSkillUnlocked(item.id);
+    if (!unlocked) {
+      this.kit.sfx.play("ui");
+      this.kit.toast(`需达到生涯等级 Lv.${item.unlockLevel} 解锁`);
+      // 点不动也要把说明翻过来:玩家最该读到的正是没解锁的那款
+      this.select(item.id);
+      return;
+    }
+    const slot = this.selectedSlot;
+    const cur = this.equipSlotOf(item.id);
+    // 装在选中槽上:槽2 = 卸下;槽1 = 惰性(口径:槽1 恒有技能,不存在"卸空")
+    if (cur === slot) {
+      if (slot === 2) {
+        this.kit.sfx.play("ui");
+        if (Career.unequipSkill(2)) {
+          this.kit.toast(`已卸下 · ${item.name}`);
+          this.afterEquipChange(item.id);
+        }
+      } else {
+        this.kit.sfx.play("ui");
+        this.kit.toast("技能1 至少要带一款 · 可点卡片先装入槽2");
+      }
+      return;
+    }
+    // 装在另一槽且目标是空槽2:被槽1恒有技能的口径拦下(装备层返回 false)
+    const moving = cur !== 0 && slot === 2;
+    if (moving && !Career.equippedSkill2()) {
+      this.kit.sfx.play("ui");
+      this.kit.toast("技能1 至少要带一款 · 先给槽2装别的再换");
+      return;
+    }
+    this.kit.sfx.play("ui");
+    if (!Career.equipSkill(item.id, slot)) {
+      this.kit.toast("装备失败,请重试");
+      return;
+    }
+    this.selectedId = item.id;
+    this.kit.toast(cur === 0 ? `已装入槽${slot} · ${item.name}` : `已换到槽${slot} · ${item.name}`);
+    this.afterEquipChange(item.id);
+  }
+
+  private afterEquipChange(id: SkillId): void {
+    this.repaint();
+    this.onEquipCallback && this.onEquipCallback(id);
+  }
+
+  /** 这款技能当前装在哪槽(0=没装) */
+  private equipSlotOf(id: SkillId): 0 | 1 | 2 {
+    if (Career.equippedSkill() === id) return 1;
+    if (Career.equippedSkill2() === id) return 2;
+    return 0;
   }
 
   /** 详情板底板 + 倒三角:建一次,之后只重画底块颜色与摆位 */
@@ -243,37 +306,48 @@ export class SkillDialog {
     lbl.node.setPosition(it.x, it.cy, 0);
   }
 
+  /** 槽位行重画:读数跟随装备(空槽显「空」),选中态高亮目标槽 */
+  private renderSlots(): void {
+    for (const slot of [1, 2] as const) {
+      const tab = this.slotTabs[slot];
+      if (!tab) continue;
+      const id = slot === 1 ? Career.equippedSkill() : Career.equippedSkill2();
+      const shortName = id ? Skills.defOf(id).shortName : null;
+      const txt = slotChipText(slot, shortName);
+      if (tab.label.string !== txt) tab.label.string = txt;
+      tab.paint(this.selectedSlot === slot);
+    }
+  }
+
   private renderAllCards(): void {
-    const curEquipped = Career.equippedSkill();
+    const slot2Occupied = !!Career.equippedSkill2();
     for (const sc of this.skillCards) {
       const def = Skills.defOf(sc.id);
-      const isEquipped = sc.id === curEquipped;
+      const equipSlot = this.equipSlotOf(sc.id);
       const isSelected = sc.id === this.selectedId;
       const isUnlocked = Career.isSkillUnlocked(sc.id);
-      const lit = isEquipped || isSelected;
+      const lit = equipSlot !== 0 || isSelected;
 
       sc.g.clear();
       drawSlantShadow(sc.g, SK.cardW, SK.cardH, skewOf(SK.cardH, SLANT.block), 3, 5, 0.45);
       drawMenuCard(sc.g, SK.cardW, SK.cardH, 10, {
         slant: SLANT.block,
         accent: lit ? sc.accent : isUnlocked ? ARCADE.dimDeep : ARCADE.line,
-        tint: isSelected ? 0.18 : isEquipped ? 0.14 : 0.06,
+        tint: isSelected ? 0.18 : equipSlot !== 0 ? 0.14 : 0.06,
         bar: lit ? 4 : 2,
         edge: lit ? 4 : 2,
         alpha: isUnlocked ? 0.92 : 0.6,
         active: isSelected,
       });
 
-      if (isEquipped) {
-        sc.statusBtnLabel.string = "已装备";
-        sc.statusBtnLabel.color = ac(ARCADE.good);
-      } else if (isUnlocked) {
-        sc.statusBtnLabel.string = "装备";
-        sc.statusBtnLabel.color = ac(ARCADE.paper);
-      } else {
-        sc.statusBtnLabel.string = `Lv.${def.unlockLevel} 解锁`;
-        sc.statusBtnLabel.color = ac(ARCADE.dimDeep);
-      }
+      const label = skillBtnLabel(def, isUnlocked, this.selectedSlot, equipSlot, slot2Occupied);
+      if (sc.statusBtnLabel.string !== label) sc.statusBtnLabel.string = label;
+      // 按钮字色跟语义走:已装/卸下 = good(绿),换槽 = 荧光黄,普通装入 = 纸白,锁住 = 暗
+      sc.statusBtnLabel.color = !isUnlocked ? ac(ARCADE.dimDeep)
+        : label === "卸下槽2" ? ac(ARCADE.good)
+          : label.startsWith("已装槽") ? ac(ARCADE.good)
+            : label.startsWith("换到槽") ? ac(ARCADE.acid)
+              : ac(ARCADE.paper);
     }
   }
 
@@ -282,8 +356,8 @@ export class SkillDialog {
     const all = Skills.allSkills();
     const def = Skills.defOf(this.selectedId) as unknown as SkillLike;
     const unlocked = Career.isSkillUnlocked(this.selectedId);
-    const equipped = Career.equippedSkill() === this.selectedId;
-    const L = layoutSkillPlate(def, unlocked, equipped);
+    const equipSlot = this.equipSlotOf(this.selectedId);
+    const L = layoutSkillPlate(def, unlocked, equipSlot);
 
     this.selAccent = def.accent;
     this.plateG.clear();
@@ -299,7 +373,7 @@ export class SkillDialog {
       if (!lbl) continue;
       lbl.color = ac(
         it.role === "name" ? (unlocked ? def.accent : ARCADE.dim)
-          : it.role === "status" ? (unlocked ? (equipped ? ARCADE.good : ARCADE.dim) : ARCADE.bad)
+          : it.role === "status" ? (unlocked ? (equipSlot !== 0 ? ARCADE.good : ARCADE.dim) : ARCADE.bad)
             : it.role === "desc" ? ARCADE.paper
               : ARCADE.cyan,
       );
@@ -307,17 +381,28 @@ export class SkillDialog {
   }
 
   private repaint(): void {
+    this.renderSlots();
     this.renderAllCards();
     this.renderDetail();
   }
 
-  /** 选中一款:幂等 —— 重复点同一张卡不再重绘、也不再响音效 */
+  /** 选中一款看说明:幂等 —— 重复点同一张卡不再重绘、也不再响音效 */
   private select(id: SkillId): void {
     if (id === this.selectedId) return;
     this.kit.sfx.play("ui");
     this.selectedId = id;
     this.renderAllCards();
     this.renderDetail();
+  }
+
+  /** 选定目标槽:幂等,选中态立刻刷两颗 chip */
+  private selectSlot(slot: 1 | 2): void {
+    if (slot === this.selectedSlot) return;
+    this.kit.sfx.play("ui");
+    this.selectedSlot = slot;
+    this.renderSlots();
+    // 按钮文案跟着目标槽变("装入槽1" ↔ "装入槽2")
+    this.renderAllCards();
   }
 
   show(onEquip?: (id: SkillId) => void): void {
@@ -331,8 +416,9 @@ export class SkillDialog {
     const parent = this.root.parent;
     if (parent) this.root.setSiblingIndex(parent.children.length - 1);
     this.root.active = true;
-    // 每次打开都跟着实际装备走(等级、装备都可能在上次关闭后变了)
+    // 每次打开都跟着实际装备走(等级、装备都可能在上次关闭后变了);目标槽回到槽1
     this.selectedId = Career.equippedSkill();
+    this.selectedSlot = 1;
     this.repaint();
     slamIn(this.card.node);
   }

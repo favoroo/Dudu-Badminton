@@ -27,8 +27,15 @@ export interface Profile {
   coins: number;
   owned: string[];
   equipped: Record<SkinKind, string>;
-  /** 当前装备的技能 */
+  /** 当前装备的技能(技能1 槽,恒有技能 —— 缺失由 profile() 兜 "lunge") */
   equippedSkill?: SkillId;
+  /**
+   * 技能2 槽(2026-10-06 双技能槽):null/缺键 = 未携带(场上技能2键显示空态)。
+   * 老档缺这个字段由 profile() 补默认 null,老玩家技能1不变、零迁移。
+   * 「同一款技能不许装两槽」由 equipSkill 保证(撞款即互换);技能1 恒不许空 ——
+   * 卸下只对槽2开放,空槽1 没有读数兜底的意义(equippedSkill() 会兜 lunge,等于骗人)。
+   */
+  equippedSkill2?: SkillId | null;
   /**
    * 新手操作教学看过了吗(首次启动自动弹一次;跳过/看完/手动关闭都算看过)。
    * 老档缺这个字段由 profile() 逐字段补默认 —— 补出来是 false,正好实现
@@ -71,6 +78,7 @@ const fresh = (): Profile => ({
   owned: KINDS.map((k) => DEFAULTS[k].id),
   equipped: { player: DEFAULTS.player.id, racket: DEFAULTS.racket.id, shuttle: DEFAULTS.shuttle.id, face: DEFAULTS.face.id },
   equippedSkill: "lunge",
+  equippedSkill2: null,
   tutorialDone: false,
   streak: 0, bestStreak: 0,
   bestEndlessScore: 0,
@@ -109,6 +117,11 @@ function profile(): Profile {
     if (!cache.owned.includes(DEFAULTS[k].id)) cache.owned.push(DEFAULTS[k].id);
   }
   if (!cache.equippedSkill) cache.equippedSkill = "lunge";
+  // 手改存档把技能2槽写坏(非技能 id)→ 退回「未携带」,别让 defOf 静默兜成 lunge 骗人
+  const skillIds = C.skills.list.map((s) => s.id) as string[];
+  if (cache.equippedSkill2 != null && !skillIds.includes(cache.equippedSkill2 as string)) {
+    cache.equippedSkill2 = null;
+  }
   // 手改存档把教学标记写坏(字符串/null)→ 退回「没看过」,下次启动再教一遍,无害
   if (typeof cache.tutorialDone !== "boolean") cache.tutorialDone = false;
   // 首次自动合流散落的旧 wins / matches 记录
@@ -342,6 +355,11 @@ function equippedSkill(): SkillId {
   return profile().equippedSkill || "lunge";
 }
 
+// 获取技能2槽(null/undefined = 未携带)
+function equippedSkill2(): SkillId | null {
+  return profile().equippedSkill2 || null;
+}
+
 // ---------- 作者通道:测试档拉满(CFG.author,手势判定在 main-menu.ts) ----------
 // 只动等级与金币:经验清零(满级后 addExp 本就不留经验),金币取「已有 vs 给定」的较大值,
 // 于是重复触发只会稳定停在满档,不会把已经花掉的钱又补回一个更大的数。
@@ -365,10 +383,41 @@ function isSkillUnlocked(id: SkillId): boolean {
   return profile().level >= def.unlockLevel;
 }
 
-// 装备指定技能
-function equipSkill(id: SkillId): boolean {
+/**
+ * 装备指定技能到某一槽(缺省槽1 = 旧口径,旧调用方不改也通)。
+ *
+ * 双槽三条口径(2026-10-06):
+ * ① **撞款即互换**:目标槽想装进另一槽已有的技能时,两槽内容对调 —— 换个键位放,
+ *    而不是弹回失败(玩家读到的永远是"装上了")。
+ * ② **技能1 恒有技能**:往槽2装槽1的那款时,若槽2是空的就拒绝(返回 false,UI 给提示)——
+ *    空槽1 会把 equippedSkill() 的 "lunge" 兜底变成一句谎话,干脆不允许;
+ *    槽2有别的技能则是正常互换(①)。
+ * ③ 卸下只对槽2开放(unequipSkill);槽1想换款直接装另一款即可,无需先卸。
+ */
+function equipSkill(id: SkillId, slot: 1 | 2 = 1): boolean {
   if (!isSkillUnlocked(id)) return false;
-  profile().equippedSkill = id;
+  const pr = profile();
+  if (slot === 2) {
+    if (pr.equippedSkill === id) {
+      if (!pr.equippedSkill2) return false;    // 口径②:槽1那款挪不进空槽2
+      pr.equippedSkill = pr.equippedSkill2;    // 口径①:互换
+    }
+    pr.equippedSkill2 = id;
+  } else {
+    if (pr.equippedSkill2 === id) pr.equippedSkill2 = pr.equippedSkill;
+    pr.equippedSkill = id;
+  }
+  saveProfile();
+  applyToMatch();
+  return true;
+}
+
+/** 卸下技能2槽(槽1恒有技能,卸它恒拒绝)。已空也返回 false,UI 据此不弹提示 */
+function unequipSkill(slot: 1 | 2 = 2): boolean {
+  if (slot === 1) return false;
+  const pr = profile();
+  if (!pr.equippedSkill2) return false;
+  pr.equippedSkill2 = null;
   saveProfile();
   applyToMatch();
   return true;
@@ -395,11 +444,13 @@ function applyToMatch(): void {
     me.racketSkin = skinOf("racket");
     me.faceSkin = skinOf("face");
     me.skill = Skills.initSkillState(equippedSkill());
+    // 双槽(2026-10-06):槽2 有货才挂,空槽清掉上一局的残留对象(应用 undefined 而不是留着)
+    me.skill2 = equippedSkill2() ? Skills.initSkillState(equippedSkill2()!) : undefined;
   }
 }
 
 export const Career = {
   KINDS, profile, skinOf, skinById, owns, unlocked,
   expNeed, levelCoin, settle, settleDrill, buy, equip, buyAndEquip, applyToMatch,
-  equippedSkill, isSkillUnlocked, equipSkill, setTutorialDone, maxOut, sandboxed,
+  equippedSkill, equippedSkill2, isSkillUnlocked, equipSkill, unequipSkill, setTutorialDone, maxOut, sandboxed,
 };

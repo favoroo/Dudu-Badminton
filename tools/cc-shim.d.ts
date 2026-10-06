@@ -15,8 +15,9 @@ declare module "cc" {
   export enum KeyCode {
     NONE = 0,
     KEY_A = 65, KEY_B = 66, KEY_D = 68, KEY_W = 87, KEY_S = 83,
-    KEY_J = 74, KEY_K = 75, KEY_L = 76, KEY_M = 77, KEY_P = 80,
+    KEY_J = 74, KEY_K = 75, KEY_L = 76, KEY_M = 77, KEY_O = 79, KEY_P = 80,
     KEY_R = 82, KEY_Q = 81, KEY_Z = 90, KEY_X = 88,
+    BACKSLASH = 220,
     COMMA = 188, PERIOD = 190, SLASH = 191,
     ESCAPE = 27, SPACE = 32, ENTER = 13,
     ARROW_LEFT = 37, ARROW_UP = 38, ARROW_RIGHT = 39, ARROW_DOWN = 40,

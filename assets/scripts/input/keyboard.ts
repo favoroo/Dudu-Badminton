@@ -18,6 +18,8 @@ const KEYCODE_TO_CODE: Record<number, string> = {
   [KeyCode.KEY_J]: "KeyJ",
   [KeyCode.KEY_K]: "KeyK",
   [KeyCode.KEY_L]: "KeyL",
+  [KeyCode.KEY_O]: "KeyO",
+  [KeyCode.BACKSLASH]: "Backslash",
   [KeyCode.COMMA]: "Comma",
   [KeyCode.KEY_Z]: "KeyZ",
   [KeyCode.KEY_X]: "KeyX",
@@ -45,9 +47,9 @@ function getCode(e: EventKeyboard): string {
 // 键盘不受触屏双键合并影响:J=深球(swingFar), K=短球(swingNear) 仍各占一键,
 // U=挑高(swingUp), I=平抽(swingDown) —— 四键各定一个完整意图,
 // press() 内部映射到 swingSwipe/swingSwipeY=±1,与触屏四向滑动手势殊途同归。
-type PadAct = "left" | "right" | "jump" | "lunge" | "swingFar" | "swingNear" | "swingUp" | "swingDown";
+type PadAct = "left" | "right" | "jump" | "lunge" | "skill2" | "swingFar" | "swingNear" | "swingUp" | "swingDown";
 /** 纯边沿语义的动作:一次按下就是一个动作,没有「按住」状态可松 */
-const EDGE_ACTIONS: PadAct[] = ["lunge", "swingFar", "swingNear", "swingUp", "swingDown"];
+const EDGE_ACTIONS: PadAct[] = ["lunge", "skill2", "swingFar", "swingNear", "swingUp", "swingDown"];
 
 /** 有「按住」状态的动作(类型守卫:KEY_UP 只会把这类交给 release) */
 const isHoldAction = (a: PadAct): a is "left" | "right" | "jump" => !EDGE_ACTIONS.includes(a);
@@ -57,6 +59,7 @@ const KEYMAP: Array<{ action: PadAct; codes: string[] }> = [
   { action: "right", codes: C.keys.p1.right },
   { action: "jump", codes: C.keys.p1.jump },
   { action: "lunge", codes: C.keys.p1.lunge },
+  { action: "skill2", codes: C.keys.p1.skill2 },
   { action: "swingFar", codes: C.keys.p1.swingFar },
   { action: "swingNear", codes: C.keys.p1.swingNear },
   { action: "swingUp", codes: C.keys.p1.swingUp },

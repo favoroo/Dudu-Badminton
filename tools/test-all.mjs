@@ -94,6 +94,9 @@ const CHECKS = [
   "strip-check",
   "brief-check",
   "skill-check",
+  // 双技能槽(2026-10-06):装备互换/槽寻址/激活路由/叠加语义/领域到期/代拍链/pad 边沿,
+  // 防的是"单槽假设漏改"这一族不崩不报错、只有真机把技能装进槽2才露馅的病。带 selftest。
+  "skill2-check",
   "pad-cd-check",
   "ui-hide-check",
   // 文案里的对象被字符串化(结算屏「新品上架:[object Object]」现场)。吃 tsc 剩下的两个洞:
@@ -158,6 +161,7 @@ const SELFTESTS = [
   "strip-check",
   "brief-check",
   "skill-check",
+  "skill2-check",
   "pad-cd-check",
   "ui-hide-check",
   // 垃圾输入(null/数字/字符串/残缺数组)必须归零且不炸 —— 洗数据函数最怕悄悄出脏条目
