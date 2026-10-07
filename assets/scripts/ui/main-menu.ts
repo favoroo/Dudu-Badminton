@@ -1,6 +1,6 @@
 // ============================================================
 // 主菜单:球场在身后,菜单是浮在场上的一层玻璃。
-// 版式(P5 海报改版):等级/金币/音效条 → 标题 → 五块实底大色块。
+// 版式(P5 海报改版):等级/金币/音效条 → 标题 → 五块实底大色块 → 底部活动横幅。
 // 底部不再挂版本号与「检查更新」(用户指令):更新整条链路收进设置「关于」页,
 // 这里只留冷启动的 24h 静默检查 —— 有更新会自己弹窗,没更新不必给个按钮让人点。
 // 信息架构(用户指令):「入门/普通/大师」不再铺在首页 —— 合并成左上那块
@@ -8,8 +8,14 @@
 // (mode-screen.ts),球馆选择与技能胶囊也搬进了对练屏,首页只留模式入口。
 // 大色块 = ui-arcade.drawSolidBlock 实底海报面,文字用色由 inkOn(accent) 定。
 // 屏间转场走 ui-arcade.screenSwap(红黑斜带扫屏),进对局仍走 slashWipe。
+//
+// **坐标一律从 menu-layout 读**(用户 2026-10-07 现场:「手机上看这个底部的活动中心
+// 这一块,被挤到下面去了」)。这一屏是全站唯一跟着屏幕长宽比变的一屏 —— FIXED_HEIGHT
+// 下高恒 540、宽随长宽比涨,旧版把 960 那一排的坐标手拍在这里,宽屏上就是
+// 「两侧各空 140、横幅贴到屏幕最下沿」。现在 layoutMenu(可视宽, 安全区) 一份算术,
+// 构造时摆一次、show() 里按当前可视宽整表重摆(折叠屏展开 / 分屏换宽后回首页不脱节)。
 // ============================================================
-import { Button, Color, Graphics, Label, Node, tween, UIOpacity, UITransform, Vec2, Widget } from "cc";
+import { Button, Color, Graphics, Label, Node, tween, UIOpacity, UITransform, Vec2, view, Widget } from "cc";
 import { CFG, DRILLS } from "../core/config";
 import { Career } from "../core/career";
 import { CampaignManager } from "../core/campaign";
@@ -20,11 +26,21 @@ import {
   drawSolidBlock, fadeOutHide, inkOn, makeChip, makeCoinIcon,
   riseIn, safePad, skewOf, slashIn, slantPath,
 } from "./ui-arcade";
-import { textW } from "../core/text-metrics";
 import { UpdateService } from "../game/update-service";
+import {
+  MENU, MENU_SIZE, MENU_TEXT, bannerSubClaimable, center, layoutMenu, width,
+  type Box, type MenuLayout,
+} from "./menu-layout";
 
 /** 大色块字色:亮面配墨黑,斩劈红面配纸白(由亮度算,不逐块手拍) */
 const inkOf = (accent: string): string => (inkOn(accent) ? "#0a0e1c" : "#f5efe1");
+
+/** 可视宽(设计单位):FIXED_HEIGHT 下高恒 540,宽 = 540 × 屏幕长宽比(hud 同一把尺) */
+function visibleDesignWidth(): number {
+  const vs = view.getVisibleSize();
+  const k = vs.height > 0 ? CFG.world.h / vs.height : 1;
+  return vs.width * k;
+}
 
 export class MainMenu {
   readonly root: Node;
@@ -50,6 +66,10 @@ export class MainMenu {
   private titleBackNode: Node | null = null;
   /** 半透明暗底节点:入场时从全黑淡到半透,让身后球场渐渐显出来 */
   private dimNode: Node | null = null;
+  /** 当前版式(屏幕局部坐标);show() 里可视宽变了就整表重摆 */
+  private L: MenuLayout = layoutMenu({ visW: visibleDesignWidth() });
+  /** 摆位表:每项 = 「按 this.L 重摆这一块/这一件」,构造时跑一遍、show() 再跑一遍 */
+  private relayout: Array<() => void> = [];
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -170,20 +190,21 @@ export class MainMenu {
     // ---------- 街机海报标题:单块大红斜切色块 + 两段大字 ----------
     // 返工定稿:去黄衬/锯齿/星芒/逐字错位,衬底与下方五块模式色块同款
     // (drawSolidBlock 厚底边语言),标题即「第六块大色块」;入场一次性,落位全静止。
+    // 标题不参与横向拉伸(它是 logo,宽屏上就该居中占那么大块),但行心读版式那一份。
     const backing = new Node("title-backing");
     backing.layer = this.root.layer;
-    backing.addComponent(UITransform);
+    backing.addComponent(UITransform).setContentSize(width(this.L.title), this.L.title.h);
     const bgg = backing.addComponent(Graphics);
-    drawSolidBlock(bgg, 372, 74, ARCADE.slash, 9);   // 自带硬阴影/厚底边/高光/描边
-    backing.setPosition(0, 190, 0);
+    drawSolidBlock(bgg, width(this.L.title), this.L.title.h, ARCADE.slash, 9);   // 自带硬阴影/厚底边/高光/描边
     backing.setParent(this.root);
+    this.bind(backing, (L) => L.title);
     this.titleBackNode = backing;
 
-    const t1 = kit.label(this.root, "嘟嘟", 54, P.accent, { disp: true });
-    t1.node.setPosition(-81, 190, 0);
-    const t2 = kit.label(this.root, "羽毛球", 54, P.text, { disp: true });
-    t2.node.setPosition(54, 190, 0);
-    for (const t of [t1, t2]) {
+    const t1 = kit.label(this.root, MENU_TEXT.title[0], MENU.titleSize, P.accent, { disp: true });
+    const t2 = kit.label(this.root, MENU_TEXT.title[1], MENU.titleSize, P.text, { disp: true });
+    for (const [t, dx] of [[t1, MENU.titleDx[0]], [t2, MENU.titleDx[1]]] as Array<[Label, number]>) {
+      const run = (): void => t.node.setPosition(dx, this.L.title.cy, 0);
+      this.relayout.push(run); run();
       t.enableShadow = true;
       t.shadowColor = new Color(0, 0, 0, 140);
       t.shadowOffset = new Vec2(0, -6);
@@ -191,17 +212,20 @@ export class MainMenu {
       this.riseNodes.push({ node: t.node, delay: 0.16 });
     }
 
-    // ---------- 五块实底大色块(P5 海报面):对练为主入口,右列 2×2 ----------
-    // 对练 = 左侧整柱斩劈红(进对练屏选难度/球馆/技能);
-    // 右列:闯关(荧光黄)/ 无限练习(绿)/ 专项训练(青)/ 生涯与商店(纸白)。
-    // 色即功能语言:红=上场、黄=闯关星星、绿=练球、青=专项、白=档案。
+    // ---------- 摆位登记(整屏只这一处读坐标) ----------
+    /** 按当前版式摆一个「节点即盒心」的件,并挂进重摆表 */
+    const bind = (node: Node, get: (L: MenuLayout) => Box): Node => {
+      this.bind(node, get);
+      return node;
+    };
+    /** 大色块:位置 + 尺寸 + 重画底面(底面是一次绘制的斜切块,宽高一变必须跟着重画) */
     const block = (
-      name: string, w: number, h: number, accent: string, onTap: () => void,
+      name: string, accent: string, onTap: () => void, get: (L: MenuLayout) => Box,
     ): Node => {
       const n = new Node(name);
       n.layer = this.root.layer;
-      n.addComponent(UITransform).setContentSize(w, h);
-      drawSolidBlock(n.addComponent(Graphics), w, h, accent, 5);
+      n.addComponent(UITransform);
+      const g = n.addComponent(Graphics);
       const b = n.addComponent(Button);
       b.transition = Button.Transition.SCALE;
       b.zoomScale = 0.96;
@@ -211,16 +235,30 @@ export class MainMenu {
         onTap();
       });
       n.setParent(this.root);
+      const run = (): void => {
+        const bx = get(this.L);
+        n.getComponent(UITransform)!.setContentSize(width(bx), bx.h);
+        this.place(n, bx);
+        g.clear();
+        drawSolidBlock(g, width(bx), bx.h, accent, 5);
+      };
+      this.relayout.push(run);
+      run();
       return n;
     };
 
+    // ---------- 五块实底大色块(P5 海报面):对练为主入口,右列 2×2 ----------
+    // 对练 = 左侧整柱斩劈红(进对练屏选难度/球馆/技能);
+    // 右列:闯关(荧光黄)/ 无限练习(绿)/ 专项训练(青)/ 生涯与商店(纸白)。
+    // 色即功能语言:红=上场、黄=闯关星星、绿=练球、青=专项、白=档案。
+    // 尺寸与坐标全在 menu-layout:宽屏上整排横向拉伸、块内件贴住块缘的固定内缩。
+
     // 主入口:对练(整柱大块,内容竖排)
-    const hero = block("mode:match-setup", 316, 330, ARCADE.slash, () => kit.openMatchSetup());
-    hero.setPosition(-298, -51, 0);
-    makeChip(hero, "MATCH", 10, "#0a0e1c", ARCADE.acid).setPosition(-102, 126, 0);
-    const heroName = kit.label(hero, "对练", 44, ARCADE.paper, { disp: true });
-    heroName.node.setPosition(-96, 74, 0);
-    this.txt(hero, "四档难度 · 选球馆 · 随时开局", 12, col(ARCADE.paper, 0.8), -104, 24, 240);
+    const hero = block("mode:match-setup", ARCADE.slash, () => kit.openMatchSetup(), (L) => L.hero.outer);
+    bind(makeChip(hero, MENU_TEXT.hero.tag, MENU_SIZE.heroChip, "#0a0e1c", ARCADE.acid), (L) => L.hero.chip);
+    const heroName = kit.label(hero, MENU_TEXT.hero.name, MENU_SIZE.heroName, ARCADE.paper, { disp: true });
+    bind(heroName.node, (L) => L.hero.name);
+    this.txt(hero, MENU_TEXT.hero.line, MENU_SIZE.heroLine, col(ARCADE.paper, 0.8), (L) => L.hero.line!);
     // 四档强度色点:绿→黄→橙→红,颜色本身就在报难度(与对练屏 DIFF_PICKS 同源)
     const dots = new Node("diff-dots");
     dots.layer = hero.layer;
@@ -232,65 +270,64 @@ export class MainMenu {
       slantPath(dg, 26, 14, skewOf(14, 8), -51 + i * 34, 0);
       dg.fill();
     }
-    dots.setPosition(-88, -22, 0);
     dots.setParent(hero);
-    const heroHint = this.txt(hero, "EASY / NORMAL / HARD / EXPERT", 10, col(ARCADE.paper, 0.55), -104, -58, 240);
-    heroHint.horizontalAlign = Label.HorizontalAlign.LEFT;
+    bind(dots, (L) => L.hero.dots);
+    this.txt(hero, MENU_TEXT.hero.hint, MENU_SIZE.heroHint, col(ARCADE.paper, 0.55), (L) => L.hero.hint);
     const heroChev = new Node("hero-chev");
     heroChev.layer = hero.layer;
     heroChev.addComponent(UITransform);
     drawChevron(heroChev.addComponent(Graphics), 15, ARCADE.paper, 0.85, 2);
-    heroChev.setPosition(112, -124, 0);
     heroChev.setParent(hero);
+    bind(heroChev, (L) => L.hero.chev);
 
     /** 右列小块:EN 角签 + 名称 + 动态副行 + 箭标(整块即按钮) */
-    const entry = (
-      name: string, accent: string, tag: string, label: string, sub: string,
-      x: number, y: number, onTap: () => void,
-    ): { node: Node; subLabel: Label | null } => {
-      const n = block(name, 282, 150, accent, onTap);
-      n.setPosition(x, y, 0);
+    const entry = (i: number, accent: string, onTap: () => void): { node: Node; subLabel: Label | null } => {
+      const t = MENU_TEXT.entries[i];
+      const n = block(`entry:${t.key}`, accent, onTap, (L) => L.entries[i].outer);
       const ink = inkOf(accent);
-      makeChip(n, tag, 9, "#0a0e1c", accent).setPosition(-104, 46, 0);
+      bind(makeChip(n, t.tag, MENU_SIZE.chip, "#0a0e1c", accent), (L) => L.entries[i].chip);
       // 名称按实测字宽左锚摆位:「生涯与商店」5 字也要贴齐左缘,中心摆会溢出块外
-      const nm = kit.label(n, label, 22, ink, { disp: true });
-      nm.node.setPosition(-104 + textW(label, 22) / 2, 10, 0);
-      const subLabel = sub ? this.txt(n, sub, 11, col(ink, 0.62), -104, -34, 210) : null;
+      const nm = kit.label(n, t.name, MENU_SIZE.name, ink, { disp: true });
+      bind(nm.node, (L) => L.entries[i].name);
+      const subLabel = t.sub
+        ? this.txt(n, t.sub, MENU_SIZE.sub, col(ink, 0.62), (L) => L.entries[i].line!)
+        : null;
       const chev = new Node("chev");
       chev.layer = n.layer;
       chev.addComponent(UITransform);
       drawChevron(chev.addComponent(Graphics), 12, ink, 0.75, 2);
-      chev.setPosition(112, -8, 0);
       chev.setParent(n);
+      bind(chev, (L) => L.entries[i].chev);
       return { node: n, subLabel };
     };
 
-    const campaign = entry("entry:campaign", ARCADE.acid, "CHALLENGE", "闯关模式", "", 12, 40, () => kit.openCampaign());
+    const campaign = entry(0, ARCADE.acid, () => kit.openCampaign());
     this.campaignSub = campaign.subLabel;
-    const endless = entry("entry:endless", ARCADE.good, "ENDLESS", "无限练习", "无视比分 · 持续对拉", 318, 40, () => kit.openEndless());
-    const drill = entry("entry:drill", ARCADE.cyan, "TRAIN", "专项训练", "", 12, -138, () => kit.openDrills());
+    const endless = entry(1, ARCADE.good, () => kit.openEndless());
+    const drill = entry(2, ARCADE.cyan, () => kit.openDrills());
     this.drillSub = drill.subLabel;
-    const career = entry("entry:career", ARCADE.paper, "CAREER", "生涯与商店", "", 318, -138, () => kit.openCareer());
+    const career = entry(3, ARCADE.paper, () => kit.openCareer());
     this.careerSub = career.subLabel;
 
     // ---------- 底部活动横幅(2026-10-07 活动板块):五块色块的通宽收尾条 ----------
-    // 宽度对齐五块的合拢外缘(hero 左缘 -456 → career 右缘 459),压在色块底(-213)
-    // 与屏底(-270)之间;打击橙是第六种功能色(红=上场/黄=闯关/绿=练球/青=专项/白=档案,
-    // 橙=活动奖励)。有可领奖励时副行升到全亮、右侧浮一枚荧光黄「N 项可领」角签 ——
-    // 首页唯一的「有事可领」信号,refresh() 每次都按 Career.activityViews() 现算。
-    const activity = block("entry:activity", 915, 44, ARCADE.hot, () => kit.openActivity());
-    activity.setPosition(1.5, -243, 0);
+    // 左右缘与五块那一排合拢对齐(版式里同一 rowHalf 算出来),压在色块阵与屏底之间,
+    // 屏底留白 + 阵↔横幅两道缝都由 menu-layout 兜住 —— 旧版这两道缝各只剩 5 单位,
+    // 宽屏上就是用户说的「被挤到下面去了」。打击橙是第六种功能色(红=上场/黄=闯关/
+    // 绿=练球/青=专项/白=档案,橙=活动奖励)。有可领奖励时副行升到全亮、右侧浮一枚
+    // 荧光黄「N 项可领」角签 —— 首页唯一的「有事可领」信号,refresh() 每次都按
+    // Career.activityViews() 现算。
+    const activity = block("entry:activity", ARCADE.hot, () => kit.openActivity(), (L) => L.banner.outer);
     this.activityNode = activity;
-    makeChip(activity, "EVENT", 9, "#0a0e1c", ARCADE.hot).setPosition(-424, 0, 0);
-    const actName = kit.label(activity, "活动中心", 18, inkOf(ARCADE.hot), { disp: true });
-    actName.node.setPosition(-392 + textW("活动中心", 18) / 2, 0, 0);
-    this.activitySub = this.txt(activity, "", 12, col(inkOf(ARCADE.hot), 0.62), -280, 0, 500);
+    bind(makeChip(activity, MENU_TEXT.banner.tag, MENU_SIZE.bannerChip, "#0a0e1c", ARCADE.hot), (L) => L.banner.chip);
+    const actName = kit.label(activity, MENU_TEXT.banner.name, MENU_SIZE.bannerName, inkOf(ARCADE.hot), { disp: true });
+    bind(actName.node, (L) => L.banner.name);
+    this.activitySub = this.txt(activity, "", MENU_SIZE.bannerSub, col(inkOf(ARCADE.hot), 0.62), (L) => L.banner.line!);
     const actChev = new Node("act-chev");
     actChev.layer = activity.layer;
     actChev.addComponent(UITransform);
     drawChevron(actChev.addComponent(Graphics), 12, inkOf(ARCADE.hot), 0.75, 2);
-    actChev.setPosition(429, 0, 0);
     actChev.setParent(activity);
+    bind(actChev, (L) => L.banner.chev);
 
     this.riseNodes.push(
       { node: hero, delay: 0.26 },
@@ -309,20 +346,54 @@ export class MainMenu {
 
   // ---------- 建块辅助 ----------
 
+  /** 盒心 → 节点位置:版式交的是盒子,面板只搬它的中心(全站同一条口径) */
+  private place(node: Node, b: Box): void {
+    node.setPosition(center(b), b.cy, 0);
+  }
+
+  /** 按当前版式摆一个「节点即盒心」的件,并挂进重摆表(show() 里可视宽变了整表重跑) */
+  private bind(node: Node, get: (L: MenuLayout) => Box): void {
+    const run = (): void => this.place(node, get(this.L));
+    this.relayout.push(run);
+    run();
+  }
+
   /**
-   * 左对齐文本:x 传「文字左缘」而不是节点中心 ——
+   * 左对齐文本盒:版式交的是「盒子」(左缘 + 宽 + 行心),这里翻译成 contentSize + 节点位置 ——
    * Cocos 的 Label 是按节点 contentSize 排字的,直接摆中心点会把整段推出卡片。
+   * 注册进重摆表:可视宽一变(折叠屏展开 / 分屏换宽)格子跟着变,CLAMP 才裁在对的地方。
    */
   private txt(parent: Node, text: string, size: number, colorHex: string | Color,
-    left: number, y: number, w: number, lines = 1, outline?: string): Label {
+    get: (L: MenuLayout) => Box, outline?: string): Label {
     // 落在遮罩上的裸文字要描边,不然亮球馆(海滩场)一冲就糊
     const l = this.kit.label(parent, text, size, colorHex,
       { align: 0, outline, outlineW: outline ? (size >= 14 ? 2 : 1) : 0 });
     const ut = l.node.getComponent(UITransform)!;
-    ut.setContentSize(w, Math.round(size * 1.35) * lines);
+    const run = (): void => {
+      const b = get(this.L);
+      ut.setContentSize(width(b), b.h);
+      this.place(l.node, b);
+    };
+    this.relayout.push(run);
+    run();
     l.overflow = Label.Overflow.CLAMP;
-    l.node.setPosition(left + w / 2, y, 0);
     return l;
+  }
+
+  /**
+   * 重算版式并整表重摆。可视宽 = 540 × 屏幕长宽比(FIXED_HEIGHT 下只有宽在变),
+   * 折叠屏展开、分屏改宽、平板横放都会撞上来 —— 构造时那一次不够用。
+   * 必须在 riseIn/slashIn **之前**跑:那两个入场读的是节点「当前坐标」当落点。
+   */
+  private applyLayout(): void {
+    const sp = safePad();
+    this.L = layoutMenu({
+      visW: visibleDesignWidth(),
+      safeX: Math.max(sp.left, sp.right),
+      safeBottom: sp.bottom,
+    });
+    for (const run of this.relayout) run();
+    if (this.claimChip) this.place(this.claimChip, this.L.banner.claim);
   }
 
   // ---------- 状态描绘 ----------
@@ -336,6 +407,7 @@ export class MainMenu {
   show(): void {
     cancelFade(this.root);
     this.root.active = true;
+    this.applyLayout();
     this.refresh();
 
     // 暗底「从黑渐透」入场:先叠一层纯黑遮罩,再淡出 → 球场渐渐显出来
@@ -395,12 +467,13 @@ export class MainMenu {
     if (this.careerSub) this.careerSub.string = `${p.stats.wins} 胜 · 胜率 ${rate}% · 金币 ${p.coins}`;
 
     // 活动横幅:进度副行 + 「N 项可领」角签(判据只吃 Career.activityViews 一份,面板同款)
+    // 两支文案的**格式**与 menu-layout 的样本串同形,量宽判据才量得到这一屏真会显示的字
     const av = Career.activityViews();
     if (this.activitySub) {
       const weeklyDone = av.weekly.filter((v) => v.done).length;
       this.activitySub.string = av.anyClaimable
-        ? `今日 ${av.dailyDone}/${av.dailyTotal} · 每周 ${weeklyDone}/${av.weekly.length}`
-        : "完成任务领金币 · 每天 0 点刷新";
+        ? bannerSubClaimable(av.dailyDone, av.dailyTotal, weeklyDone, av.weekly.length)
+        : MENU_TEXT.banner.sub;
       this.activitySub.color = col(inkOf(ARCADE.hot), av.anyClaimable ? 1 : 0.62);
     }
     const chipText = av.claimableCount > 0 ? `${av.claimableCount} 项可领` : "";
@@ -408,8 +481,8 @@ export class MainMenu {
       this.claimChipText = chipText;
       if (this.claimChip) { this.claimChip.destroy(); this.claimChip = null; }
       if (chipText && this.activityNode) {
-        this.claimChip = makeChip(this.activityNode, chipText, 10, ARCADE.acid, "#0a0e1c");
-        this.claimChip.setPosition(330, 0, 0);
+        this.claimChip = makeChip(this.activityNode, chipText, MENU_SIZE.claimChip, ARCADE.acid, "#0a0e1c");
+        this.place(this.claimChip, this.L.banner.claim);
       }
     }
   }

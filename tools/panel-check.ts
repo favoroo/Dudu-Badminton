@@ -17,6 +17,10 @@
 // 2026-10-05 起加 ⑪「二次确认弹窗」:版式(卡高跟着文案算、两颗键不撞框)+ 接线完整性
 // (两颗「重置默认」都得走确认,不许有绕过它直接覆盖存档的第三条路)。
 //
+// 2026-10-07 起加 ⑭「切板块不许换装」:商店里「切换」这个动作本身不许改变身上穿的东西
+// (从前三处入口恒把选中钉在货架第一格 = 免费底款,试衣间立刻把人换成那一件)。
+// 判据扫面板源码,吃的是卡片「装备中」那一个读数是不是唯一出处 —— 不重新实现一遍方法。
+//
 // 与同目录其它 check 一样:判据写成吃数据的纯函数,正题喂真实布局,
 // --selftest 喂**改动前的真实旧写法** —— 反例必须变红,否则这套断言没牙齿。
 //
@@ -321,6 +325,61 @@ export function checkShelfWiring(raw: string, fileLabel: string): string[] {
   return out;
 }
 
+/** 面板源码里取一个方法的体(方法恒缩进两级,到第一个 `\n  }` 收尾)。
+ *  锚在**定义**上而不是方法名首次出现处 —— 那通常是调用点(`this._sel = this._wornIndex();`),
+ *  从它往后找会把整段文件当成方法体,判据就再也咬不到真正的坏写法。
+ *  判据只吃这一份文本,不重新实现一遍方法 —— 那等于把被测代码抄两遍。 */
+function methodBody(src: string, name: string): string {
+  const m = new RegExp(`${name}\\s*\\([^)]*\\)\\s*(?::[^{;]*)?\\{`).exec(src);
+  if (!m) return "";
+  const open = m.index + m[0].length - 1;
+  const end = src.indexOf("\n  }", open);
+  return src.slice(open, end < 0 ? src.length : end);
+}
+
+/**
+ * ⑭ **切板块不许换装**(2026-10-07 用户口径:「切换到上衣,它就直接给我穿上第一个配饰了」)。
+ * 这个坏不崩、不报错、出图也看不见:三处入口(开门 show / 换顶栏 tab / 换「形象」页子槽 chip)
+ * 从前都写 `this._sel = 0`,而货架第 0 格恒是免费底款(`_list` 的排序把 price 0 排最前),
+ * 于是右侧试衣间立刻把**不是玩家身上那件**的东西画上身 —— 读起来就是被偷偷换装了。
+ *   a) `this._sel = 0` 整文件不许再有;三处入口一律走 `_wornIndex()`;
+ *   b) `_wornIndex()` 必须吃 `_cardState(...).worn`(卡片那行「装备中」的同一个读数)——
+ *      在面板里另抄一份 `accAt(...) === id` 就是第二把尺子,绿带与选中亮起会指两件东西;
+ *   c) 进二级的两个入口不许用 `Math.max(0, …)` 把「身上没穿这族/这套里的任何一件」夹回第一格
+ *      (返回一级那两个可以夹:刚出去的那张卡恒在表里);
+ *   d) 没有选中项时 `_drawLivePreview` 不许 `if (!s) return` 留下一片空白试衣间 —— 要画此刻这一身。
+ */
+export function checkShelfSwitch(raw: string, fileLabel: string): string[] {
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const out: string[] = [];
+
+  const zeros = (src.match(/this\._sel\s*=\s*0\b/g) ?? []).length;
+  if (zeros) {
+    out.push(`${fileLabel}:仍有 ${zeros} 处 this._sel = 0 —— 把选中钉在货架第一格(免费底款),切过去就像替人穿上了一件没打算要的东西`);
+  }
+  const calls = (src.match(/this\._sel\s*=\s*this\._wornIndex\(\)/g) ?? []).length;
+  if (calls < 3) {
+    out.push(`${fileLabel}:只有 ${calls} 处入口走 _wornIndex()(要 3 处:开门 show / 换 tab _setKind / 换形象页子槽 chip)—— 没走的那处还会把人换装`);
+  }
+  const worn = methodBody(src, "_wornIndex");
+  if (!worn) {
+    out.push(`${fileLabel}:没有 _wornIndex() —— 「停在身上那一件」没有唯一出处`);
+  } else if (!/_cardState\([^)]*\)\.worn/.test(worn)) {
+    out.push(`${fileLabel}:_wornIndex 没吃 _cardState(…).worn —— 与卡片那行「装备中」成了两把尺子`);
+  }
+  for (const fn of ["_openFamily", "_openBundle"]) {
+    const b = methodBody(src, fn);
+    if (b && /this\._sel\s*=\s*Math\.max\(\s*0\s*,/.test(b)) {
+      out.push(`${fileLabel}:${fn} 用 Math.max(0, …) 把「身上没穿这${fn === "_openFamily" ? "一族" : "一套"}里的任何一件」夹回了第一格`);
+    }
+  }
+  const pv = methodBody(src, "_drawLivePreview");
+  if (pv && /if\s*\(\s*!s\s*\)\s*return\s*;/.test(pv)) {
+    out.push(`${fileLabel}:没选中项时 _drawLivePreview 直接 return —— 屏幕清完就剩一片空白试衣间,应当画此刻这一身`);
+  }
+  return out;
+}
+
 /** 面板 fxTag() 里**硬编码**那几条卖点(脸面/球拍/羽毛球的分支)。
  *  从源码现取,判据里不抄第二份 —— 那边加一句新的,这里自动跟着量。 */
 function fxTagLiterals(raw: string): string[] {
@@ -602,6 +661,22 @@ if (selftest) {
         fx: "纯黑衫的镜像 · 暗球馆里最亮的一件 · 穿上之后全场都看得见你" }])],
     ["商品名写到七个字(12 号字排不进 96 宽的卡)",
       cardTextFits([{ tag: "面饰「疾风限量款墨镜」", name: "疾风限量款墨镜", status: "金币 268", fx: "" }])],
+    // ---------- 切板块换装的反例(2026-10-07 用户现场:切到上衣就替他把第一件穿上了) ----------
+    // 这一份就是改动前 career-panel 的真实写法,四条各咬一处(不崩、不报错、出图看不见)
+    ["切板块把选中钉在第一格 + 没有 _wornIndex + 空选中留一片空白", checkShelfSwitch(
+      `show() { this._kind = "acc"; this._sel = 0; this._refresh(); }\n`
+      + `private _setKind(k) { this._kind = k; this._sel = 0; }\n`
+      + `t.node.on(Button.EventType.CLICK, () => { this._accSlot = slot.key; this._sel = 0; });\n`
+      + `private _openFamily(fid) { this._sel = Math.max(0, fam.members.indexOf(id)); }\n`
+      + `private _openBundle(id) { this._sel = Math.max(0, wornIdx); }\n`
+      + `private _drawLivePreview() { const s = list[this._sel]; if (!s) return; }`,
+      "sample-bad")],
+    ["_wornIndex 存在但不吃卡片那个 worn 读数(另起一把尺)", checkShelfSwitch(
+      `private _setKind(k) { this._sel = this._wornIndex(); }\n`
+      + `show() { this._sel = this._wornIndex(); }\n`
+      + `this._accSlot = slot.key; this._sel = this._wornIndex();\n`
+      + `private _wornIndex() { return this._list().findIndex((s) => Career.accAt(Career.profile(), s.slot) === s.id); }\n`,
+      "sample-second-ruler")],
   ];
   for (const [nm, msgs] of cases) {
     ok(msgs.length > 0, `反例 ${nm}:应被拦下,实得 ${msgs.length} 条${msgs.length ? ` —— ${msgs[0]}` : ""}`);
@@ -625,6 +700,8 @@ if (selftest) {
     "正例:真面板的接线过「两处都问」这道闸");
   ok(checkSkillsGateWiring(readFileSync(join(UI, "ui-manager.ts"), "utf8"), "ui-manager").length === 0,
     "正例:对练/无限/闯关三处开赛口都接了双技能闸,弹窗文案走 confirm-layout");
+  ok(checkShelfSwitch(readFileSync(join(UI, "career-panel.ts"), "utf8"), "career-panel").length === 0,
+    "正例:真面板的三处入口都停在「身上那一件」,没有 _sel = 0 的第四条路");
   process.exit(bad ? 1 : 0);
 }
 
@@ -770,6 +847,12 @@ for (const [nm, pw, ph] of [["闯关", CMP.pw, CMP.ph], ["训练场", DRILL.pw, 
   const wire = checkShelfWiring(readFileSync(join(UI, "career-panel.ts"), "utf8"), "career-panel");
   for (const m of wire) ok(false, `货架接线 ${m}`);
   ok(wire.length === 0, "可视窗读 _curShelf.h、卡上三行字都过 cardLine/cardFxLines(没有直接摆原文的第四条路)");
+
+  const sw = checkShelfSwitch(readFileSync(join(UI, "career-panel.ts"), "utf8"), "career-panel");
+  for (const m of sw) ok(false, `切板块 ${m}`);
+  ok(sw.length === 0,
+    "开门 / 换顶栏 tab / 换形象页子槽三处入口都把选中停在**身上那一件**(_wornIndex 吃的就是卡片那行「装备中」的读数),"
+    + "空槽则谁都不选中、试衣间照画此刻这一身");
 }
 
 const c4: string[] = []; for (const f of copyTargets()) c4.push(...checkCopy(readFileSync(join(UI, f), "utf8"), f));

@@ -330,8 +330,11 @@ export class CareerPanel extends Component {
     // 默认开在「形象」:进来先看自己这一身,套装/皮肤是主动逛街才去翻的(2026-10-07 用户指令)。
     // 显式传 initialKind 的入口(履历跳转等)仍以传入为准。
     this._kind = initialKind ?? "acc";
-    this._sel = 0;
     this._fam = null;   // 每次开门都从整族货架看起,不复用上次停在二级界面的位置
+    this._bundle = null; // 套装的二级货架同理(面板复用同一个组件,不复位就会停在上一套的组成件里)
+    // 停在身上那一件,不是货架第一格 —— 且必须等 _fam/_bundle 复位之后再算,
+    // 那时 _list() 交回的才是主货架(见 _wornIndex)
+    this._sel = this._wornIndex();
     this._buildAll(parent);
     this._refresh();
     if (this._panelNode) slamIn(this._panelNode);   // 老 .panel slam 砸落
@@ -866,6 +869,7 @@ export class CareerPanel extends Component {
 
   /** 把选中的卡片滚进视野(键盘上下选、点下半截露在外面的卡片都要) */
   private _revealSel() {
+    if (this._sel < 0) return;   // 谁都没选中(这一槽空着),没有要滚进来的行
     if (this._maxScroll <= 0 || this._rows <= 0) return;
     const cols = gridCols(this._list().length);
     const { min, max } = revealRange(Math.floor(this._sel / cols), this._maxScroll, this._curShelf);
@@ -998,13 +1002,22 @@ export class CareerPanel extends Component {
     };
   }
 
+  /** 切板块时该停在哪一格:**身上正穿着的那一件**(2026-10-07 用户口径 —— 从前恒停在
+   *  第一格,而第一格永远是免费底款,于是「切到上衣」看着像"它把我换成经典红了")。
+   *  判据不另算一份,吃的就是卡片那行「装备中」的同一个读数(`_cardState().worn`),
+   *  所以绿带亮着的格与选中亮起的格不可能指两件东西。
+   *  返回 -1 = 这一槽空着、谁都没选中:试衣间站"此刻这一身",按钮待命,不替人试穿第一件。 */
+  private _wornIndex(): number {
+    return this._list().findIndex((s) => this._cardState(s).worn);
+  }
+
   /** 进族二级货架的唯一入口(选中族卡后按动作键/键盘 Enter;点卡只选中)。进来先停在
-   *  身上正穿着的那一款(没穿族里的停在第一格) */
+   *  身上正穿着的那一款(没穿族里的谁都没选中,不把候选款试穿上身) */
   private _openFamily(fid: string) {
     const fam = CFG.families[fid];
     if (!fam) return;
     this._fam = fid;
-    this._sel = Math.max(0, fam.members.indexOf(Career.profile().equipped[fam.kind]));
+    this._sel = fam.members.indexOf(Career.profile().equipped[fam.kind]);
     this._resetShelf();
     this._refresh();
   }
@@ -1020,15 +1033,14 @@ export class CareerPanel extends Component {
   }
 
   /** 进套装二级货架的唯一入口(选中套装卡后按动作键/键盘 Enter;点卡只选中):
-   *  摆它包含的那几件单件,进来先停在身上正穿着的那一件(一件都没穿就停在第一格 = 免费底款)。 */
+   *  摆它包含的那几件单件,进来先停在身上正穿着的那一件(一件都没穿就谁都没选中)。 */
   private _openBundle(setId: string) {
     const set = Career.skinById(setId);
     if (!set?.parts) return;
     this._bundle = setId;
     const prof = Career.profile();
     const pieces = this._list();
-    const wornIdx = pieces.findIndex((c) => Career.accAt(prof, (c as CosmeticDef).slot) === c.id);
-    this._sel = Math.max(0, wornIdx);
+    this._sel = pieces.findIndex((c) => Career.accAt(prof, (c as CosmeticDef).slot) === c.id);
     this._resetShelf();
     this._refresh();
   }
@@ -1234,7 +1246,8 @@ export class CareerPanel extends Component {
       t.node.on(Button.EventType.CLICK, () => {
         if (this._accSlot === slot.key) return;
         this._accSlot = slot.key;
-        this._sel = 0;
+        // 先亮身上这一件,不把货架第一件试穿上身(见 _wornIndex)
+        this._sel = this._wornIndex();
         this._resetShelf();
         this._refresh();
       });
@@ -1381,7 +1394,9 @@ export class CareerPanel extends Component {
     const kind = this._kind;
     if (kind === "stats") return { text: "", face: null, fg: COL.dimGray };
     const s = this._list()[this._sel];
-    if (!s) return { text: "", face: null, fg: COL.dimGray };
+    // 这一槽空着、还没点任何一件(_wornIndex 交回 -1):按钮是凹陷槽 + 一句怎么走,
+    // 不做「已选中第一件」的假动作 —— 那样按下就会把没打算买的东西穿上身。
+    if (!s) return { text: "点一件卡片试穿", face: null, fg: COL.dimGray };
     const p = Career.profile();
     const buyFg = ac(inkFor(ROLE.primary.face));
     const short = (price: number): { text: string; face: null; fg: Color } =>
@@ -1554,9 +1569,10 @@ export class CareerPanel extends Component {
 
   private _setKind(k: SkinKind | "acc" | "stats") {
     this._kind = k;
-    this._sel = 0;
     this._fam = null;   // 换 tab 就出了这一族,二级货架随之收
     this._bundle = null; // 套装的二级货架同理:换格子还停在上一套的组成件里就是迷路
+    // 换格子不改身上穿的东西:停在身上那一格,而不是货架第一件(见 _wornIndex)
+    this._sel = this._wornIndex();
     this._resetShelf();
     this._refresh();
   }
@@ -1653,6 +1669,26 @@ export class CareerPanel extends Component {
 
   // ========== 实时预览 ==========
 
+  /** 试衣间:把「合成的这一身」画成活人(呼吸走不回卷的 _clock —— _elapsed 每 2.2s 回卷,
+   *  sin(6×2.2)≠sin(0),拿它当呼吸时钟会让整只人每循环凭空坠一下)。
+   *  选中件与"此刻这一身"共用这一支,于是两者之间不可能画出两个尺度。 */
+  private _drawTryOn(
+    L: ReturnType<typeof Career.look>,
+    acc: ReturnType<typeof Career.look>["acc"],
+    name: string,
+  ) {
+    const g = this._previewGfx!;
+    const body = dummyPlayer(L.theme, Career.skinOf("racket"), {
+      playerSkin: L.skin, faceSkin: Career.skinOf("face"),
+      acc,
+      y: Math.sin(this._clock * 6) * 2,
+    });
+    // alpha=0:预览逐帧画精确状态,没有"上一帧"可插值 —— drawPlayer 会把 alpha 加进
+    // 挥拍/收拍状态里,传 1 等于每帧预先快进一帧,起拍/收拍边界各瞬移一大步
+    drawPlayer(g, previewVp(1.5, 0, -45), body, Math.round(this._clock * 60), 0, null);
+    if (this._previewName) this._previewName.string = name;
+  }
+
   private _drawLivePreview() {
     if (!this._previewGfx) return;
     const g = this._previewGfx;
@@ -1663,13 +1699,16 @@ export class CareerPanel extends Component {
 
     const list = this._list();
     const s = list[this._sel];
-    if (!s) return;
 
     // 当前真实形象:逐槽合成出来的那一份,不再是"equipped.player 那条 def"。
     // 玩家自己搭出来的混搭(黑肤 + 猫耳 + 王者拼色)必须在每一个 tab 的预览里都站着,
     // 否则买家在球拍页看到的"自己"是另一个人。
     const cur = Career.look();
     const curRacket = Career.skinOf("racket");
+
+    // --- 一件都没选中(切到一个身上空着的槽,见 _wornIndex):试衣间就站此刻这一身。
+    //     这条分支存在的全部意义 = 切板块不改变身上穿的东西,也不让货架第一件冒充"已穿"。 ---
+    if (!s) { this._drawTryOn(cur, cur.acc, cur.skin.name); return; }
 
     // --- 配饰 tab:全身试衣间 —— 当前形象 + 选中件换上身的实时试穿。
     //     买家拍板的是「穿在我身上哪儿、什么效果」,单件静置画答不了这个问题;
@@ -1680,20 +1719,8 @@ export class CareerPanel extends Component {
       const acc = s.kind === "wear"
         ? L.acc.filter((a) => a.slot !== s.slot).concat(s)
         : L.acc;
-      const body = dummyPlayer(L.theme, curRacket, {
-        playerSkin: L.skin, faceSkin: Career.skinOf("face"),
-        acc,
-        // 呼吸走不回卷的 _clock:_elapsed 每 2.2s 回卷,sin(6×2.2)≠sin(0),
-        // 每个循环回卷瞬间整只人凭空坠一下(sin 没落在 0 上)
-        y: Math.sin(this._clock * 6) * 2,
-      });
-      // alpha=0:预览逐帧画精确状态,没有"上一帧"可插值 —— drawPlayer 会把 alpha 加进
-      // 挥拍/收拍状态里,传 1 等于每帧预先快进一帧,起拍/收拍边界各瞬移一大步
-      drawPlayer(g, previewVp(1.5, 0, -45), body, Math.round(this._clock * 60), 0, null);
-      if (this._previewName) {
-        const rn = CFG.rarity[s.rarity].name;
-        this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;
-      }
+      const rn = CFG.rarity[s.rarity].name;
+      this._drawTryOn(L, acc, rn === "经典" ? s.name : `${s.name} · ${rn}`);
       return;
     }
 
@@ -1916,7 +1943,10 @@ export class CareerPanel extends Component {
     if (this._kind === "stats") return;
     const list = this._list();
     if (list.length === 0) return;
-    this._sel = (this._sel + d + list.length) % list.length;
+    // -1 = 这一槽空着、谁都没选中:从两端各往前走一步进货架,不要绕到中间去
+    this._sel = this._sel < 0
+      ? (d > 0 ? 0 : list.length - 1)
+      : (this._sel + d + list.length) % list.length;
     this._elapsed = 0;
     this._buildGrid();
     this._revealSel();   // 选中了窗外那一行也得滚过来,别让人对着看不见的东西按确认

@@ -32,6 +32,7 @@
     "../assets/scripts/ui/drill-layout.ts",
     "../assets/scripts/ui/confirm-layout.ts",
     "../assets/scripts/ui/settle-layout.ts",
-    "../assets/scripts/ui/activity-layout.ts"
+    "../assets/scripts/ui/activity-layout.ts",
+    "../assets/scripts/ui/menu-layout.ts"
   ]
 }
