@@ -49,6 +49,7 @@ import { CareerPanel } from "./career-panel";
 import { DrillPanel } from "./drill-panel";
 import { TutorialPanel } from "./tutorial-panel";
 import { CampaignPanel } from "./campaign-panel";
+import { ActivityPanel } from "./activity-panel";
 import { CampaignManager, type StageDef } from "../core/campaign";
 import { objectiveResults } from "../core/campaign-hud";
 import { SettingsPanel } from "./settings-panel";
@@ -375,6 +376,8 @@ export interface UiKit {
   /** 新手操作教学(滑轨):首启自动弹一次;重看入口在训练场列表页与设置「关于」页 */
   openTutorial(): void;
   openCampaign(): void;
+  /** 活动面板(每日/每周任务 + 全勤宝箱;首页底部横幅点入,与闯关大厅同款契约) */
+  openActivity(): void;
   startCampaignStage(stage: StageDef): void;
   /** 对练屏(模式屏:三档难度 + 球馆 + 技能;主菜单大色块点入,screenSwap 转场) */
   openMatchSetup(): void;
@@ -420,6 +423,7 @@ export class UIManager extends Component {
   private endlessScreen!: EndlessScreen;
   private skillDialog!: SkillDialog;
   private campaignPanel!: CampaignPanel;
+  private activityPanel!: ActivityPanel;
   private careerPanel: CareerPanel | null = null;
   private drillPanel: DrillPanel | null = null;
   private tutorialPanel: TutorialPanel | null = null;
@@ -471,6 +475,7 @@ export class UIManager extends Component {
     this.historyDialog = new HistoryDialog(this.node, this.kit);
     this.skillDialog = new SkillDialog(root, this.kit);
     this.campaignPanel = new CampaignPanel(root, this.kit);
+    this.activityPanel = new ActivityPanel(root, this.kit);
     this.bridgeCareerSettle();
 
     // UI 音复用同一批烘焙 WAV(resources 缓存共享)。
@@ -946,6 +951,14 @@ export class UIManager extends Component {
     }));
   }
 
+  /** 活动面板:与闯关大厅同款契约(浮在 MENU 之上的一屏,归途必须命令式给回菜单) */
+  private openActivity(): void {
+    const panel = this.activityPanel;
+    screenSwap(this.node, this.menu.root, () => panel.show(() => {
+      screenSwap(this.node, null, () => { panel.hide(); this.menu.show(); });
+    }));
+  }
+
   /**
    * 设置页。从暂停页进来时关完要回暂停页,不能漏进主菜单 ——
    * onState 只在状态**变化沿**触发,而 PAUSED → (开着设置) → PAUSED 根本没有变化沿,
@@ -1021,6 +1034,7 @@ export class UIManager extends Component {
       openDrills: () => this.openDrills(),
       openTutorial: () => this.openTutorial(),
       openCampaign: () => this.openCampaign(),
+      openActivity: () => this.openActivity(),
       startCampaignStage: (stage) => this.doStartCampaign(stage),
       openMatchSetup: () => screenSwap(this.node, this.menu.root, () => this.matchSetup.show()),
       openEndless: () => screenSwap(this.node, this.menu.root, () => this.endlessScreen.show()),

@@ -14,6 +14,7 @@ import { AI } from "../core/ai";
 import { Drill } from "../core/drill";
 import { Tutorial } from "../core/tutorial";
 import { Career } from "../core/career";
+import { questTitle } from "../core/activity";
 import { flightFramesToClosest } from "../core/physics";
 import { Pace } from "../core/pace";
 import { Gait } from "../core/gait";
@@ -1030,6 +1031,13 @@ export class GameRoot extends Component {
             this.world.floatSys(C.world.w / 2, C.world.h / 2 - 8,
               youWon ? `胜利! 金币 +${res.coin} · 经验 +${res.exp}` : `惜败 · 金币 +${res.coin}`,
               youWon ? "#ffe14d" : "#d8e2ff", 20, 120);
+            // 活动任务现场播报(2026-10-07 活动板块):这条只报「新完成且未领」的任务,
+            // 完成的下一拍不发钱 —— 领取在首页活动面板,把人拉回菜单形成闭环
+            if (res.questsDone?.length) {
+              this.world.floatSys(C.world.w / 2, C.world.h / 2 - 72,
+                `活动完成 · ${res.questsDone.map(questTitle).join(" · ")}`,
+                "#ffe14d", 14, 130);
+            }
           }
           break;
         }

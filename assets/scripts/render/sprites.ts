@@ -427,10 +427,10 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   // 只有 faceStyles 一个出处,两根旋钮各管各的(见 drawHead)
   const skinCol = isShadow ? "#000000" : (ps?.skinTone ?? SKIN);
   // 脸面解析:CPU/P2 无 faceSkin → undefined → drawHead 兜墨面(敌我识别,不许动);
-  // 真人装备位 "auto"(人物默认)→ 人物自带脸 → 全局默认肤色脸
+  // 真人装备「跟随人物」(faceStyle "auto")→ 现读身上这套人物自带的脸,套装没写就素净肤色。
+  // 货架默认款 face-auto「普通肤色」不在这条分支里 —— 它恒为 "skin",不跟随任何人。
   const eqFace = p.faceSkin?.faceStyle;
-  const faceStyle = eqFace === undefined ? undefined
-    : eqFace !== "auto" ? eqFace : (ps?.face ?? "skin");
+  const faceStyle = eqFace === "auto" ? (ps?.face ?? "skin") : eqFace;
 
   // 圆头笔画贯穿全身(老 canvas 里首个 arm() 设完就随状态泄漏到后续笔画,闭合路径上无视觉差)
   g.lineCap = LineCap.ROUND;
@@ -1524,7 +1524,8 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
 // ---------- 商店面部款预览:大头像(与上场同一套 drawHead 笔画) ----------
 // career-panel 的面部 tab 缩略图/试衣间用;expr 传表情种类,faceT 给到 666(>600 = 贴纸
 // 走「定格」分支:pop 完成且不淡出),让表情与贴纸都以最终成色示人。
-// faceStyle 为注册表 key;"auto"(人物默认)在预览里按默认人物的肤色脸示人。
+// faceStyle 为注册表 key;"auto"(跟随人物)在没有人物上下文的预览里兜素净肤色,
+// 与 drawPlayer 那条 `ps?.face ?? "skin"` 是同一条兜底、不是第二把尺子。
 export function drawHeadStill(g: Graphics, vp: Viewport, wx: number, wy: number, scale: number,
   th: Theme, faceStyle: string, expr: FaceKind, t: number): void {
   const f = playerFrame(vp, wx, wy, 1, scale, scale);

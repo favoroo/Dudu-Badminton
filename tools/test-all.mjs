@@ -176,6 +176,10 @@ const CHECKS = [
   // 蓝球衣顶着一头别人的橙发(用户 2026-10-05 现场)。同一个副本还让 ball.owner === p 恒假,
   // 发球托球姿势只在商店里亮过。不崩不报错、frame-cost-check 自己另抄循环量不到 —— 常驻。
   "view-leak-check",
+  // 每日/每周活动(2026-10-07 活动板块):轮换/重置/领取/视图的口径判据 + 活动面板两屏出图。
+  // 这条链坏法全是静默的(进度不涨/跨天没清/宝箱重复领),不登记就等于没人跑。
+  "activity-check",
+  "activity-preview",
 ];
 
 /** 带反例的 check:--selftest 必须也绿(规则脚本最怕悄悄全绿) */
@@ -242,6 +246,10 @@ const SELFTESTS = [
   "settle-layout-check",
   // 反例:全场共用一个副本(必须真的复现"CPU 穿上真人的装扮")、旧 world.ts/sprites.ts 源码片段
   "view-leak-check",
+  // 反例:id 撞车 / 前缀不符 / id 掺日期 / 零奖励 / 词表外 stat / 池小于 dailyPick /
+  // 同日清单漂移 / 进度不夹紧 / 跨天清掉每周 / 没做完也能领 / 宝箱重复领 / 视图漏报可领 /
+  // UI 直改钱包 / 面板漏接领取 —— 十四份必须被拦下
+  "activity-check",
 ];
 
 let failed = 0;

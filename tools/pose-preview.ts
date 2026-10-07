@@ -408,7 +408,8 @@ ${opsToSvg(ops)}
     const p = mkPlayer({
       theme: { main: sk.main ?? "#ff4d4d", dark: sk.dark ?? "#a8202c", glow: sk.glow ?? "#ff8a6a", name: sk.name },
       playerSkin: sk,
-      // 模拟真人装备位:applyToMatch 恒挂 faceSkin(默认 face-auto = 跟随人物默认脸)
+      // 模拟真人装备位:applyToMatch 恒挂 faceSkin(这一格 faceStyle "auto" = 跟随人物,
+      //  于是每套人物都戴它自带的那张脸:影分身无面、猫系少女猫须)
       faceSkin: { id: "face-auto", kind: "face", name: "auto", price: 0, faceStyle: "auto" },
       runAmt: act === "run" ? 1 : 0, runPhase: act === "run" ? 0 : 0, vx: act === "run" ? 6 : 0,
       lungeT: act === "lunge" ? 7 : -1, lungeDir: act === "lunge" ? 1 : 0,

@@ -4,7 +4,7 @@
 // 现场(用户 2026-10-06):「商店里面这四个同类型的面部合并成一个吧,然后可以在二级界面
 // 去选择对应的面部特征」。合并这件事坏起来有三种,全都不崩、不报错、只有商店里那行字不对:
 //   ① 族表引用了货架上不存在/不同类的成员 ⇒ 二级货架少一格,买家点不到那款脸;
-//   ② 所有权算术把**免费底款**当凭据 ⇒ 新档一出生就白拿一个付费族(人物默认人人有份);
+//   ② 所有权算术把**免费底款**当凭据 ⇒ 新档一出生就白拿一个付费族(免费底款人人有份);
 //      反向坏掉(只认某一款)⇒ 早就买过雀斑的人,合并之后被要求再掏一次 168;
 //   ③ 买断只交付所点的那一款 ⇒ 钱扣了、其余三款还写着「金币 88」,这正是本次要修的病。
 // 于是判据写成吃「实现」的纯函数:正题喂真 Career,--selftest 喂上面三种坏法。
@@ -13,10 +13,10 @@
 // 否则族 id 会被当成商品走进 buy/equip),以及二级货架的「返回」键落在空带里
 // (几何与判据同源:shop-shelf.shopSubOverlaps)。
 //
-// ⑦ 是 2026-10-07 补的两条源码判据(拆件重构后的现场:「点进去之后有个二级菜单可以选很多」,
-// 可那天点族卡只冒出一颗「返回」键):族展开必须排在面板 acc 那条早退之前,而脸底只许有
-// FACE_STYLES.base 一个出处 —— 「肤色」那颗旋钮不许再往脸上涂色。两条都不崩不报错,
-// 数据闸门抓不到,所以钉在源码上。
+// ⑦ 是源码判据(拆件重构后的现场:「点进去之后有个二级菜单可以选很多」,
+// 可那天点族卡只冒出一颗「返回」键):族展开必须排在面板 acc 那条早退之前、脸底只许有
+// FACE_STYLES.base 一个出处(「肤色」那颗旋钮不许再往脸上涂色)、点卡只选中进二级只有
+// 动作键一条路 —— 都不崩不报错,数据闸门抓不到,所以钉在源码上。
 //
 // 用法(仓库根目录):
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/face-family-check.js
@@ -64,7 +64,7 @@ for (const f of FAMS) {
   ok(bad.length === 0, `${f.name}:二级货架的「返回」键不压末行卡片、不压提示带(${bad.join(" | ") || "空带够用"})`);
 }
 
-// ---------- ② 族卡与成员两张脸互不冒充(面板据此决定「点它是进二级还是选中」) ----------
+// ---------- ② 族卡与成员两张脸互不冒充(面板据此把族卡当「入口卡」:选中看当前脸,按钮才进二级) ----------
 for (const f of FAMS) {
   ok(Career.familyOf(f.id)?.id === f.id, `${f.id}:familyOf 认得族卡`);
   ok(Career.familyOfSkin(f.id) === null, `${f.id}:familyOfSkin 不认族卡(族 id 走不进单品那条成交路)`);
@@ -177,12 +177,14 @@ for (const f of FAMS) {
 
 Career.profile().owned = [...BASE];
 
-// ---------- ⑦ 面板与渲染层的两条静态事实:二级货架摆得出来 · 脸不吃肤色 ----------
-// 两条坏法都不崩、不报错、数据闸门一条抓不到,只有商店里那格不对:
+// ---------- ⑦ 面板与渲染层的静态事实:二级货架摆得出来 · 脸不吃肤色 · 点卡只选中 ----------
+// 三条坏法都不崩、不报错、数据闸门一条抓不到,只有商店里那格不对:
 //   ① _list() 的族展开排在 acc 那条早退**之后** ⇒ 点族卡只冒出一颗「返回」键,货架纹丝不动
 //      (2026-10-07 拆件重构现场就是这么把二级货架弄没的,用户:「点进去之后有个二级菜单可以选很多」);
 //   ② drawHead 再吃一根 skinTone ⇒ 「肤色」那颗旋钮替全公司的脸上色,选纯黑肤就把付费的
-//      雀斑/猫须脸一起染黑(用户同一天点名要解耦)。
+//      雀斑/猫须脸一起染黑(用户同一天点名要解耦);
+//   ③ 卡片 TOUCH_END 直接调 _openFamily/_openBundle ⇒ 点一下就跳进二级,试衣间没机会亮候选
+//      (2026-10-07 用户口径:「点一下就进去了,这样体验不好,应该点按钮才进」)。
 /** 货架的族展开必须在 acc 早退之前,而且只许有一份 */
 function checkShelfNesting(src: string): string[] {
   const out: string[] = [];
@@ -196,6 +198,28 @@ function checkShelfNesting(src: string): string[] {
     if (accAt >= 0 && famAt > accAt) out.push("族展开排在 acc 早退之后(脸面住在「形象」页,永远走不到)");
     if (body.indexOf("this._fam ? CFG.families", famAt + 1) >= 0) out.push("族展开写了两份(同一条货架两把尺子)");
   }
+  return out;
+}
+
+/** 点卡只选中、进二级只有动作键一条路(2026-10-07 用户口径:「点一下就进去了,这样体验不好」)。
+ *  卡片 TOUCH_END 里出现 _openFamily/_openBundle = 旧写法(点族卡/套装卡直接跳二级,
+ *  试衣间永远没机会亮出候选);_act() 里少了那两条路由 = 按钮/键盘 Enter 进不去二级,
+ *  _act() 又直接调 _actSet = 一级卡绕过二级直接花钱(成交只许发生在二级「一键穿戴」)。 */
+function checkCardTapWiring(panel: string): string[] {
+  const out: string[] = [];
+  const i = panel.indexOf("Node.EventType.TOUCH_END");
+  if (i < 0) return ["卡片 TOUCH_END 读不到了(改名要同步这条判据)"];
+  const body = panel.slice(i, panel.indexOf("});", i));
+  if (!body.includes("this._select(")) out.push("点卡不再走 _select(选中态丢了,点了没反应)");
+  if (body.includes("_openFamily(") || body.includes("_openBundle(")) {
+    out.push("点卡直接进二级(旧写法:要先选中看预览,按钮才进)");
+  }
+  const a = panel.indexOf("private _act()");
+  if (a < 0) return [...out, "_act() 读不到了(改名要同步这条判据)"];
+  const act = panel.slice(a, panel.indexOf("\n  }\n", a));
+  if (!act.includes("this._openFamily(")) out.push("_act() 里族卡路由没了(按钮/Enter 进不了族二级货架)");
+  if (!act.includes("this._openBundle(")) out.push("_act() 里套装路由没了(按钮/Enter 进不了套装二级货架)");
+  if (act.includes("this._actSet(")) out.push("_act() 又直接成交套装了(整套成交只许在二级「一键穿戴」)");
   return out;
 }
 
@@ -215,12 +239,22 @@ function checkFaceColor(sprites: string, panel: string): string[] {
   const sprites = readFileSync("assets/scripts/render/sprites.ts", "utf8");
   const bad = checkShelfNesting(panel);
   ok(bad.length === 0, `脸面族卡的二级货架摆得出来(${bad.join(" | ") || "族展开在 acc 早退之前"})`);
+  const bad3 = checkCardTapWiring(panel);
+  ok(bad3.length === 0, `点卡只选中、动作键才进二级(${bad3.join(" | ") || "点卡=_select;Enter 路由族卡/套装齐全"})`);
   const bad2 = checkFaceColor(sprites, panel);
   ok(bad2.length === 0, `脸底只走 FACE_STYLES.base,与「肤色」槽无关(${bad2.join(" | ") || "两处都不再上肤色"})`);
   // 数据侧同一条:每款脸自己带底色(类型上 base 必填,这里核的是别有人再填一份"随肤色"的口子)
   ok(Object.values(CFG.faceStyles).every((s) => /^#[0-9a-f]{6}$/i.test(s.base)),
     "每一款脸面都有一个写死的 hex 脸底(没有一款靠外部着色)")
   ;
+  // 每件脸面商品写的 faceStyle 都得是注册表里的真 key("auto" 由渲染层现读套装的 face 旋钮)。
+  // 拼错一个 key 不崩不报错:drawHead 兜回墨面 ⇒ 商店里那张卡与身上那颗头一起变黑。
+  const unreg = CFG.skins.face.filter((f) => f.faceStyle !== "auto" && !CFG.faceStyles[f.faceStyle ?? ""]);
+  ok(unreg.length === 0, `脸面商品的 faceStyle 全在 FACE_STYLES 注册表里(${unreg.map(f => `${f.id}→${f.faceStyle}`).join(", ") || "无悬空 key"})`);
+  // 「人物默认」这个歧义源头:货架默认款不许再是"跟随"语义(用户 2026-10-07:
+  // 穿着影分身的人,在「肤色脸面」这一族里看到的首格是一颗纯黑无面)
+  ok(CFG.skins.face[0].faceStyle === "skin",
+    `各表第一项 = 存档默认款(${CFG.skins.face[0].id})恒为素净肤色,不跟随任何人物`);
 }
 
 // ---------- selftest:三种坏法必须被点名 ----------
@@ -275,6 +309,24 @@ if (process.argv.includes("--selftest")) {
   for (const [name, src] of shelfCases) {
     const hit = checkShelfNesting(src);
     ok(hit.length > 0, `货架反例被拦下:${name}(${hit.join(" | ") || "没拦住"})`);
+  }
+
+  // 点卡接线判据:旧写法(点族卡/套装卡直接进二级)与路由缺失必须被同一判据点名
+  const TAP_OK = 'card.on(Node.EventType.TOUCH_END, () => {\n    if (this._dragMoved) return;\n    this._select(idx);\n  });\n';
+  const ACT_OK = 'private _act() {\n    if (fam) { this._openFamily(fam.id); return; }\n    if (s.kind === "player" && s.parts) { this._openBundle(s.id); return; }\n  }\n';
+  const tapCases: Array<[string, string]> = [
+    ["点族卡直接 _openFamily(旧写法:试衣间没机会亮候选)",
+      TAP_OK.replace("this._select(idx);", "this._openFamily(fid.id);") + ACT_OK],
+    ["点卡不走 _select(点了没反应)",
+      TAP_OK.replace("this._select(idx);", "// 空的") + ACT_OK],
+    ["_act() 丢了套装路由(按钮/Enter 进不了套装二级)",
+      TAP_OK + ACT_OK.replace('if (s.kind === "player" && s.parts) { this._openBundle(s.id); return; }\n', "")],
+    ["_act() 绕过二级直接成交套装(整套成交只许在二级「一键穿戴」)",
+      TAP_OK + ACT_OK.replace("this._openBundle(s.id); return; ", "this._actSet(s.id); return; ")],
+  ];
+  for (const [name, src] of tapCases) {
+    const hit = checkCardTapWiring(src);
+    ok(hit.length > 0, `点卡反例被拦下:${name}(${hit.join(" | ") || "没拦住"})`);
   }
 
   const CLEAN_SPRITES = "function drawHead(g: Graphics) {\n  const st = C.faceStyles[k] ?? C.faceStyles.ink;\n}\n";

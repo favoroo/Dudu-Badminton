@@ -747,7 +747,8 @@ export interface SkinDef {
    *  全黑款靠它才真的从头黑到脚 —— 与 skinTone(手臂/膝)分开的两根旋钮 */
   sock?: string;
   shoe?: string;
-  /** player 人物默认脸面(faceStyle key);装备的脸面商品为 face-auto 时生效 */
+  /** player 这套自带的脸面(faceStyle key):装备「跟随人物」(faceStyle "auto")时生效,
+   *  买这套也按这条引用送那张脸(`career.linkedFace`)。货架默认款 face-auto 不吃它 */
   face?: string;
   /** player 体型档:config.bodies 的 key —— 髋高/躯干/头身比的整体微调
    *  (挥拍肩点 pivotY 是判定锁定位,体型档不碰它,只改下肢/躯干/头) */
@@ -763,7 +764,7 @@ export interface SkinDef {
    */
   parts?: Partial<Record<AccSlot, string>>;
   /** face 设计字段:脸面款式 key(config.faceStyles 注册表)。
-   *  "auto" = 跟随人物默认脸(装备位默认款),其余 key 直接指定 */
+   *  "auto" = 跟随人物(现读身上这套的 face 旋钮,没写兜肤色),其余 key 直接指定 */
   faceStyle?: string;
   /** racket 配色;frame 留空 = 跟随人物主题 glow 色 */
   grip?: string; shaft?: string; frame?: string | null;

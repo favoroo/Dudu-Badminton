@@ -31,6 +31,7 @@
     "../assets/scripts/ui/campaign-layout.ts",
     "../assets/scripts/ui/drill-layout.ts",
     "../assets/scripts/ui/confirm-layout.ts",
-    "../assets/scripts/ui/settle-layout.ts"
+    "../assets/scripts/ui/settle-layout.ts",
+    "../assets/scripts/ui/activity-layout.ts"
   ]
 }

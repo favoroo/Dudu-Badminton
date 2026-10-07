@@ -112,15 +112,26 @@ export const SKINS: Record<SkinKind, SkinDef[]> = {
     { id: "s-galaxy",  kind: "shuttle", name: "星河羽", price: 788, unlockLevel: 9, rarity: "legendary",
       cap: "#e0d4ff", band: "#8b5cf6", skirt: "#f4eeff", vein: "rgba(160,120,240,0.72)", trailStyle: "rainbow" },
   ],
-  // 脸面商品:face-auto(人物默认)= 免费默认款,指到当前人物形象自带的那张脸;
+  // 脸面商品两件事分开了(用户 2026-10-07):
+  //  · face-auto「普通肤色」= 存档默认款(SKINS.face[0]),**恒为素净肤色脸**。
+  //    id 仍叫 face-auto —— 存档 owned/equipped 存的都是这个 id,改名不改 id。
+  //    旧写法把它解析成"身上那套人物自带的脸",于是穿着影分身的人在「肤色脸面」这一族
+  //    里看到的首格是一颗纯黑无面,读起来就是坏图(用户:「这个默认的怎么是个全黑呢」)。
+  //  · face-follow「跟随人物」= 顶层单独一件,faceStyle "auto" → 现读身上那套的 face 旋钮
+  //    (影分身的无面/猫系少女的猫须),套装没写就兜回素净肤色。
+  // 人物形象自带的那张脸另有两条既有通道,与这件商品无关:linkedFace(买人物送脸面)
+  // 与 equipSet(整套穿上时顺带戴上它)。
   // face-ink 转免费情怀款(老档人人已有);face-sun(阳光肤色 88)已被 face-auto
   // 取代而下架,已购玩家按 SKIN_REFUNDS 原价退款;新付费脸面 = 特征标记款。
   // 面部是真人 0 号专属穿戴位(CPU/P2 恒为墨面,敌我一眼分明);只换脸面配色,不碰任何判定
   // 每张脸的底色只在自己的 FACE_STYLES.base 里(人物形象的「肤色」槽不上脸,2026-10-07 解耦)
-  // 肤色系四款(默认/雀斑/泪痣/猫须)在货架上合成一张「肤色脸面」族卡,见 SKIN_FAMILIES
+  // 肤色系五款(素面/雀斑/泪痣/猫须/白眉)在货架上合成一张「肤色脸面」族卡,见 SKIN_FAMILIES
+  // faceStyle 一律是 FACE_STYLES 的真 key:未知 key 不报错,drawHead 静默兜墨面 —— 闸门
+  // face-family-check ⑦ 逐款核这一条。
   face: [
-    { id: "face-auto",    kind: "face", name: "人物默认", price: 0, faceStyle: "auto" },
+    { id: "face-auto",    kind: "face", name: "普通肤色", price: 0, faceStyle: "skin" },
     { id: "face-ink",     kind: "face", name: "经典墨面", price: 0, faceStyle: "ink" },
+    { id: "face-follow",  kind: "face", name: "跟随人物", price: 0, faceStyle: "auto" },
     { id: "face-void",    kind: "face", name: "纯黑无面", price: 88, rarity: "common", faceStyle: "void" },
     { id: "face-snow",    kind: "face", name: "纯白无面", price: 88, rarity: "common", faceStyle: "snow" },
     { id: "face-freckle", kind: "face", name: "雀斑肤色", price: 88, rarity: "common", faceStyle: "freckle" },
@@ -141,7 +152,7 @@ export const SKINS: Record<SkinKind, SkinDef[]> = {
 // 三条口径别改回去:
 //  ① 买断价 = 族内**最贵单款**的价格,不是各款相加。合并对已经只买得起一款的人是涨价,
 //     对全想要的人是打折;取「最贵单款」是那个不让任何人多花的交点。
-//  ② price 0 的成员(人物默认)人人有份,**不算入族所有权**
+//  ② price 0 的成员(普通肤色)人人有份,**不算入族所有权**
 //     (见 career.ownsFamily),否则新档一出生就白拿一个付费族。
 //  ③ 成员照常留在 SKINS 与存档 owned 里,equipped.face 存的仍是**成员 id** ——
 //     族卡只是货架入口,渲染层(faceSkin / FACE_STYLES / drawHead)零改动。
@@ -161,9 +172,9 @@ export interface SkinFamily {
 export const SKIN_FAMILIES: Record<string, SkinFamily> = {
   "fam-face-skin": {
     id: "fam-face-skin", kind: "face", name: "肤色脸面",
-    tag: "雀斑 · 泪痣 · 猫须 任选",
+    tag: "雀斑 · 泪痣 · 猫须 · 白眉 任选",
     price: 168, rarity: "rare",
-    members: ["face-auto", "face-freckle", "face-tear", "face-cat"],
+    members: ["face-auto", "face-freckle", "face-tear", "face-cat", "face-sage"],
   },
 };
 
@@ -173,7 +184,7 @@ export const SKIN_REFUNDS: Record<string, number> = {
   "p-mint": 150, "p-violet": 300, "p-onyx": 350, "p-jade": 420, "p-gold": 500, "p-ice": 680,
   "r-sunset": 250, "r-aurora": 450, "r-mono": 600, "r-inferno": 880,
   "s-sunset": 300, "s-jade": 550, "s-gold": 600, "s-volt": 760,
-  "face-sun": 88,   // 肤色脸转为人物默认款(免费)后下架,已购原价退
+  "face-sun": 88,   // 肤色脸转为默认款「普通肤色」(免费)后下架,已购原价退
 };
 
 // ===== 穿戴件表(纯装饰):一槽一件、跨槽叠加,与皮肤共用 owned 数组与金币钱包 =====
@@ -429,6 +440,48 @@ export const MILESTONES: MilestoneDef[] = [
   { id: "ms-endless-1", stat: "endless", at: 5, coin: 40, exp: 25 },
   { id: "ms-endless-2", stat: "endless", at: 15, coin: 80, exp: 50 },
   { id: "ms-endless-3", stat: "endless", at: 30, coin: 150, exp: 100 },
+];
+
+// ============================================================
+// 每日/每周活动(2026-10-07):首页底部横幅入口 → 活动面板,完成领金币+经验。
+// 四条口径:
+// ① id 恒为 d-*/w-* 前缀、**不掺日期** —— 轮换轮的是「今天抽中哪几条」,id 池恒定;
+//    已领记录在 Profile.quests,跨天/跨周由 core/activity.ts 按戳整侧重置,不靠 id 区分日期。
+// ② stat 全部来自对局结算的现成数据(career.settle 的入参与生涯统计同源同口径):
+//    mode: "sum" = 跨场累加(场次/胜场/扣杀…),"max" = 单次取最好(无限单局得分这类)。
+// ③ 奖励量级对标 normal 胜场(50币+36经验):每日 3 条 + 宝箱 ≈ 2 个胜场、
+//    每周 ≈ 6 个胜场 —— 粘性奖励不该压过赢球本身,别把数值抬成新的印钞机。
+// ④ 每日面板只显示 pickDaily 抽中的 dailyPick 条;每周固定全量(kind: "weekly" 的每条都上)。
+// ============================================================
+
+export type ActivityKind = "daily" | "weekly";
+export type ActivityStat = "match" | "win" | "smash" | "sweet" | "perfect" | "drill" | "endlessScore";
+
+export interface ActivityDef {
+  id: string;
+  kind: ActivityKind;
+  stat: ActivityStat;
+  /** sum = 跨场累加;max = 单次取最好(进度不会因一场发挥差而回退) */
+  mode: "sum" | "max";
+  target: number;
+  coin: number;
+  exp: number;
+  /** 面板行标题(短句);进度数字由 UI 按 prog/target 现拼,别把数字写进标题 */
+  title: string;
+}
+
+export const ACTIVITIES: ActivityDef[] = [
+  // ---- 每日池(6 条抽 3,目标都轻松,当天 0 点刷新)----
+  { id: "d-match-1",    kind: "daily", stat: "match",        mode: "sum", target: 1,  coin: 20, exp: 15, title: "完成一局比赛" },
+  { id: "d-win-1",      kind: "daily", stat: "win",          mode: "sum", target: 1,  coin: 30, exp: 20, title: "赢得一局比赛" },
+  { id: "d-smash-10",   kind: "daily", stat: "smash",        mode: "sum", target: 10, coin: 25, exp: 15, title: "打出10记扣杀" },
+  { id: "d-sweet-15",   kind: "daily", stat: "sweet",        mode: "sum", target: 15, coin: 25, exp: 15, title: "15次甜区击球" },
+  { id: "d-drill-1",    kind: "daily", stat: "drill",        mode: "sum", target: 1,  coin: 20, exp: 15, title: "完成一次专项训练" },
+  { id: "d-endless-15", kind: "daily", stat: "endlessScore", mode: "max", target: 15, coin: 30, exp: 20, title: "无限单局得15分" },
+  // ---- 每周(固定 3 条,周一 0 点重置)----
+  { id: "w-match-5",  kind: "weekly", stat: "match", mode: "sum", target: 5,  coin: 100, exp: 60, title: "本周完成5局比赛" },
+  { id: "w-win-3",    kind: "weekly", stat: "win",   mode: "sum", target: 3,  coin: 120, exp: 80, title: "本周赢得3局" },
+  { id: "w-smash-50", kind: "weekly", stat: "smash", mode: "sum", target: 50, coin: 100, exp: 60, title: "本周50记扣杀" },
 ];
 
 /** 飘字文案档位(夸奖/技能/瞄准共用):plate 指定 P5 底板样式(缺省 = 无底板);
@@ -2621,6 +2674,14 @@ export const CFG = {
   refunds: SKIN_REFUNDS,
   // 生涯里程碑档位表(2026-10-07):career 领取链与 shop-shelf 副行消费
   milestones: MILESTONES,
+  // 每日/每周活动任务表(2026-10-07):core/activity.ts 轮换记录、career 领取链、活动面板与首页横幅消费
+  activities: ACTIVITIES,
+  activity: {
+    /** 每日从池子里抽几条(不许超过 daily 池子长度,activity-check ①拦) */
+    dailyPick: 3,
+    /** 全勤宝箱:该 kind 当天/当周的任务全部完成后额外可领,记在 quests 的 claimed 里(id 见 activity.CHEST_IDS) */
+    chest: { daily: { coin: 50 }, weekly: { coin: 200 } },
+  },
   // 脸面款式注册表(数据)与体型档:sprites.drawHead/drawPlayer 消费
   faceStyles: FACE_STYLES,
   bodies: BODIES,

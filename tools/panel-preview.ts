@@ -426,9 +426,8 @@ function panelsSheet(): string {
       out.push(txt(c.X(bx + cwid / 2), c.Y(by - 42), status, 11, got ? C.good : lock ? C.dim : "#ffd24d"));
     });
     const sel = sets[0];
-    const selPr = Career.setPriceFor(sel, prof.owned);
-    out.push(block(c, K.action, selPr.have ? ROLE.star.face : ROLE.primary.face,
-      selPr.have ? "整套穿上身" : `整套买下 · ${selPr.charge} 金币`, 16, SLANT.button));
+    // 2026-10-07 起,一级套装卡的按钮是「看组成」入口(点卡只选中,成交在二级「一键穿戴」)
+    out.push(block(c, K.action, ROLE.info.face, `看${sel.name}的组成`, 16, SLANT.button));
     // 底部提示带:与面板同一批数(shop-shelf.TOAST / toastWidth),字色由 block() 走
     // inkFor(面色)。旧写法是 Label 自己抄 COL.gold = 同一支 #ffe14d,整条黄到读不出字
     // —— 这一格就是用户那张截图的对照。

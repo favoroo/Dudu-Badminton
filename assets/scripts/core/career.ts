@@ -6,6 +6,11 @@
 // ============================================================
 import { CFG, SkinFamily, MilestoneStat } from "./config";
 import { milestoneViews as milestoneViewsOf, statValue as milestoneStatValue, type MilestoneView } from "./milestone";
+import {
+  claimInfo as questClaimInfo, markClaimed as questMarkClaimed, normalizeQuests,
+  questViews as questViewsOf, recordDrill as questRecordDrill, recordMatch as questRecordMatch,
+  freshQuestSave, type ActivityViews, type QuestSave,
+} from "./activity";
 import { load, save } from "./utils";
 import { Rules } from "./rules";
 import { DrillResult } from "./drill";
@@ -66,6 +71,12 @@ export interface Profile {
    * 清掉它就等于让玩家重新领一遍同一笔奖励。
    */
   claimed?: string[];
+  /**
+   * 每日/每周活动进度(2026-10-07 活动板块):d/w 是「这份进度属于哪天/哪周」的戳,
+   * 跨天/跨周由 normalizeQuests 按戳整侧重置(每日与每周各记各的,互不清)。
+   * 老档缺这个字段由 profile() 补当天当周的空账,零迁移。
+   */
+  quests?: QuestSave;
   /** 无限练习手动收局的个人单局最高分(最长相持共用 stats.maxRally) */
   bestEndlessScore: number;
   /** 训练场进度:关卡 id → 最好成绩。老档缺这个字段由 profile() 逐字段补默认,零迁移 */
@@ -106,6 +117,7 @@ const fresh = (): Profile => ({
   tutorialDone: false,
   streak: 0, bestStreak: 0,
   claimed: [],
+  quests: freshQuestSave(new Date()),
   bestEndlessScore: 0,
   drills: {},
   stats: {
@@ -182,6 +194,10 @@ function profile(): Profile {
   }
   // 手改存档把教学标记写坏(字符串/null)→ 退回「没看过」,下次启动再教一遍,无害
   if (typeof cache.tutorialDone !== "boolean") cache.tutorialDone = false;
+  // 每日/每周活动进度:缺字段补当天当周的空账;跨天/跨周在这里按戳整侧重置 ——
+  // 放在归一化里(而不是各消费方自己判)意味着任何读取路径(首页横幅/活动面板/领取链)
+  // 拿到的都已是新一周,没有「过了午夜面板还显示昨天的进度」这种时差
+  cache.quests = normalizeQuests(cache.quests, new Date());
   // 首次自动合流散落的旧 wins / matches 记录
   const legacyWins = load<number>("wins", 0);
   const legacyMatches = load<number>("matches", 0);
@@ -221,7 +237,7 @@ export function linkedFace(playerSkinId: string): SkinDef | null {
 }
 
 /** 买人物形象 ⇒ 自带脸面一起解锁(不另存一张捆绑表,吃的就是
- *  SKINS.player[].face → SKINS.face[].faceStyle 这条既有引用:「这个人物默认长这张脸」
+ *  SKINS.player[].face → SKINS.face[].faceStyle 这条既有引用:「这个人物长这张脸」
  *  与「买他送这张脸」是同一句话,抄两份迟早漂移)。
  *  纯函数、幂等:只交「owned 里还缺的那些」,闸门 shop-bundle-check 直接喂反例。 */
 export function bundledFaces(owned: string[]): string[] {
@@ -482,7 +498,7 @@ function familyOfSkin(id: string): SkinFamily | null {
 }
 
 /** 族内**付费成员**只要有一款在 owned 里,整族就算入手。
- *  免费底款(人物默认)人人有份,拿它当凭据等于白送一个付费族。
+ *  免费底款(普通肤色)人人有份,拿它当凭据等于白送一个付费族。
  *  反过来:老玩家买过其中任意一款都不必再掏钱 —— 货架合并不该让人为同一件东西付第二次。 */
 function ownsFamily(fid: string): boolean {
   const f = familyOf(fid);
@@ -517,6 +533,8 @@ export interface SettleResult {
   coin: number; exp: number; perf: number; baseCoin: number; streakBonus: number;
   streak: number; levelUps: number[]; first?: boolean;
   unlocked: SkinDef[];
+  /** 本次结算新完成且未领的活动任务 id(game-root 拿去飘字播报;2p 友谊赛不走这个出口) */
+  questsDone?: string[];
 }
 
 // ---------- 赛后结算:发奖励 + 升级,返回明细给 UI 展示 ----------
@@ -542,6 +560,14 @@ function settle({ mode, diff, won, stats, longestRally, scores, campaign }: {
     p.stats.hits += (stats.hits || 0);
   }
   p.stats.maxRally = Math.max(p.stats.maxRally || 0, longestRally || 0);
+
+  // 活动任务进度与生涯统计同口径:2p 也算「完成一局」、胜负按同一把 won 尺,
+  // 无限练习带终局个人比分喂 max 型任务。2p 早退前记录 —— 2p 不发奖但仍要记进度。
+  const questsDone = questRecordMatch(p.quests!, {
+    won,
+    smashes: stats?.smashes, sweets: stats?.sweets, perfects: stats?.perfects,
+    endlessScore: mode === "endless" && scores ? scores[0] : undefined,
+  }, new Date());
 
   if (mode === "2p") { p.streak = 0; saveProfile(); return null; }
 
@@ -581,6 +607,7 @@ function settle({ mode, diff, won, stats, longestRally, scores, campaign }: {
     streak: p.streak, levelUps,
     first: stageFirst,
     unlocked: skinsUnlockedAt(levelUps),
+    questsDone,
   };
 }
 
@@ -607,6 +634,10 @@ function settleDrill(res: DrillResult): SettleResult {
   rec.bestQ = Math.max(rec.bestQ || 0, res.avgQ || 0);
   rec.bestReps = Math.max(rec.bestReps || 0, res.valid || 0);
   rec.attempts = (rec.attempts || 0) + (res.attempts || 0);
+
+  // 活动任务:「完成一次专项训练」类只记 drill 维度;训练不发奖也不飘字,
+  // 完成提示交给首页横幅与活动面板(训练有自己的结算排版,别再往上叠一行)
+  questRecordDrill(p.quests!, new Date());
 
   p.coins += coin;
   saveProfile();
@@ -649,6 +680,31 @@ function claimMilestone(stat: MilestoneStat): MilestoneClaim | null {
 function milestoneViews(): Record<MilestoneStat, MilestoneView> {
   const p = profile();
   return milestoneViewsOf(p.stats, p.bestEndlessScore, p.claimed);
+}
+
+export interface ActivityClaim {
+  coin: number; exp: number; levelUps: number[];
+}
+
+// ---------- 活动任务领取(2026-10-07 活动板块):与 claimMilestone 同一条经济轨道 ----------
+// 金币直接入账、经验必须走 addExp(升级金币由它同步发),严禁另抄升级曲线(见 addExp 头注)。
+// 校验与记账两半在 core/activity.ts(claimInfo/markClaimed),这里只管发钱;
+// 无可领返回 null(面板只在读数可领时才点得动,这里再拦一道防绕过)。
+function claimActivity(id: string): ActivityClaim | null {
+  const p = profile();
+  const grant = questClaimInfo(p.quests!, id, new Date());
+  if (!grant) return null;
+  questMarkClaimed(p.quests!, id, new Date());
+  p.coins += grant.coin;
+  const levelUps = addExp(p, grant.exp);
+  saveProfile();
+  return { coin: grant.coin, exp: grant.exp, levelUps };
+}
+
+/** 活动三态视图(进行中/可领取/已领取 + 宝箱):活动面板与首页横幅副行共用这一份 */
+function activityViews(): ActivityViews {
+  const p = profile();
+  return questViewsOf(p.quests!, new Date());
 }
 
 // 升级踩到解锁门槛、且还没拥有的商品 → 结算屏「商店上新」提示(皮肤与穿戴件同扫)。
@@ -703,7 +759,7 @@ function buy(id: string): BuyResult {
 
   // 族内付费成员走的不是单品价:一次扣**族价**把族内所有付费成员一并记进 owned。
   // 已经拥有族内任何一款 ⇒ 这一款免费补进 owned(ownsFamily 的口径,不二次收费)。
-  // 免费成员(人物默认)不进这条道 —— 它没有"买断"可言,落回下面的 0 元领取。
+  // 免费成员(普通肤色)不进这条道 —— 它没有"买断"可言,落回下面的 0 元领取。
   const fam = s ? familyOfSkin(id) : null;
   if (fam && s && s.price > 0) {
     if (ownsFamily(fam.id)) {
@@ -900,9 +956,9 @@ const PART_KEYS = [
  * 两条不能改的口径:
  *  ① 每次调用都新建 skin/theme/acc 三样。view-cache 按实体拷引用,共享一份就会
  *     「全员戴同一条围巾」(见 render/view-cache.ts)。
- *  ② `face` 与 `name` 仍取**套装**那根 legacy 旋钮(equipped.player)。脸面解析
- *     (sprites.ts 的 face-auto → ps.face → "skin")吃的就是这一根,把它拆进槽位
- *     要动的是渲染层,而这次重构的前提是渲染层零改动。
+ *  ② `face` 与 `name` 仍取**套装**那根 legacy 旋钮(equipped.player)。渲染层只在装备
+ *     「跟随人物」(faceStyle "auto")时才读这一根;留着还有第二个理由 —— look-compose
+ *     断言"逐件穿上后合成出的 SkinDef 与该套装 def 逐键相等",少一个键就是那条地基断了。
  */
 function composeLook(picks?: Partial<Record<AccSlot, CosmeticDef>>): Look {
   const p = profile();
@@ -986,6 +1042,8 @@ export const Career = {
   accById, equippedAcc, equippedAccs, equipAcc, unequipAcc, buyAcc, accAt, isWear,
   isCosmoDef, look, lookOfCandidate,
   setPrice, setPriceFor, setItems, equipSet, grantSetPieces, freeCosmetics, wearsSet, shelfSets,
-  expNeed, levelCoin, settle, settleDrill, claimMilestone, milestoneViews, buy, equip, buyAndEquip, applyToMatch,
+  expNeed, levelCoin, settle, settleDrill, claimMilestone, milestoneViews,
+  claimActivity, activityViews,
+  buy, equip, buyAndEquip, applyToMatch,
   equippedSkill, equippedSkill2, skillSlotsReady, isSkillUnlocked, equipSkill, unequipSkill, setTutorialDone, maxOut, sandboxed,
 };

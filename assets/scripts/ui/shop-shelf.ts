@@ -441,13 +441,15 @@ export function shopStats(gridH: number): SBox[] {
 }
 
 // ============================================================
-// 二级货架(皮肤族成员列表)的「返回」键
+// 二级货架(皮肤族成员 / 套装组成件)的底部空带:「返回」居左 + 套装「一键穿戴」居右
 //
 // 为什么单独算:面部 tab 把四款同族脸面合成一张卡(见 config.SKIN_FAMILIES),点进去
 // 是一层成员列表 —— 那一层必须有一条回去的路。它能待的地方只有货架窗底部那一条空带:
 // 上面是末行卡片(2 行制时底缘 -156),下面紧挨着就是提示带车道(带顶 -209),
 // 53px 装 44 高的触控键,上下各剩 5/4px。这个数抬不动了,所以由 shopSubOverlaps 钉住:
 // 成员多到 3 行就没有这条空带,那时该改的是排版,不是把判据调松。
+// 套装二级货架(2026-10-07)在同一条带里加第二颗键「一键穿戴」:散件试穿时不用退回
+// 一级货架再整套成交;主动作贴右(拇指热区),返回键留在原位不动。
 // ============================================================
 
 /** 返回键的盒子:贴在货架窗左下角内侧 */
@@ -457,17 +459,32 @@ export function shopSubBack(w = 104, h: number = TOUCH.min): SBox {
   return sbox(K.grid.left + 8, w, winBottom + 3 + h / 2, h);
 }
 
-/** 返回键两头不许压字:上不叠末行卡片、下不叠提示带,且不越出货架窗 */
+/** 套装二级货架「一键穿戴」键的盒子:同一条空带、贴货架窗右下角内侧。
+ *  右缘留 14:滚动条贴着窗右缘(BAR_X),别让键的斜切角顶上去。 */
+export function shopSubAction(w = 188, h: number = TOUCH.min): SBox {
+  const K = shopContent(SHELF.h);
+  const winBottom = K.grid.cy - SHELF.h / 2;
+  return sbox(K.grid.right - 14 - w, w, winBottom + 3 + h / 2, h);
+}
+
+/** 空带里的两颗键两头不许压字:上不叠末行卡片、下不叠提示带、不越出货架窗、彼此不叠 */
 export function shopSubOverlaps(n: number): string[] {
   const out: string[] = [];
-  const b = shopSubBack();
   const K = shopContent(SHELF.h);
   const rows = shelfLayout(n).rows;
   const lastBottom = K.grid.cy + rowTopY(rows - 1) - SHELF.cardH;
-  if (sTop(b) > lastBottom - 0.5) out.push(`返回键顶边 ${sTop(b).toFixed(1)} 压住末行卡片(末行底缘 ${lastBottom.toFixed(1)})`);
   const toastTop = TOAST.cy + TOAST.h / 2;
-  if (sBottom(b) < toastTop + 0.5) out.push(`返回键底边 ${sBottom(b).toFixed(1)} 压住提示带(带顶 ${toastTop.toFixed(1)})`);
-  if (b.right > K.grid.right - 0.5) out.push(`返回键右缘 ${b.right} 越出货架窗 ${K.grid.right}`);
+  const check = (label: string, b: SBox): void => {
+    if (sTop(b) > lastBottom - 0.5) out.push(`${label}顶边 ${sTop(b).toFixed(1)} 压住末行卡片(末行底缘 ${lastBottom.toFixed(1)})`);
+    if (sBottom(b) < toastTop + 0.5) out.push(`${label}底边 ${sBottom(b).toFixed(1)} 压住提示带(带顶 ${toastTop.toFixed(1)})`);
+    if (b.left < K.grid.left - 0.5) out.push(`${label}左缘 ${b.left} 越出货架窗 ${K.grid.left}`);
+    if (b.right > K.grid.right - 0.5) out.push(`${label}右缘 ${b.right} 越出货架窗 ${K.grid.right}`);
+  };
+  const back = shopSubBack();
+  const act = shopSubAction();
+  check("返回键", back);
+  check("穿戴键", act);
+  if (act.left < back.right + 4) out.push(`穿戴键左缘 ${act.left} 压住返回键(返回键右缘 ${back.right})`);
   return out;
 }
 

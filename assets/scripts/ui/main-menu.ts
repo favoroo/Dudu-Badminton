@@ -36,6 +36,11 @@ export class MainMenu {
   private campaignSub: Label | null = null;
   private drillSub: Label | null = null;
   private careerSub: Label | null = null;
+  /** 底部活动横幅(2026-10-07 活动板块):动态副行 + 可领角签(文案变了才重建) */
+  private activitySub: Label | null = null;
+  private activityNode: Node | null = null;
+  private claimChip: Node | null = null;
+  private claimChipText = "";
   private checkedStartup = false;
   /** rise 入场的节点队列(节点,延迟):show 时逐级展开 */
   private riseNodes: Array<{ node: Node; delay: number }> = [];
@@ -267,12 +272,33 @@ export class MainMenu {
     this.drillSub = drill.subLabel;
     const career = entry("entry:career", ARCADE.paper, "CAREER", "生涯与商店", "", 318, -138, () => kit.openCareer());
     this.careerSub = career.subLabel;
+
+    // ---------- 底部活动横幅(2026-10-07 活动板块):五块色块的通宽收尾条 ----------
+    // 宽度对齐五块的合拢外缘(hero 左缘 -456 → career 右缘 459),压在色块底(-213)
+    // 与屏底(-270)之间;打击橙是第六种功能色(红=上场/黄=闯关/绿=练球/青=专项/白=档案,
+    // 橙=活动奖励)。有可领奖励时副行升到全亮、右侧浮一枚荧光黄「N 项可领」角签 ——
+    // 首页唯一的「有事可领」信号,refresh() 每次都按 Career.activityViews() 现算。
+    const activity = block("entry:activity", 915, 44, ARCADE.hot, () => kit.openActivity());
+    activity.setPosition(1.5, -243, 0);
+    this.activityNode = activity;
+    makeChip(activity, "EVENT", 9, "#0a0e1c", ARCADE.hot).setPosition(-424, 0, 0);
+    const actName = kit.label(activity, "活动中心", 18, inkOf(ARCADE.hot), { disp: true });
+    actName.node.setPosition(-392 + textW("活动中心", 18) / 2, 0, 0);
+    this.activitySub = this.txt(activity, "", 12, col(inkOf(ARCADE.hot), 0.62), -280, 0, 500);
+    const actChev = new Node("act-chev");
+    actChev.layer = activity.layer;
+    actChev.addComponent(UITransform);
+    drawChevron(actChev.addComponent(Graphics), 12, inkOf(ARCADE.hot), 0.75, 2);
+    actChev.setPosition(429, 0, 0);
+    actChev.setParent(activity);
+
     this.riseNodes.push(
       { node: hero, delay: 0.26 },
       { node: campaign.node, delay: 0.3 },
       { node: endless.node, delay: 0.34 },
       { node: drill.node, delay: 0.38 },
       { node: career.node, delay: 0.42 },
+      { node: activity, delay: 0.46 },
     );
 
     // 版本号与「检查更新」不再占首页底部(用户指令:入口收进设置「关于」页)。
@@ -367,5 +393,24 @@ export class MainMenu {
     if (this.drillSub) this.drillSub.string = `${cleared}/${DRILLS.length} 已练成 · 首通有奖`;
     const rate = p.stats.matches > 0 ? Math.round((p.stats.wins / p.stats.matches) * 100) : 0;
     if (this.careerSub) this.careerSub.string = `${p.stats.wins} 胜 · 胜率 ${rate}% · 金币 ${p.coins}`;
+
+    // 活动横幅:进度副行 + 「N 项可领」角签(判据只吃 Career.activityViews 一份,面板同款)
+    const av = Career.activityViews();
+    if (this.activitySub) {
+      const weeklyDone = av.weekly.filter((v) => v.done).length;
+      this.activitySub.string = av.anyClaimable
+        ? `今日 ${av.dailyDone}/${av.dailyTotal} · 每周 ${weeklyDone}/${av.weekly.length}`
+        : "完成任务领金币 · 每天 0 点刷新";
+      this.activitySub.color = col(inkOf(ARCADE.hot), av.anyClaimable ? 1 : 0.62);
+    }
+    const chipText = av.claimableCount > 0 ? `${av.claimableCount} 项可领` : "";
+    if (chipText !== this.claimChipText) {
+      this.claimChipText = chipText;
+      if (this.claimChip) { this.claimChip.destroy(); this.claimChip = null; }
+      if (chipText && this.activityNode) {
+        this.claimChip = makeChip(this.activityNode, chipText, 10, ARCADE.acid, "#0a0e1c");
+        this.claimChip.setPosition(330, 0, 0);
+      }
+    }
   }
 }

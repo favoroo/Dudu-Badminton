@@ -16,6 +16,8 @@
 //      不越界、不 NaN、速度只减不增 —— 猛甩一记必须真能从头滚到尾,不然「滑动查看」是假的;
 //   7) 滑块**位置**:f=0..1 全程整体落在轨道内,f=0 顶缘贴轨道顶、f=1 底缘贴轨道底 ——
 //      旧版把滑块中心钉在轨道顶,上半截戳出网格窗叠到 tab 条上(用户截图里的黄条)。
+//   8) 二级货架底部那条 53px 空带:套装二级货架的「返回」+「一键穿戴」两颗键都放得下
+//      (shopSubOverlaps,按每个套装的组成件数各跑一遍)。
 // 商品款数直接读 CFG.skins,以后加/删皮肤不用改这里。
 //
 // 另带 --selftest:拿「改动前那套(窗只装两行、没有滚动)」当反例,确认它**会**被报警
@@ -28,8 +30,9 @@
 import { makeChecker } from "./harness";
 import { CFG } from "../assets/scripts/core/config";
 import { SkinKind } from "../assets/scripts/core/types";
+import { Career } from "../assets/scripts/core/career";
 import {
-  FLING_MIN, SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, thumbCenterY, thumbHeight,
+  FLING_MIN, SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, shopSubOverlaps, thumbCenterY, thumbHeight,
 } from "../assets/scripts/ui/shop-shelf";
 
 const h = makeChecker({});
@@ -175,7 +178,21 @@ for (const kind of KINDS) {
   }
 }
 
-// ---------- ⑤ selftest:改动前那套必须被报警 ----------
+// ---------- ⑤ 二级货架底部空带:返回 + 一键穿戴两颗键都放得下 ----------
+// 空带只有 53px(shop-shelf 头注),套装二级货架的「一键穿戴」与「返回」同带(2026-10-07)。
+// 按每个套装的组成件数跑同一份 shopSubOverlaps —— 现在最多 5 件(1 行),但判据钉的是
+// 「几行都放得下」,以后加长套装也不用回来改这里。族货架的成员数由 face-family-check 复检。
+{
+  const sets = Career.shelfSets();
+  ok(sets.length > 0, "套装货架非空");
+  for (const s of sets) {
+    const n = Career.setItems(s).length;
+    const bad = shopSubOverlaps(n);
+    ok(bad.length === 0, `「${s.name}」二级货架(${n} 件)底部空带放得下返回键与一键穿戴键${bad.length ? ":" + bad.join(";") : ""}`);
+  }
+}
+
+// ---------- ⑥ selftest:改动前那套必须被报警 ----------
 if (process.argv.includes("--selftest")) {
   console.log("\nselftest:拿「窗只装两行、没有滚动」的旧状态当反例");
   const n = (CFG.skins.player ?? []).length;
@@ -209,6 +226,10 @@ if (process.argv.includes("--selftest")) {
     `旧公式 f=0 滑块顶缘戳出轨道顶 ${(cyOldF0 + thOld / 2 - trackOld / 2).toFixed(0)}px —— thumbCenterY 同判据干净`);
   ok(thumbCenterY(trackOld, thOld, 0) + thOld / 2 <= trackOld / 2 + 1e-6,
     "同一轨道/滑块下 thumbCenterY(f=0) 不出轨道半步");
+  // 反例五:二级货架空带判据有牙齿 —— 3 行长的列表会把底部两颗键压进末行里
+  const longBad = shopSubOverlaps(15);
+  ok(longBad.length > 0, `15 件(3 行)的二级货架被报警:${longBad[0] ?? ""}`);
+  ok(shopSubOverlaps(5).length === 0, "同一条判据下 5 件(1 行)干净 —— 现行套装/族货架都在线内");
 }
 
 console.log(`\n${h.fails === 0 ? "✓" : "✗"} ${h.checks} 项断言,失败 ${h.fails}`);
