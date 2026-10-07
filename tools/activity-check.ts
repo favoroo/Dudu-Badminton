@@ -15,9 +15,13 @@
 //   ⑧ 版式判据:activityOverlaps/activityOverflow 全绿,行内五格吃 config 真文案量宽
 //   ⑨ 接线扫源码:settle 里记进度、settleDrill 里记训练、claimActivity 走 addExp、
 //      面板走 Career.claimActivity/activityViews + progressDL、ui-manager 三处登记 openActivity
-// 另带 --selftest:十一份反例(id 撞车 / 前缀不符 / 零奖励 / 词表外的 stat / dailyPick 超池 /
-// 记录不夹紧 / 重置错侧 / claimInfo 漏拦未达成 / 宝箱可重复领 / UI 直改钱包 / 面板漏接领取)
-// 必须被拦下。
+//   ⑩ 摆放锚点扫源码:place() 必须把水平对齐与锚点跟摆放 align 钉成一致 —— mkLabel
+//      创建时不传 align 的 Label 是中心锚,只按格缘摆节点 = 文字以格缘为中心向两边溢出
+//      (2026-10-07 真机:奖励读数压进按钮、宝箱副句飘出卡外;出图按 SVG start/end 画,
+//      预览看不见,只有真机有)
+// 另带 --selftest:十五份反例(id 撞车 / 前缀不符 / 零奖励 / 词表外的 stat / dailyPick 超池 /
+// 记录不夹紧 / 重置错侧 / claimInfo 漏拦未达成 / 宝箱可重复领 / UI 直改钱包 / 面板漏接领取 /
+// place 不钉对齐锚点)必须被拦下。
 //
 // 用法(仓库根目录):
 //   npx tsc -p tools/tsconfig.json && node .tools-build/tools/activity-check.js [--selftest]
@@ -256,6 +260,21 @@ export function judgeWiring(panelSrc: string, label: string): string[] {
   return out;
 }
 
+// ---------- ⑩ 摆放锚点扫源码(仿 ⑨:这类错位不崩不报错、预览看不见,只有真机有) ----------
+export function judgePlaceAnchor(panelSrc: string, label: string): string[] {
+  const out: string[] = [];
+  const m = strip(panelSrc).match(/function place\([\s\S]*?\n\}/);
+  if (!m) return [`${label}:找不到 place() 摆放函数(版式格子与 Label 的接驳点丢了)`];
+  const body = m[0];
+  if (!/horizontalAlign\s*=/.test(body)) {
+    out.push(`${label}:place() 没把 Label 水平对齐钉成与摆放一致(创建默认居中,文字以格缘为中心向两边溢出)`);
+  }
+  if (!/setAnchorPoint\(/.test(body)) {
+    out.push(`${label}:place() 没把锚点跟摆放 align 钉成一致(中心锚 Label 摆在格缘 = 半个文字宽溢出格子)`);
+  }
+  return out;
+}
+
 // ---------- 正题 ----------
 {
   const bad = judgeTable(CFG.activities, CFG.activity.dailyPick);
@@ -373,6 +392,13 @@ export function judgeWiring(panelSrc: string, label: string): string[] {
   ok(/Career\.activityViews\(\)/.test(menuSrc), "⑨ 首页副行吃 Career.activityViews(别在菜单里另算一遍)");
 }
 
+// ---------- ⑩ 摆放锚点 ----------
+{
+  const bad = judgePlaceAnchor(readFileSync(join(UI, "activity-panel.ts"), "utf8"), "activity-panel");
+  for (const m of bad) ok(false, `摆放锚点 ${m}`);
+  ok(bad.length === 0, "⑩ place() 把水平对齐与锚点跟摆放 align 钉成一致(缘摆不钉 = 文字溢出格子)");
+}
+
 // ---------- selftest:反例必须被拦下(防规则脚本悄悄全绿) ----------
 if (process.argv.includes("--selftest")) {
   const base: ActivityDef[] = [...CFG.activities];
@@ -456,6 +482,13 @@ if (process.argv.includes("--selftest")) {
     ["视图漏报可领(玩家领不到该领的)", judgeViews(hideClaimable)],
     ["UI 直改钱包(绕过 Career 的记账)", judgeWiring("function claim() { p.coins += 40; }", "sample-bad")],
     ["面板漏接领取(点击无反应)", judgeWiring('function refresh() { Career.activityViews(); progressDL(1, 1, 1, "#fff"); }', "sample-bad")],
+    ["place 不钉对齐与锚点(旧版:奖励读数压进按钮、副句飘出卡外)", judgePlaceAnchor(
+      "function place(l: Label, b: Box, align: 0 | 1 | 2 = 1): void {"
+      + " const w = b.right - b.left;"
+      + " l.node.getComponent(UITransform)!.setContentSize(w, b.h);"
+      + " l.overflow = Label.Overflow.CLAMP;"
+      + " l.node.setPosition(align === 0 ? b.left : align === 2 ? b.right : b.left + w / 2, b.cy, 0);\n}",
+      "sample-bad")],
   ];
   for (const [nm, msgs] of cases) {
     ok(msgs.length > 0, `反例被拦下:${nm}(${msgs.length} 条)`);

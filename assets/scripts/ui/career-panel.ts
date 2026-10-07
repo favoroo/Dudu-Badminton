@@ -1683,9 +1683,13 @@ export class CareerPanel extends Component {
       const body = dummyPlayer(L.theme, curRacket, {
         playerSkin: L.skin, faceSkin: Career.skinOf("face"),
         acc,
-        y: Math.sin(this._elapsed * 6) * 2,
+        // 呼吸走不回卷的 _clock:_elapsed 每 2.2s 回卷,sin(6×2.2)≠sin(0),
+        // 每个循环回卷瞬间整只人凭空坠一下(sin 没落在 0 上)
+        y: Math.sin(this._clock * 6) * 2,
       });
-      drawPlayer(g, previewVp(1.5, 0, -45), body, Math.round(this._clock * 60), 1, null);
+      // alpha=0:预览逐帧画精确状态,没有"上一帧"可插值 —— drawPlayer 会把 alpha 加进
+      // 挥拍/收拍状态里,传 1 等于每帧预先快进一帧,起拍/收拍边界各瞬移一大步
+      drawPlayer(g, previewVp(1.5, 0, -45), body, Math.round(this._clock * 60), 0, null);
       if (this._previewName) {
         const rn = CFG.rarity[s.rarity].name;
         this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;
@@ -1731,16 +1735,17 @@ export class CareerPanel extends Component {
       const style = faceStyleOf(cand, cur.skin);
       const sticker = expr === "normal" ? 0 : 666;  // >600 = 贴纸走「定格」分支
 
-      // 左:头部特写(与上场同一套 drawHead 笔画,底色只来自这张脸自己)
-      drawHeadStill(g, previewVp(2.6, -92, 52), 0, 0, 1, th, style, expr, this._elapsed);
+      // 左:头部特写(与上场同一套 drawHead 笔画,底色只来自这张脸自己);
+      // 微动时钟走 _clock(表情循环才需要回卷的 _elapsed,微动不回卷)
+      drawHeadStill(g, previewVp(2.6, -92, 52), 0, 0, 1, th, style, expr, this._clock);
       // 右:当前装备的人物 + 球拍,只把脸换成候选;站姿呼吸,不挥拍(挥拍会甩头,脸读不清)。
       // 1.5 与人物/球拍 tab 同一档 —— 三个 tab 里"你"该是一样大。
       const body = dummyPlayer(th, curRacket, {
         playerSkin: cur.skin, faceSkin: cand,
         face: expr, faceT: sticker, faceD: 666,
-        y: Math.sin(this._elapsed * 6) * 2,
+        y: Math.sin(this._clock * 6) * 2,
       });
-      drawPlayer(g, previewVp(1.5, 45, -45), body, Math.round(this._clock * 60), 1, null);
+      drawPlayer(g, previewVp(1.5, 45, -45), body, Math.round(this._clock * 60), 0, null);
 
       if (this._previewName) {
         const rn = CFG.rarity[s.rarity ?? "common"].name;
@@ -1783,7 +1788,9 @@ export class CareerPanel extends Component {
       y: bob,
     });
 
-    drawPlayer(g, vp, player, Math.round(this._clock * 60), 1, null);
+    // alpha=0:同配饰页 —— 预览画精确状态;传 1 会把起拍 blendIn 第一帧推到 56%、
+    // 收拍 easeOutBack 第一帧推到 92%(整段回摆被压进一帧),每 2.2s 各瞬移一大步
+    drawPlayer(g, vp, player, Math.round(this._clock * 60), 0, null);
     if (this._previewName) {
       const rn = CFG.rarity[s.rarity ?? "common"].name;
       this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;

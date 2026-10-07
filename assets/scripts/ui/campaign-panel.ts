@@ -101,11 +101,15 @@ function cardRole(unlocked: boolean, isNext: boolean, rec: StageRec): Role {
  * 把一个 Label 摆进 campaign-layout 给的格子。
  * contentSize 必须设:Label 不设它会被忽略,长文案整条推出卡片(战前简报糊出弹窗
  * 的根因就是这条),左对齐还要按左缘摆而不是盒心 —— 中心摆会往反方向伸半个框宽。
+ * 对齐与锚点在这里跟摆放的 align 一次钉死:创建时不传 align 的 Label 是中心锚,
+ * 缘摆不钉锚 = 文字以格缘为中心向两边溢出(activity-panel 2026-10-07 真机翻车的同款)。
  */
 function place(l: Label, b: Box, align: 0 | 1 | 2 = 1): void {
   const w = b.right - b.left;
   l.node.getComponent(UITransform)!.setContentSize(w, b.h);
   l.overflow = Label.Overflow.CLAMP;
+  l.horizontalAlign = align as Label.HorizontalAlign;
+  l.node.getComponent(UITransform)!.setAnchorPoint(align === 0 ? 0 : align === 2 ? 1 : 0.5, 0.5);
   l.node.setPosition(align === 0 ? b.left : align === 2 ? b.right : b.left + w / 2, b.cy, 0);
 }
 

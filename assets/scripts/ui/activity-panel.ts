@@ -30,11 +30,19 @@ import type { UiKit } from "./ui-manager";
 
 const PW = ACT.pw, PH = ACT.ph;
 
-/** 把一个 Label 摆进 activity-layout 给的格子(与 campaign-panel 同款:contentSize 必设) */
+/**
+ * 把一个 Label 摆进 activity-layout 给的格子(与 campaign-panel 同款:contentSize 必设)。
+ * 水平对齐与锚点必须在这里跟摆放的 align 一次钉死 —— mkLabel 创建时不传 align 的 Label
+ * 是中心锚+居中,只按左/右缘摆节点,文字就以格缘为中心向两边溢出半个宽(真机:奖励
+ * 读数压进按钮、宝箱副句飘出卡外;出图按 SVG start/end 画,预览看不见),闸门
+ * activity-check ⑩ 扫源码钉死。
+ */
 function place(l: Label, b: Box, align: 0 | 1 | 2 = 1): void {
   const w = b.right - b.left;
   l.node.getComponent(UITransform)!.setContentSize(w, b.h);
   l.overflow = Label.Overflow.CLAMP;
+  l.horizontalAlign = align as Label.HorizontalAlign;
+  l.node.getComponent(UITransform)!.setAnchorPoint(align === 0 ? 0 : align === 2 ? 1 : 0.5, 0.5);
   l.node.setPosition(align === 0 ? b.left : align === 2 ? b.right : b.left + w / 2, b.cy, 0);
 }
 

@@ -48,12 +48,12 @@ export const ACT = {
   tab: { w: TAB_W, h: TOUCH.min, gap: 12, cy: 150, size: 15 },
   /** 任务行区:行心由 rowBoxes 现算,这里只存模板数 */
   row: { h: ROW_H, gap: ROW_GAP, top: ROW_TOP, padX: 20 },
-  /** 行内进度条:左缘贴行内 padX,行心在标题下方 */
+  /** 行内任务行两条线:标题线 +20 / 进度线 -18(宝箱副句同吃 -18,四行第二行同一行心) */
   bar: { x: 20, w: 300, h: 12, cy: -18 },
   /** 行内领取按钮:右缘贴行内 padX,方形块(可点 = 亮色大色块语言) */
   btn: { w: 104, h: 44, right: 20, size: 15 },
-  /** 行内奖励读数:右锚,贴在按钮左侧 */
-  reward: { right: 140, cy: 20, size: 12 },
+  /** 行内奖励读数:右锚贴按钮左侧,行心与按钮同行(上下对齐,别悬回标题线) */
+  reward: { right: 140, cy: 0, size: 12 },
   /** 行内进度读数「7/10」:贴在进度条右侧 */
   prog: { x: 332, cy: -18, size: 12 },
 } as const;
@@ -104,7 +104,7 @@ export function headerBoxes(): { tag: Box; title: Box; hint: Box } {
 
 /**
  * 任务行内部格子(以行盒为原点换算)。返回的是**面板局部**坐标,面板直接照摆:
- * title 左上 / bar+prog 左下 / reward 右上 / btn 右侧整高。
+ * title 左上 / bar+prog 左下 / reward+btn 右侧同一行心(奖励右锚贴按钮左缘)。
  */
 export function questRowParts(r: Box): { title: Box; bar: Box; prog: Box; reward: Box; btn: Box } {
   const { bar, prog, reward, btn, row } = ACT;
@@ -117,12 +117,12 @@ export function questRowParts(r: Box): { title: Box; bar: Box; prog: Box; reward
   };
 }
 
-/** 宝箱行内部格子:标题 + 副句 + 奖励 + 按钮(没有进度条) */
+/** 宝箱行内部格子:标题 + 副句 + 奖励 + 按钮(没有进度条;副句行心与任务行的进度线同高) */
 export function chestRowParts(r: Box): { title: Box; sub: Box; reward: Box; btn: Box } {
-  const { reward, btn, row } = ACT;
+  const { bar, reward, btn, row } = ACT;
   return {
     title: box(r.left + row.padX, 200, r.cy + 20, 22),
-    sub: box(r.left + row.padX, 360, r.cy - 16, 16),
+    sub: box(r.left + row.padX, 360, r.cy + bar.cy, 16),
     reward: box(r.right - reward.right - 150, 150, r.cy + reward.cy, 16),
     btn: box(r.right - btn.right - btn.w, btn.w, r.cy, btn.h),
   };
