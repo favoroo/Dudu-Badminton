@@ -27,7 +27,7 @@ import type { Graphics } from "cc";
 import type { CardOpts, Paint } from "../assets/scripts/ui/p5-shapes";
 import { Graphics as StubGraphics, opsToSvg } from "./cc-stub";
 import { C, ROLE, SLANT, inkFor } from "../assets/scripts/ui/p5-tokens";
-import { RARITY_META } from "../assets/scripts/core/config";
+import { CFG, RARITY_META } from "../assets/scripts/core/config";
 import { textW } from "../assets/scripts/core/text-metrics";
 import { APP_VERSION_NAME } from "../assets/scripts/core/version";
 import { ASSIST_COPY, ASSIST_COPY_SIZE, assistLayout, SET, aboutLayout, controlLayout, donePos, mediaLayout, MODE_TIP_SIZE, MOVE_MODES, SETTINGS_TABS, tabBoxes } from "../assets/scripts/ui/settings-layout";
@@ -36,9 +36,11 @@ import {
   cardRow, cardRows, CMP, resumeRow as cmpResume, tabRow as campTabRow,
 } from "../assets/scripts/ui/campaign-layout";
 import { cardBoxes as drillCardBoxes, DRILL } from "../assets/scripts/ui/drill-layout";
-import { gridCols as shopGridCols, SHELF, SHOP, shopContent, shopStats, shopTabs, shopTopBar, STAT, statCardDL, statCells, TOAST, toastBox, toastWidth } from "../assets/scripts/ui/shop-shelf";
+import { accBandH, accShelf, accSlotRowCounts, accSlotRows, cardFxLines, cardFxYs, cardLine, CARD_TEXT, gridCols as shopGridCols, rowTopY, SHELF, SHOP, shopContent, shopStats, shopTabs, shopTopBar, STAT, statCardDL, statCells, TOAST, toastBox, toastWidth } from "../assets/scripts/ui/shop-shelf";
 import { CONFIRM_PAD_RESET, layoutConfirm } from "../assets/scripts/ui/confirm-layout";
 import type { Profile } from "../assets/scripts/core/career";
+import { Career } from "../assets/scripts/core/career";
+import { milestoneViews } from "../assets/scripts/core/milestone";
 import {
   drawBevelSlot, drawHalftone, drawIconBtn, drawP5Block, drawP5Card, drawPosterPlate, drawRankBadge,
   drawSliderFace, drawStarGlyph, drawToggleFace, paintP5, progressDL, sliderDL,
@@ -47,6 +49,18 @@ import { chipDL, chipHeight, chipWidth } from "../assets/scripts/ui/p5-shapes";
 
 const FONT = "'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif";
 const SHEET_W = 1360, SHEET_H = 1140;
+
+/** 顶栏五格的标签(2026-10-06 拆件重构:逐槽搭配的「形象」放第一格,打包买的「套装」次之;
+ *  「面部皮肤」并入形象页的 chip)。长度必须与 shop-shelf 算出来的格数一致 ——
+ *  这里以前把六个名字抄在三处,改一处漏两处。 */
+const SHOP_TABS = ["形象", "套装", "球拍皮肤", "羽毛球皮肤", "生涯战绩"];
+/** 各出图页高亮哪一格(顺序变了要跟着改,别按记忆写数字) */
+const TAB_LOOK = 0, TAB_SET = 1, TAB_STATS = 4;
+if (SHOP_TABS.length !== SHOP.tabs.n) {
+  throw new Error(`出图标签 ${SHOP_TABS.length} 个 ≠ SHOP.tabs.n = ${SHOP.tabs.n},顶栏会少画/多画一格`);
+}
+/** 一个"什么都没买"的档案起点(各表第一项 price 0 = 默认拥有) */
+const BASE_DEFAULTS = (["player", "racket", "shuttle", "face"] as const).map((k) => CFG.skins[k][0].id);
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -379,33 +393,47 @@ function panelsSheet(): string {
     out.push(txt(c.X(DRILL.left), c.Y(-DRILL.ph / 2 + 24), "(引导页见 drill-diagram-preview,不与本页同框)", 11, C.dimDeep, { anchor: "start" }));
   }
 
-  // ---------- ④ 商店(880×470)----------
+  // ---------- ④ 形象套装页(880×470)----------
+  // 卡片清单/稀有度/名字/解锁门槛/状态行**全部读真数据**:Career.shelfSets 与面板吃的是
+  // 同一条判据。旧版这里把 8 个名字、8 个稀有度和一句「Lv.8 解锁」写死在工具里 ——
+  // 于是它把免费底款「经典红」画在套装页上(真货架早已排除),还给 Lv.3 的樱花少女标 Lv.8。
+  // 出图编参数就等于没出图。
   {
     const c = cell(40 + DRILL.pw + 80, 40 + SET.ph + 90 + SET.ph + 90, SHOP.pw, SHOP.ph, ROLE.star.face, "生涯与商店");
     out.push(shopTopRow(c));
-    shopTabs().forEach((b, i) => out.push(block(c, b, i === 0 ? ROLE.star.face : null,
-      ["角色皮肤", "球拍皮肤", "羽毛球皮肤", "面部皮肤", "生涯战绩"][i], 15)));
+    shopTabs().forEach((b, i) => out.push(block(c, b, i === TAB_SET ? ROLE.star.face : null, SHOP_TABS[i], 15)));
     const K = shopContent(330);
-    const rarity = ["common", "legendary", "legendary", "epic", "epic", "epic", "rare", "rare"] as const;
-    const owned = [true, false, false, false, false, false, false, false];
-    const cols = shopGridCols(rarity.length), cwid = SHELF.cardW, chgt = SHELF.cardH, gp = SHELF.gap;
+    // 摆拍档案:Lv.4 + 手里有经典红与樱花少女的两件 ⇒ 同时演出"已拥有/补齐/未解锁"三种读数
+    const prof = Career.profile();
+    prof.level = 4;
+    prof.coins = 1760;
+    prof.owned = [...BASE_DEFAULTS, "p-red", "j-blossom", "hr-twin"];
+    const sets = Career.shelfSets();
+    const cols = shopGridCols(sets.length), cwid = SHELF.cardW, chgt = SHELF.cardH, gp = SHELF.gap;
     const totalW = cols * cwid + (cols - 1) * gp;
-    rarity.forEach((r, i) => {
-      const f = RARITY_META[r].color;
+    sets.forEach((s, i) => {
+      const f = RARITY_META[s.rarity ?? "common"].color;
       const col = i % cols, row = Math.floor(i / cols);
       const bx = (K.grid.left + K.grid.right) / 2 - totalW / 2 + col * (cwid + gp);
       const by = K.grid.cy + K.grid.h / 2 - SHELF.padTop - row * (chgt + gp) - chgt / 2;
-      out.push(shape(c.X(bx + cwid / 2), c.Y(by), (g) => drawP5Card(g, cwid, chgt, f, { bandH: 24, teeth: 0, locked: !owned[i], glow: owned[i] })));
-      out.push(txt(c.X(bx + cwid / 2), c.Y(by + chgt / 2 - 12), RARITY_META[r].name, 10, owned[i] ? inkFor(f) : C.dimDeep, { bold: true }));
-      out.push(txt(c.X(bx + cwid / 2), c.Y(by - 18), ["经典红", "球场之王", "金羽宗师", "樱花少女", "赛博骇客", "猫系少女", "烈焰少年", "萌芽豆丁"][i], 12, owned[i] ? C.paper : C.dimDeep));
-      out.push(txt(c.X(bx + cwid / 2), c.Y(by - 42), owned[i] ? "已拥有" : "Lv.8 解锁", 11, owned[i] ? C.good : C.dim));
+      const pr = Career.setPriceFor(s, prof.owned);
+      const got = pr.have, lock = !Career.unlocked(s);
+      out.push(shape(c.X(bx + cwid / 2), c.Y(by), (g) => drawP5Card(g, cwid, chgt, f, { bandH: 24, teeth: 0, locked: !got && lock, glow: got })));
+      out.push(txt(c.X(bx + cwid / 2), c.Y(by + chgt / 2 - 12), RARITY_META[s.rarity ?? "common"].name, 10, got ? inkFor(f) : C.dimDeep, { bold: true }));
+      out.push(txt(c.X(bx + cwid / 2), c.Y(by - 18), s.name, 12, got || !lock ? C.paper : C.dimDeep));
+      const status = got ? "已集齐整套" : lock ? `Lv.${s.unlockLevel} 解锁`
+        : pr.lack < pr.total ? `补齐 ${pr.charge}` : `整套 ${pr.charge}`;
+      out.push(txt(c.X(bx + cwid / 2), c.Y(by - 42), status, 11, got ? C.good : lock ? C.dim : "#ffd24d"));
     });
-    out.push(block(c, K.action, ROLE.star.face, "装备上身", 16, SLANT.button));
+    const sel = sets[0];
+    const selPr = Career.setPriceFor(sel, prof.owned);
+    out.push(block(c, K.action, selPr.have ? ROLE.star.face : ROLE.primary.face,
+      selPr.have ? "整套穿上身" : `整套买下 · ${selPr.charge} 金币`, 16, SLANT.button));
     // 底部提示带:与面板同一批数(shop-shelf.TOAST / toastWidth),字色由 block() 走
     // inkFor(面色)。旧写法是 Label 自己抄 COL.gold = 同一支 #ffe14d,整条黄到读不出字
     // —— 这一格就是用户那张截图的对照。
     {
-      const msg = "已装备「活力橙」";
+      const msg = `已整套穿上「${sel.name}」· ${Career.setItems(sel).length} 件一并到手`;
       out.push(block(c, toastBox(toastWidth(textW(msg, TOAST.size))), TOAST.face, msg, TOAST.size, SLANT.band));
     }
   }
@@ -414,16 +442,19 @@ function panelsSheet(): string {
   {
     const c = cell(40 + DRILL.pw + 80 + SHOP.pw + 80, 40 + SET.ph + 90 + SET.ph + 90, SHOP.pw, SHOP.ph, ROLE.record.face, "生涯战绩");
     out.push(shopTopRow(c));
-    shopTabs().forEach((b, i) => out.push(block(c, b, i === 4 ? ROLE.star.face : null,
-      ["角色皮肤", "球拍皮肤", "羽毛球皮肤", "面部皮肤", "生涯战绩"][i], 15)));
-    // 只喂 statCells 会读的那几个键(版式与文案都是真函数出的,数字是摆拍的)
+    shopTabs().forEach((b, i) => out.push(block(c, b, i === TAB_STATS ? ROLE.star.face : null, SHOP_TABS[i], 15)));
+    // 只喂 statCells 会读的那几个键(版式与文案都是真函数出的,数字是摆拍的)。
+    // 里程碑三态一屏看全(2026-10-07):胜率/扣杀/完美/甜区喂「可领」(发光 + 金色领取行,
+    // 胜率摆拍先领过第 1 档 ⇒ 合计是两档之和)、最长相持喂「已领满」、无限纪录留 0 分喂「下一档」
+    // —— 视图全部出自 core/milestone 的真函数,不另摆一套假状态。
     const mock = {
       level: 4, exp: 77, coins: 1760, bestEndlessScore: 0, drills: {},
       stats: { matches: 22, wins: 15, smashes: 662, sweets: 1173, perfects: 952, hits: 4982, maxRally: 46 },
     } as unknown as Profile;
+    const mv = milestoneViews(mock.stats, 0, ["ms-winRate-1", "ms-maxRally-1", "ms-maxRally-2", "ms-maxRally-3"]);
     const boxes = shopStats(330);
     const gridCy = shopContent(330).grid.cy;
-    statCells(mock, 18).forEach((s, i) => {
+    statCells(mock, 18, mv).forEach((s, i) => {
       const b = boxes[i];
       const cw = b.right - b.left, ch = b.h;
       const x = (b.left + b.right) / 2, y = b.cy - gridCy;
@@ -432,22 +463,24 @@ function panelsSheet(): string {
       const rule: Paint[] = [{ kind: "stroke", hex: face, a: 0.5, lw: STAT.ruleW,
         pts: [[d.rule.x0, d.rule.y], [d.rule.x1, d.rule.y]] }];
       out.push(shape(c.X(x), c.Y(y), (g) => {
-        drawP5Card(g, cw, ch, face, { bandH: 0 });
+        drawP5Card(g, cw, ch, face, { bandH: 0, glow: !!s.claim });
         paintP5(g, rule);
       }));
       out.push(chip(c, x + d.chip.x, y + d.chip.y, s.name, STAT.chipSize, face));
       const numCx = x + d.num.x + d.num.w / 2;
       out.push(txt(c.X(numCx), c.Y(y + d.num.y), s.num, STAT.numSize, C.paper, { bold: true }));
       if (s.unit) out.push(txt(c.X(x + d.unit.x + d.unit.w / 2), c.Y(y + d.unit.y), s.unit, STAT.unitSize, C.paperDim));
-      if (s.sub) out.push(txt(c.X(x + d.sub.x), c.Y(y + d.sub.y), s.sub, STAT.subSize, C.dimDeep));
+      if (s.sub) out.push(txt(c.X(x + d.sub.x), c.Y(y + d.sub.y), s.sub, STAT.subSize, s.claim ? C.acid : C.dimDeep));
     });
+    out.push(tag(40 + DRILL.pw + 80 + SHOP.pw + 80, 40 + SET.ph + 90 + SET.ph + 90 + SHOP.ph + 24,
+      "里程碑三态:发光卡 = 整卡可点领金币+经验(副行金色);「下一档 N」= 未达标;「已领满」= 收讫。状态全读 core/milestone 真视图"));
   }
 
   // ---------- ⑥ 二次确认弹窗(点「重置默认」先问那一句)----------
   // 为什么要出图:这张弹窗的全部风险都在「文案一长就撞」,而断言只能证明算术没坏。
   // 坐标一个不抄 —— 卡高、四块的 cy、两颗键的 cx,全是 layoutConfirm 算出来的那一份。
   {
-    const c = cell(40, 610, SET.pw, SET.ph, ROLE.primary.face, "二次确认弹窗");
+    const c = cell(40, PANELS_ROW4, SET.pw, SET.ph, ROLE.primary.face, "二次确认弹窗");
     out.push(c.head);
     const L = layoutConfirm(CONFIRM_PAD_RESET);
     out.push(shape(c.X(0), c.Y(0), (g) => drawPosterPlate(g, L.cardW, L.cardH, { bandHex: ROLE.primary.face })));
@@ -465,9 +498,61 @@ function panelsSheet(): string {
         : drawBevelSlot(g, b.w, b.h, SLANT.button))));
       out.push(txt(c.X(b.cx), c.Y(b.cy), b.text, b.size, face ? inkFor(face) : C.dim, { bold: !!face }));
     }
-    out.push(tag(40, 610 + SET.ph + 24,
+    out.push(tag(40, PANELS_ROW4 + SET.ph + 24,
       `卡高 ${L.cardH} = 内边距 + 标题 + ${L.items[1].lines.length} 行正文 + 补充行 + 按钮行,全在 confirm-layout 算;`
       + "真文案与四行长文案各量一遍见 panel-check ⑪"));
+  }
+
+  // ---------- ⑦ 形象页(顶栏五格,货架窗顶**两行**槽位子页签) ----------
+  // 出图与真机同源:tab 数、子页签排布、货架让位(accShelf 把**可视窗**变矮)、卡片三行字
+  // (CARD_TEXT / cardFxLines)全吃 shop-shelf 那一份算术;商品读 config 真数据。
+  // 卡片整组套一个 SVG clipPath = 那扇变矮的窗:子页签带里再也不会透出卡片,
+  // 这件事在真机上是 Mask 做的,预览里不裁就等于没验。
+  {
+    const c = cell(40 + SET.pw + 80, PANELS_ROW4, SHOP.pw, SHOP.ph, ROLE.star.face, "商店 · 形象页");
+    out.push(shopTopRow(c));
+    shopTabs().forEach((b, i) => out.push(block(c, b, i === TAB_LOOK ? ROLE.star.face : null, SHOP_TABS[i], 15)));
+    const K = shopContent(SHELF.h);
+    const slotRows = accSlotRowCounts(CFG.accSlots.map((s) => s.row));
+    const band = accBandH(slotRows.length);
+    const shelf = accShelf(slotRows.length);
+    const winCy = K.grid.cy - band / 2;          // 裁切窗中心:窗底不动,顶边让到 chip 之下
+    out.push(`<defs><clipPath id="accWin"><rect x="${r2(c.X(K.grid.left))}" y="${r2(c.Y(winCy + shelf.h / 2))}"`
+      + ` width="${r2(SHELF.w)}" height="${r2(shelf.h)}"/></clipPath></defs>`);
+    // 货架:上衣那一槽(款最多,三排要滚 —— 用户 2026-10-07 截图正是这一格)
+    const items = CFG.accessories.filter((x) => x.slot === "jersey");
+    const cols = shopGridCols(items.length), cwid = SHELF.cardW, chgt = SHELF.cardH, gp = SHELF.gap;
+    const totalW = cols * cwid + (cols - 1) * gp;
+    out.push('<g clip-path="url(#accWin)">');
+    items.forEach((a, i) => {
+      const f = a.rarity === "common" ? "#3a4258" : RARITY_META[a.rarity].color;
+      const col = i % cols, row = Math.floor(i / cols);
+      const bx = (K.grid.left + K.grid.right) / 2 - totalW / 2 + col * (cwid + gp);
+      const by = winCy + rowTopY(row, shelf) - chgt / 2;
+      const owned = i === 0;
+      const cx = c.X(bx + cwid / 2), Y = (v: number): number => c.Y(by + v);
+      out.push(shape(cx, Y(0), (g) => drawP5Card(g, cwid, chgt, f, { bandH: 24, teeth: 0, locked: false, glow: owned })));
+      out.push(txt(cx, Y(chgt / 2 - 12), a.rarity === "common" ? "经典" : RARITY_META[a.rarity].name, 10, inkFor(f), { bold: true }));
+      out.push(txt(cx, Y(CARD_TEXT.nameY), cardLine(a.name, CARD_TEXT.nameSize), CARD_TEXT.nameSize, C.paper, { bold: true }));
+      out.push(txt(cx, Y(CARD_TEXT.statusY), cardLine(owned ? "已拥有" : `金币 ${a.price}`, CARD_TEXT.statusSize),
+        CARD_TEXT.statusSize, owned ? C.good : "#ffd24d"));
+      const fx = cardFxLines(a.desc);
+      cardFxYs(fx.length).forEach((fy, k) => {
+        out.push(txt(cx, Y(fy), fx[k], CARD_TEXT.fxSize, "#7e9bd8"));
+      });
+    });
+    out.push('</g>');
+    // 槽位子页签两行:钉在网格窗顶部、不随滚动;选中槽 = info 青实底
+    accSlotRows(K.grid, slotRows).forEach((b, i) => {
+      const meta = CFG.accSlots[i];
+      if (!meta) return;
+      out.push(block(c, b, i === 3 ? ROLE.info.face : null, meta.name, 13, SLANT.band));
+    });
+    out.push(block(c, K.action, ROLE.primary.face, "购买 · 48 金币", 16, SLANT.button));
+    out.push(tag(40 + SET.pw + 80, PANELS_ROW4 + SHOP.ph + 24,
+      `形象页:${CFG.accSlots.length} 个槽排成 ${slotRows.join("+")} 两行,各槽限装一件、跨槽叠加;`
+      + `子页签带高 ${band} 从**裁切窗**让位(accShelf(${slotRows.length}).h = ${shelf.h}),`
+      + `所以卡片滚到哪儿都不会穿到 chip 背后;卖点小字按卡宽折两行、装不下才截尾`));
   }
   return out.join("\n");
 }
@@ -477,7 +562,9 @@ const SYNTAX_H = 1100;
 // 行 1:设置(操控页) + 闯关大厅;行 2:设置(声音画面) + 设置(关于) + 设置(辅助);行 3:训练场 + 商店
 // 行 3 现在是三格:训练场 + 商店 + 履历页(与商店共用衬纸的另一面)
 const PANELS_W = 40 + 880 + 80 + 880 + 80 + 880 + 40;
-const PANELS_H = 1068 + 470 + 60;
+// 第 4 行:二次确认弹窗 + 配饰页(610 那一行塞不下 —— 上面声音画面/关于两格底缘 978,弹窗 610 起必撞)
+const PANELS_ROW4 = 1068 + 470 + 60;
+const PANELS_H = PANELS_ROW4 + 470 + 60;
 
 function sheet(body: string, w: number, h: number, bg: string): string {
   return [

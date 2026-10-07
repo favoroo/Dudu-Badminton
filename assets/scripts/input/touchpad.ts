@@ -1662,12 +1662,15 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
   const bindPlayLayer = (): void => {
     const layerTrans = layerUt;
 
-    /** 触点 → 命中的键:兄弟序即层级,从最上层(数组尾部)往回找 */
+    /** 触点 → 命中的键:兄弟序即层级,从最上层(数组尾部)往回找。
+     *  active=false 的键(没携带技能的空槽)不显示,也就绝不收手指 ——
+     *  否则那块空地会吃掉一次触摸,还回一记看不见来源的拒按抖动。 */
     const hitAny = (e: EventTouch): BtnRec | null => {
       const u = e.getUILocation();
       const p = layerTrans.convertToNodeSpaceAR(v3(u.x, u.y, 0), tmpVec);
       for (let i = recs.length - 1; i >= 0; i--) {
         const rec = recs[i];
+        if (!rec.node.active) continue;
         const c = layerTrans.convertToNodeSpaceAR(rec.node.worldPosition, tmpVecB);
         const dx = p.x - c.x, dy = p.y - c.y;
         if (dx * dx + dy * dy <= rec.r * rec.r) return rec;
@@ -2390,12 +2393,29 @@ export function buildTouchPad(root: Node, pad: Pad, opts: TouchPadOpts = {}): To
 
   /**
    * 技能键运行时状态(双槽 2026-10-06):target 指定喂哪颗键 —— "lunge" = 技能1 键
-   * (历史遗留动作名),"skill2" = 技能2 键。两颗键各喂各的,参数语义完全一致;
-   * 空槽喂 skillId=""(键面画空槽横杠)+ blockReason(config.skills.blockText.emptySlot)。
+   * (历史遗留动作名),"skill2" = 技能2 键。两颗键各喂各的,参数语义完全一致。
+   *
+   * **空槽(skillId 传空串)= 这颗键整颗不显示**,不是画个「未携带」封条:封条、键心
+   * 「空」、键上方那句提示说的是同一件"按了也没用"的事,而携带技能的地方在设置页那一栏,
+   * 场上留一颗空键只是白占拇指起手区。编辑态不受影响 —— 「调整位置」用的是另一个 pad
+   * 实例,它根本不喂技能状态,那颗键照样摆得了位置。
    */
   const setSkillState = (target: "lunge" | "skill2", cdRatio: number, ready: boolean, skillId: string, skillName?: string, cdSec = 0, blockReason?: string | null, chargeRatio = 0, chargePipes = 0): void => {
     for (const rec of recs) {
       if (rec.action !== target) continue;
+      const empty = !skillId;
+      const wantVisible = !empty;
+      if (rec.node.active !== wantVisible) {        // 只在"显示 ↔ 隐藏"的切换那一帧动手
+        rec.node.active = wantVisible;
+        // 呼吸辉光是 repeatForever 的循环 tween:藏键时不掐,它会在一颗看不见的键上
+        // 一直跑,重新显示时 syncReadyPulse 又因 readyPulsing 仍为 true 而不再起新环。
+        if (empty) {
+          Tween.stopAllByTarget(rec.flashOp);
+          rec.readyPulsing = false;
+          rec.flashOp.opacity = 0;
+        }
+      }
+      if (empty) continue;                     // 空槽没有读数可画,隐藏那一帧已经把收尾做掉
       const block = blockReason ?? null;
       // 比例项走 gate:基准是「上一次画上屏的值」。直接比 rec.cdRatio 的旧写法基准每帧被
       // 覆盖,阈值退化成相邻帧增量(= 1/maxCd),长 CD 的扫掠会整段冻结(见 pad-cd.makeCdGate)

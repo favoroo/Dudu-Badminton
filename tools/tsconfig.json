@@ -25,10 +25,12 @@
     "../assets/scripts/ui/shop-shelf.ts",
     "../assets/scripts/ui/brief-layout.ts",
     "../assets/scripts/ui/skill-layout.ts",
+    "../assets/scripts/ui/skill-diagram.ts",
     "../assets/scripts/ui/settings-layout.ts",
     "../assets/scripts/ui/pad-diagram.ts",
     "../assets/scripts/ui/campaign-layout.ts",
     "../assets/scripts/ui/drill-layout.ts",
-    "../assets/scripts/ui/confirm-layout.ts"
+    "../assets/scripts/ui/confirm-layout.ts",
+    "../assets/scripts/ui/settle-layout.ts"
   ]
 }

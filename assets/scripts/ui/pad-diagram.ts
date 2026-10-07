@@ -346,8 +346,14 @@ function courtDL(out: Paint[], st: Stage): void {
 /**
  * 人物剪影:h = 图示像素身高。头 + 斜切身 + 两条腿 + 一柄拍。
  * 落地影子随腾空又小又淡 —— 在没离开地面之前,这一眼就能判「他跳了」。
+ *
+ * `tint` 是给 ui/skill-diagram 复用留的口子(影分身要三色);本模块自己恒用默认值。
+ * 同一个人形两处共用一份,不允许可可再画一个"差不多的人"—— 那是第二把尺子。
  */
-function personDL(out: Paint[], x: number, groundY: number, h: number, alpha: number, hopPx: number): void {
+export function personDL(
+  out: Paint[], x: number, groundY: number, h: number, alpha: number, hopPx: number,
+  tint: string = C.paper,
+): void {
   if (alpha <= 0.02) return;
   const feet = groundY + hopPx;
   const shrink = 1 - Math.min(0.55, hopPx / (h * 1.6));
@@ -358,15 +364,15 @@ function personDL(out: Paint[], x: number, groundY: number, h: number, alpha: nu
   const hipY = feet + h * 0.42, shY = feet + h * 0.74, headY = feet + h * 0.88;
   const spread = hopPx > 0 ? 0.20 : 0.13;
   const lw = Math.max(2, h * 0.075);
-  out.push(line(C.paper, 0.85 * alpha, lw, [[x - h * spread, feet], [x - h * 0.03, hipY]]));
-  out.push(line(C.paper, 0.85 * alpha, lw, [[x + h * spread, feet], [x + h * 0.03, hipY]]));
-  out.push(fill(C.paper, 0.92 * alpha, slantQuad(h * 0.24, h * 0.36, h * 0.05, x, (hipY + shY) / 2)));
-  out.push(fill(C.paper, 0.95 * alpha, ringPts(x, headY, h * 0.115, 1, 14)));
+  out.push(line(tint, 0.85 * alpha, lw, [[x - h * spread, feet], [x - h * 0.03, hipY]]));
+  out.push(line(tint, 0.85 * alpha, lw, [[x + h * spread, feet], [x + h * 0.03, hipY]]));
+  out.push(fill(tint, 0.92 * alpha, slantQuad(h * 0.24, h * 0.36, h * 0.05, x, (hipY + shY) / 2)));
+  out.push(fill(tint, 0.95 * alpha, ringPts(x, headY, h * 0.115, 1, 14)));
   // 持拍手朝网那一侧;拍杆的延长线正好接到拍头环的边缘(差一点就像脱手)。
   // 重影不画拍:荧光黄的环在暗底上最扎眼,三份叠成一排"圈圈"就把"这是刚才那个人"
   // 读成了"这儿有三个球"—— 出图肉眼判定的这一档。
   if (detail) {
-    out.push(line(C.paper, 0.8 * alpha, Math.max(1.6, h * 0.055), [[x + h * 0.06, shY - h * 0.02], [x + h * 0.19, shY + h * 0.11]]));
+    out.push(line(tint, 0.8 * alpha, Math.max(1.6, h * 0.055), [[x + h * 0.06, shY - h * 0.02], [x + h * 0.19, shY + h * 0.11]]));
     out.push(outline(C.acid, 0.9 * alpha, Math.max(1.6, h * 0.05), ringPts(x + h * 0.25, shY + h * 0.17, h * 0.085, 1, 12)));
   }
 }

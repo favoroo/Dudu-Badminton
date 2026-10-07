@@ -22,7 +22,7 @@
 import { Color, Graphics } from "cc";
 import { CFG } from "../core/config";
 import { Skills } from "../core/skills";
-import { Player, Ball, FaceKind, SkinDef, SwingStyle, Theme } from "../core/types";
+import { Player, Ball, FaceKind, SkinDef, AccessoryDef, SwingStyle, Theme } from "../core/types";
 import { Physics } from "../core/physics";
 import { lerp, clamp, TAU, D2R } from "../core/utils";
 import { pal, withAlpha } from "./palette";
@@ -36,6 +36,7 @@ import { ShuttleMotion, shuttleWobble, TIER_FIRE, TIER_SMASH, TIER_SWEET, TIER_S
 import { entityOf } from "./view-cache";
 import { drawFootSigil } from "./aura";
 import { drawSpikeRing, fillSpikes, SPIKE_VERTS } from "./p5kit";
+import { ACC_STYLES, drawAccGlove } from "./acc";
 
 const LineCap = Graphics.LineCap;
 const LineJoin = Graphics.LineJoin;
@@ -43,228 +44,23 @@ const LineJoin = Graphics.LineJoin;
 const C = CFG;
 const CO = C.court, SW = C.swing;
 
-/** 世界坐标(canvas,y 向下,960×540)→ Graphics 本地坐标(居中原点,y 向上)。
- *  与 world.ts 的同名接口结构一致;此处独立声明避免 render 模块互相成环。 */
-export interface Viewport {
-  x(wx: number): number;
-  y(wy: number): number;
-}
-
-// ---------- 局部坐标帧:替代 ctx.save/translate/rotate/scale ----------
-
-interface Pt { x: number; y: number }
-
-/**
- * 一个绘制帧:局部点 (lx, ly)(canvas 约定,y 向下)→ Graphics 坐标。
- * kx/ky 是局部 x/y 轴的长度缩放(未旋转帧才有意义,旋转帧置 0 以禁用 ellipseAA)。
- */
-interface Frame {
-  pt(lx: number, ly: number): Pt;
-  /** 线宽折算:canvas 的 CTM 会缩放描边,这里按 sqrt(|det|) 做几何平均近似 */
-  lw(v: number): number;
-  kx: number;
-  ky: number;
-}
-
-/** 人物帧:老代码 translate(x,y) + scale(facing*sx, sy) 的等价展开 */
-function playerFrame(vp: Viewport, wx: number, wy: number, facing: number, sx: number, sy: number): Frame {
-  const vsx = Math.abs(vp.x(1) - vp.x(0));
-  const vsy = Math.abs(vp.y(1) - vp.y(0));
-  const vs = Math.sqrt(vsx * vsy) || 1;
-  const k = Math.sqrt(Math.abs(facing * sx * sy)) * vs;
-  return {
-    pt: (lx, ly) => {
-      const p = pooledPt();
-      p.x = vp.x(wx + facing * sx * lx);
-      p.y = vp.y(wy + sy * ly);
-      return p;
-    },
-    lw: (v) => v * k,
-    kx: sx * vsx,
-    ky: sy * vsy,
-  };
-}
-
-/** 平移子帧(不旋转不缩放,行列式不变) */
-function offsetFrame(parent: Frame, ox: number, oy: number): Frame {
-  return {
-    pt: (lx, ly) => parent.pt(ox + lx, oy + ly),
-    lw: (v) => parent.lw(v),
-    kx: parent.kx,
-    ky: parent.ky,
-  };
-}
-
-/** 缩放子帧:以锚点为原点缩放局部单位(表情贴纸的 pop-in 弹出用) */
-function scaledFrame(parent: Frame, ox: number, oy: number, s: number): Frame {
-  return {
-    pt: (lx, ly) => parent.pt(ox + lx * s, oy + ly * s),
-    lw: (v) => parent.lw(v * s),
-    kx: parent.kx,
-    ky: parent.ky,
-  };
-}
-
-/** 旋转子帧:老代码 translate(ox,oy) + rotate(rot) 的等价展开(canvas 旋转矩阵,坐标系 y 向下) */
-function rotateFrame(parent: Frame, ox: number, oy: number, rot: number): Frame {
-  const cos = Math.cos(rot), sin = Math.sin(rot);
-  return {
-    pt: (lx, ly) => parent.pt(ox + lx * cos - ly * sin, oy + lx * sin + ly * cos),
-    lw: (v) => parent.lw(v),
-    kx: 0, ky: 0, // 旋转帧不轴对齐,禁用 ellipseAA/circleAA(一律采样)
-  };
-}
-
-/** 羽毛球帧:老代码 translate(bx,by) + rotate(ang) + scale(sqX,sqY) 的等价展开(先缩放再旋转再平移) */
-function shuttleFrame(vp: Viewport, wx: number, wy: number, ang: number, sqX: number, sqY: number): Frame {
-  const cos = Math.cos(ang), sin = Math.sin(ang);
-  const vsx = Math.abs(vp.x(1) - vp.x(0));
-  const vsy = Math.abs(vp.y(1) - vp.y(0));
-  const vs = Math.sqrt(vsx * vsy) || 1;
-  const k = Math.sqrt(Math.abs(sqX * sqY)) * vs;
-  return {
-    pt: (lx, ly) => {
-      const p = pooledPt();
-      const rx = lx * sqX, ry = ly * sqY;
-      p.x = vp.x(wx + rx * cos - ry * sin);
-      p.y = vp.y(wy + rx * sin + ry * cos);
-      return p;
-    },
-    lw: (v) => v * k,
-    kx: 0, ky: 0,
-  };
-}
-
-// ---------- 折线 / 采样:cc.Graphics.arc 扫向与 canvas 相反,统一自采样最稳 ----------
-
-// ---------- 采样点池:圆弧采样每帧零分配 ----------
-// drawPlayer/drawShuttle 一帧要采几十处圆弧,旧写法每点 new {x,y}、每弧 new 数组,
-// 两名角色 + 球合计每帧 1500~2500 个短命对象 —— 周期性 major GC 尖峰的主要来源。
-// 全文件对采样点的用法都是「采完立刻 polyPath/读值,不跨调用树持有」,所以一页
-// 环形池轮转即可:槽位复用、游标只进不退;单帧峰值用量 ~3000 点 / 几十条数组,
-// 池深 8192 / 256,任何还活着的点在被覆盖前早就画完了。offset/scaled/rotate 三类
-// 子帧只是委托父帧变换,本身不产出新点,无需自己过池。
-const PT_POOL_N = 8192;
-const ptPool: Pt[] = Array.from({ length: PT_POOL_N }, () => ({ x: 0, y: 0 }));
-let ptHead = 0;
-const ARR_POOL_N = 256;
-const arrPool: Pt[][] = Array.from({ length: ARR_POOL_N }, () => []);
-let arrHead = 0;
-
-/** 取下一个复用点(调用方立即写 x/y) */
-function pooledPt(): Pt {
-  const p = ptPool[ptHead];
-  ptHead = (ptHead + 1) % PT_POOL_N;
-  return p;
-}
-
-/** 取一条复用折线(长度清零,调用方 push) */
-function pooledPts(): Pt[] {
-  const a = arrPool[arrHead];
-  arrHead = (arrHead + 1) % ARR_POOL_N;
-  a.length = 0;
-  return a;
-}
-
-/** canvas arc 语义的扫角归一化:ccw=false 扫增角(区间 (0,2π]),ccw=true 扫减角(区间 [-2π,0)) */
-function sweepDelta(a0: number, a1: number, ccw: boolean): number {
-  let d = a1 - a0;
-  if (!ccw) {
-    if (d >= TAU) d = TAU;
-    else { while (d < 0) d += TAU; }
-  } else {
-    if (d <= -TAU) d = -TAU;
-    else { while (d > 0) d -= TAU; }
-  }
-  return d;
-}
-
-/** 圆/椭圆折线采样的整圈段数:20 段在 r≤30px 下弦降 <0.6px(肉眼不可辨),
- *  顶点量比旧值 36 少 45% —— 人物一帧要画十几处圆弧,这里是被 GC 与顶点重传放大的热点 */
-const CIRCLE_SEGS = 20;
-
-/** 整圈采样段数随半径自适应:大轮廓(r≥12)维持 CIRCLE_SEGS 不变,小件按比例减段 ——
- *  眼睛 2px、嘴巴 3px 这些也照拿 20 段是被顶点重传放大的浪费。下限 8 段
- *  (8 段在 r=8 时弦降 ~0.77px,仍不可辨);拍框高光弧等按索引映射角度的调用
- *  仍直接用 CIRCLE_SEGS,不经过这里,免得点数与角度错位。 */
-function segsFor(r: number): number {
-  const ar = r < 0 ? -r : r;
-  if (ar >= 12) return CIRCLE_SEGS;
-  const s = Math.ceil(ar * 1.4) + 4;
-  return s < 8 ? 8 : s;
-}
-
-/** 局部圆弧按 canvas 语义采样成折线(角度在局部 canvas 约定里解释,方向视觉与原版一致) */
-function arcPts(f: Frame, cx: number, cy: number, r: number, a0: number, a1: number, ccw: boolean): Pt[] {
-  const d = sweepDelta(a0, a1, ccw);
-  const steps = Math.max(2, Math.ceil((Math.abs(d) / TAU) * segsFor(r)));
-  const pts = pooledPts();
-  for (let i = 0; i <= steps; i++) {
-    const th = a0 + (d * i) / steps;
-    pts.push(f.pt(cx + r * Math.cos(th), cy + r * Math.sin(th)));
-  }
-  return pts;
-}
-
-/** 一般椭圆参数采样(带旋转/非均匀缩放的椭圆 cc ellipse 画不了,统一折线) */
-function ellipsePts(f: Frame, cx: number, cy: number, rx: number, ry: number): Pt[] {
-  const segs = segsFor(rx > ry ? rx : ry);
-  const pts = pooledPts();
-  for (let i = 0; i < segs; i++) {
-    const t = (i / segs) * TAU;
-    pts.push(f.pt(cx + rx * Math.cos(t), cy + ry * Math.sin(t)));
-  }
-  return pts;
-}
-
-/** 折线路径(隐式起笔画);closed 时补 close() */
-function polyPath(g: Graphics, pts: Pt[], closed: boolean): void {
-  g.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-  if (closed) g.close();
-}
-
-/** 椭圆采样为折线路径:经由 f.pt 变换,与 arcPts / fillRectTr 完全一致,彻底规避 Viewport 缩放/镜像导致比例失调 */
-function ellipseAA(g: Graphics, f: Frame, cx: number, cy: number, rx: number, ry: number): void {
-  const pts = ellipsePts(f, cx, cy, rx, ry);
-  polyPath(g, pts, true);
-}
-
-function circleAA(g: Graphics, f: Frame, cx: number, cy: number, r: number): void {
-  ellipseAA(g, f, cx, cy, r, r);
-}
-
-/** 局部线段(不 stroke,由调用方攒路径后一次性 stroke,与 canvas 同构) */
-function lineSeg(g: Graphics, f: Frame, x0: number, y0: number, x1: number, y1: number): void {
-  const a = f.pt(x0, y0), b = f.pt(x1, y1);
-  g.moveTo(a.x, a.y);
-  g.lineTo(b.x, b.y);
-}
-
-/** 变换帧里的实心矩形:canvas fillRect 向 +x/+y 延伸,经镜像/翻转后归一成数学最小角 */
-function fillRectTr(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number, color: Color): void {
-  const a = f.pt(lx, ly), b = f.pt(lx + w, ly + h);
-  const minX = Math.round(Math.min(a.x, b.x));
-  const minY = Math.round(Math.min(a.y, b.y));
-  const rw = Math.round(Math.abs(b.x - a.x));
-  const rh = Math.round(Math.abs(b.y - a.y));
-  g.fillColor = color;
-  g.rect(minX, minY, rw, rh);
-  g.fill();
-}
-
-/** 老代码的 px():半像素对齐的实心矩形(减少亚像素抖动);取整在局部坐标里做,与原版一致 */
-function px(g: Graphics, f: Frame, lx: number, ly: number, w: number, h: number, color: string | Color): void {
-  const x0 = Math.round(lx * 2) / 2, y0 = Math.round(ly * 2) / 2;
-  fillRectTr(g, f, x0, y0, Math.ceil(w), Math.ceil(h), typeof color === "string" ? pal(color) : color);
-}
+// 世界坐标 → Graphics 的帧/采样池/描边原语(Viewport/Frame/px/arm/circleAA…)已整包
+// 迁往 render/draw-kit.ts —— 配饰(acc.ts)要在 drawPlayer/drawHead 的同一把变换尺下
+// 画,抄一份就是「第二把尺子」。这里按需引用,Viewport 转出口给 world/career-panel 等老调用方。
+export type { Viewport } from "./draw-kit";
+import {
+  arm, arcPts, circleAA, CIRCLE_SEGS, ellipseAA, ellipsePts, fillRectTr, lineSeg,
+  offsetFrame, playerFrame, polyPath, pooledPt, pooledPts, px,
+  rotateFrame, scaledFrame, shuttleFrame,
+} from "./draw-kit";
+import type { Frame, Pt, Viewport } from "./draw-kit";
 
 // 头部固定配色,两款脸面(商店「面部皮肤」):墨面款(经典)一整颗黑脸圆 + 白色线条五官,
-// 队色只上发带 —— 黑脸上唯一的彩色,红蓝阵营识别靠它;肤色款脸底与手臂同一肤色,
+// 队色不上脸(头顶只有戴了头饰才有第二色)—— 阵营识别走球衣/短裤/手臂;肤色款脸底与手臂同一肤色,
 // 五官换深暖棕墨色,好心情表情加腮红。SKIN/SKIN_LINE 仍用于手臂与手(肤色款脸圆共用)。
 const SKIN = "#f2c491", SKIN_LINE = "rgba(10,13,24,0.55)";
 // HEAD 兼任三处墨迹:墨面款脸底、wow 感叹号气泡的「!」、羽毛球球托背光暗面
-const HEAD = "#0a0e18", HEAD_LINE = "rgba(235,240,255,0.5)", FACE = "#ffffff";
+const HEAD = "#0a0e18", FACE = "#ffffff";
 // 肤色款专用:五官墨色(与肤色同暖调,比纯黑柔和)/ 心情腮红(happy/cheer/star 两颊淡粉)
 const INK = "#4a2b16", BLUSH = "rgba(255,110,120,0.32)";
 
@@ -616,11 +412,19 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     : (p.theme ?? DEFAULT_THEME);
   // 完整人物皮肤(发型/头饰/纹样/光环/体型/默认脸):影分身不吃皮肤(纯黑剪影);CPU/P2 没挂 → null 走原版画法
   const ps = isShadow ? null : (p.playerSkin ?? null);
+  // 配饰(四槽,applyToMatch 只挂真人):与 playerSkin 同一条路 —— 影分身/CPU/P2 天然没有。
+  // 每槽最多一件,画法按 def.style 查 ACC_STYLES,挂载点由 slot 决定(见下文四处接线)。
+  const acc = isShadow ? null : (p.acc ?? null);
+  const accFace = acc?.find((a) => a.slot === "face") ?? null;
+  const accUpper = acc?.find((a) => a.slot === "upper") ?? null;
+  const accLower = acc?.find((a) => a.slot === "lower") ?? null;
+  const accHand = acc?.find((a) => a.slot === "hand") ?? null;
   const H = C.player.h, W = C.player.w;
   // 体型档(纯视觉):髋高/躯干/头身比/肢宽的整体微调。肩点 pivotY 是判定
   // 锁定位,体型档不碰它 —— 只改轮廓观感,零手感影响。未知 key 兜 standard
   const body = C.bodies[ps?.body ?? "standard"] ?? C.bodies.standard;
-  // 人物肤色:手臂/手/膝盖皮肤与肤色系脸面共用的那一号颜色(影分身为纯黑)
+  // 人物肤色:手臂/手/膝盖/颈这一号颜色(影分身为纯黑)。脸面不吃它 —— 脸上的颜色
+  // 只有 faceStyles 一个出处,两根旋钮各管各的(见 drawHead)
   const skinCol = isShadow ? "#000000" : (ps?.skinTone ?? SKIN);
   // 脸面解析:CPU/P2 无 faceSkin → undefined → drawHead 兜墨面(敌我识别,不许动);
   // 真人装备位 "auto"(人物默认)→ 人物自带脸 → 全局默认肤色脸
@@ -938,7 +742,13 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   arm(g, B, th.dark, fp.pts, 5.0 * body.limbMul, 0.68);
   arm(g, B, skinCol, [fp.pts[1], fp.hand], 4.4 * body.limbMul, 0.62);
   // 发球持球时手盘略放大:托球的手型(掌心向上兜着球);起拍松球后随沉降一起收回常态
-  drawHand(g, B, fp.hand.x, fp.hand.y, (3.3 + serveBodyK * 0.5) * body.limbMul, 0.66, skinCol);   // 有手 = 是手臂,不是棍子
+  // 手套(手部槽):腕向 = 肘 → 手的反方向,腕口束带垂直于小臂
+  {
+    const gvx = fp.pts[1].x - fp.hand.x, gvy = fp.pts[1].y - fp.hand.y;
+    const gvl = Math.hypot(gvx, gvy) || 1;
+    drawHand(g, B, fp.hand.x, fp.hand.y, (3.3 + serveBodyK * 0.5) * body.limbMul, 0.66, skinCol,
+      accHand ?? undefined, gvx / gvl, gvy / gvl);   // 有手 = 是手臂,不是棍子
+  }
 
   // ---------- 腿:两段真关节(髋-膝-踝),脚位目标 + IK 反解 ----------
   // 旧版是「4 个矩形 + 水平偏移假折膝」:膝弯靠小腿矩形整体后移伪装,屈膝时大腿段
@@ -955,8 +765,8 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const kneeGapF = 0.34;                       // 膝盖皮肤段占小腿的比例(短裤与球袜之间)
   // 后腿(远侧)整体压暗 + 收窄,前腿(近侧)受光 —— 前后景深一眼读出侧身
   const legs = [
-    { bx: -W * 0.14, sock: isShadow ? "#000000" : "#cdc9bd", shoe: isShadow ? "#000000" : "#141824", s: -1, far: true },
-    { bx: W * 0.10, sock: isShadow ? "#000000" : "#f2efe6", shoe: isShadow ? "#000000" : "#1b1f2e", s: 1, far: false },
+    { bx: -W * 0.14, sock: isShadow ? "#000000" : (ps?.sock ?? "#cdc9bd"), shoe: isShadow ? "#000000" : (ps?.shoe ?? "#141824"), s: -1, far: true },
+    { bx: W * 0.10, sock: isShadow ? "#000000" : (ps?.sock ?? "#f2efe6"), shoe: isShadow ? "#000000" : (ps?.shoe ?? "#1b1f2e"), s: 1, far: false },
   ];
   const airK = clamp((p.vy + 3) / 6, 0, 1);           // 0=刚起跳(收腿) 1=快落地(展腿)
   const wAir = airborne ? 1 - runAmt : 0;
@@ -990,8 +800,23 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
     arm(g, F, th.dark, [hip, knee], 7.6 * lw * body.limbMul, farA);
     arm(g, F, skinCol, [knee, knee2], 5.6 * lw * body.limbMul, farA);
     arm(g, F, L.sock, [knee2, foot], 5.8 * lw * body.limbMul, sockA);
-    // 鞋:踝下的厚底,朝网侧前伸(随踝目标起落/分踩)
-    px(g, F, fx - 2.5, fy - 1.5, 12.5, H * 0.075, L.far ? withAlpha(pal(L.shoe), 0.80) : pal(L.shoe));
+    // 鞋:踝下的厚底,朝网侧前伸(随踝目标起落/分踩)。
+    // 配饰下身槽(球鞋)在位时替换素色鞋块 —— 画法与配色全在 acc.ts,远侧腿照旧压暗
+    if (accLower && ACC_STYLES[accLower.style]?.foot) {
+      ACC_STYLES[accLower.style]!.foot!(g, F, accLower, fx, fy, L.far ? 0.80 : 1);
+    } else {
+      px(g, F, fx - 2.5, fy - 1.5, 12.5, H * 0.075, L.far ? withAlpha(pal(L.shoe), 0.80) : pal(L.shoe));
+    }
+  }
+
+  // ---------- 配饰·上身槽(背段):围巾飘尾画在躯干之前 → 压在身体后面 ----------
+  // 颈锚点与画脖子的 px(:颈部矩形)同源;激励用离地(air)与跑动权重(runAmt)。
+  // 颈圈/前结在躯干之后、头之前画(见 drawHead 前的接线),两段拼出"围着脖子、
+  // 尾巴甩在身后"的景深,不需要裁剪。
+  if (accUpper) {
+    (ACC_STYLES[accUpper.style]?.back)?.(g, F, accUpper, {
+      x: 2 + (lean - 2) * 0.6, y: bodyTop - 3, t, run: runAmt, air,
+    });
   }
 
   // ---------- 躯干:3/4 斜侧 —— 沿一条连续脊柱描出(见文件上方 Torso 注释块) ----------
@@ -1248,9 +1073,15 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const blink = ((t + (p.blinkSeed ?? 0)) % 220) < 5;
   const hr = H * 0.21 * body.headMul;
   px(g, F, -1 + (lean - 2) * 0.6, bodyTop - 7, 6, 9, skinCol);
+  // 配饰·上身槽(前段):颈圈+前结画在脖子矩形之后、头之前 —— 上沿被头压住、下沿压住衣领
+  if (accUpper) {
+    (ACC_STYLES[accUpper.style]?.front)?.(g, F, accUpper, {
+      x: 2 + (lean - 2) * 0.6, y: bodyTop - 3, t, run: runAmt, air,
+    });
+  }
   drawHead(g, F, th, hr, 2 + (lean - 2) * 0.6, bodyTop - hr * 1.12 + headDy,
     { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD, skin: ps,
-      faceStyle, skinTone: ps?.skinTone, focusT: p.focusT, isShadow });
+      faceStyle, focusT: p.focusT, isShadow, accFace });
 
   // ---------- 持拍臂:一条姿势管线,挥拍弧线 ↔ 待机收拍全程连续 ----------
   // 命中后持拍臂横拉过身体:肩点朝网侧额外偏移(增强跟随感)
@@ -1370,7 +1201,13 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   arm(g, A, th.dark, [{ x: 0, y: 0 }, ik.elbow], 5.5 * body.limbMul);
   arm(g, A, skinCol, [ik.elbow, pose.hand], 5.5 * body.limbMul);
   drawRacket(g, A, pose.hand.x, pose.hand.y, pose.ang, pose.len, th, p, isShadow);
-  drawHand(g, A, pose.hand.x, pose.hand.y, 3.6 * body.limbMul, 1, skinCol);
+  // 手套(手部槽):腕向 = 手 → 肘,腕口束带垂直于小臂
+  {
+    const gvx = ik.elbow.x - pose.hand.x, gvy = ik.elbow.y - pose.hand.y;
+    const gvl = Math.hypot(gvx, gvy) || 1;
+    drawHand(g, A, pose.hand.x, pose.hand.y, 3.6 * body.limbMul, 1, skinCol,
+      accHand ?? undefined, gvx / gvl, gvy / gvl);
+  }
   // 肩关节衔接件:手臂从肩头长出来,不再从躯干边缘凭空伸出
   g.fillColor = pal(th.dark);
   circleAA(g, A, 0, 0, 4.5);
@@ -1489,15 +1326,19 @@ function drawPlayerCursor(g: Graphics, vp: Viewport, p: Player, x: number, y: nu
   g.fill();
 }
 
-// ---------- 头:脸面注册表 + 队色发带(商店「面部皮肤」) ----------
+// ---------- 头:脸面注册表 + 头饰注册表(商店「面部皮肤」) ----------
 // 脸面数据(脸底/描边/五官墨色/腮红/特征标记)在 config.faceStyles,按 faceStyle key 取;
-// 未知 key 兜回墨面款(经典/CPU 默认)。肤色系支持 skinTone 覆写脸底(人物形象的肤色)。
+// 未知 key 兜回墨面款(经典/CPU 默认)。
+// 2026-10-07 用户指令:脸底**只**走 faceStyles 自己的 base,不吃人物形象的「肤色」——
+// 一根旋钮只上一处。选了纯黑肤色,四肢黑、脸该是什么样还是什么样;
+// 要黑脸白五官请戴免费的经典墨面,要整张无面 → 纯黑/纯白无面。
 // 表情种类见 types.FaceKind;局部 +x = 朝球网:近侧眼大、远侧眼小,瞳位随 opt.look 追球。
 // 注意 cc.Graphics 的 fill()/stroke() 会消费当前路径(弧光双描边处靠重建路径证实),
 // 所以「填充 + 描边」同一形状必须重建路径,攒路径后一次性 stroke 与 canvas 同构。
 function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
   opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number;
-    skin?: SkinDef | null; faceStyle?: string; skinTone?: string; focusT?: number; isShadow?: boolean } = {}): void {
+    skin?: SkinDef | null; faceStyle?: string; focusT?: number; isShadow?: boolean;
+    accFace?: AccessoryDef | null } = {}): void {
   // 影分身纯黑无面剪影:零发带、零头饰、零高光、零五官,纯黑圆底一笔而成。
   // 2026-10-05 三色:黑底之外补**一圈身份色细描边** —— 无脸是这款的身份不能丢,
   // 但三个剪影在同屏距离下必须一眼分得开,头上一圈是离脸最近、最不像"染色"的那一笔。
@@ -1516,19 +1357,19 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
   const lx = opt.lookX || 0, ly = opt.lookY || 0;
   const face: FaceKind = (opt.faceT ?? 0) > 0 ? (opt.face ?? "normal") : "normal";
   const sk = opt.skin ?? null;
-  const st0 = C.faceStyles[opt.faceStyle ?? "ink"] ?? C.faceStyles.ink;
-  // 肤色系脸面支持人物形象的 skinTone 覆写脸底(墨面是剪影,不吃肤色)
-  const st = opt.skinTone && opt.faceStyle !== "ink" ? { ...st0, base: opt.skinTone } : st0;
+  const st = C.faceStyles[opt.faceStyle ?? "ink"] ?? C.faceStyles.ink;
   const ink = st.ink;                       // 五官用色(各款式自己的"墨")
 
-  // 脸圆:墨面款近黑填充 + 淡白描边(暗色球馆里勾轮廓);肤色款与手臂同肤色 + 同款描边
+  // 脸圆填充:肤色款用自己的那号肤底 + 同款描边;剪影款(墨面/无面)不描,见 config.faceStyles
   g.fillColor = pal(st.base);
   circleAA(g, f, cx, cy, hr);
   g.fill();
-  g.strokeColor = pal(st.line);
-  circleAA(g, f, cx, cy, hr);
-  g.lineWidth = f.lw(1.6);
-  g.stroke();
+  if (st.line) {
+    g.strokeColor = pal(st.line);
+    circleAA(g, f, cx, cy, hr);
+    g.lineWidth = f.lw(1.6);
+    g.stroke();
+  }
 
   // 头顶高光:一道极淡反光弧,墨面款不至于闷成纯色块;浅色脸上稍提亮才看得见
   g.strokeColor = withAlpha(pal(FACE), st.hi ?? 0.15);
@@ -1541,14 +1382,12 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
     (HAIRS[sk.hairStyle] ?? HAIRS.short)(g, f, sk.hairColor, hr, cx, cy);
   }
 
-  // 头饰(设计款)替换默认队色发带;ribbon 自带头带 + 结饰
+  // 头饰(设计款):戴了才往头顶画东西,ribbon 自带头带 + 结饰。
+  // 2026-10-06 用户指令去掉「默认队色发带」:墨面款的脸与深色背景几乎同色,那道
+  // 0.9hr 的粗弧读成「悬在头顶的一圈」—— 商店每张卡、场上每个没戴头饰的人都这样。
+  // 阵营色仍由球衣/短裤/手臂承担,头顶不再作为第四处落色点。
   const hw = sk?.headwear;
-  if (hw && HEADWEARS[hw]) {
-    HEADWEARS[hw](g, f, th, hr, cx, cy, opt.t ?? 0);
-  } else {
-    // 队色发带:压在头顶,两款脸上的红蓝阵营识别都靠它
-    drawBand(g, f, th, hr, cx, cy);
-  }
+  if (hw && HEADWEARS[hw]) HEADWEARS[hw](g, f, th, hr, cx, cy, opt.t ?? 0);
 
   // ---------- 五官基线:眼距沿用 3/4 透视(网侧大、背侧小) ----------
   const exN = cx + hr * 0.40, exF = cx - hr * 0.16;   // 近/远眼 x
@@ -1660,6 +1499,12 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
     (FACE_MARKS[st.mark] ?? (() => {}))(g, f, cx, cy, hr, ink);
   }
 
+  // 配饰·面部槽(墨镜/口罩):压在五官与特征标记之上 —— 戴上就是盖住,镜片后面的
+  // 眨眼/追球照画(反正看不见),表情系统零改动;画法与配色在 render/acc.ts。
+  if (opt.accFace) {
+    (ACC_STYLES[opt.accFace.style]?.face)?.(g, f, opt.accFace, hr, cx, cy, opt.t ?? 0);
+  }
+
   // 时空减速鹰眼激光流光 (Focus Zone Trail)
   if (opt.focusT && opt.focusT > 0) {
     const fA = clamp(opt.focusT / C.skills.focus.duration, 0, 1) * 0.95;
@@ -1679,13 +1524,12 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
 // ---------- 商店面部款预览:大头像(与上场同一套 drawHead 笔画) ----------
 // career-panel 的面部 tab 缩略图/试衣间用;expr 传表情种类,faceT 给到 666(>600 = 贴纸
 // 走「定格」分支:pop 完成且不淡出),让表情与贴纸都以最终成色示人。
-// faceStyle 为注册表 key;"auto"(人物默认)在预览里按默认人物的肤色脸示人;
-// skinTone 可选:预览自定义肤色的脸面配色(pose-preview 的配色验收用)。
+// faceStyle 为注册表 key;"auto"(人物默认)在预览里按默认人物的肤色脸示人。
 export function drawHeadStill(g: Graphics, vp: Viewport, wx: number, wy: number, scale: number,
-  th: Theme, faceStyle: string, expr: FaceKind, t: number, skinTone?: string): void {
+  th: Theme, faceStyle: string, expr: FaceKind, t: number): void {
   const f = playerFrame(vp, wx, wy, 1, scale, scale);
   const style = faceStyle === "auto" ? "skin" : faceStyle;
-  drawHead(g, f, th, 20, 0, 0, { t, face: expr, faceT: expr === "normal" ? 0 : 666, faceD: 666, faceStyle: style, skinTone });
+  drawHead(g, f, th, 20, 0, 0, { t, face: expr, faceT: expr === "normal" ? 0 : 666, faceD: 666, faceStyle: style });
 }
 
 // ---------- 设计款发型与头饰零件(全部局部坐标,角度沿用 canvas y 向下约定:
@@ -1702,12 +1546,12 @@ const HAIRS: Record<string, HairFn> = {
   mohawk: drawHairMohawk,
   short: drawHairCover,
   bun: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairBun(g, f, c, hr, cx, cy); },
-  twin: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairTwin(g, f, c, hr, cx, cy); },
+  twin: drawHairCover,
   bob: (g, f, c, hr, cx, cy) => { drawHairBob(g, f, c, hr, cx, cy); drawHairSprout(g, f, c, hr, cx, cy); },
-  long: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairLong(g, f, c, hr, cx, cy); },
+  long: drawHairCover,
 };
 
-/** 头饰注册表:key → 绘制函数;无 key 或未知 key = 默认队色发带 */
+/** 头饰注册表:key → 绘制函数;无 key 或未知 key = 头顶不画东西 */
 const HEADWEARS: Record<string, HwFn> = {
   cap: drawCap,
   crown: (g, f, _th, hr, cx, cy) => drawCrown(g, f, hr, cx, cy),
@@ -1884,7 +1728,7 @@ function hairTail(g: Graphics, f: Frame, color: Color, x0: number, y0: number, x
   g.stroke();
 }
 
-// 默认队色发带:压在头顶,红蓝阵营识别靠它(默认款/ribbon 的底座)
+// 队色发带:ribbon(樱花缎带)的底座,只有戴这件头饰的人才画
 function drawBand(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
   g.strokeColor = pal(th.main);
   g.lineWidth = f.lw(4);
@@ -1963,24 +1807,18 @@ function drawCrown(g: Graphics, f: Frame, hr: number, cx: number, cy: number): v
   g.fill();
 }
 
-// 护目镜:推在额头上的荧光镜片(赛博骇客),束带用皮肤深色、镜面用 glow 色
+// 赛博科技发带(赛博骇客):移除原本沉重黑带与额前圆圈绿泡泡,改为清爽干练的霓虹双色科技发带
 function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
-  const gy = cy - hr * 0.52;
-  g.strokeColor = pal(th.dark);
-  g.lineWidth = f.lw(3);
-  polyPath(g, arcPts(f, cx, cy, hr * 0.92, Math.PI * 1.08, Math.PI * 1.92, false), false);
+  // 青绿主色底座:贴合额头轮廓与莫霍克发根
+  g.strokeColor = pal(th.main);
+  g.lineWidth = f.lw(4);
+  polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.14, Math.PI * 1.86, false), false);
   g.stroke();
-  const lens = (ex: number, er: number): void => {
-    g.fillColor = withAlpha(pal(th.glow), 0.32);
-    circleAA(g, f, ex, gy, er);
-    g.fill();
-    g.strokeColor = pal(th.glow);
-    g.lineWidth = f.lw(1.3);
-    circleAA(g, f, ex, gy, er);
-    g.stroke();
-  };
-  lens(cx + hr * 0.34, hr * 0.26);
-  lens(cx - hr * 0.30, hr * 0.21);
+  // 荧光青 glow 光芯(呼应球衣 stripes 双条纹科技感)
+  g.strokeColor = withAlpha(pal(th.glow), 0.85);
+  g.lineWidth = f.lw(1.4);
+  polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.16, Math.PI * 1.84, false), false);
+  g.stroke();
 }
 
 // 忍者额带:更宽的束带 + 额前金属贴片 + 脑后两条随风微摆的飘带(影忍)
@@ -2178,26 +2016,20 @@ function drawFaceSticker(g: Graphics, f: Frame, t: number, face: FaceKind, faceT
   }
 }
 
-// 手臂/腿折线:圆头描边;alpha 用于压暗远侧肢(canvas globalAlpha → 叠进颜色)
-function arm(g: Graphics, f: Frame, color: string, pts: Pt2[], lw = 5.5, alpha = 1): void {
-  g.strokeColor = withAlpha(pal(color), alpha);
-  g.lineWidth = f.lw(lw);
-  g.lineCap = LineCap.ROUND;
-  g.lineJoin = LineJoin.ROUND;
-  const p0 = f.pt(pts[0].x, pts[0].y);
-  g.moveTo(p0.x, p0.y);
-  for (let i = 1; i < pts.length; i++) {
-    const q = f.pt(pts[i].x, pts[i].y);
-    g.lineTo(q.x, q.y);
-  }
-  g.stroke();
-}
+// 手臂/腿折线 arm() 已随帧原语一起迁往 render/draw-kit.ts(配饰同尺共用)
 
 // 握拍的手:最后叠画在拍柄上,才是「拿着」而不是「粘着」
 // r/alpha 给远侧手用(远侧更小更暗才读得出景深);默认值 = 原持拍手,那一路输出逐字节不变。
 // 【注意】withAlpha 是「覆盖」alpha 而不是叠乘(palette.ts 里 new Color(r,g,b,k*255)),
 // 而 SKIN_LINE 自带 0.55 —— 所以描边必须写 0.55 * alpha,直接套 alpha 会把持拍手变成黑边。
-function drawHand(g: Graphics, f: Frame, hx: number, hy: number, r = 3.6, alpha = 1, skin = SKIN): void {
+// glove 传配饰手部槽:掌面换手套主色 + 腕口束带/指节缝线(画法在 render/acc.ts);
+// wdx/wdy = 手 → 腕的单位向量(腕口束带垂直于小臂),由调用方从 IK 肘位现算。
+function drawHand(g: Graphics, f: Frame, hx: number, hy: number, r = 3.6, alpha = 1, skin = SKIN,
+  glove?: AccessoryDef, wdx = 0, wdy = 1): void {
+  if (glove) {
+    drawAccGlove(g, f, glove, hx, hy, r, alpha, wdx, wdy);
+    return;
+  }
   g.fillColor = withAlpha(pal(skin), alpha);
   g.strokeColor = withAlpha(pal(SKIN_LINE), 0.55 * alpha);
   g.lineWidth = f.lw(1.2);

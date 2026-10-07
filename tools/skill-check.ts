@@ -14,6 +14,9 @@
 //   C) 折行本身:任何输入都不横向溢出;
 //   D) 充能款(kind==="charge",怒气重击)的读数与配置自洽 + 三条一键化的门控数值同源;
 //   E) rage 不在任何 AI 技能表里(否则等于把技能 buff 当成难度补丁偷偷加给对手)。
+//   F) 烘焙不许碰实机状态:演示是「把真机跑一遍」跑出来的,那一跑必须发生在一次性的
+//      对局状态上 —— 跑在全局 R 上就是把玩家眼前那一局换掉(2026-10-07 现场:点一下
+//      技能卡片,游戏突然自己开打了)。
 // 另带 --selftest:拿人造反例(含旧版真实写法)当输入,断言它**会**被报警 ——
 // 规则脚本最怕悄悄全绿。
 //
@@ -26,10 +29,14 @@ import { textW, wrapText } from "../assets/scripts/core/text-metrics";
 import { CAMPAIGN_STAGES } from "../assets/scripts/core/campaign";
 import { Skills } from "../assets/scripts/core/skills";
 import {
-  SK, layoutSkillPlate, panelStackFits, plateOverlaps, plateOverflow, skillBtnLabel,
-  skillCardX, skillStatus, skillMeter, slotChipText,
+  SD, SK, demoBox, layoutSkillPlate, panelStackFits, plateOverlaps, plateOverflow, sdStackFits,
+  skillBtnLabel, skillCardX, skillMeter, skillStatus, slotChipText, slotRowFits, sdCaptionLines,
   type PlateItem, type PlateLayout, type SkillLike,
 } from "../assets/scripts/ui/skill-layout";
+import { SKD, skillDiagramStrokeCount } from "../assets/scripts/ui/skill-diagram";
+import { SkillDemo } from "../assets/scripts/core/skill-demo";
+import { Rules } from "../assets/scripts/core/rules";
+import type { SkillId } from "../assets/scripts/core/types";
 
 const h = makeChecker({});
 const ok = (cond: boolean, msg: string): void => h.ok(cond, msg);
@@ -87,10 +94,11 @@ console.log("技能配置弹窗:面板竖排不撞、详情板不出列不压字
 // ---------- A) 面板竖排 ----------
 {
   const bad = panelStackFits(SK.panelH);
-  ok(bad.length === 0, `竖排(标题/槽位行/卡片/详情板/完成)互不压字、全在面板内${bad.length ? ` → ${bad.join(" / ")}` : ""}`);
-  // 槽位行自身:两颗 chip 不出面板、高度够拇指(TOUCH_MIN)
+  ok(bad.length === 0, `竖排(标题/槽位行/卡片/详情板)互不压字、全在面板内${bad.length ? ` → ${bad.join(" / ")}` : ""}`);
+  // 槽位行自身:两颗 chip + 完成键(2026-10-06 演示盒把底部那条带子占了,完成键搬进行列)
   ok(SK.slotH >= 44, `槽位 chip 高 ${SK.slotH} >= TOUCH_MIN 44`);
-  ok(SK.slotW * 2 + SK.slotGap <= SK.panelW - 32, `两颗槽位 chip 总宽 ${SK.slotW * 2 + SK.slotGap} <= 面板宽 ${SK.panelW} 减边距`);
+  const rbad = slotRowFits();
+  ok(rbad.length === 0, `槽位行三颗件(chip×2 + 完成)互不压、不出斜切边界${rbad.length ? ` → ${rbad.join(" / ")}` : ""}`);
   ok(slotChipText(1, "时空") === "技能1 · 时空" && slotChipText(2, null) === "技能2 · 空", `槽位读数 =「${slotChipText(1, "时空")} / ${slotChipText(2, null)}」`);
   ok(SK.panelH <= 540 - 2 * 50, `面板高 ${SK.panelH} <= 屏幕 540 减上下各 50 留白`);
   const cbad = cardStackFits();
@@ -128,10 +136,52 @@ console.log("技能配置弹窗:面板竖排不撞、详情板不出列不压字
     }
   }
   console.log(`\n  参照:最需要 ${worstStack.toFixed(1)} 高的板(现有 ${SK.plateH})、说明最宽一行 ${worstDesc}px(可用 ${layoutSkillPlate(LIST[0], true, 0).availW})、最多 ${maxLines} 行`);
-  // 今天的文案必须全是单行 —— 变成多行是允许的下限,但先钉住「一行放得下」这个事实
+  // 说明折几行由文案决定(演示盒占了左列,内容列从 600 收到 ~352,长句必然折),
+  // 该钉的是「折完仍在行数上限内、整块仍在板内、且永远从演示盒右缘之后开始」。
   for (const def of LIST) {
     const L = layoutSkillPlate(def, true, 0);
-    ok(L.descLines === 1, `${def.shortName}:说明在 ${SK.descSize} 号下 ${L.descLines} 行(读得完整)`);
+    ok(L.descLines >= 1 && L.descLines <= SK.descMaxLines,
+      `${def.shortName}:说明在 ${SK.descSize} 号下 ${L.descLines} 行(上限 ${SK.descMaxLines},读得完整)`);
+    ok(L.innerL > L.demoRight, `${def.shortName}:文字列起点 ${L.innerL.toFixed(0)} 在演示盒右缘 ${L.demoRight.toFixed(0)} 之后`);
+  }
+  {
+    // 演示盒自己:贴着板内边距、上下不探出板、与卡片行那条缝装得下倒三角
+    const d = demoBox();
+    const pbad: string[] = [];
+    if (d.left < -SK.plateW / 2) pbad.push("左缘出了板");
+    if (d.right + SK.demoGap > SK.plateW / 2) pbad.push("右缘出了板");
+    if (d.h / 2 > SK.plateH / 2) pbad.push("高度出了板");
+    ok(pbad.length === 0, `演示盒 ${d.w}×${d.h} 在详情板左列内${pbad.length ? ` → ${pbad.join(" / ")}` : ""}`);
+    ok(d.h >= 120, `演示盒高 ${d.h} >= 120(再矮人物就缩成一根签,出图肉眼定的这条)`);
+    // 与 ui/skill-diagram 的取景同源:盒子的内框必须容得下那一条带的宽高比
+    const innerW = d.w - 2 * SKD.pad, innerH = d.h - 2 * SKD.pad;
+    const k = Math.min(innerW / (SKD.x1 - SKD.x0), innerH / (SKD.above + SKD.below));
+    const person = CFG.player.h * k;
+    ok(person >= 34, `盒内人物高 ${person.toFixed(0)}px >= 34(剪影+拍环读得出来的下限)`);
+  }
+  {
+    // 放大窗:竖排四格不撞、不出窗;每一步的文案放得进文案带;每帧笔画在预算内
+    const sbad = sdStackFits();
+    ok(sbad.length === 0, `放大窗竖排(顶行/画布/文案/底排)互不压${sbad.length ? ` → ${sbad.join(" / ")}` : ""}`);
+    ok(SD.canvasH >= 200 && SD.canvasW >= 380, `放大窗画布 ${SD.canvasW}×${SD.canvasH} 够大(点开放大就是为了看清)`);
+    let worstCap = 0, worstStrokes = 0;
+    for (const def of LIST) {
+      const b = SkillDemo.bake(def.id as SkillId);
+      if (!b) { ok(false, `${def.shortName}:演示烘焙跑不通(面板会整格不画)`); continue; }
+      ok(b.steps.length === 4, `${def.shortName}:分步讲解四段`);
+      b.steps.forEach((s, i) => {
+        const lines = sdCaptionLines(i, s.name, s.text);
+        worstCap = Math.max(worstCap, lines.length);
+        ok(lines.length <= SD.capMaxLines,
+          `${def.shortName} 第 ${i + 1} 步文案 ${lines.length} 行 <= ${SD.capMaxLines}`);
+      });
+      for (let t = 0; t < b.loop; t++) {
+        const n = skillDiagramStrokeCount(def.id as SkillId, t, SK.demoW, SK.demoH);
+        worstStrokes = Math.max(worstStrokes, n);
+      }
+    }
+    ok(worstCap <= SD.capMaxLines, `最挤的一条文案 ${worstCap} 行(带子按 ${SD.capMaxLines} 行留的高)`);
+    ok(worstStrokes <= SKD.strokeBudget, `演示盒最重一帧 ${worstStrokes} 笔 <= 预算 ${SKD.strokeBudget}`);
   }
   // 状态四态文案钉住(双技能槽):改的人只可能改 skill-layout
   ok(skillStatus(LIST[4], false, 0) === "未解锁 · Lv.5", `锁定态文案 =「${skillStatus(LIST[4], false, 0)}」`);
@@ -229,7 +279,41 @@ console.log("技能配置弹窗:面板竖排不撞、详情板不出列不压字
   ok(CFG.aiSkillByDiff.easy === CFG.aiSkillByDiff.normal, "入门/标准 AI 同技能档(ai-check 的基线口径没被动过)");
 }
 
-// ---------- F) selftest:反例必须被报警 ----------
+// ---------- F) 烘焙不许碰实机状态 ----------
+/** 此刻全局对局状态的读数:状态 / 比分 / 球员数 / 待播事件 */
+const liveRead = (): string[] => [
+  Rules.R.state, Rules.R.scores.join(":"), String(Rules.R.players.length), String(Rules.R.events.length),
+];
+
+/**
+ * 跑一遍 run(应当是"烘一次演示"),对比它前后的实机读数 —— 空数组 = 没碰。
+ * G 段与 selftest (j) 共用这一把尺子:selftest 拿"旧的直接跑法"喂它,必须非空。
+ */
+function bakeIsolationProbe(run: () => void): string[] {
+  Rules.newMatch("1p", "hard");
+  Rules.R.state = "RALLY";
+  Rules.R.scores = [7, 5];
+  Rules.R.events.length = 0;
+  const before = liveRead().join(" | ");
+  run();
+  const after = liveRead().join(" | ");
+  return before === after ? [] : [`烘焙前「${before}」→ 后「${after}」`];
+}
+
+{
+  // 演示烘焙要真跑 `newMatch` + 几百次 `step`(否则教的是另一套参数)。跑在全局 R 上
+  // 就是把玩家眼前那一局整块换掉:state 从 MENU 变成 POINT,而界面层靠轮询 `R.state` 换屏
+  // —— 现场症状即「点一下技能卡片,游戏突然自己开打了」(2026-10-07)。
+  // 所以烘焙走 Rules.isolated():换一块一次性状态跑,跑完原样换回。
+  const bad = bakeIsolationProbe(() => {
+    SkillDemo.invalidate();                     // 必须验真烘,不能吃 memo
+    for (const def of LIST) SkillDemo.bake(def.id as SkillId);
+  });
+  ok(bad.length === 0, `七款全烘一遍,实机那局原封不动(state/比分/球员/事件队列)${bad.length ? ` → ${bad[0]}` : ""}`);
+  ok(LIST.every((d) => !!SkillDemo.bake(d.id as SkillId)), "隔离后七款演示仍然烘得出来(不是靠不跑蒙过去的)");
+}
+
+// ---------- G) selftest:反例必须被报警 ----------
 if (process.argv.includes("--selftest")) {
   console.log("\nselftest:拿人造反例验判据有没有牙齿");
   const base = layoutSkillPlate(LIST[0], true, 1);
@@ -259,8 +343,8 @@ if (process.argv.includes("--selftest")) {
   const hb = plateOverlaps(handpicked);
   ok(hb.some((s) => s.includes("cd × status")), `手挑的 CD@256 / Lv@292 被报压字(${hb[0] ?? "无"})`);
 
-  // (c) 超长文案:说明把详情板撑爆
-  const bloatedDef: SkillLike = { ...LIST[0], desc: "快速滑步".repeat(20) };
+  // (c) 超长文案:说明把详情板撑爆(演示盒版把板加高到 162,反例的长度要跟着加够)
+  const bloatedDef: SkillLike = { ...LIST[0], desc: "快速滑步".repeat(60) };
   const BL = layoutSkillPlate(bloatedDef, true, 0);
   const of = plateOverflow(BL);
   ok(of.some((s) => s.startsWith("stackH")), `60 字说明把需求板高顶到 ${BL.stackH.toFixed(1)},红线 ${SK.plateH} 拦得住`);
@@ -304,6 +388,28 @@ if (process.argv.includes("--selftest")) {
   const dupTier = { ...CFG.skills.rage, tierAt: [0, 0, 0, 0] };
   ok(!dupTier.tierAt.every((v, i) => i === 0 || v > dupTier.tierAt[i - 1]), "四档下界全写成 0 会被递增判据抓到");
   ok(Skills.rageTierOf(1) === 3 && Skills.rageTierOf(0.5) === 1, "现档位:满怒 3 档、半怒 1 档(分得开)");
+
+  // (i) 演示盒把详情板顶高、或放大窗的文案带被压扁:两处都是"改一处忘改另一处"的静默翻车
+  const tallPlate = { ...SK, plateH: SK.plateH - 60 };
+  ok(panelStackFits(SK.panelH).length === 0, "现竖排在现板高下干净(下面两条反例的对照组)");
+  ok(sdStackFits(SD.panelH - 60).length > 0, "放大窗矮 60 就报相撞/越界(文案带与底排先挤)",);
+  ok(sdStackFits().length === 0, "现放大窗尺寸在同一把尺子下干净");
+  const longCap = sdCaptionLines(0, "什么时候按", "快速滑步".repeat(24));
+  ok(longCap.length > SD.capMaxLines, `60 字文案折 ${longCap.length} 行 > 上限 ${SD.capMaxLines}(排版判据抓得住)`);
+  ok(tallPlate.plateH < SK.plateH, "(反例)板高被砍 60 时演示盒就探出板:demoBox 判据抓得住");
+  ok(demoBox().h / 2 <= SK.plateH / 2, `现演示盒高 ${demoBox().h} 仍在详情板 ${SK.plateH} 之内`);
+
+  // (j) 烘焙的旧跑法:直接在全局 R 上 newMatch + step。不崩、不报错,只是玩家那一局被
+  //     整块换掉,而界面下一帧读到 state≠MENU 就"自己开局"。同一把尺子必须抓到它。
+  const noInp = () => ({ left: false, right: false, jumpPressed: false, jumpHeld: false, swingAim: null, lungePressed: false });
+  const leaky = bakeIsolationProbe(() => {
+    Rules.newMatch("1p", "normal");
+    Rules.R.state = "RALLY";
+    for (let f = 0; f < 3; f++) Rules.step([noInp(), noInp()]);
+  });
+  ok(leaky.length > 0, `旧写法(烘焙跑在全局 R 上)被同一把尺子抓到(${leaky[0] ?? "无"})`);
+  ok(bakeIsolationProbe(() => { SkillDemo.invalidate(); SkillDemo.bake("flash"); }).length === 0,
+    "现写法(走 Rules.isolated)在同一把尺子下干净");
 }
 
 // ---------- E) --preview:把排版打成行表,不开编辑器也能 eyeball ----------

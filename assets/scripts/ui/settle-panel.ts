@@ -4,6 +4,10 @@
 // 训练模式吃 settleDrill + Drill.result,同屏复用一套布局。
 // 经验条:从结算前快照滚到结算后档位,跨级时分段填充并逐级闪「Lv.X」;
 // 满级静态显示 MAX(经济曲线只有一份,动画只负责演)。
+//
+// ⚠ 竖排坐标一律问 ui/settle-layout.ts 要(块高由内容算、块间距由剩余空间摊派),
+//   这里不许再出现写死的 y —— 0.0.35 之前那套常量把比分压在大标语红衬底背后、
+//   把关卡目标那三行切掉半截(用户 2026-10-06 现场图),闸门 settle-layout-check 钉住。
 // ============================================================
 import { BlockInputEvents, Button, Color, Graphics, Label, Node, Tween, tween, UIOpacity, UITransform, Vec2, Vec3, view, Widget } from "cc";
 import { CFG } from "../core/config";
@@ -20,6 +24,10 @@ import {
   progressDL, retainedDraw, riseIn, ROLE, SLANT, slantPath, skewOf, slashIn, textW,
 } from "./ui-arcade";
 import { clearKids } from "./ui-shell";
+import {
+  SETTLE, actionWidths, actionXs, condRow, newsH, settleLayout, stageY,
+  type SettleLayout,
+} from "./settle-layout";
 
 /** 荣誉称号(老 ui.js evaluateTitle 的返回,文案已换 BMP 安全符号) */
 export interface SettleBadge { title: string; color: string }
@@ -57,17 +65,18 @@ export interface SettlePayload {
 interface ExpSeg { lv: number; from: number; to: number; need: number }
 interface ExpAnim { segs: ExpSeg[]; total: number; elapsed: number; done: boolean; shownSeg: number }
 
-/** 一颗行动钮:文案 + 字号 + 是否主钮 + 点下去干什么(宽度由文案量出来) */
+/** 一颗行动钮:文案 + 字号 + 是否主钮 + 点下去干什么(宽度由 settle-layout 量出来) */
 interface Act { text: string; size: number; primary?: boolean; run: () => void }
 
-const BAR_W = 320;
 const DUR = 1.25; // 经验条整体滚动时长(s),段数多时按比例加快由 tick 内兜底
 
-/** 卡片尺寸:统计六格 + 奖励区 + 双按钮都塞得下,四周又还留得住球场(老 .panel.result) */
-const CW = 560, CH = 490;
-const CELL_W = 168, CELL_H = 48, CELL_GAP = 8;
-/** 战报两行的纵坐标(卡片中心为原点) */
-const STAT_Y = 76;
+// 版式常量全数从 ui/settle-layout.ts 取别名 —— 面板里不留第二个"真值",
+// 排版算术与闸门读的是同一份,改一处不会只改到一半。
+const CW = SETTLE.cardW, CH = SETTLE.cardH;
+const CELL_W = SETTLE.cellW, CELL_H = SETTLE.cellH, CELL_GAP = SETTLE.cellGap;
+const BAR_W = SETTLE.barW;
+/** 卡片在 root 里的 y:标语舞台在 cine 层,两边靠这一个数对齐 */
+const CARD_Y = SETTLE.cardY;
 
 const stars = (n: number): string => "★".repeat(n) + "☆".repeat(Math.max(0, 3 - n));
 
@@ -96,6 +105,8 @@ export class SettlePanel {
   private objRow!: Node;
   /** 底部行动钮容器(整排随场景重建,见 buildActions) */
   private actionRow!: Node;
+  /** 这一屏的竖排结果:show() 开头按在场块算出来,之后所有摆位只读它 */
+  private L!: SettleLayout;
   private anim: ExpAnim | null = null;
   private payload: SettlePayload | null = null;
   private cMax = new Color();
@@ -161,12 +172,12 @@ export class SettlePanel {
       r: 18, alpha: 0.94, bandHex: ROLE.primary.face,
     });
     this.card = card.node;
-    this.card.setPosition(0, 2, 0);
+    this.card.setPosition(0, CARD_Y, 0);
     this.cardOp = this.card.addComponent(UIOpacity);
 
     // ---------- 谢幕演出层(压在卡片之上, Widget 撑满):斜带扫场 + 标语舞台 ----------
-    // 大字先于卡片砸落/沉落,所以标语从卡片里搬出来,钉在同一坐标
-    // (卡片在 (0,2)、标语原卡内 (0,198) → 舞台 (0,200),逐像素不动)。
+    // 大字先于卡片砸落/沉落,所以标语从卡片里搬出来,坐标由 settle-layout 的 verdict
+    // 那一格经 cardY 折回 root(stageY)—— 舞台与卡片内容永远同一份排版说了算。
     // 演出期 BlockInputEvents 吞触摸:留白段不许误触卡片下还没显形的按钮,
     // 卡片入场即关 —— 按钮要能点。点按跳过也挂在这层(ui-hide-check:有 on 必有 off)。
     this.cine = new Node("settle-cine");
@@ -200,11 +211,11 @@ export class SettlePanel {
       this.bands.push(b);
     }
 
-    // 标语舞台:斜切衬底(胜=斩劈红 / 败=冷墨)+ 大字
+    // 标语舞台:斜切衬底(胜=斩劈红 / 败=冷墨)+ 大字。y 由 show() 里 place() 摆到
+    // stageY(L) —— 衬底与卡片内容同一份排版,不再各钉一个常量。
     const stage = new Node("verdict-stage");
     stage.layer = this.cine.layer;
     stage.addComponent(UITransform);
-    stage.setPosition(0, 200, 0);
     stage.setParent(this.cine);
     this.stage = stage;
 
@@ -213,15 +224,15 @@ export class SettlePanel {
     verdictBg.layer = stage.layer;
     verdictBg.addComponent(UITransform);
     const vbg = verdictBg.addComponent(Graphics);
-    const vsk = skewOf(88, 9);
+    const vsk = skewOf(SETTLE.bandH, 9);
     retainedDraw(vbg, () => {
-      drawSlantShadow(vbg, 470, 88, vsk, 7, 7, 0.55);
+      drawSlantShadow(vbg, SETTLE.bandW, SETTLE.bandH, vsk, SETTLE.bandShadow, SETTLE.bandShadow, 0.55);
       vbg.fillColor = col(ARCADE.slash, 0.96);
-      slantPath(vbg, 470, 88, vsk);
+      slantPath(vbg, SETTLE.bandW, SETTLE.bandH, vsk);
       vbg.fill();
       vbg.strokeColor = col("#ff6b72", 0.5);
       vbg.lineWidth = 1.5;
-      slantPath(vbg, 470, 88, vsk);
+      slantPath(vbg, SETTLE.bandW, SETTLE.bandH, vsk);
       vbg.stroke();
     });
     verdictBg.setPosition(0, 0, 0);
@@ -236,13 +247,13 @@ export class SettlePanel {
     verdictBgLose.addComponent(UITransform);
     const vbl = verdictBgLose.addComponent(Graphics);
     retainedDraw(vbl, () => {
-      drawSlantShadow(vbl, 470, 88, vsk, 7, 7, 0.55);
+      drawSlantShadow(vbl, SETTLE.bandW, SETTLE.bandH, vsk, SETTLE.bandShadow, SETTLE.bandShadow, 0.55);
       vbl.fillColor = col(ARCADE.ink, 0.78);
-      slantPath(vbl, 470, 88, vsk);
+      slantPath(vbl, SETTLE.bandW, SETTLE.bandH, vsk);
       vbl.fill();
       vbl.strokeColor = col(SC.loseVeilHex, 0.9);
       vbl.lineWidth = 1.5;
-      slantPath(vbl, 470, 88, vsk);
+      slantPath(vbl, SETTLE.bandW, SETTLE.bandH, vsk);
       vbl.stroke();
     });
     verdictBgLose.setPosition(0, 0, 0);
@@ -252,7 +263,7 @@ export class SettlePanel {
     this.verdictBgLoseOp = verdictBgLose.addComponent(UIOpacity);
     this.verdictBgLoseOp.opacity = 0;
 
-    this.verdict = kit.label(stage, "", 42, P.text, { outline: P.ink, outlineW: 2, disp: true });
+    this.verdict = kit.label(stage, "", SETTLE.verdictSize, P.text, { outline: P.ink, outlineW: 2, disp: true });
     this.verdict.node.setPosition(0, 0, 0);
     this.verdict.node.angle = 2;
     this.verdictOp = this.verdict.node.addComponent(UIOpacity);
@@ -260,24 +271,21 @@ export class SettlePanel {
     this.verdict.enableShadow = true;
     this.verdict.shadowColor = new Color(0, 0, 0, 140);
     this.verdict.shadowOffset = new Vec2(0, -5);
-    // 比分(比赛)与关卡名(训练)共用同一个位置,同屏只亮一个
-    this.sub = kit.label(this.card, "", 15, P.text);
-    this.sub.node.setPosition(0, 158, 0);
-    this.score = kit.label(this.card, "", 34, P.text, { disp: true });
-    this.score.node.setPosition(0, 158, 0);
+    // 比分(比赛)与关卡名(训练)共用头部那一格,同屏只亮一个 —— y 全在 place() 里给
+    this.sub = kit.label(this.card, "", SETTLE.subSize, P.text);
+    this.score = kit.label(this.card, "", SETTLE.scoreSize, P.text, { disp: true });
     this.score.node.angle = 7;   // 老 .final 的斜切数字
     this.score.enableShadow = true;
     this.score.shadowColor = new Color(0, 0, 0, 128);
     this.score.shadowOffset = new Vec2(0, -3);
 
-    // 荣誉称号胶囊(老 .match-badge:比分下方的圆角小条,颜色随战绩变化)
+    // 荣誉称号胶囊(老 .match-badge:比分下方的小条,颜色随战绩变化)
     const badgeWrap = new Node("badge-pill");
     badgeWrap.layer = this.card.layer;
-    badgeWrap.addComponent(UITransform).setContentSize(CW - 60, 26);
+    badgeWrap.addComponent(UITransform).setContentSize(CW - 60, SETTLE.badgeH);
     badgeWrap.setParent(this.card);
-    badgeWrap.setPosition(0, 124, 0);
     this.badgeBg = badgeWrap.addComponent(Graphics);
-    this.titleBadge = kit.label(badgeWrap, "", 13, P.accent, { outline: P.ink, outlineW: 1 });
+    this.titleBadge = kit.label(badgeWrap, "", SETTLE.badgeSize, P.accent, { outline: P.ink, outlineW: 1 });
 
     // 六格战报(老 .stats:grid-template-columns:repeat(3,1fr))
     this.statLayer = new Node("stats");
@@ -285,22 +293,18 @@ export class SettlePanel {
     this.statLayer.addComponent(UITransform);
     this.statLayer.setParent(this.card);
 
-    // ---------- 奖励:一行大数 + 一行明细 ----------
-    this.coinLine = kit.label(this.card, "", 17, P.accent);
-    this.coinLine.node.setPosition(0, -34, 0);
-    this.bonusLine = kit.label(this.card, "", 12, P.dim);
-    this.bonusLine.node.setPosition(0, -56, 0);
+    // ---------- 奖励:一行大数 + 一行明细 + 一条经验槽 ----------
+    this.coinLine = kit.label(this.card, "", SETTLE.coinSize, P.accent);
+    this.bonusLine = kit.label(this.card, "", SETTLE.bonusSize, P.dim);
 
     // 经验条:Lv 左标 + 底槽 + 填充(填充逐帧重绘)。底槽 = 凹陷槽,与滑杆轨道同件
-    this.lvLabel = kit.label(this.card, "", 14, P.text);
-    this.lvLabel.node.setPosition(-CW / 2 + 44, -82, 0);
+    this.lvLabel = kit.label(this.card, "", SETTLE.lvSize, P.text);
     this.barWrap = new Node("exp-bar");
     this.barWrap.layer = this.card.layer;
-    this.barWrap.setPosition(24, -82, 0);
     this.barBg = this.barWrap.addComponent(Graphics);
     // 2p 友谊赛不发奖励时整条会 active=false,再显示就得重画(原生侧 onDisable 清渲染数据)
     retainedDraw(this.barBg, () => {
-      paintP5(this.barBg, progressDL(BAR_W, 14, 0, P.accent).track);
+      paintP5(this.barBg, progressDL(BAR_W, SETTLE.barH, 0, P.accent).track);
     });
     const fillN = new Node("fill");
     fillN.layer = this.card.layer;
@@ -309,20 +313,19 @@ export class SettlePanel {
     this.barFill = fillN.addComponent(Graphics);
     this.barWrap.setParent(this.card);
 
-    // 升级 / 商店上新:合到一行两格高,免得某一帧突然把按钮顶下去
-    this.newsLine = kit.label(this.card, "", 14, P.accent, { outline: P.ink, outlineW: 1 });
-    this.newsLine.node.setPosition(0, -118, 0);
-    this.newsLine.node.getComponent(UITransform)!.setContentSize(CW - 60, 44);
+    // 升级 / 商店上新:高度按**实际行数**由 place() 给(旧写法恒占两格 = 没事时也白占
+    // 44px,把下面的目标行和按钮一起挤到重叠区里)
+    this.newsLine = kit.label(this.card, "", SETTLE.newsSize, P.accent, { outline: P.ink, outlineW: 1 });
     this.newsLine.overflow = Label.Overflow.SHRINK;
-    this.newsLine.lineHeight = 20;
+    this.newsLine.lineHeight = SETTLE.newsLineH;
 
     // ---------- 关卡目标逐条结果(只在闯关亮;输赢都排) ----------
-    // 三条横排在奖励新闻行与行动钮之间那条 24px 的空带上:每条「★N 净胜 1/2」,
-    // 达成=荧光黄、未达=纸白压暗 —— 一眼看得出"差的是哪一条、差多少"。
+    // 三条横排在奖励区与行动钮之间:每条「★N 净胜 1/2」,达成=荧光黄、未达=纸白压暗
+    // —— 一眼看得出"差的是哪一条、差多少"。它和行动钮**必须各占一格**,旧写法把这两格
+    // 钉在 -150 / -152 上,于是三条 ★ 被按钮切掉半截(用户 2026-10-06 现场)。
     this.objRow = new Node("obj-row");
     this.objRow.layer = this.card.layer;
-    this.objRow.addComponent(UITransform).setContentSize(CW - 40, 16);
-    this.objRow.setPosition(0, -150, 0);
+    this.objRow.addComponent(UITransform).setContentSize(CW - SETTLE.objPadX, SETTLE.objH);
     this.objRow.setParent(this.card);
     this.objRow.active = false;
 
@@ -331,19 +334,20 @@ export class SettlePanel {
     // 原生(JSB)侧 onDisable 会清掉渲染数据、重显不重传 → 藏过的那颗会变成只剩字的透明钮
     // (见 ui-arcade.retainedDraw)。结算一屏建一次整排,几个节点的代价,
     // 换「任何一套按钮组合都不会隐身」,而且按钮个数/文案本来就要随模式变。
+    // 容器恒在原点:钮与小字直接按卡片坐标摆,少一层"容器 y + 相对 y"的换算 ——
+    // 旧写法那个 `caption ? 12 : 0` 的上抬就是藏在这一层里把目标行切掉的。
     this.actionRow = new Node("actions");
     this.actionRow.layer = this.card.layer;
     this.actionRow.addComponent(UITransform).setContentSize(CW, 60);
-    this.actionRow.setPosition(0, -190, 0);
     this.actionRow.setParent(this.card);
   }
 
   /**
    * 底部行动钮:闯关通关时「下一关」顶到最左当主钮;全 20 关通完自动退回「返回主菜单」。
-   * 宽度按实测文案量、超宽再等比缩回卡片内 —— 三颗钮的文案长短差得很多(第 1 关 vs 第 20 关)。
+   * 只出「这一屏有哪几颗钮 + 下面那行小字」,摆位交给 buildActionRow —— 因为
+   * 「有没有小字」要先进排版(它决定行动钮那一块多高),不能等到摆的时候才知道。
    */
-  private buildActions(p: SettlePayload): void {
-    clearKids(this.actionRow);
+  private planActions(p: SettlePayload): { acts: Act[]; caption: string } {
     const camp = p.campaign;
 
     const toMenu = (primary = false): Act => ({
@@ -354,13 +358,13 @@ export class SettlePanel {
       text, size: 18, primary: true,
       run: () => { this.kit.sfx.play("ui"); this.hide(); this.kit.restartCurrent(); },
     });
-
-    const acts: Act[] = [];
-    let caption = "";
     const replay = (size: number): Act => ({
       text: "重打本关", size,
       run: () => { this.kit.sfx.play("ui"); this.hide(); this.kit.restartCurrent(); },
     });
+
+    const acts: Act[] = [];
+    let caption = "";
     if (camp && p.won && camp.next) {
       const next = camp.next;
       acts.push({
@@ -387,32 +391,31 @@ export class SettlePanel {
       acts.push(retry("再来一局"));
       acts.push(toMenu());
     }
+    return { acts, caption };
+  }
 
-    const GAP = 14;
-    // 宽度按实测文案走:20 关的关卡名长短不一,写死会把长文案挤出按钮底块
-    const laid = acts.map((a) => ({
-      a, w: Math.min(300, Math.max(acts.length >= 3 ? 128 : 240, Math.round(textW(a.text, a.size) + 46))),
-    }));
-    let total = laid.reduce((s, x) => s + x.w, 0) + GAP * (laid.length - 1);
-    if (total > CW - 32) {
-      // 兜底:文案再长也挤回卡片内(缩到下限 112 时三颗仍远宽于 528)
-      const k = (CW - 32 - GAP * (laid.length - 1)) / laid.reduce((s, x) => s + x.w, 0);
-      for (const x of laid) x.w = Math.max(112, Math.floor(x.w * k));
-      total = laid.reduce((s, x) => s + x.w, 0) + GAP * (laid.length - 1);
-    }
-    let x = -total / 2;
-    for (const { a, w } of laid) {
-      const n = this.kit.button(this.actionRow, a.text, w, 52, { style: a.primary ? "primary" : "ghost", size: a.size });
-      n.setPosition(x + w / 2, caption ? 12 : 0, 0);
+  /**
+   * 把排好的那一排建出来。宽度算术在 settle-layout.actionWidths(20 关的关名长短不一,
+   * 写死会把长文案挤出按钮底块,闸门逐关量过);y 一律读这一屏的排版结果 ——
+   * 旧写法在这里按「有没有小字」把整排上抬 12,那一抬就把关卡目标行切掉了半截。
+   */
+  private buildActionRow(acts: Act[], caption: string): void {
+    clearKids(this.actionRow);
+    const w = actionWidths(acts);
+    const xs = actionXs(w);
+    for (let i = 0; i < acts.length; i++) {
+      const a = acts[i];
+      const n = this.kit.button(this.actionRow, a.text, w[i], SETTLE.btnH, { style: a.primary ? "primary" : "ghost", size: a.size });
+      n.setPosition(xs[i], this.L.y.buttons, 0);
       n.on(Button.EventType.CLICK, () => a.run());
-      x += w + GAP;
     }
     if (caption) {
-      this.kit.label(this.actionRow, caption, 12, this.kit.pal.dim).node.setPosition(0, -28, 0);
+      this.kit.label(this.actionRow, caption, SETTLE.captionSize, this.kit.pal.dim)
+        .node.setPosition(0, this.L.y.caption, 0);
     }
   }
 
-  /** 战报六格:格数固定 6,节点复用,只换文案与颜色 */
+  /** 战报六格:格数固定 6,节点复用,只换文案与颜色;两行的 y 从这一屏的排版读 */
   private renderStats(rows: SettleStat[]): void {
     const P = this.kit.pal;
     // 打击橙走 ROLE.power(与商店履历格「扣杀终结」同一支笔);旧写法这里又抄一遍 #ff6a1f
@@ -434,8 +437,8 @@ export class SettlePanel {
       const r = rows[i];
       cell.active = !!r;
       if (!r) continue;
-      const col2 = i % 3, row = Math.floor(i / 3);
-      cell.setPosition((col2 - 1) * (CELL_W + CELL_GAP), STAT_Y - row * (CELL_H + CELL_GAP), 0);
+      const col2 = i % SETTLE.statCols, row = Math.floor(i / SETTLE.statCols);
+      cell.setPosition((col2 - 1) * (CELL_W + CELL_GAP), this.L.y[`stat${row}`], 0);
       const big = cell.children[0].getComponent(Label)!;
       const cap = cell.children[1].getComponent(Label)!;
       big.string = r.v;
@@ -444,53 +447,49 @@ export class SettlePanel {
     }
   }
 
-  /** 荣誉胶囊:底块宽度跟着字数走(老 .match-badge 的 fit-content);测宽走全站唯一尺 */
   /**
    * 关卡目标逐条:三条横排「★1 净胜 1/2」,达成提荧光黄、未达压暗。
    * **输赢都排** —— 打输了玩家最需要知道的就是"差哪一条、差多少",
    * 而从前这里只有 "DEFEAT" 两个字母(判星整块只在获胜分支里跑)。
    * 这行只有 Label 没有 Graphics 底块,所以整行 active 切换是安全的
    * (原生侧 onDisable 清的是 Graphics 的渲染数据,文字标签重上时是完整的)。
+   * 横排宽度走 settle-layout.condRow(与闸门同一把尺):三条文案是 core/campaign-hud
+   * 现算的,长句会把整行推出卡片 —— 旧写法一点防护都没有。
    */
   private renderConds(p: SettlePayload): void {
     const conds = p.conds ?? [];
     this.objRow.active = conds.length > 0;
     if (!conds.length) return;
     const P = this.kit.pal;
-    const GAP = 14;
-    const laid = conds.map((c, i) => {
-      const text = `★${i + 1} ${c.detail}`;
-      return { text, ok: c.ok, w: textW(text, 12) + 2 };
-    });
-    const total = laid.reduce((s, x) => s + x.w, 0) + GAP * (laid.length - 1);
-    let x = -total / 2;
-    for (let i = 0; i < laid.length; i++) {
+    const texts = conds.map((c, i) => `★${i + 1} ${c.detail}`);
+    const row = condRow(texts);
+    for (let i = 0; i < texts.length; i++) {
       let n = this.objRow.children[i];
       if (!n) {
         n = new Node(`cond-${i}`);
         n.layer = this.card.layer;
         n.addComponent(UITransform);
-        this.kit.label(n, "", 12, P.text);
+        this.kit.label(n, "", SETTLE.objSize, P.text);
         n.setParent(this.objRow);
       }
       n.active = true;
       const l = n.children[0].getComponent(Label)!;
-      l.string = laid[i].text;
-      l.color = col(laid[i].ok ? P.accent : P.dim);
-      n.setPosition(x + laid[i].w / 2, 0, 0);
-      x += laid[i].w + GAP;
+      l.string = texts[i];
+      l.color = col(conds[i].ok ? P.accent : P.dim);
+      n.setPosition(row.x[i], 0, 0);
     }
-    for (let i = laid.length; i < this.objRow.children.length; i++) this.objRow.children[i].active = false;
+    for (let i = texts.length; i < this.objRow.children.length; i++) this.objRow.children[i].active = false;
   }
 
+  /** 荣誉胶囊:底块宽度跟着字数走(老 .match-badge 的 fit-content);测宽走全站唯一尺 */
   private renderBadge(b: SettleBadge | null): void {
     this.badgeBg.node.active = !!b;
     if (!b) return;
-    const w = Math.min(CW - 60, textW(b.title, 13) + 34);
+    const w = Math.min(CW - 60, textW(b.title, SETTLE.badgeSize) + 34);
     const g = this.badgeBg;
     g.clear();
     // 荣誉称号 = 斜切色带印章(与闯关大厅状态胶囊同件),不再画圆角胶囊
-    drawSectionBand(g, w, 26, b.color);
+    drawSectionBand(g, w, SETTLE.badgeH, b.color);
     this.titleBadge.string = b.title;
     // 面从半透明描边换成了实底徽章色,字色按面色亮度重算,不然白字印黄底读不出
     this.titleBadge.color = col(inkFor(b.color));
@@ -514,19 +513,57 @@ export class SettlePanel {
     this.sub.node.active = !match;
     this.score.string = `${p.scores[0]} : ${p.scores[1]}`;
     this.sub.string = p.drill ? `${p.drill.def ? p.drill.def.label : ""} ${stars(p.drill.stars)}` : "";
+
+    // ---------- 排版:先问"这一屏有哪几块在场",再算竖排 ----------
+    // 「有没有下一关小字」「升级/上新几行」必须**先**定下来 —— 它们改变块高,进而改变
+    // 每一格的 y。旧写法反过来:坐标是常量,块在不在场谁也不问,于是有块没块都会撞。
+    const plan = this.planActions(p);
+    const news = this.rewardNews(p);
+    this.L = settleLayout({
+      match,
+      badge: match && !!p.badge,
+      rewards: !!p.res,
+      newsLines: news.length,
+      conds: (p.conds ?? []).length,
+      caption: !!plan.caption,
+    });
+    this.place(match, news.length);
+
     // 行动钮:比赛「再来一局」、训练「再练一次」、闯关通关「下一关 ▶ …」(老 btnAgain)
-    this.buildActions(p);
+    this.buildActionRow(plan.acts, plan.caption);
     // 荣誉称号:比赛模式才显示(老 .matchBadge)
     this.renderBadge(match ? p.badge : null);
     this.renderStats(p.stats);
     this.renderConds(p);
 
-    this.fillRewards(p);
+    this.fillRewards(p, news);
     this.anim = this.buildExpAnim(p);
     this.renderBar(true);
 
     // ---------- 入场:谢幕演出(胜负两条路径;训练保持旧快速入场) ----------
     this.playCine(buildCine(won, match));
+  }
+
+  /** 把这一屏的每一格摆到排版算出来的位置上 —— 全文件唯一的 y 出口 */
+  private place(match: boolean, newsLines: number): void {
+    const L = this.L;
+    // 标语衬底画在 cine 层(压在卡片之上),所以经 cardY 折回 root 坐标
+    this.stage.setPosition(0, stageY(L), 0);
+    const headY = match ? L.y.score : L.y.sub;
+    this.score.node.setPosition(0, headY, 0);
+    this.sub.node.setPosition(0, headY, 0);
+    this.badgeBg.node.setPosition(0, L.y.badge, 0);
+    this.coinLine.node.setPosition(0, L.y.coin, 0);
+    this.bonusLine.node.setPosition(0, L.y.bonus, 0);
+    this.lvLabel.node.setPosition(SETTLE.lvX, L.y.bar, 0);
+    this.barWrap.setPosition(SETTLE.barX, L.y.bar, 0);
+    this.newsLine.node.setPosition(0, L.y.news, 0);
+    // 盒高 = 实际行数:没新闻时这一格不再像旧写法那样恒占两行(44px)把下面顶出重叠区。
+    // 下限留一行高 —— SHRINK 型 Label 拿到 0 高的 contentSize 是自找的坑,而空串本来就
+    // 画不出任何东西,多留的行高不会跟谁重叠。
+    this.newsLine.node.getComponent(UITransform)!
+      .setContentSize(CW - 60, Math.max(SETTLE.newsLineH, newsH(newsLines)));
+    this.objRow.setPosition(0, L.y.obj, 0);
   }
 
   hide(): void {
@@ -552,7 +589,7 @@ export class SettlePanel {
     const card = this.card;
     const op = this.cardOp;
     Tween.stopAllByTarget(card);
-    card.setPosition(0, 2, 0);
+    card.setPosition(0, CARD_Y, 0);
     card.setScale(1, 1, 1);
     // 卡片本体在留白段必须隐身:上一局正常收场时 opacity 是 255,不复位就会
     // 整张卡提前明晃晃地压在球场上,等 beatWin 才"入场"
@@ -668,7 +705,8 @@ export class SettlePanel {
       tween(this.verdictOp).to(0.12, { opacity: 255 }).start();
       tween(v).delay(0.02).to(plan.verdict.dur, { scale: new Vec3(1, 1, 1) }, { easing: "backOut" }).start();
       slashIn(this.verdictBg, 0, -46, -5, 0.3);
-      burstOnce(this.cine, CFG.fx.settleCine.bandsColors[0], plan.burst?.r ?? 130, plan.burst?.points ?? 12, 0, 200, true);
+      // 星芒爆在衬底中心(从前钉死 (0,200) —— 衬底一跟着排版走就会爆在半空)
+      burstOnce(this.cine, CFG.fx.settleCine.bandsColors[0], plan.burst?.r ?? 130, plan.burst?.points ?? 12, 0, stageY(this.L), true);
       tween(this.stage).delay(0.22).call(() => {
         if (this.cinePhase === "card") this.shakeCard(plan.card.shakeAmp, plan.card.shakeDur);
       }).start();
@@ -792,7 +830,26 @@ export class SettlePanel {
 
   // ---------- 内部 ----------
 
-  private fillRewards(p: SettlePayload): void {
+  /**
+   * 升级 / 商店上新那两行(排版要先知道有几行,所以从 fillRewards 里拆出来)。
+   * 封顶两行:第三条要出现就该改排版结构,不是继续把缝压薄。
+   */
+  private rewardNews(p: SettlePayload): string[] {
+    const res = p.res;
+    if (!res) return [];
+    const news: string[] = [];
+    if (res.levelUps.length > 0) {
+      const coinSum = res.levelUps.reduce((s, lv) => s + Career.levelCoin(lv), 0);
+      news.push(res.levelUps.length > 1
+        ? `↑ 连升 ${res.levelUps.length} 级 → Lv.${res.levelUps[res.levelUps.length - 1]} · 奖励金币 +${coinSum}`
+        : `↑ 升级 Lv.${res.levelUps[0]} · 奖励金币 +${coinSum}`);
+    }
+    // unlocked 是 SkinDef[],直接 join 会排成 "[object Object]" —— 只取商店里那套名字
+    if (res.unlocked.length > 0) news.push(`新品上架:${res.unlocked.map((s) => s.name).join(" · ")}`);
+    return news.slice(0, SETTLE.newsMaxLines);
+  }
+
+  private fillRewards(p: SettlePayload, news: string[]): void {
     const res = p.res;
     if (!res) {
       // 理论上手机版不会走到这(2p 友谊赛不发奖励):只留标语和比分
@@ -816,16 +873,6 @@ export class SettlePanel {
     if (res.streakBonus > 0) parts.push(`连胜 ×${(1 + res.streakBonus).toFixed(2).replace(/0$/, "")}(${res.streak} 连胜)`);
     // 明细恒在:没经验时也照样把「基础/表现/连胜」摊开,不用另写一句"本次没有经验入账"
     this.bonusLine.string = parts.join(" · ");
-
-    const news: string[] = [];
-    if (res.levelUps.length > 0) {
-      const coinSum = res.levelUps.reduce((s, lv) => s + Career.levelCoin(lv), 0);
-      news.push(res.levelUps.length > 1
-        ? `↑ 连升 ${res.levelUps.length} 级 → Lv.${res.levelUps[res.levelUps.length - 1]} · 奖励金币 +${coinSum}`
-        : `↑ 升级 Lv.${res.levelUps[0]} · 奖励金币 +${coinSum}`);
-    }
-    // unlocked 是 SkinDef[],直接 join 会排成 "[object Object]" —— 只取商店里那套名字
-    if (res.unlocked.length > 0) news.push(`新品上架:${res.unlocked.map((s) => s.name).join(" · ")}`);
     this.newsLine.string = news.join("\n");
   }
 
@@ -889,7 +936,7 @@ export class SettlePanel {
     if (r <= 0.02) return;
     // 与旧胶囊同款:再空也露 14 宽的斜切头(progressDL 内部对过窄填充不画)
     const t = Math.max(r, 14 / BAR_W);
-    paintP5(g, progressDL(BAR_W, 14, t, this.kit.pal.accent).fill);
+    paintP5(g, progressDL(BAR_W, SETTLE.barH, t, this.kit.pal.accent).fill);
     // 亮头(老 .exp-bar i 的 linear-gradient 提亮):同斜率斜切条,贴着填充顶缘
     const w = Math.max(14, BAR_W * t);
     g.fillColor = col("#fff0a0", 0.9);

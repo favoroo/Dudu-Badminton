@@ -544,6 +544,13 @@ export interface Player {
   playerSkin?: SkinDef;
   /** 面部款式:未挂或字段缺失时渲染层兜回墨面款(经典黑脸) */
   faceSkin?: SkinDef;
+  /**
+   * 佩戴中的配饰(最多四件,每槽一件,顺序按 ACC_SLOTS)。与 playerSkin 同一条挂载路:
+   * career.applyToMatch() 只挂左队 0 号真人 —— 影分身强制无皮肤、CPU/P2 不挂,
+   * 所以配饰天然只出现在「你」身上,渲染层不用另设守卫。
+   * 每次装备变更都要换**新数组**(viewOf 按实体拷引用,原地改数组会跨实体串装)。
+   */
+  acc?: AccessoryDef[];
   hideTag?: boolean;
   groundY?: number;
   /** 闯关挑战模式:体力值 (0..100) 与体力枯竭标记 */
@@ -736,13 +743,25 @@ export interface SkinDef {
   headwear?: string;
   jersey?: string;
   aura?: string;
+  /** player 球袜/鞋色:全身最后两处没走皮肤数据的部件(缺省 = 原版奶白袜 + 深墨鞋)。
+   *  全黑款靠它才真的从头黑到脚 —— 与 skinTone(手臂/膝)分开的两根旋钮 */
+  sock?: string;
+  shoe?: string;
   /** player 人物默认脸面(faceStyle key);装备的脸面商品为 face-auto 时生效 */
   face?: string;
   /** player 体型档:config.bodies 的 key —— 髋高/躯干/头身比的整体微调
    *  (挥拍肩点 pivotY 是判定锁定位,体型档不碰它,只改下肢/躯干/头) */
   body?: "standard" | "compact" | "tall";
-  /** player 肤色:脸面为肤色系时作脸底、手臂/手共用;缺省走全局 SKIN */
+  /** player 肤色:手臂/手/膝盖/颈共用;缺省走全局 SKIN。
+   *  不上脸 —— 脸的底色只有 FACE_STYLES.base 一个出处(2026-10-07 与脸面解耦) */
   skinTone?: string;
+  /**
+   * 套装 → 单件(2026-10-06 拆件重构):一条 `SKINS.player` 记录现在**就是一个套装**,
+   * 这里声明它由哪些穿戴件组成。吃的就是上面那几根既有旋钮 —— 「这个人物长这样」与
+   * 「这套包含这些件」是同一句话的两面,抄两份迟早漂移。
+   * 脸面不进这张表:它走 `face` 那根既有引用(`career.linkedFace`),不另立第二把尺子。
+   */
+  parts?: Partial<Record<AccSlot, string>>;
   /** face 设计字段:脸面款式 key(config.faceStyles 注册表)。
    *  "auto" = 跟随人物默认脸(装备位默认款),其余 key 直接指定 */
   faceStyle?: string;
@@ -759,6 +778,100 @@ export interface SkinDef {
 }
 
 export type SkinKind = "player" | "racket" | "shuttle" | "face";
+
+// ---------- 穿戴槽(2026-10-06 角色皮肤拆件重构) ----------
+
+/**
+ * 落在 `Profile.acc` 里的槽位键。
+ *
+ * **`face`/`upper`/`hand` 三个既有键的含义与挂载点一字不动** —— 存档是活的,dev 的
+ * localStorage 就是作者真进度,改键名等于洗档。`lower` 由「下身」收窄为「鞋」
+ * (`acc-sneaker` 仍住在这里,老档 `acc.lower` 原样有效),另开 `sock` 承接原先长在
+ * 人物皮肤上的球袜色:今天「球鞋(替换鞋块)」与「袜色」是两条独立通道,合成一个槽
+ * 会让人穿上疾步球鞋就丢掉影分身的黑袜 —— 那是回退,不是简化。
+ */
+export type AccSlot =
+  | "face" | "upper" | "lower" | "hand"
+  | "tone" | "body" | "hair" | "head" | "jersey" | "sock" | "aura";
+
+/**
+ * 商店导航用的完整槽位。`faceStyle` 不落 `acc` 而是落 `equipped.face`(脸面有它自己的
+ * 族卡与 `face-auto` 解析链,搬进 acc 要动的东西比它省下的多)。
+ * 它**只**出现在槽位描述符表(config.COSMO_SLOTS)与顶栏导航里:脸面商品本身是
+ * `SKINS.face` 的一条 `SkinDef`,不是 `CosmeticDef`,所以商品侧的 `slot` 恒为 `AccSlot` ——
+ * 让 `Profile.acc` 在类型上就不可能被写进一个跨存储的键。
+ */
+export type CosmoSlot = AccSlot | "faceStyle";
+
+/**
+ * 槽内商品的两个类别 —— 判别轴是「自己画不画」,不是「能不能空」:
+ *  - `part` 本体件:不自带画法,只把旋钮写进 `career.look()` 合成出的那份 SkinDef;
+ *  - `wear` 挂件件:走 `render/acc.ts` 的 `ACC_STYLES`,style/main 必有。
+ * 每个槽都有一件 price 0 的底款代表「原版/不戴」,所以**没有空槽态** ——
+ * 「回到原版」是一张卡,不是一枚封条。
+ */
+export type CosmoKind = "part" | "wear";
+
+interface CosmoBase {
+  id: string;
+  /** 恒为 AccSlot:见 CosmoSlot 的注释 —— faceStyle 是导航位,不是商品槽 */
+  slot: AccSlot;
+  name: string;
+  price: number;
+  unlockLevel?: number;
+  rarity: Rarity;
+  /** 卡片卖点小字 */
+  desc: string;
+  kind: CosmoKind;
+}
+
+/** 挂件件(口罩/墨镜/围巾/球鞋/手套…):`style` 是 `render/acc.ts` 的 ACC_STYLES key */
+export interface CosmoWear extends CosmoBase {
+  kind: "wear";
+  style: string;
+  /** 主色(镜框/围巾/鞋面/手套的 body 色) */
+  main: string;
+  /** 暗部/描边色;缺省由渲染层从 main 压暗 */
+  dark?: string;
+  /** 点缀色(鞋底/镜片反光/围巾条纹);缺省走纸白 */
+  accent?: string;
+}
+
+/**
+ * 本体件(肤色/发型/上衣/袜…):每件只填**自己那个槽**用到的旋钮,其余留空。
+ * 这些字段的名字与 `SkinDef` 同源 —— `look()` 是逐键搬运,不做二次翻译,
+ * 所以「上衣这件长什么样」在 config 里一眼读得出,不用去渲染层反查。
+ */
+export interface CosmoPart extends CosmoBase {
+  kind: "part";
+  /** 肤色:手臂/手/膝盖/颈(不上脸,脸的底色在 FACE_STYLES 里) */
+  skinTone?: string;
+  /** 体型:config.bodies 的 key */
+  body?: "standard" | "compact" | "tall";
+  /** 发型(sprites.HAIRS key)与发色,成对卖 —— 样式自带配色,不做颜色×样式矩阵 */
+  hairStyle?: string;
+  hairColor?: string;
+  /** 头饰(sprites.HEADWEARS key) */
+  headwear?: string;
+  /** 上衣:torso 主色 / 袖与领暗色 / 纹样点缀色 / 纹样 key(sprites.OUTFITS)。
+   *  短裤色今天仍与袖子同源(th.dark),没有一款人物单独变过它,故不单开槽 */
+  main?: string;
+  dark?: string;
+  glow?: string;
+  jersey?: string;
+  /** 球袜色 / 鞋色。**底款一律留空** —— sprites.ts 的远近腿各自兜底
+   *  (#f2efe6 / #cdc9bd、#1b1f2e / #141824) 就是原版的双腿景深;填单值则两腿同色
+   *  (影分身的从头黑到脚靠的就是这条)。所以不需要 sockFar/shoeFar 第三根旋钮。 */
+  sock?: string;
+  shoe?: string;
+  /** 脚下光环(aura.AURA_COLORS key);留空 = 无光环 */
+  aura?: string;
+}
+
+export type CosmeticDef = CosmoWear | CosmoPart;
+
+/** 既有引用名保留为窄化别名:acc.ts 的绘制 hook 全吃 `style`/`main` 必填的形状 */
+export type AccessoryDef = CosmoWear;
 
 /** 主菜单条目 */
 export interface MenuEntry {

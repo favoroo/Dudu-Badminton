@@ -20,6 +20,9 @@ vibe_images/
 # Agent 变更日志(仅本地追踪,规范见 AGENTS.md「变更日志」)
 CHANGELOG.md
 
+# 根目录一次性调试脚本(不入库)
+/test_*.js
+
 # 系统文件
 .DS_Store
 

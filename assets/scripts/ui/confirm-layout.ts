@@ -83,6 +83,21 @@ export const CONFIRM_PAD_RESET: ConfirmSpec = {
   action: "重置",
 };
 
+/**
+ * 「双技能闸」那一句 —— 三处开赛口(对练 / 无限练习 / 闯关)共用一份。
+ * 口径:槽1 恒有技能(career.equipSkill 口径②),"没配齐"只可能是槽2空着,正文直接说破;
+ * 出路不说"去设置里…"这种系统话 —— 弹窗右键就是「去配置」,点了当场开技能配置弹窗,
+ * 所以正文只交代"配好再回这里开赛"(闸门不自动替人开赛,装完哪槽、还调不调槽1 由人定)。
+ * 判据本身在 career.skillSlotsReady(新手解锁款不足两项时不拦)。
+ */
+export const CONFIRM_SKILLS_REQUIRED: ConfirmSpec = {
+  title: "技能还没配齐",
+  body: "现在只装了技能1,开赛前要把技能2也装上一款。",
+  hint: "两个槽都配好,再回这里开赛。",
+  cancel: "返回",
+  action: "去配置",
+};
+
 export type ConfirmRole = "title" | "body" | "hint";
 
 /** 一个文本块:lines 已折好,渲染层用 "\n" 拼接直接画 */

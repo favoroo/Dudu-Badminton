@@ -274,11 +274,10 @@ ${opsToSvg(ops)}
 // 用商店同款 drawHeadStill(内部就是 drawHead)画大头像;faceT=666 让贴纸走「定格」分支,
 // pop 完成且不淡出,每格都能看到表情 + 贴纸的最终成色。
 if (process.argv.includes("--faces")) {
-  // 全部脸面款式(config.faceStyles 注册表):肤色系支持人物 skinTone 覆写,
-  // 这里顺带验一款自定义肤色的可读性(萌芽豆丁式的暖肤)
+  // 全部脸面款式(config.faceStyles 注册表):每款的脸底只有它自己的 base 一个出处,
+  // 人物的「肤色」槽不上脸(2026-10-07 解耦),所以这里不再另配一份自定义肤色档
   const STYLE_KEYS = Object.keys(CFG.faceStyles);
   const STYLES: { label: string; style: string }[] = STYLE_KEYS.map((k) => ({ label: `${k}`, style: k }));
-  STYLES.push({ label: "skin+tan 自定义肤色", style: "skin" });
   const EXPRS: FaceKind[] = ["normal", "fierce", "star", "wow", "oops", "happy", "sad", "cheer", "ko"];
   const RED = { main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a", name: "red" };
   // 方形小画布,头像居中(单位视口 y 取负 = 预翻转,给外层 scale(6,-6) 再翻回来);
@@ -293,19 +292,16 @@ ${opsToSvg(ops)}
 </g>
 </svg>`;
   };
-  const headSvg = (style: string, expr: FaceKind, bg: string, tan: boolean): string => {
+  const headSvg = (style: string, expr: FaceKind, bg: string): string => {
     const g = new StubGraphics();
-    drawHeadStill(g as unknown as Parameters<typeof drawHeadStill>[0], VP2, 0, 0, 1, RED, style, expr, 0.4,
-      tan ? "#e0a878" : undefined);
+    drawHeadStill(g as unknown as Parameters<typeof drawHeadStill>[0], VP2, 0, 0, 1, RED, style, expr, 0.4);
     return faceSvg(g.ops, bg, `${style}-${expr}`);
   };
   const cells: string[] = [];
   for (const { label, style } of STYLES) {
-    const tan = style.includes("tan");
-    const key = tan ? "skin" : style;
     for (const expr of EXPRS) {
       // 单张 SVG 一并落盘(face-<款>-<表情>.svg / .light.svg),供转 PNG 做视觉验收
-      const s = headSvg(key, expr, "#12161f", tan), l = headSvg(key, expr, "#d8ecd2", tan);
+      const s = headSvg(style, expr, "#12161f"), l = headSvg(style, expr, "#d8ecd2");
       const file = `${style}-${expr}`;
       fs.writeFileSync(`${OUT}/face-${file}.svg`, s);
       fs.writeFileSync(`${OUT}/face-${file}.light.svg`, l);

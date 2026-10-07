@@ -14,7 +14,9 @@ import {
 } from "cc";
 import { Career } from "../core/career";
 import { CFG, DRILLS } from "../core/config";
-import { Ball, FaceKind, Player, SkinDef, SkinKind, Theme } from "../core/types";
+import type { SkinFamily, MilestoneStat } from "../core/config";
+import { Ball, CosmoSlot, CosmeticDef, FaceKind, Player, SkinDef, SkinKind, Theme } from "../core/types";
+import { drawAccStill } from "../render/acc";
 import { drawHeadStill, drawPlayer, drawRacketStill, drawShuttle, hueColor, Viewport } from "../render/sprites";
 import { Physics } from "../core/physics";
 import { clamp } from "../core/utils";
@@ -25,23 +27,44 @@ import {
   progressDL, retainedDraw, ROLE, skewOf, slamIn, SLANT, textW, TOUCH_MIN, uiIconButton,
 } from "./ui-arcade";
 import { C } from "./p5-tokens";
-import { clearKids, solidTab, type TabHandle } from "./ui-shell";
+import { clearKids, onTap, pressable, solidTab, type TabHandle } from "./ui-shell";
 import {
-  SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout, SHOP,
-  shopContent, shopStats, shopTabs, shopTopBar, STAT, statCardDL, statCells, thumbCenterY, thumbHeight,
-  TOAST, TOAST_FG, toastWidth,
+  accBandH, accShelf, accSlotRowCounts, accSlotRows, cardFxLines, cardFxYs, cardInnerW, cardLine, CARD_TEXT, SHELF, advanceScroll, gridCols, revealRange, rubberBand, rowTopY, shelfLayout,
+  SHOP, shopContent, shopStats, shopSubBack, shopTabs, shopTopBar, STAT, statCardDL, statCells, thumbCenterY,
+  thumbHeight, TOAST, TOAST_FG, toastWidth,
 } from "./shop-shelf";
-import type { ScrollMotion } from "./shop-shelf";
+import type { ScrollMotion, Shelf } from "./shop-shelf";
 
 const { ccclass } = _decorator;
 
 // ---------- 常量 ----------
 
-const KIND_ORDER: SkinKind[] = ["player", "racket", "shuttle", "face"];
-const KIND_ALL: string[] = ["player", "racket", "shuttle", "face", "stats"];
+// 顶栏五格(2026-10-06 拆件重构):
+//  · "acc" 摆**第一格**并改名「形象」—— 用户 2026-10-06 点名:自己逐槽搭才是这件事的主入口,
+//    打包买是次要路径。「配饰」这个名字本来也不对:里面装的是上衣、发型、肤色,不是配饰。
+//  · "player" 这一格摆的是**套装卡**(13 条老人物皮肤改出来的打包),跟着挪到第二格;
+//    标签从「形象套装」缩短成「套装」—— 它左边那格已经叫「形象」,再叫「形象套装」
+//    两格读起来像同一格打错了字。
+//  · "face"(面部皮肤)从顶栏撤掉,并进「形象」的「脸面」chip(它本来就是单选,和一个槽同构);
+//  · "acc" 不是 SkinKind:它是 CFG.accessories 这张独立表 + 十二个子槽的面板状态(_accSlot),
+//    货架几何走 accShelf(槽位 chip 行数)(padTop 抬高让出子页签行)。
+const KIND_ALL: string[] = ["acc", "player", "racket", "shuttle", "stats"];
 const KIND_LABEL: Record<string, string> = {
-  player: "角色皮肤", racket: "球拍皮肤", shuttle: "羽毛球皮肤", face: "面部皮肤", stats: "生涯战绩",
+  player: "套装", racket: "球拍皮肤", shuttle: "羽毛球皮肤", face: "面部皮肤",
+  acc: "形象", stats: "生涯战绩",
 };
+
+/** 槽位 chip 的行分组(每行几颗)与行数:全部由 config.COSMO_SLOTS 的 row 字段算出来。
+ *  chip 排布与货架让位(accShelf 抬 padTop)吃同一份数字,两边不可能漂成两套。 */
+const SLOT_ROWS = accSlotRowCounts(CFG.accSlots.map((s) => s.row));
+const SLOT_ROW_N = SLOT_ROWS.length;
+
+/** 皮肤与穿戴件共用一张货架/一条成交链。判别走 `kind`:SkinDef 的 kind 是四类皮肤,
+ *  CosmeticDef 的 kind 是 "part"/"wear",两个联合字面量**互不相交**,所以这是真判别式。
+ *  (旧写法 `"slot" in s && "style" in s` 在拆件后失效了:本体件没有 style。) */
+function isCosmo(s: SkinDef | CosmeticDef): s is CosmeticDef {
+  return s.kind === "part" || s.kind === "wear";
+}
 const LV_NAMES = [
   "新手菜鸟", "初学乍练", "渐入佳境", "业余好手", "俱乐部主力",
   "地区新星", "城市名将", "省队水准", "全国赛手", "顶级选手",
@@ -154,6 +177,14 @@ function themeOf(s: SkinDef): Theme {
   return { main: s.main ?? "#ff4d4d", dark: s.dark ?? "#a8202c", glow: s.glow ?? "#ff8a6a", name: s.name };
 }
 
+/** 候选脸面 → drawHead 的 faceStyle key。"auto"(人物默认)按「当前装备人物自带的脸」
+ *  解析 —— 与 sprites.drawPlayer 里那条 eqFace === "auto" 的分支同一个口径,别兜两份。 */
+function faceStyleOf(s: SkinDef, worn: SkinDef): string {
+  const k = s.faceStyle;
+  if (k === undefined) return "skin";
+  return k === "auto" ? (worn.face ?? "skin") : k;
+}
+
 /** 构造最小可用的 Player 实体供 drawPlayer 消费。
  *  faceSkin 恒挂 face-auto:商品卡展示的是「人物形象本体」,默认走人物自带脸面
  *  (萌芽豆丁的雀斑/猫系少女的猫须),不被玩家当前装备的脸面盖掉。 */
@@ -206,11 +237,18 @@ function previewVp(scale: number, cx: number, cy: number): Viewport {
 }
 
 /** 设计款卖点一句话:卡片底部小字与购买欲直接挂钩 */
-function fxTag(s: SkinDef): string {
+function fxTag(s: SkinDef | CosmeticDef): string {
+  // 配饰的卖点就是 config 里那句 desc,不走下面的皮肤字段分支
+  if (isCosmo(s)) return s.desc;
+  // 族卡不吃下面任何一条分支:它的卖点不是"某一张脸长什么样",而是"里面有好几张可挑"
+  const fam = Career.familyOf(s.id);
+  if (fam) return fam.tag;
   if (s.kind === "face") {
     switch (s.faceStyle) {
       case "auto": return "跟随人物默认脸面";
       case "ink": return "经典剪影 · 情怀款";
+      case "void": return "纯黑无面 · 零描边";
+      case "snow": return "纯白无面 · 零描边";
       case "freckle": return "肤色脸 · 雀斑 · 心情腮红";
       case "tear": return "肤色脸 · 泪痣 · 心情腮红";
       case "cat": return "猫系脸面 · 猫须腮红";
@@ -236,10 +274,15 @@ function fxTag(s: SkinDef): string {
     }
     return "";
   }
-  if (s.body === "compact") return "小巧体型 · 全新人物形象";
-  if (s.body === "tall") return "高挑体型 · 全新人物形象";
-  return s.aura ? "专属脚下光环"
-    : (s.hairStyle || s.headwear || s.jersey) ? "全新人物形象" : "";
+  // 套装卡的卖点不再是"它长什么样"(卡片本身就在画它),而是**这一格里有哪几件、
+  // 一次拿下省多少**。旧写法是从 aura/body/face 反推一句「专属脚下光环」,那是在猜;
+  // 现在 parts 就是那张清单,直接数。
+  if (s.kind === "player" && s.parts) {
+    const pr = Career.setPrice(s.id);
+    const save = pr.total - s.price;
+    return save > 0 ? `${pr.n} 件单品 · 整套省 ${save} 金币` : `${pr.n} 件单品 · 一次穿齐`;
+  }
+  return "";
 }
 
 /** 预览球的专属拖尾示意:球后斜向 5 颗衰减圆点(与 world 拖尾同色系) */
@@ -274,10 +317,11 @@ export class CareerPanel extends Component {
   // ---------- 公开接口 ----------
 
   /** 构建并显示面板 */
-  show(parent: Node, onClose: () => void, initialKind?: SkinKind | "stats") {
+  show(parent: Node, onClose: () => void, initialKind?: SkinKind | "acc" | "stats") {
     this._onCloseCb = onClose;
     this._kind = initialKind ?? "player";
     this._sel = 0;
+    this._fam = null;   // 每次开门都从整族货架看起,不复用上次停在二级界面的位置
     this._buildAll(parent);
     this._refresh();
     if (this._panelNode) slamIn(this._panelNode);   // 老 .panel slam 砸落
@@ -307,9 +351,13 @@ export class CareerPanel extends Component {
     this._gridNode = null;
     this._statsNode = null;
     this._previewArea = null;
+    this._backNode = null;
+    this._fam = null;
+    this._accSlotBar = null;
     // 货架整棵随 root 一起销毁,这里只清引用 + 复位滚动状态(面板复用时不留残余)
     this._viewport = null;
     this._contentNode = null;
+    this._vpH = 0;
     this._barG = null;
     this._scrollY = 0;
     this._maxScroll = 0;
@@ -333,7 +381,9 @@ export class CareerPanel extends Component {
     if (!this.root) return;
     this._stepScroll(dt);
     if (this._kind === "stats") return;
-    if (this._kind === "player" || this._kind === "racket") {
+    // player/racket/acc 的试衣间都是活的小人(呼吸/挥拍/围巾飘动都吃时钟)。
+    // "face" 这一项随顶栏撤掉一并删了 —— 脸面现在是 acc 里的一个槽,时钟由 acc 那支管。
+    if (this._kind === "player" || this._kind === "racket" || this._kind === "acc") {
       this._elapsed += dt;
       if (this._elapsed > 2.2) this._elapsed -= 2.2;
       // 另一条不回卷的时钟:专给 drawPlayer 的 animT(待机呼吸/眨眼/脚下法阵的自转)。
@@ -363,8 +413,23 @@ export class CareerPanel extends Component {
   get rootNode(): Node | null { return this.root; }
   private _panelNode: Node | null = null;
   private _onCloseCb: (() => void) | null = null;
-  private _kind: SkinKind | "stats" = "player";
+  private _kind: SkinKind | "acc" | "stats" = "acc";
   private _sel = 0;
+  /** 二级货架:非 null = 此刻摆在的是这一族(config.SKIN_FAMILIES 的 key)的成员列表。
+   *  换 tab / 开关面板都回 null(整族货架),只有点族卡才会置上。 */
+  private _fam: string | null = null;
+  /** 形象套装 tab 的二级货架:正展开的是哪个套装(= SKINS.player 的那条 id,与存档 owned 同源)。
+   *  与 _fam 分开两个字段:族是"同槽互斥的几款合并成一张卡",套装是"跨槽的几件打包同时穿",
+   *  两者的成员来源、价格口径、成交动作全不同,塞进一个字段早晚写出错的分支。 */
+  private _bundle: string | null = null;
+  /** 配饰 tab 当前看的槽位;换 tab 不复位,回来还停在原槽。
+   *  类型是 CosmoSlot 不是 AccSlot:这一格导航里既有落 acc 的槽,也有脸面(落 equipped.face)。 */
+  private _accSlot: CosmoSlot = "tone";
+  /** 配饰子页签条(挂在 gridArea 上、与可视窗平级 → 不随滚动、履历页随整树销毁) */
+  private _accSlotBar: Node | null = null;
+  /** 本次货架用的几何(形象页用 accShelf() 把**可视窗**变矮,让出钉住的子页签带);
+   *  _revealSel 要用同一份算「滚到哪能看全」,别两边各拿一份 SHELF */
+  private _curShelf: Shelf = SHELF;
   private _elapsed = 0;
   /** 不回卷的累加时钟 → drawPlayer 的 animT(帧);_elapsed 负责挥拍编排,这条负责自转 */
   private _clock = 0;
@@ -390,10 +455,15 @@ export class CareerPanel extends Component {
   private _gridNode: Node | null = null;
   private _statsNode: Node | null = null;
   private _previewArea: Node | null = null;
+  /** 二级货架的「返回」键:货架窗底部那条空带里的唯一一件常驻件(随 _buildGrid 重建) */
+  private _backNode: Node | null = null;
 
   // 货架滚动:viewport 挂 Mask 裁切,content 是被拖动的货架
   private _viewport: Node | null = null;
   private _contentNode: Node | null = null;
+  /** 建这扇窗时用的窗高:换 tab 之后 _curShelf.h 变了就得重建(Mask 的矩形在原生侧
+   *  是渲染时烘进去的,运行时改 UITransform 不保证跟着改) */
+  private _vpH = 0;
   private _barG: Graphics | null = null;
   /** 货架位移(≥0 = 往上滚看了后面的行),范围 [0, _maxScroll] */
   private _scrollY = 0;
@@ -556,7 +626,7 @@ export class CareerPanel extends Component {
       h.node.setPosition((b.left + b.right) / 2, 0, 0);
       h.node.on(Button.EventType.CLICK, () => {
         if (this._kind === k) return;
-        this._setKind(k as SkinKind | "stats");
+        this._setKind(k as SkinKind | "acc" | "stats");
       });
       this._tabHandles.push(h);
     });
@@ -640,18 +710,25 @@ export class CareerPanel extends Component {
   private _ensureGridShell() {
     if (!this._gridNode || (this._contentNode && this._contentNode.isValid)) return;
 
-    const vp = mkNode("gridView", this._gridNode, GRID_W, CONTENT_H);
+    // 窗高跟着本次货架走:形象页让出子页签带之后窗变矮,而且是**底对齐**变矮
+    // (往下挪 (SHELF.h − h)/2),这样窗底与右侧试衣间仍然齐平。
+    const vpH = this._curShelf.h;
+    const inset = (SHELF.h - vpH) / 2;
+
+    const vp = mkNode("gridView", this._gridNode, GRID_W, vpH);
+    vp.setPosition(0, -inset, 0);
     const mask = vp.addComponent(Mask);
     mask.type = Mask.Type.GRAPHICS_RECT;
 
-    const content = mkNode("gridContent", vp, GRID_W, CONTENT_H);
+    const content = mkNode("gridContent", vp, GRID_W, vpH);
 
     // 滚动条挂在窗户外面(gridArea 的另一个子节点),否则跟着内容一起被裁掉
-    const bar = mkNode("gridBar", this._gridNode, BAR_W + 4, CONTENT_H);
-    bar.setPosition(BAR_X, 0, 0);
+    const bar = mkNode("gridBar", this._gridNode, BAR_W + 4, vpH);
+    bar.setPosition(BAR_X, -inset, 0);
 
     this._viewport = vp;
     this._contentNode = content;
+    this._vpH = vpH;
     this._barG = bar.addComponent(Graphics);
 
     const T = Node.EventType;
@@ -681,7 +758,9 @@ export class CareerPanel extends Component {
     }
     this._viewport = null;
     this._contentNode = null;
+    this._vpH = 0;
     this._barG = null;
+    this._backNode = null;   // 它是 _gridNode 的孩子,跟着上面那圈一起销毁
     this._dragId = null;
     this._dragMoved = false;
     this._vel = 0;
@@ -706,8 +785,8 @@ export class CareerPanel extends Component {
     if (!g || !g.isValid) return;
     g.clear();
     if (this._maxScroll <= 0) return;
-    const trackH = CONTENT_H - BAR_PAD * 2;
-    const thumbH = thumbHeight(trackH, CONTENT_H, this._maxScroll);
+    const trackH = this._curShelf.h - BAR_PAD * 2;
+    const thumbH = thumbHeight(trackH, this._curShelf.h, this._maxScroll);
     const f = clamp(this._scrollY / this._maxScroll, 0, 1);
     const cy = thumbCenterY(trackH, thumbH, f);
     g.fillColor = BAR_TRACK_COLOR;
@@ -775,7 +854,7 @@ export class CareerPanel extends Component {
   private _revealSel() {
     if (this._maxScroll <= 0 || this._rows <= 0) return;
     const cols = gridCols(this._list().length);
-    const { min, max } = revealRange(Math.floor(this._sel / cols), this._maxScroll);
+    const { min, max } = revealRange(Math.floor(this._sel / cols), this._maxScroll, this._curShelf);
     if (min > max) return;   // 这一行在任何位置都露不全 —— shelf-check 拦的就是它
     let target = this._scrollY;
     if (target < min) target = min;
@@ -787,29 +866,194 @@ export class CareerPanel extends Component {
 
   // ========== 卡片网格 ==========
 
-  /** 商店展示顺序:默认款 → 设计款(稀有度降序→价格升序) → 纯色款(价格升序)。
-   *  设计款放前面是货架语言:开门先看到好看的东西,纯色款垫底当「基础款」 */
-  private _list(): SkinDef[] {
-    const all = CFG.skins[this._kind as SkinKind] ?? [];
+  /** 此刻货架上摆的是哪些商品。四条货架,一把尺子:
+   *  · **配饰 tab** = 当前槽位那一格的商品。脸面槽特殊:商品住在 SKINS.face(它落
+   *    equipped.face,不落 acc),而且它带着「肤色脸面」那张族卡,折叠口径与皮肤页一致。
+   *  · **形象套装 tab** = 套装卡。只有**真的多件**才算套装 —— 纯色款拆完只剩一件上衣,
+   *    套装卡与单件卡长得一模一样,摆出来是噪声,所以 parts 少于 2 件的不上这一格。
+   *    点套装卡进二级货架 = 摆它 parts 里那几件单件,顺序照 parts 的槽位表。
+   *  · 整族货架:一族的成员不各占一格,合成一张族卡,点它进二级货架(顺序照 members,
+   *    首项是免费底款,不排序)。
+   *  · 排序:免费底款永远排第一(它代表「回到原版」,是这一槽的锚点),其余稀有度降序→价格升序。 */
+  private _list(): Array<SkinDef | CosmeticDef> {
     const rank: Record<string, number> = { legendary: 0, epic: 1, rare: 2, common: 3 };
-    return [...all].sort((a, b) => {
+    const byRarityThenPrice = (a: { rarity?: string; price: number }, b: { rarity?: string; price: number }): number => {
       if (a.price === 0) return -1;
       if (b.price === 0) return 1;
       const ra = rank[a.rarity ?? "common"], rb = rank[b.rarity ?? "common"];
-      if (ra !== rb) return ra - rb;
-      return a.price - b.price;
-    });
+      return ra !== rb ? ra - rb : a.price - b.price;
+    };
+
+    // 二级货架:一族摆它自己的成员。这条必须排在下面 acc 那条早退**之前** —— 脸面的族住在
+    // 「形象」页的「脸面」chip 里,acc 分支一 return 就到不了这里,点族卡只剩一颗「返回」键、
+    // 货架纹丝不动(2026-10-07 拆件重构就是这么把它挤没的,闸门 face-family-check ⑦ 钉住)
+    const fam = this._fam ? CFG.families[this._fam] : null;
+    if (fam) return fam.members
+      .map((id) => Career.skinById(id))
+      .filter((s): s is SkinDef => !!s);
+
+    if (this._kind === "acc") {
+      if (this._accSlot === "faceStyle") {
+        // 脸面:族卡盖住的成员不各占一格(与皮肤页同一条 familyOfSkin,别另算一份)
+        const fams = Object.values(CFG.families).filter((f) => f.kind === "face");
+        const solo = CFG.skins.face.filter((s) => !Career.familyOfSkin(s.id));
+        return [...solo, ...fams.map((f) => this._famCard(f))].sort(byRarityThenPrice);
+      }
+      return CFG.accessories
+        .filter((c) => c.slot === this._accSlot)
+        .sort(byRarityThenPrice);
+    }
+
+    // 二级货架:套装的组成件
+    const bundle = this._bundle ? Career.skinById(this._bundle) : null;
+    if (bundle?.parts) {
+      const order = CFG.accSlots.map((s) => s.key as string);
+      return Object.entries(bundle.parts)
+        .map(([, id]) => (id ? Career.accById(id) : null))
+        .filter((c): c is CosmeticDef => !!c)
+        .sort((a, b) => order.indexOf(a.slot) - order.indexOf(b.slot));
+    }
+
+    if (this._kind === "player") {
+      // 套装卡是一张**合成商品卡**(走卡片那条渲染路径,但 id 用套装 id、价格用补齐价)。
+      // "哪些算套装"这条判据住在 Career.shelfSets —— 面板自己 filter 一遍就会和出图/闸门漂。
+      return Career.shelfSets().sort(byRarityThenPrice);
+    }
+
+    // 「谁被族卡盖住」只问 Career.familyOfSkin 一张嘴 —— 闸门 face-family-check 折叠那段
+    // 吃的也是它,两边不会漂成两套(在这里另算一份 hidden 集合就是第二把尺子)
+    const own = Object.values(CFG.families).filter((f) => f.kind === this._kind);
+    const all = (CFG.skins[this._kind as SkinKind] ?? []).filter((s) => !Career.familyOfSkin(s.id));
+    return [...all, ...own.map((f) => this._famCard(f))].sort(byRarityThenPrice);
+  }
+
+  /** 族卡是一张**合成商品卡**(不进 CFG.skins,也不进存档):走的是卡片那同一条渲染路径,
+   *  只是 id 用族 id、价格用买断价、脸面缩略图画族里最贵的那一款(货架上先给买家看最好的)。 */
+  private _famCard(fam: SkinFamily): SkinDef {
+    const defs = fam.members
+      .map((id) => Career.skinById(id))
+      .filter((s): s is SkinDef => !!s);
+    const best = defs.reduce((a, b) => (b.price > a.price ? b : a), defs[0]);
+    return {
+      id: fam.id, kind: fam.kind, name: fam.name,
+      price: fam.price, rarity: fam.rarity,
+      faceStyle: best?.faceStyle,
+    };
+  }
+
+  /** 一张卡此刻的四件读数:穿着没有 / 到手没有 / 该报多少钱 / 那个价是不是**打包价**。
+   *  三条车道各有一个唯一出处,这里只负责取,不在 UI 里算第二份:
+   *   · 穿戴件 → owned 数组 + accAt(槽位落点在 career 那张描述符表里,脸面落 equipped.face);
+   *   · 套装   → Career.setPrice(补齐差价)与 Career.wearsSet(是否恰好整套在身上);
+   *   · 族卡   → Career.ownsFamily(同槽互斥的那套老口径)。
+   *  `bundle` 是给状态行用的:几格全写「金币 168」会被读成每件各 168,写「补齐 168」才是一句话。 */
+  private _cardState(s: SkinDef | CosmeticDef): { worn: boolean; owned: boolean; price: number; bundle: boolean } {
+    const prof = Career.profile();
+    if (isCosmo(s)) {
+      return {
+        worn: Career.accAt(prof, s.slot) === s.id,
+        owned: Career.owns(s.id),
+        price: s.price,
+        bundle: false,
+      };
+    }
+    if (s.kind === "player" && s.parts) {
+      const pr = Career.setPrice(s.id);
+      return {
+        worn: Career.wearsSet(s.id),
+        owned: pr.have,
+        price: pr.charge,
+        bundle: true,
+      };
+    }
+    const asFamily = Career.familyOf(s.id);
+    if (asFamily) {
+      return {
+        worn: asFamily.members.includes(prof.equipped[asFamily.kind]),
+        owned: Career.ownsFamily(asFamily.id),
+        price: asFamily.price,
+        bundle: true,
+      };
+    }
+    const of = Career.familyOfSkin(s.id);
+    return {
+      worn: prof.equipped[s.kind] === s.id,
+      owned: Career.owns(s.id) || (!!of && Career.ownsFamily(of.id)),
+      price: of ? of.price : s.price,
+      bundle: !!of,
+    };
+  }
+
+  /** 点族卡 = 进二级货架。进来先停在身上正穿着的那一款(没穿族里的停在第一格) */
+  private _openFamily(fid: string) {
+    const fam = CFG.families[fid];
+    if (!fam) return;
+    this._fam = fid;
+    this._sel = Math.max(0, fam.members.indexOf(Career.profile().equipped[fam.kind]));
+    this._resetShelf();
+    this._refresh();
+  }
+
+  /** 返回 = 回到整族货架,并且**停在刚出去的那张族卡上**,不把人丢回第一格 */
+  private _closeFamily() {
+    const fid = this._fam;
+    if (!fid) return;
+    this._fam = null;
+    this._sel = Math.max(0, this._list().findIndex((s) => s.id === fid));
+    this._resetShelf();
+    this._refresh();
+  }
+
+  /** 点套装卡 = 进二级货架,摆它包含的那几件单件。
+   *  进来先停在身上正穿着的那一件(一件都没穿就停在第一格 = 免费底款)。 */
+  private _openBundle(setId: string) {
+    const set = Career.skinById(setId);
+    if (!set?.parts) return;
+    this._bundle = setId;
+    const prof = Career.profile();
+    const pieces = this._list();
+    const wornIdx = pieces.findIndex((c) => Career.accAt(prof, (c as CosmeticDef).slot) === c.id);
+    this._sel = Math.max(0, wornIdx);
+    this._resetShelf();
+    this._refresh();
+  }
+
+  /** 从套装二级货架返回:停在刚出去的那张套装卡上(与 _closeFamily 同一条口径) */
+  private _closeBundle() {
+    const sid = this._bundle;
+    if (!sid) return;
+    this._bundle = null;
+    this._sel = Math.max(0, this._list().findIndex((s) => s.id === sid));
+    this._resetShelf();
+    this._refresh();
+  }
+
+  /** 换货架(切 tab / 进出二级界面)都要复位滚动:别停在上一页的行位置 */
+  private _resetShelf() {
+    this._elapsed = 0;
+    this._scrollY = 0;
+    this._vel = 0;
+    this._easeTo = null;
+    this._dragId = null;
+    this._dragMoved = false;
   }
 
   private _buildGrid() {
+    // 先定货架几何,再建壳:可视窗的高就是从这里来的(形象页要让出钉住的子页签带)
+    this._curShelf = this._kind === "acc" ? accShelf(SLOT_ROW_N) : SHELF;
+    if (this._vpH && this._vpH !== this._curShelf.h) this._destroyGridShell();
     this._ensureGridShell();
     const host = this._contentNode;
     if (!this._gridNode || !host || !host.isValid) return;
     // 清空旧卡片:只清货架,别把挂着 Mask 的可视窗和滚动条一起摘了
     clearKids(host)
+    this._buildBack();
+    this._buildAccSlots();
 
     const list = this._list();
-    const lay = shelfLayout(list.length);
+    // 形象页的窗变矮让出子页签行(几何真话在 shop-shelf.accShelf);
+    // _revealSel 用同一份 _curShelf,两边不各拿一份 SHELF
+    const lay = shelfLayout(list.length, this._curShelf);
     const cols = lay.cols;
     const lefts = hbox(Array(cols).fill(CARD_W), GAP);
     const prof = Career.profile();
@@ -819,7 +1063,7 @@ export class CareerPanel extends Component {
     this._maxScroll = lay.maxScroll;
     // 货架方框要始终盖住整扇窗(上下各多让 maxScroll),否则滚到底时窗底那一条
     // 落在货架框外 —— 手指从卡片缝隙起手的拖动就收不到 TOUCH_START 了。
-    host.getComponent(UITransform)!.setContentSize(GRID_W, CONTENT_H + 2 * lay.maxScroll);
+    host.getComponent(UITransform)!.setContentSize(GRID_W, this._curShelf.h + 2 * lay.maxScroll);
     if (this._scrollY > this._maxScroll) {
       this._scrollY = this._maxScroll;
       this._vel = 0;
@@ -829,12 +1073,14 @@ export class CareerPanel extends Component {
     list.forEach((s, i) => {
       const row = Math.floor(i / cols);
       const x = lefts[i % cols] + CARD_W / 2;
-      const y = rowTopY(row) - CARD_H / 2;
+      const y = rowTopY(row, this._curShelf) - CARD_H / 2;
 
-      const equipped = prof.equipped[this._kind as SkinKind] === s.id;
-      const owned = Career.owns(s.id);
+      // 装备/拥有/价格三件读数同源(族卡与族内成员看整族,口径在 _cardState)
+      const st = this._cardState(s);
+      const equipped = st.worn;
+      const owned = st.owned;
       const locked = !Career.unlocked(s);
-      const broke = !owned && !locked && prof.coins < s.price;
+      const broke = !owned && !locked && prof.coins < st.price;
       const rarity = s.rarity ?? "common";
       const rmeta = CFG.rarity[rarity];
       // 稀有度色只有**一个**出处:config 的 RARITY_META(它带着中文名与色值)。
@@ -878,29 +1124,39 @@ export class CareerPanel extends Component {
         chip.setPosition(-CARD_W / 2 + 21, CARD_H / 2 - 8, 0);
       }
 
-      // 名称
+      // 名称。三行字的字号/行心/可用宽一律读 shop-shelf.CARD_TEXT ——
+      // Label 默认 Overflow.NONE,给它 w 只是给它一个它不会遵守的盒子,
+      // 所以文案在摆出去之前先按同一把尺折行/截尾(判据 cardTextFits 量的也是这一份)。
       const nameColor = locked ? COL.dimGray : COL.white;
-      mkLabel(card, "name", s.name, 12, nameColor, {
-        y: -8, w: CARD_W - 8, align: 1,
+      mkLabel(card, "name", cardLine(s.name, CARD_TEXT.nameSize), CARD_TEXT.nameSize, nameColor, {
+        y: CARD_TEXT.nameY, w: cardInnerW(), align: 1,
       });
 
-      // 状态行
+      // 状态行。套装那一格说的不是"这一件多少钱",而是**还差几件的钱**:
+      // 零散买过其中两件的人,看到「金币 888」会以为又在收一次全套 —— 那是把人往外推。
       let statusText: string, statusColor: Color;
+      const setPr = s.kind === "player" && s.parts ? Career.setPrice(s.id) : null;
       if (equipped) { statusText = "装备中"; statusColor = COL.green; }
-      else if (owned) { statusText = "已拥有"; statusColor = COL.dimWhite; }
+      else if (owned) { statusText = setPr ? "已集齐整套" : "已拥有"; statusColor = COL.dimWhite; }
       else if (locked) { statusText = `Lv.${s.unlockLevel} 解锁`; statusColor = COL.dimGray; }
-      else { statusText = `金币 ${s.price}`; statusColor = broke ? COL.dimGray : COL.gold; }
-      mkLabel(card, "status", statusText, 12, statusColor, {
-        y: -28, w: CARD_W - 8, align: 1,
+      else if (setPr) {
+        statusText = setPr.lack < setPr.total ? `补齐 ${setPr.charge}` : `整套 ${setPr.charge}`;
+        statusColor = broke ? COL.dimGray : COL.gold;
+      }
+      else { statusText = st.bundle ? `买断 ${st.price}` : `金币 ${st.price}`; statusColor = broke ? COL.dimGray : COL.gold; }
+      mkLabel(card, "status", cardLine(statusText, CARD_TEXT.statusSize), CARD_TEXT.statusSize, statusColor, {
+        y: CARD_TEXT.statusY, w: cardInnerW(), align: 1,
       });
 
-      // 卖点小字(设计款专属效果,稀有度色)
-      const fx = fxTag(s);
-      if (fx) {
-        mkLabel(card, "fx", fx, 9, new Color(rarityCol.r, rarityCol.g, rarityCol.b, 215), {
-          y: -47, w: CARD_W - 6, align: 1,
-        });
-      }
+      // 卖点小字(设计款专属效果,稀有度色):折成几行摆几行,行心由排版那边给
+      const fx = cardFxLines(fxTag(s));
+      const ys = cardFxYs(fx.length);
+      fx.forEach((line, k) => {
+        mkLabel(card, `fx${k}`, line, CARD_TEXT.fxSize,
+          new Color(rarityCol.r, rarityCol.g, rarityCol.b, 215), {
+            y: ys[k], w: cardInnerW(), align: 1,
+          });
+      });
 
       // 锁定遮罩(独立子节点:一个节点只能挂一个 renderable,card 已有背景 Graphics)
       // 锁定/买不起:凹陷槽本身已经把卡压暗了,不再叠一层圆角黑罩(那会把斜切边露在外面)。
@@ -913,11 +1169,16 @@ export class CareerPanel extends Component {
       }
 
       // 点击 = 只选中:右侧试衣间马上换人,下方按钮改口径;金币不动
+      // 两个例外都是「它不是一件商品」:族卡点进去是同槽挑一款,套装卡点进去是跨槽看它由
+      // 哪几件组成 —— 两者都没有"选中态"可言,也不在这一按上花钱。
       // (先注册业务回调再补按压反馈:重建网格销毁卡片时动画不会晚到一步)
       const idx = i;
       card.on(Node.EventType.TOUCH_END, () => {
         if (this._dragMoved) return;   // 这一指是在滑货架,不是在点卡片
-        this._select(idx);
+        if (s.kind === "player" && s.parts) { this._openBundle(s.id); return; }
+        const fid = Career.familyOf(s.id);
+        if (fid) this._openFamily(fid.id);
+        else this._select(idx);
       });
       pressFx(card);
     });
@@ -925,32 +1186,123 @@ export class CareerPanel extends Component {
     this._applyScroll();
   }
 
+  /** 配饰 tab 的子页签行:四个槽位 chip 钉在网格窗顶部(不随滚动 —— 挂 gridArea,
+   *  与可视窗/返回键平级,Mask 只裁自己的子孙)。随 _buildGrid 重建,不用 active 开关
+   *  (原生侧 Graphics 渲染数据会在 onDisable 被清);chip 上带一枚「已佩戴」小圆点,
+   *  颜色就是那件配饰自己的 main —— 一眼读出「这个槽已经戴了什么色」。 */
+  private _buildAccSlots() {
+    if (this._accSlotBar && this._accSlotBar.isValid) this._accSlotBar.destroy();
+    this._accSlotBar = null;
+    if (this._kind !== "acc" || !this._gridNode || !this._gridNode.isValid) return;
+
+    const K = shopContent(CONTENT_H);
+    const chips = accSlotRows(K.grid, SLOT_ROWS);
+    // bar 挂在 gridArea 上,**它自己就在网格窗中心** —— chip 的局部坐标已经按
+    // 「窗中心为原点」算好(b.center − grid.center),bar 再摆到面板系的网格中心
+    // 就是把整排子页签又平移一倍(现场:四个 chip 集体左移出面板左缘、压住商品卡)。
+    // 与 _buildBack 同一条参照系:父节点 = 网格窗中心,子件摆相对量。
+    const bar = mkNode("accSlots", this._gridNode, GRID_W, accBandH(SLOT_ROW_N));
+    bar.setPosition(0, 0, 0);
+    this._accSlotBar = bar;
+
+    CFG.accSlots.forEach((slot, i) => {
+      const b = chips[i];
+      const w = b.right - b.left;
+      const t = solidTab({
+        name: `accSlot-${slot.key}`, parent: bar, label: slot.name,
+        w, h: b.h, role: "info", size: 14,
+      });
+      t.paint(this._accSlot === slot.key);
+      t.node.setPosition((b.left + b.right) / 2 - (K.grid.left + K.grid.right) / 2, b.cy - K.grid.cy, 0);
+      // 这里原先有一枚「已佩戴」色点(点色 = 该槽那件的主色)。删了:近黑的描边压在近黑的
+      // chip 上,墨黑球鞋/墨黑球袜那点根本看不见;而它没有任何地方解释自己是什么 ——
+      // 用户盯着红点问"这是什么意思"就是结论。槽位状态不靠猜:点进 chip,货架上那一件
+      // 自己写着「装备中」,右侧试衣间立刻演出全身效果,两处都比一枚无字小点说得清。
+      t.node.on(Button.EventType.CLICK, () => {
+        if (this._accSlot === slot.key) return;
+        this._accSlot = slot.key;
+        this._sel = 0;
+        this._resetShelf();
+        this._refresh();
+      });
+    });
+  }
+
+  /** 二级货架的「返回」键:摆在货架窗底部那条空带里(几何与判据都在 shop-shelf.shopSubBack)。
+   *  挂在 gridArea 上、与可视窗**平级** —— Mask 只裁自己的子孙,滚动条就是这么活下来的。
+   *  随 _buildGrid 一起重建:不用 active 开关(原生侧 Graphics 渲染数据会在 onDisable 被清)。 */
+  private _buildBack() {
+    if (this._backNode && this._backNode.isValid) this._backNode.destroy();
+    this._backNode = null;
+    const fam = this._fam ? CFG.families[this._fam] : null;
+    // 族货架与套装货架共用这一颗「返回」:谁在二级态就接谁的返回。两颗长在一起的返回键
+    // 读起来就是界面坏了,而套装页永远不可能同时开着族。
+    const inBundle = !fam && !!this._bundle;
+    if ((!fam && !inBundle) || !this._gridNode || !this._gridNode.isValid) return;
+
+    const b = shopSubBack();
+    const K = shopContent(CONTENT_H);
+    const t = solidTab({
+      name: "subBack", parent: this._gridNode, label: "返回",
+      w: b.right - b.left, h: b.h, role: "info", size: 15,
+    });
+    t.paint(true);   // 常态走实底青块:凹陷槽在这个位置会被读成「这颗键坏了」
+    t.node.setPosition((b.left + b.right) / 2 - (K.grid.left + K.grid.right) / 2, b.cy - K.grid.cy, 0);
+    t.node.on(Button.EventType.CLICK, () => (fam ? this._closeFamily() : this._closeBundle()));
+    this._backNode = t.node;
+  }
+
   // ---------- 卡片缩略图 ----------
 
-  private _drawCardThumb(g: Graphics, s: SkinDef) {
+  /** 卡片缩略图。分支一律按**商品自己的 kind**判,不按所在格子判 ——
+   *  脸面从顶栏搬进「配饰」的 chip 之后,拿 this._kind 判会一条都不命中,
+   *  八张脸面的卡就全是空白(格子名与商品类型是两件事,前者会搬,后者不会)。 */
+  private _drawCardThumb(g: Graphics, s: SkinDef | CosmeticDef) {
     g.clear();
-    const kind = this._kind;
 
-    if (kind === "player") {
-      // 缩小版 drawPlayer 静态像(对齐原版 scale 0.6:100px 的人物画成 60px 高);
-      // playerSkin 挂卡片自身 → 缩略图直接带发型/头饰,设计款一眼可辨
-      const vp = previewVp(0.60, 0, -30);
+    if (isCosmo(s)) {
+      if (s.kind === "wear") {
+        // 挂件件有"孤立的样子"可看:墨镜是墨镜、围巾是围巾,摆成商品挂展;
+        // _clock 驱动微动画(镜面反光/尾梢慢波)
+        drawAccStill(g, previewVp(1, 0, 0), s, Math.round(this._clock * 60));
+        return;
+      }
+      // 本体件(上衣/发型/肤色/体型/袜/鞋/光环)**没有孤立的样子** —— 一件"樱花粉上衣"
+      // 摊开就是几块布,买家要看的从来是「穿上之后」。所以卡片直接画缩小全身像,
+      // 走 Career.lookOfCandidate:预览与成交后吃同一份合成,不可能长得不一样。
+      const L = Career.lookOfCandidate(s);
+      const p = dummyPlayer(L.theme, Career.skinOf("racket"), {
+        playerSkin: L.skin, faceSkin: Career.skinOf("face"), acc: L.acc,
+      });
+      drawPlayer(g, previewVp(0.60, 0, -30), p, 0, 1, null);
+      return;
+    }
+
+    if (s.kind === "player") {
+      // 套装卡:挂这套的完整 def → 缩略图直接带发型/头饰/光环,设计款一眼可辨
       const th = themeOf(s);
-      const curRacket = Career.skinOf("racket");
-      const p = dummyPlayer(th, curRacket, { playerSkin: s });
-      drawPlayer(g, vp, p, 0, 1, null);
-    } else if (kind === "racket") {
+      const p = dummyPlayer(th, Career.skinOf("racket"), { playerSkin: s });
+      drawPlayer(g, previewVp(0.60, 0, -30), p, 0, 1, null);
+      return;
+    }
+    if (s.kind === "racket") {
       // 真球拍(与上场同一套 drawRacket,拍头朝上竖放;皮肤来自卡片本身)
-      const p = dummyPlayer(themeOf(CFG.skins.player[0] ?? s), s);
+      const p = dummyPlayer(themeOf(CFG.skins.player[0]), s);
       drawRacketStill(g, previewVp(1.30, 0, -26), 0, 0, 1, p);
-    } else if (kind === "shuttle") {
+      return;
+    }
+    if (s.kind === "shuttle") {
       // 真羽毛球(与上场同一套 drawShuttle,放大 2.05 对齐原版)
       drawShuttle(g, previewVp(2.05, 0, 4), dummyBall(), s);
-    } else if (kind === "face") {
-      // 大头像(与上场同一套 drawHead):常态表情,换什么脸一眼可辨
-      drawHeadStill(g, previewVp(2.1, 0, 10), 0, 0, 1,
-        themeOf(Career.skinOf("player")), s.faceStyle ?? "skin", "normal", 0);
+      return;
     }
+    // 脸面:大头像(与上场同一套 drawHead),常态表情,换什么脸一眼可辨。
+    // 底色走这张脸自己的 FACE_STYLES.base —— 玩家的肤色不上脸,所以「纯黑肤 + 猫系脸面」
+    // 的卡与试衣间里那张猫系脸是同一个颜色(2026-10-07 解耦)。当前形象只用来把
+    // "人物默认"那一款解析成他身上这套人物自带的脸。
+    const cur = Career.look();
+    drawHeadStill(g, previewVp(2.1, 0, 10), 0, 0, 1,
+      cur.theme, faceStyleOf(s, cur.skin), "normal", 0);
   }
 
   // ========== 选中 / 成交 ==========
@@ -973,19 +1325,65 @@ export class CareerPanel extends Component {
    * 有面 = 整块实底大色块 —— 商店里唯一花钱的地方必须是最亮的那一块。
    * 字色一律 inkFor(面色),不再硬写「浅粉白」。
    */
+  /** 这一槽允不允许空着?由槽位描述符说了算(有免费底款的槽不许空 —— 「回到原版」是
+   *  一张卡,不是一颗卸下键)。卸下只对真能空着的槽开放,否则按下去会得到一个隐形状态。 */
+  private _slotCanEmpty(s: CosmeticDef): boolean {
+    return !CFG.accSlots.find((m) => m.key === s.slot)?.base;
+  }
+
   private _actView(): { text: string; face: string | null; fg: Color } {
     const kind = this._kind;
     if (kind === "stats") return { text: "", face: null, fg: COL.dimGray };
     const s = this._list()[this._sel];
     if (!s) return { text: "", face: null, fg: COL.dimGray };
-
     const p = Career.profile();
-    if (p.equipped[kind] === s.id) return { text: "已经装备", face: null, fg: COL.green };
-    if (Career.owns(s.id)) return { text: "装备上身", face: ROLE.star.face, fg: ac(inkFor(ROLE.star.face)) };
-    if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, face: null, fg: COL.dimGray };
-    if (p.coins < s.price) return { text: `金币不足 · 还差 ${s.price - p.coins}`, face: null, fg: COL.dimGray };
     const buyFg = ac(inkFor(ROLE.primary.face));
+    const short = (price: number): { text: string; face: null; fg: Color } =>
+      ({ text: `金币不足 · 还差 ${price - p.coins}`, face: null, fg: COL.dimGray });
+
+    // ---------- 穿戴件:四态(卸下 / 穿上 / 买即穿 / 购买) ----------
+    if (isCosmo(s)) {
+      const st = this._cardState(s);
+      if (st.worn) {
+        return this._slotCanEmpty(s)
+          ? { text: "卸下这一件", face: ROLE.info.face, fg: ac(inkFor(ROLE.info.face)) }
+          : { text: "已经穿着", face: null, fg: COL.green };
+      }
+      if (st.owned) return { text: "穿上身", face: ROLE.star.face, fg: ac(inkFor(ROLE.star.face)) };
+      if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, face: null, fg: COL.dimGray };
+      if (p.coins < s.price) return short(s.price);
+      return { text: `购买 · ${s.price} 金币`, face: ROLE.primary.face, fg: buyFg };
+    }
+
+    // ---------- 套装:成交就是"补齐剩下那几件 + 整套穿上",一族一件都不缺时报「整套穿上」 ----------
+    if (s.kind === "player" && s.parts) {
+      const st = this._cardState(s);
+      const pr = Career.setPrice(s.id);
+      if (st.worn) return { text: "整套已穿在身上", face: null, fg: COL.green };
+      if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, face: null, fg: COL.dimGray };
+      if (st.owned) return { text: "整套穿上身", face: ROLE.star.face, fg: ac(inkFor(ROLE.star.face)) };
+      if (pr.charge === 0) return { text: "整套穿上身", face: ROLE.star.face, fg: ac(inkFor(ROLE.star.face)) };
+      if (p.coins < pr.charge) return short(pr.charge);
+      // 已经零散买过其中几件 ⇒ 报的是「补齐」,不是原价,否则买家以为又在收一次全套
+      return {
+        text: pr.lack < pr.total ? `整套穿上 · 补齐 ${pr.charge} 金币` : `整套买下 · ${pr.charge} 金币`,
+        face: ROLE.primary.face, fg: buyFg,
+      };
+    }
+
+    // 族卡不成交:按钮说的是「进去挑一款」。点卡片本身就会进,这条只服务键盘选中
+    const fam = Career.familyOf(s.id);
+    if (fam) return { text: `挑一款${fam.name}`, face: ROLE.info.face, fg: ac(inkFor(ROLE.info.face)) };
+
+    const st = this._cardState(s);
+    if (st.worn) return { text: "已经装备", face: null, fg: COL.green };
+    // 族已入手 ⇒ 族内任何一款都算"装备上身"(没在 owned 里的那一款按下去走免费补票)
+    if (st.owned) return { text: "装备上身", face: ROLE.star.face, fg: ac(inkFor(ROLE.star.face)) };
+    if (!Career.unlocked(s)) return { text: `Lv.${s.unlockLevel ?? "?"} 解锁`, face: null, fg: COL.dimGray };
     if (s.price === 0) return { text: "免费领取", face: ROLE.primary.face, fg: buyFg };
+    if (p.coins < st.price) return short(st.price);
+    const of = Career.familyOfSkin(s.id);
+    if (of) return { text: `买断全族 · ${of.price} 金币`, face: ROLE.primary.face, fg: buyFg };
     return { text: `购买 · ${s.price} 金币`, face: ROLE.primary.face, fg: buyFg };
   }
 
@@ -1015,18 +1413,75 @@ export class CareerPanel extends Component {
     const s = this._list()[this._sel];
     if (!s) return;
 
+    // ---------- 穿戴件三态:卸下 / 穿上 / 买即穿(金币链与皮肤同一条,见 career.buyAcc) ----------
+    if (isCosmo(s)) {
+      const st = this._cardState(s);
+      if (st.worn) {
+        if (!this._slotCanEmpty(s)) { this._showToast("这一件已经穿在身上了"); return; }
+        Career.unequipAcc(s.slot);
+        this._showToast(`已卸下「${s.name}」`);
+      } else if (st.owned) {
+        Career.equipAcc(s.id);
+        this._showToast(`已穿上「${s.name}」`);
+      } else {
+        const r = Career.buyAcc(s.id);
+        this._showToast(r.ok ? `入手「${s.name}」并已穿上!` : (r.reason ?? "购买失败"));
+      }
+      this._elapsed = 0;
+      this._refresh();
+      return;
+    }
+
+    // ---------- 套装:一次补齐 + 逐槽穿上。成交链仍住在 Career.buy 里,这里只多走一步装备 ----------
+    if (s.kind === "player" && s.parts) {
+      const st = this._cardState(s);
+      if (st.worn) { this._showToast("整套已经穿在身上了"); return; }
+      if (!Career.unlocked(s)) { this._showToast(`Lv.${s.unlockLevel} 解锁`); return; }
+      const pr = Career.setPrice(s.id);
+      // 「送了几件」要在成交**之前**问,别对着早就拥有的东西报喜
+      const gift = pr.have ? 0 : Career.setItems(s).filter((i) => i.price > 0 && !Career.owns(i.id)).length;
+      if (!st.owned && pr.charge > 0) {
+        const r = Career.buy(s.id);
+        if (!r.ok) { this._showToast(r.reason ?? "购买失败"); return; }
+      }
+      if (!Career.equipSet(s.id)) { this._showToast("先买下这套的组成件"); return; }
+      this._showToast(gift > 0
+        ? `入手「${s.name}」整套 · ${gift} 件一并到手,已穿上!`
+        : `已整套穿上「${s.name}」`);
+      this._elapsed = 0;
+      this._refresh();
+      return;
+    }
+
+    const fam = Career.familyOf(s.id);
+    if (fam) { this._openFamily(fam.id); return; }   // 族卡按下去 = 进二级货架,金币一分不动
+
+    // 走到这里的一定是皮肤货架(上面的穿戴件与套装分支已提前返回)。
+    // 装备的目标类取**商品自己的 kind**,不取 this._kind —— 脸面现在摆在「配饰」那一格里,
+    // 但它仍然落 equipped.face;拿格子名当类名,按下去就会去写一个不存在的 "acc" 类。
+    const k = s.kind;
     const p = Career.profile();
-    if (p.equipped[kind] === s.id) {
+    if (p.equipped[k] === s.id) {
       this._showToast("已经穿在身上了");
       return;
     }
     if (Career.owns(s.id)) {
-      Career.equip(kind, s.id);
+      Career.equip(k, s.id);
       this._showToast(`已装备「${s.name}」`);
     } else {
-      const r = Career.buyAndEquip(kind, s.id);
-      if (r.ok) this._showToast(`入手「${s.name}」并已装备!`);
-      else this._showToast(r.reason ?? "购买失败");
+      // 买人物 ⇒ 自带脸面一起到手(捆绑住在 Career.profile() 归一化里)。
+      // 「送」字要在成交**之前**问一次有没有,别对着早就拥有的东西报喜
+      const gift = k === "player" ? Career.linkedFace(s.id) : null;
+      const had = gift ? Career.owns(gift.id) : false;
+      const of = Career.familyOfSkin(s.id);
+      const r = Career.buyAndEquip(k, s.id);
+      if (!r.ok) this._showToast(r.reason ?? "购买失败");
+      else if (r.family === "bought" && of) {
+        // 一次扣族价拿下整族:把"还送了什么"说清楚,否则买家只看到钱少了
+        const extra = of.members.filter((m) => (Career.skinById(m)?.price ?? 0) > 0).length;
+        this._showToast(`买断「${of.name}」· ${extra} 款脸面随意换`);
+      } else if (gift && !had) this._showToast(`入手「${s.name}」并已装备!送「${gift.name}」`);
+      else this._showToast(`入手「${s.name}」并已装备!`);
     }
     this._elapsed = 0;
     this._refresh();
@@ -1034,16 +1489,12 @@ export class CareerPanel extends Component {
 
   // ========== Tab 切换 ==========
 
-  private _setKind(k: SkinKind | "stats") {
+  private _setKind(k: SkinKind | "acc" | "stats") {
     this._kind = k;
     this._sel = 0;
-    this._elapsed = 0;
-    // 换 tab = 换货架:回到第一行,别停在上一页的滚动位置
-    this._scrollY = 0;
-    this._vel = 0;
-    this._easeTo = null;
-    this._dragId = null;
-    this._dragMoved = false;
+    this._fam = null;   // 换 tab 就出了这一族,二级货架随之收
+    this._bundle = null; // 套装的二级货架同理:换格子还停在上一套的组成件里就是迷路
+    this._resetShelf();
     this._refresh();
   }
 
@@ -1061,7 +1512,7 @@ export class CareerPanel extends Component {
     // 清空旧统计卡片
     clearKids(this._statsNode)
 
-    const cells = statCells(Career.profile(), DRILL_STARS_MAX);
+    const cells = statCells(Career.profile(), DRILL_STARS_MAX, Career.milestoneViews());
 
     // 六格的格位与格内排版都由 shop-shelf 给(与 shopOverlaps / shopOverflow / statCardFits 同一套数)
     const boxes = shopStats(CONTENT_H);
@@ -1079,7 +1530,10 @@ export class CareerPanel extends Component {
       // 墨面 + 同色 keyline。**不再压一条通宽实心色带**:那条带子和它下面的数字同色,
       // 什么也没报(装饰),而且它的斜切量按自己的 26 高算、卡框按 136 高算,两边不平行
       // ⇒ 一侧戳出卡框、一侧留缝,就是用户说的「那个条形底板不太对」。
-      retainedDraw(g, () => drawP5Card(g, cw, ch, face, { bandH: 0 }));
+      // 里程碑可领的卡点亮 glow(与货架卡选中态同一参数):这里只管画,「可不可领」
+      // 的判定在 shop-shelf.statCells 的三态里,面板不重复算第二遍。
+      const claim = !!c.claim;
+      retainedDraw(g, () => drawP5Card(g, cw, ch, face, { bandH: 0, glow: claim }));
 
       // 引导线**另起一个节点**:cc 的 Graphics 上 stroke() 不清路径(AGENTS.md 坑 8),
       // 画在同一张画布上会把卡框 keyline 再描一遍,0.55 的边被叠成 0.78 —— 一条线的钱,
@@ -1110,10 +1564,28 @@ export class CareerPanel extends Component {
       if (c.unit) mkLabel(node, "unit", c.unit, STAT.unitSize, COL.dimWhite, {
         x: d.unit.x, y: d.unit.y, w: d.unit.w + 8, align: 0, disp: true,
       });
-      if (c.sub) mkLabel(node, "sub", c.sub, STAT.subSize, COL.dimGray, {
+      if (c.sub) mkLabel(node, "sub", c.sub, STAT.subSize, claim ? COL.gold : COL.dimGray, {
         x: d.sub.x, y: d.sub.y, w: cw - STAT.padX * 2, align: 1,
       });
+
+      // 里程碑可领 → 整卡即按钮(268×136 远超触控下限),点按领取;发奖与记账都在
+      // Career.claimMilestone 一处,面板只管喊话与重建。
+      if (c.claim) {
+        pressable(node);
+        onTap(node, () => this._claimMilestone(c.key));
+      }
     });
+  }
+
+  // 生涯里程碑领取(2026-10-07):可领卡整卡点按 → Career 发奖(金币+经验走同一条
+  // 经济轨道)→ toast 播报 → _refresh() 重建六格并同步顶栏金币。无可领时 Career 返回
+  // null,这里静默返回(卡片本来就是照「可领」态建的,正常点不到这条路)。
+  private _claimMilestone(key: MilestoneStat) {
+    const r = Career.claimMilestone(key);
+    if (!r) return;
+    const ups = r.levelUps.length ? ` 升级 Lv.${r.levelUps[r.levelUps.length - 1]}!` : "";
+    this._showToast(`里程碑达成!+${r.coin}金币 +${r.exp}经验${ups}`);
+    this._refresh();
   }
 
   // ========== 实时预览 ==========
@@ -1130,14 +1602,39 @@ export class CareerPanel extends Component {
     const s = list[this._sel];
     if (!s) return;
 
-    const curPlayer = Career.skinOf("player");
+    // 当前真实形象:逐槽合成出来的那一份,不再是"equipped.player 那条 def"。
+    // 玩家自己搭出来的混搭(黑肤 + 猫耳 + 王者拼色)必须在每一个 tab 的预览里都站着,
+    // 否则买家在球拍页看到的"自己"是另一个人。
+    const cur = Career.look();
     const curRacket = Career.skinOf("racket");
 
-    // 试衣间:player tab 用候选人物+当前球拍;racket tab 反之。
+    // --- 配饰 tab:全身试衣间 —— 当前形象 + 选中件换上身的实时试穿。
+    //     买家拍板的是「穿在我身上哪儿、什么效果」,单件静置画答不了这个问题;
+    //     选中的那件**即时替换**它槽位上的现装(没戴也直接戴上),站姿呼吸看细节。 ---
+    if (isCosmo(s)) {
+      // 本体件走合成覆写(改的是 skin 的旋钮);挂件件改的是 acc 数组。两条通道各管各的槽。
+      const L = Career.lookOfCandidate(s);
+      const acc = s.kind === "wear"
+        ? L.acc.filter((a) => a.slot !== s.slot).concat(s)
+        : L.acc;
+      const body = dummyPlayer(L.theme, curRacket, {
+        playerSkin: L.skin, faceSkin: Career.skinOf("face"),
+        acc,
+        y: Math.sin(this._elapsed * 6) * 2,
+      });
+      drawPlayer(g, previewVp(1.5, 0, -45), body, Math.round(this._clock * 60), 1, null);
+      if (this._previewName) {
+        const rn = CFG.rarity[s.rarity].name;
+        this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;
+      }
+      return;
+    }
+
+    // 试衣间:player tab 用候选套装+当前球拍;racket tab 反之。
     // playerSkin 挂完整定义 → 发型/头饰/光环在预览里实时可见
-    const playerSkinDef = kind === "player" ? s : curPlayer;
-    const playerTheme = themeOf(playerSkinDef);
-    const racketSkin = kind === "racket" ? s : curRacket;
+    const playerSkinDef = kind === "player" ? (s as SkinDef) : cur.skin;
+    const playerTheme = kind === "player" ? themeOf(s as SkinDef) : cur.theme;
+    const racketSkin = kind === "racket" ? (s as SkinDef) : curRacket;
 
     // --- 羽毛球 tab:展示羽毛球 + 专属拖尾示意 ---
     if (kind === "shuttle") {
@@ -1152,13 +1649,30 @@ export class CareerPanel extends Component {
       return;
     }
 
-    // --- 面部 tab:大头像循环表情,把五官配色和心情腮红直接演给买家看 ---
-    if (kind === "face") {
-      const vp = previewVp(3.4, 0, 10);
+    // --- 面部 tab:全身 + 头部特写。买家要拍板的是「这张脸装在这身上什么效果」,
+    //     只给一颗大头像看不出发型/球衣/肤色的整体搭配;但五官与心情腮红又必须
+    //     看得清,所以两幅同屏、共用同一个表情时钟(不是两张各演各的)。 ---
+    // 判据取**商品自己的 kind**,不取所在格子:脸面现在摆在「配饰」那一格的 chip 里,
+    // 拿 this._kind 判就永远进不来这条分支(选中的脸根本不会画进预览)。
+    if (s.kind === "face") {
       const exprs: FaceKind[] = ["normal", "happy", "star", "wow"];
       const seg = 2.2 / exprs.length;               // 与试衣间同一个 2.2s 循环时钟
       const expr = exprs[Math.min(exprs.length - 1, Math.floor(this._elapsed / seg))];
-      drawHeadStill(g, vp, 0, 0, 1, themeOf(curPlayer), s.faceStyle ?? "skin", expr, this._elapsed);
+      const th = cur.theme;
+      const style = faceStyleOf(s, cur.skin);
+      const sticker = expr === "normal" ? 0 : 666;  // >600 = 贴纸走「定格」分支
+
+      // 左:头部特写(与上场同一套 drawHead 笔画,底色只来自这张脸自己)
+      drawHeadStill(g, previewVp(2.6, -92, 52), 0, 0, 1, th, style, expr, this._elapsed);
+      // 右:当前装备的人物 + 球拍,只把脸换成候选;站姿呼吸,不挥拍(挥拍会甩头,脸读不清)。
+      // 1.5 与人物/球拍 tab 同一档 —— 三个 tab 里"你"该是一样大。
+      const body = dummyPlayer(th, curRacket, {
+        playerSkin: cur.skin, faceSkin: s,
+        face: expr, faceT: sticker, faceD: 666,
+        y: Math.sin(this._elapsed * 6) * 2,
+      });
+      drawPlayer(g, previewVp(1.5, 45, -45), body, Math.round(this._clock * 60), 1, null);
+
       if (this._previewName) {
         const rn = CFG.rarity[s.rarity ?? "common"].name;
         this._previewName.string = rn === "经典" ? s.name : `${s.name} · ${rn}`;
@@ -1315,6 +1829,7 @@ export class CareerPanel extends Component {
       this._act(); return;
     }
     if (code === KeyCode.ESCAPE || code === KeyCode.KEY_Q || code === KeyCode.KEY_B) {
+      if (this._fam) { this._closeFamily(); return; }   // 在二级货架里,Esc 是先退一层而不是关店
       this._onCloseCb?.();
       this.hide();
     }

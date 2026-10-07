@@ -12,15 +12,26 @@
 // 硬塞进去就是用户拍的那张图 —— 五句糊成一排互相盖字。何况那颗动作按钮被
 // uiButton 的 TOUCH_MIN 抬到 44 高之后,卡里连第三样东西的缝都不剩(见 skill-check
 // 的 cardStackFits)。所以卡片只留「标签 + 名字 + CD + 动作」,完整说明整条搬到
-// 面板底部那条 652 宽的详情板:15 号字下最长一句 535 px,一行就读得完。
+// 面板底部那条详情板:15 号字下最长一句 535 px,一行就读得完。
+//
+// 详情板左列那块**会动的演示**(2026-10-06,用户指令:「选择了对应的技能之后,就是要有一个
+// 演示窗口来稍微介绍一下这个技能怎么去用,跟设置里面选择不同的操作方式那个窗口类似」):
+//   · 形态照的是设置页「移动方式图示」那一格 —— 常驻、跟着选中项立刻换画面、自动循环、
+//     切档不重置时钟(同一拍继续演),不另开一屏拦人;
+//   · 点它放大成窗(分步讲解 + 可定格),画的是**同一批点列**换个盒子,不是第二套画面;
+//   · 演示的每一帧来自 core/skill-demo(把 Rules.step 当真机跑一遍录下来的快照),
+//     所以「教的」与「判的」不可能分叉 —— 训练场 0.0.21 / 教学 0.0.24 踩过之后的老规矩;
+//   · 为了腾出这一格(盒高 150 才读得懂人物),底部那条 50 高的完成键带让给详情板,
+//     「完成」搬进槽位行最右(与两颗 chip 同排,几何判据 slotRowFits)。
 //
 // 排版一个坐标都不手调 —— 全问 ui/skill-layout.ts(折行、右对齐块按实测宽倒推、
 // 竖排留缝),7 个技能 × 解锁 × 双槽全组合在 node 下回归:tools/skill-check.ts。
 //
 // ⚠ 整卡可点,但 Button 不挂在卡片节点上:见下面 hit 垫那段注释。
 // ============================================================
-import { Button, Graphics, Label, Node, UITransform, Vec2 } from "cc";
+import { Button, Component, Graphics, Label, Node, UITransform, Vec2, _decorator } from "cc";
 import { Skills } from "../core/skills";
+import { SkillDemo } from "../core/skill-demo";
 import { Career } from "../core/career";
 import { SkillId } from "../core/types";
 import type { UiKit } from "./ui-manager";
@@ -29,11 +40,27 @@ import {
   ac, ARCADE, cancelFade, drawMenuCard, drawSlantShadow, fadeOutHide,
   makeChip, retainedDraw, ROLE, SLANT, slamIn, skewOf, slantPath,
 } from "./ui-arcade";
+import { paintP5 } from "./p5-paint";
+import { C } from "./p5-tokens";
+import { skillDiagramDL } from "./skill-diagram";
 import {
-  layoutSkillPlate, SK, skillBtnLabel, skillCardX, skillMeter, skillStatus,
-  slotChipText, slotChipX,
+  demoBox, layoutSkillPlate, SD, SK, skillBtnLabel, skillCardX, skillMeter, skillStatus,
+  slotChipText, slotChipX, slotFinX, sdCaptionLines, sdCloseX, sdTitleX,
   type PlateItem, type PlateRole, type SkillLike,
 } from "./skill-layout";
+
+const { ccclass } = _decorator;
+
+/**
+ * 演示盒的每帧时钟。弹窗是常驻纯类(不是 Component),拿不到引擎的 update;而让它去求
+ * UIManager 替它数帧 = 把私有状态伸进另一个面板(那块面板正被别的改动碰着)。
+ * 所以自带一个只转发 tick 的小组件:关闭时 onTick 置 null,update 立刻零开销。
+ */
+@ccclass("SkillDialogClock")
+class SkillDialogClock extends Component {
+  onTick: ((dt: number) => void) | null = null;
+  update(dt: number): void { if (this.onTick) this.onTick(dt); }
+}
 
 /** 倒三角的 y:贴在选中卡片下缘(含厚底边)与详情板之间那条缝里 */
 const CARET_Y = SK.cardsY - SK.cardH / 2 - SK.cardEdge;
@@ -66,6 +93,21 @@ export class SkillDialog {
   private selectedId: SkillId = "lunge";
   private selAccent: string = ARCADE.acid;
   private onEquipCallback?: (id: SkillId) => void;
+
+  // ---------- 演示(详情板左列那一格 + 点开后的放大窗) ----------
+  /** 演示时钟(帧)。切技能**不重置** —— 与设置页那张图示同一条口径:同一拍继续演 */
+  private demoT = 0;
+  private demoGfx: Graphics | null = null;
+  /** 放大窗:一次性节点(开时建、关时 destroy)—— 不留"active=false 再开掉渲染数据"的坑 */
+  private win: Node | null = null;
+  private winGfx: Graphics | null = null;
+  private winCap: Label | null = null;
+  private winPlay: Label | null = null;
+  /** 放大窗当前钉在第几步(-1 = 连播,读数跟着画面走) */
+  private winStep = -1;
+  /** 定格:钉住某一帧(点画面切) */
+  private frozen = false;
+  private clock: SkillDialogClock | null = null;
 
   constructor(parent: Node, kit: UiKit) {
     this.kit = kit;
@@ -115,6 +157,7 @@ export class SkillDialog {
     }
 
     this.buildPlate();
+    this.buildDemo();
 
     // 7 张横排技能卡片
     const all = Skills.allSkills();
@@ -171,17 +214,208 @@ export class SkillDialog {
       });
     });
 
-    // 底部完成按钮
+    // 「完成」:与两颗槽位 chip 同排、贴内容列右缘(底部那条带子整个让给了演示盒)。
+    // 位置全问 skill-layout(slotFinX / slotRowFits),不在这儿挑坐标。
     const finBtn = kit.button(this.card.node, "完成", SK.finW, SK.finH, {
       size: 13,
       fg: P.accent,
       bg: ARCADE.navy2,
     });
-    finBtn.setPosition(0, SK.finY, 0);
+    finBtn.setPosition(slotFinX(), SK.finY, 0);
     finBtn.on(Button.EventType.CLICK, () => {
       kit.sfx.play("ui");
       this.hide();
     });
+
+    // 演示时钟:引擎每帧调一次组件的 update,组件再转给本弹窗(纯类自己没有 update)
+    this.clock = this.root.addComponent(SkillDialogClock);
+    this.clock.onTick = (dt: number): void => this.tickDemo(dt);
+  }
+
+  // ---------- 演示盒 ----------
+
+  /**
+   * 详情板左列:凹陷槽底 + 每帧重画的图示 + 右下角「点开」角标。
+   * 整块可点 = 放大看分步讲解(与设置页那一格一样,画面本身就是入口)。
+   */
+  private buildDemo(): void {
+    const d = demoBox();
+    const slot = this.kit.slot("skill-demo", this.plate, d.w, d.h, C.ink);
+    slot.node.setPosition(d.cx, d.cy, 0);
+
+    const n = new Node("skill-demo-gfx");
+    n.layer = this.root.layer;
+    n.addComponent(UITransform).setContentSize(d.w, d.h);
+    n.setParent(this.plate);
+    n.setPosition(d.cx, d.cy, 0);
+    this.demoGfx = n.addComponent(Graphics);
+
+    // 借一个临时名再挂 CLICK:接收者名不能与文件里手搓的 `new Node` 撞名,
+    // 否则 ui-click-check 会把「工厂节点的 .node.on」误判成手搓裸节点漏装 Button。
+    const mini = slot.node;
+    this.kit.press(mini, 0.98);
+    mini.on(Button.EventType.CLICK, () => this.openWindow());
+  }
+
+  /** 「点开」角标:右上角两条括线。淡到看不见就等于没画(0.55 是出图肉眼定的这一档) */
+  private paintExpandHint(g: Graphics, w: number, h: number): void {
+    const x = w / 2 - 6, y = h / 2 - 6, s = 6;
+    g.strokeColor = ac(C.paper, 0.55);
+    g.lineWidth = 1.6;
+    g.moveTo(x - s, y);
+    g.lineTo(x, y);
+    g.lineTo(x, y - s);
+    g.moveTo(x - s + 2, y - 2);
+    g.lineTo(x - 2, y - s + 2);
+    g.stroke();
+  }
+
+  private paintDemo(): void {
+    const g = this.demoGfx;
+    if (!g || !g.node.isValid) return;
+    g.clear();
+    paintP5(g, skillDiagramDL(this.selectedId, this.demoT, SK.demoW, SK.demoH));
+    this.paintExpandHint(g, SK.demoW, SK.demoH);
+  }
+
+  /**
+   * 每帧推进演示时钟并重画。三道门控,少一道就是白画:
+   *   · 弹窗不在层级里可见 —— 关掉之后引擎还在调 update(组件挂在 root 上,root 只是淡出)
+   *   · 该技能没烘出演示(loop 0)—— 局面跑不通就整格不画,不演假的
+   *   · 放大窗开着 —— 身后那格看不见,画它就是每帧多一屏多边形
+   */
+  private tickDemo(dt: number): void {
+    if (!this.root.active) return;
+    const loop = SkillDemo.loopFrames(this.selectedId);
+    if (loop <= 0) return;
+    if (this.demoT >= loop) this.demoT = 0;
+    if (!this.frozen) this.demoT = (this.demoT + Math.min(3, dt * 60)) % loop;
+    if (this.win) this.paintWindow();
+    else this.paintDemo();
+  }
+
+  // ---------- 放大窗 ----------
+
+  /** 建即显示、关闭即销毁(照 confirm-dialog 那条一次性路,不留复活路径) */
+  private openWindow(): void {
+    const bake = SkillDemo.bake(this.selectedId);
+    if (!bake) {
+      this.kit.toast("这款技能的演示跑不出来,先说文字版");
+      return;
+    }
+    this.kit.sfx.play("ui");
+    this.closeWindow();
+    const P = this.kit.pal;
+    const root = this.kit.root(this.root, "skill-demo-window");
+    this.win = root;
+    const dim = this.kit.dim(root, 0.55, 0.85);
+    dim.on(Node.EventType.TOUCH_START, this.onWinDimTap, this);
+    this.kit.atmosphere(root);
+    const panel = this.kit.panel(root, SD.panelW, SD.panelH, {
+      r: 16, bgAlpha: 0.96, scan: true, bandHex: ROLE.info.face,
+    });
+    panel.node.setPosition(0, 0, 0);
+
+    const def = Skills.defOf(this.selectedId);
+    const title = this.kit.label(panel.node, `${def.shortName} · 怎么用`, 20, def.accent);
+    title.node.setPosition(sdTitleX(), SD.titleY, 0);
+
+    const close = this.kit.button(panel.node, "关闭", SD.closeW, SD.closeH, {
+      size: 13, fg: P.accent, bg: ARCADE.navy2,
+    });
+    close.setPosition(sdCloseX(), SD.titleY, 0);
+    close.on(Button.EventType.CLICK, () => { this.kit.sfx.play("back"); this.closeWindow(); });
+
+    // 画布:槽底(读作"这是一块看着的窗") + 每帧重画的图示 —— 与那格小图同一批点列
+    const slot = this.kit.slot("demo-canvas", panel.node, SD.canvasW, SD.canvasH, C.ink);
+    slot.node.setPosition(0, SD.canvasY, 0);
+    const gfx = new Node("demo-canvas-gfx");
+    gfx.layer = root.layer;
+    gfx.addComponent(UITransform).setContentSize(SD.canvasW, SD.canvasH);
+    gfx.setParent(panel.node);
+    gfx.setPosition(0, SD.canvasY, 0);
+    this.winGfx = gfx.addComponent(Graphics);
+    // 点画面 = 定格/继续(分步讲解要能钉在某一帧上,而不是"错过就没了")
+    const canvas = slot.node;
+    this.kit.press(canvas, 0.99);
+    canvas.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); this.toggleFreeze(); });
+
+    this.winCap = this.kit.label(panel.node, "", SD.capSize, ARCADE.paper);
+    this.winCap.node.setPosition(0, SD.capY, 0);
+    this.winCap.lineHeight = SD.capLineH;
+
+    const keys: Array<[string, () => void]> = [
+      ["上一步", () => this.gotoStep(-1)],
+      ["", () => this.toggleFreeze()],
+      ["下一步", () => this.gotoStep(1)],
+    ];
+    const n = keys.length;
+    keys.forEach(([lab, cb], i) => {
+      const b = this.kit.button(panel.node, lab || "连播", SD.keyW, SD.keyH, {
+        size: 13, fg: ARCADE.paper, bg: ARCADE.navy2,
+      });
+      b.setPosition((i - (n - 1) / 2) * (SD.keyW + SD.keyGap), SD.keyY, 0);
+      b.on(Button.EventType.CLICK, () => { this.kit.sfx.play("ui"); cb(); });
+      if (i === 1) this.winPlay = b.getComponent(Label);
+    });
+
+    this.winStep = -1;
+    this.frozen = false;
+    this.paintWindow();
+    slamIn(panel.node);
+  }
+
+  private closeWindow(): void {
+    if (!this.win) return;
+    this.win.destroy();
+    this.win = null;
+    this.winGfx = null;
+    this.winCap = null;
+    this.winPlay = null;
+    this.frozen = false;
+    this.winStep = -1;
+    this.paintDemo();
+  }
+
+  private onWinDimTap(): void {
+    this.kit.sfx.play("back");
+    this.closeWindow();
+  }
+
+  /** 定格 ↔ 连播:钉住当前这一帧(读数与画面一起停),再点就走 */
+  private toggleFreeze(): void {
+    const loop = SkillDemo.loopFrames(this.selectedId);
+    this.frozen = !this.frozen;
+    if (!this.frozen) this.winStep = -1;
+    else if (loop > 0) this.demoT = this.demoT % loop;
+    this.kit.sfx.play("ui");
+    this.paintWindow();
+  }
+
+  /** 上/下一步:画面钉到那一步的锚帧(定格),第 1 步之前与最后一步之后回连播 */
+  private gotoStep(dir: number): void {
+    const bake = SkillDemo.bake(this.selectedId);
+    if (!bake) return;
+    const last = bake.steps.length - 1;
+    const cur = this.winStep < 0 ? (dir > 0 ? -1 : 0) : this.winStep;
+    let next = this.winStep < 0 ? (dir > 0 ? 0 : last) : cur + dir;
+    if (next > last) next = 0;
+    this.winStep = next;
+    this.frozen = true;
+    this.demoT = bake.steps[next].frame;
+    this.paintWindow();
+  }
+
+  private paintWindow(): void {
+    const g = this.winGfx;
+    const bake = SkillDemo.bake(this.selectedId);
+    if (!g || !g.node.isValid || !bake) return;
+    g.clear();
+    paintP5(g, skillDiagramDL(this.selectedId, this.demoT, SD.canvasW, SD.canvasH));
+    const step = this.frozen && this.winStep >= 0 ? this.winStep : SkillDemo.stepAt(bake, this.demoT);
+    const s = bake.steps[Math.min(step, bake.steps.length - 1)];
+    if (this.winCap) this.winCap.string = sdCaptionLines(step, s.name, s.text).join("\n");
+    if (this.winPlay) this.winPlay.string = this.frozen ? "连播" : "定格";
   }
 
   /** 卡片动作按钮:对「当前选中槽」执行 装入/换到/卸下,失败给可读 toast */
@@ -420,10 +654,14 @@ export class SkillDialog {
     this.selectedId = Career.equippedSkill();
     this.selectedSlot = 1;
     this.repaint();
+    this.paintDemo();
     slamIn(this.card.node);
   }
 
   hide(): void {
+    // 放大窗先收:它是 root 的子节点,只淡出 root 会留一块"看得见但点不动"的窗
+    // (fadeOutHide 只关 Button 与 BlockInputEvents,裸 TOUCH 监听照旧活着 —— 闸门 ui-hide-check)
+    this.closeWindow();
     this.dim.off(Node.EventType.TOUCH_START, this.onDimTap, this);
     fadeOutHide(this.root);
   }

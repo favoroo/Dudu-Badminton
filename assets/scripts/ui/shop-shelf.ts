@@ -144,9 +144,11 @@ export function advanceScroll(m: ScrollMotion, maxScroll: number, dt: number): S
 import { inkFor, ROLE, SLANT, TOUCH } from "./p5-tokens";
 import type { Role } from "./p5-tokens";
 import { chipHeight, chipWidth, skewOf, slantEdgeX } from "./p5-shapes";
-import { textW } from "../core/text-metrics";
+import { textW, wrapText, ellipsize } from "../core/text-metrics";
 // 只取类型:履历格的内容函数要吃什么数据,不该把 core/career 的运行时代码拖进排版层
 import type { Profile } from "../core/career";
+// 里程碑口径单一出口(core/milestone):statCells 的胜率与「下一档」副行都吃它,不许另算一份
+import { MILESTONE_STATS, statValue, type MilestoneStat, type MilestoneView } from "../core/milestone";
 
 export const SHOP = {
   pw: 880, ph: 470,
@@ -241,6 +243,190 @@ export function shopContent(gridH: number): { grid: SBox; preview: SBox; name: S
   };
 }
 
+// ============================================================
+// 穿戴槽子页签(配饰 tab 专用,2026-10-06 拆件重构)
+//
+// 为什么是「窗顶钉住的槽位 chip」而不是把它们提成顶栏 tab:12 个槽会把每格压到
+// 半张卡宽,标签放不下;而一行摆 12 颗 chip 只剩 ~43px,加上佩戴色点就挤成一团。
+// 所以固定**两行**(本体 / 配件,分组读 config.COSMO_SLOTS[].row)—— 不用横向滚动,
+// 因为滚动会把槽位藏起来,而"看不见的控件"在这个面板里一律算 bug。
+// 两行都钉在网格窗顶部、**不随滚动**;窗本身按 accBandH 整段变矮让出这条带(见 accShelf)
+// —— 让位必须发生在裁切上,抬 padTop 只管静止那一格,一滚就穿帮。
+// 滚动上限/末行露出全走 shelfLayout 既有算术,不在面板里手调。
+// chip 高吃满 TOUCH.min:它是「选哪个槽位的货架」的触控件,不是标签。
+// ============================================================
+
+/** 子页签行高(chip 吃满触控下限)+ 与首行卡片的缝 + 两行之间的缝 */
+export const ACC_SLOT_H = TOUCH.min;
+export const ACC_SLOT_GAP = 6;
+export const ACC_SLOT_ROW_GAP = 4;
+
+/** 槽位 chip 占几行:由 COSMO_SLOTS 的 row 字段分组算出来,不在面板里手调。
+ *  拆件重构把 4 槽扩到 12 槽后一行放不下(520px 宽 ÷ 12 ≈ 43px,标签 + 佩戴色点会挤成一团),
+ *  而横向滚动会把槽位藏起来 —— 「看不见的控件就是 bug」。所以固定两行:本体 / 配件。 */
+export function accSlotRowCounts(rows: number[]): number[] {
+  const out: number[] = [];
+  for (const r of rows) out[r] = (out[r] ?? 0) + 1;
+  return out.map((n) => n || 0);
+}
+
+/** 子页签带总高:rowCount 行 chip + 行缝 + 与首行卡片的那条缝。
+ *  chip 的落位与货架的让位都从这一个式子算,两边不可能漂成两套。 */
+export function accBandH(rowCount = 1): number {
+  return rowCount * ACC_SLOT_H + (rowCount - 1) * ACC_SLOT_ROW_GAP + ACC_SLOT_GAP;
+}
+
+/** 形象页的货架:**可视窗整块变矮**让出子页签带(窗底不动、顶边落到 chip 之下)。
+ *
+ *  旧写法是抬 padTop,那是错的:padTop 只管得住「静止时第一行不压 chip」,
+ *  手指一滑,整排卡片就从半透明的 chip 背后穿出去(用户 2026-10-07 现场图:
+ *  「肤色/上衣」那两行下面全是别人的商品名、价格与卖点小字)。
+ *  chip 既然是钉住不随滚动的,让位就必须发生在**裁切**上 —— 让不进窗口的东西,
+ *  才是真的不让它出现在那一条带里。 */
+export function accShelf(rowCount = 1): Shelf {
+  return { ...SHELF, h: SHELF.h - accBandH(rowCount) };
+}
+
+/** 槽位 chip:counts[r] = 第 r 行几颗,自上而下排;返回**展平**后的盒,顺序与槽位表一致。
+ *  等分货架窗宽、钉在网格窗顶部(y 向上,第一行顶 = 窗顶)。
+ *  右缘留一条滚动条走廊:滚动条贴窗右缘内侧(BAR_X = w/2−7),某槽商品多到能滚时
+ *  滑块会常驻那一条 —— chip 全宽铺就会与它相撞,走廊提前让位(与是否在滚无关,
+ *  chip 宽度不该随滚动状态变)。 */
+export function accSlotRows(grid: SBox, counts: number[]): SBox[] {
+  const gap = 4;
+  const corridor = 14;
+  const out: SBox[] = [];
+  counts.forEach((n, r) => {
+    const tw = (grid.right - grid.left - corridor) / n;
+    const cy = grid.cy + grid.h / 2 - ACC_SLOT_H / 2
+      - r * (ACC_SLOT_H + ACC_SLOT_ROW_GAP);
+    for (let i = 0; i < n; i++) out.push(sbox(grid.left + i * tw, tw - gap, cy, ACC_SLOT_H));
+  });
+  return out;
+}
+
+/** 单行版:一行 n 颗(旧调用点与出图工具仍走这条) */
+export function accSlotRow(grid: SBox, n = 4): SBox[] {
+  return accSlotRows(grid, [n]);
+}
+
+/** 子页签判据:chip 两两不压、都不越出货架窗、高度够触控;
+ *  外加**这条带必须整段在裁切窗之外** —— shelf 传进来的是「卡片能滑到的那块窗」,
+ *  默认取 accShelf(行数)。把让位退回成抬 padTop,这条会当场咬住(见 selftest 反例)。 */
+export function accSlotOverlaps(grid: SBox, counts: number[] = [4], shelf: Shelf = accShelf(counts.length)): string[] {
+  const out: string[] = [];
+  const chips = accSlotRows(grid, counts);
+  for (let i = 0; i < chips.length; i++) {
+    for (let j = i + 1; j < chips.length; j++) {
+      if (hit(chips[i], chips[j])) out.push(`槽位 chip ${i} 压住 ${j}`);
+    }
+    if (chips[i].left < grid.left - 0.5 || chips[i].right > grid.right + 0.5) {
+      out.push(`槽位 chip ${i} 越出货架窗`);
+    }
+    if (chips[i].h < TOUCH.min) out.push(`槽位 chip ${i} 触控高度不足`);
+  }
+  const bandBottom = Math.min(...chips.map(sBottom));
+  // 让位是**底对齐**的:窗变矮之后中心往下掉 (grid.h − shelf.h)/2,窗顶才落到 chip 之下。
+  // 直接拿 grid.cy + shelf.h/2 会把窗顶算高半条带 —— 于是正例反例一起红。
+  const winTop = grid.cy + shelf.h / 2 - (grid.h - shelf.h) / 2;
+  if (winTop > bandBottom + 0.5) {
+    out.push(`裁切窗顶 ${winTop.toFixed(1)} 高过子页签带底缘 ${bandBottom.toFixed(1)} —— 卡片一滚就穿到 chip 背后`);
+  }
+  return out;
+}
+
+// ============================================================
+// 卡片上的三行字 —— 名称 / 状态 / 卖点小字
+//
+// 为什么把「这行字有多长」搬进排版:Label 默认 Overflow.NONE,给它 w 只是给
+// 了个它自己不会遵守的盒子。卖点那一行吃的是 config 里的 desc(最长的一句 15 字、
+// 9 号字约 153px,而一张卡只有 96px 宽),于是五张卡的小字在货架上连成一句
+// 读不通的话(用户 2026-10-07:「这里显示都溢出了」)。
+// 折行/截尾都是纯算术,所以和 statCardFits 同一族:版式住这里,panel-check 拿
+// **config 真文案**断言,面板只管摆它算出来的行。
+// ============================================================
+
+export const CARD_TEXT = {
+  nameSize: 12, statusSize: 12, fxSize: 9,
+  /** 三行的行心(卡局部坐标,y 向上,以卡心为轴)。面板照这里摆,判据照这里量。 */
+  nameY: -8, statusY: -28,
+  /** 左右各留这么多。5px 不是随手拍的:卡片是 5° 斜切块,越往下整行越往右移,
+   *  以卡心为轴居中的文字在最深那一行(-55)每侧只剩 (96−86)/2 = 5px —— 再窄就骑边。 */
+  padX: 5,
+  /** 卖点最多两行,再多就吃掉卡的墨面;两行装不下就截尾 */
+  fxLines: 2, fxLineH: 10,
+  /** 第一行卖点的行心;第二行往下一个 fxLineH */
+  fxY: -45,
+} as const;
+
+/** 一行字在卡里能用多宽 */
+export const cardInnerW = (): number => SHELF.cardW - CARD_TEXT.padX * 2;
+
+/** 单行件(名称 / 状态):装不下就截尾,不许画到邻卡上 */
+export function cardLine(text: string, size: number): string {
+  return ellipsize(text, size, cardInnerW());
+}
+
+/** 卖点排成几行、有没有被砍掉一截。面板摆的(cardFxLines)与判据量的(cardTextFits)同源。
+ *
+ *  两条排法,先试前者:
+ *  ① 按「·」分段 —— 全站 desc 的写法就是「A · B」两截,按它断行读起来是一句话分成两行;
+ *  ② 兜底按字宽贪心折行 —— 纯按宽度断会断出「队服原色 · 人人有 / 份」这种半截词。
+ *  两条都装不下才截尾(省略号算进宽度)。 */
+function fitCardFx(text: string): { lines: string[]; cut: boolean } {
+  if (!text) return { lines: [], cut: false };
+  const w = cardInnerW(), size = CARD_TEXT.fxSize;
+  const segs = text.split("·").map((s) => s.trim()).filter(Boolean);
+  const rows = segs.length > 1 && segs.length <= CARD_TEXT.fxLines && segs.every((s) => textW(s, size) <= w)
+    ? segs
+    : wrapText(text, size, w);
+  if (rows.length <= CARD_TEXT.fxLines) return { lines: rows, cut: false };
+  return {
+    lines: [...rows.slice(0, CARD_TEXT.fxLines - 1),
+      ellipsize(`${rows[CARD_TEXT.fxLines - 1]}…`, size, w)],
+    cut: true,
+  };
+}
+
+/** 卖点小字最终摆出去的那 0~2 行(永远不溢出卡宽 —— 装不下就截尾兜着) */
+export function cardFxLines(text: string): string[] {
+  return fitCardFx(text).lines;
+}
+
+/** 卖点那一摞的各行行心(与 cardFxLines 一一对应;末行不许低于卡底) */
+export function cardFxYs(n: number): number[] {
+  return Array.from({ length: n }, (_, i) => CARD_TEXT.fxY - i * CARD_TEXT.fxLineH);
+}
+
+/** 卡上三行字的判据。量的都是**config 原文**,不是截尾之后的样子 ——
+ *  面板那侧 cardLine/cardFxLines 是兜底(永远不许溢出),这条判据管的是另一件事:
+ *  **现役文案本来就该整句装进卡里**,靠省略号糊过去等于把卖点砍了还没人发现。
+ *  所以 panel-check 喂真文案:加一款长 desc,这里先红,而不是等真机截图。 */
+export function cardTextFits(rows: Array<{ tag: string; name: string; status: string; fx: string }>): string[] {
+  const out: string[] = [];
+  const w = cardInnerW();
+  for (const r of rows) {
+    for (const [nm, text, size] of [
+      ["名称", r.name, CARD_TEXT.nameSize], ["状态", r.status, CARD_TEXT.statusSize],
+    ] as Array<[string, string, number]>) {
+      if (textW(text, size) > w) out.push(`${r.tag} ${nm}「${text}」宽 ${textW(text, size)} > 卡内宽 ${w},会被截尾`);
+    }
+    const f = fitCardFx(r.fx);
+    if (f.cut) out.push(`${r.tag} 卖点「${r.fx}」装不进 ${CARD_TEXT.fxLines} 行,末行被截尾 —— 截掉的就是卖点`);
+    for (const l of f.lines) {
+      if (textW(l, CARD_TEXT.fxSize) > w) out.push(`${r.tag} 卖点折出的「${l}」仍宽 ${textW(l, CARD_TEXT.fxSize)} > 卡内宽 ${w}`);
+    }
+    const ys = cardFxYs(f.lines.length);
+    if (ys.length && ys[0] + CARD_TEXT.fxSize / 2 > CARD_TEXT.statusY - CARD_TEXT.statusSize / 2) {
+      out.push(`${r.tag} 卖点骑上状态行`);
+    }
+    const low = ys.pop() ?? 0;
+    if (low - CARD_TEXT.fxSize / 2 < -SHELF.cardH / 2) out.push(`${r.tag} 卖点末行低于卡底`);
+  }
+  return out;
+}
+
+
 /** 履历页六格(占满面板宽,与货架窗互斥显示) */
 export function shopStats(gridH: number): SBox[] {
   const cy = SHOP.ph / 2 - SHOP.content.topPad - gridH / 2;
@@ -252,6 +438,37 @@ export function shopStats(gridH: number): SBox[] {
     const col = i % cols, row = Math.floor(i / cols);
     return sbox(-totalW / 2 + col * (cw + gap), cw, top - row * (ch + gap) - ch / 2, ch);
   });
+}
+
+// ============================================================
+// 二级货架(皮肤族成员列表)的「返回」键
+//
+// 为什么单独算:面部 tab 把四款同族脸面合成一张卡(见 config.SKIN_FAMILIES),点进去
+// 是一层成员列表 —— 那一层必须有一条回去的路。它能待的地方只有货架窗底部那一条空带:
+// 上面是末行卡片(2 行制时底缘 -156),下面紧挨着就是提示带车道(带顶 -209),
+// 53px 装 44 高的触控键,上下各剩 5/4px。这个数抬不动了,所以由 shopSubOverlaps 钉住:
+// 成员多到 3 行就没有这条空带,那时该改的是排版,不是把判据调松。
+// ============================================================
+
+/** 返回键的盒子:贴在货架窗左下角内侧 */
+export function shopSubBack(w = 104, h: number = TOUCH.min): SBox {
+  const K = shopContent(SHELF.h);
+  const winBottom = K.grid.cy - SHELF.h / 2;
+  return sbox(K.grid.left + 8, w, winBottom + 3 + h / 2, h);
+}
+
+/** 返回键两头不许压字:上不叠末行卡片、下不叠提示带,且不越出货架窗 */
+export function shopSubOverlaps(n: number): string[] {
+  const out: string[] = [];
+  const b = shopSubBack();
+  const K = shopContent(SHELF.h);
+  const rows = shelfLayout(n).rows;
+  const lastBottom = K.grid.cy + rowTopY(rows - 1) - SHELF.cardH;
+  if (sTop(b) > lastBottom - 0.5) out.push(`返回键顶边 ${sTop(b).toFixed(1)} 压住末行卡片(末行底缘 ${lastBottom.toFixed(1)})`);
+  const toastTop = TOAST.cy + TOAST.h / 2;
+  if (sBottom(b) < toastTop + 0.5) out.push(`返回键底边 ${sBottom(b).toFixed(1)} 压住提示带(带顶 ${toastTop.toFixed(1)})`);
+  if (b.right > K.grid.right - 0.5) out.push(`返回键右缘 ${b.right} 越出货架窗 ${K.grid.right}`);
+  return out;
 }
 
 // ============================================================
@@ -281,12 +498,16 @@ export const STAT = {
 export interface StatCell {
   /** 指标名(印在色签上) */
   name: string;
+  /** 里程碑统计键(面板据此接整卡领取;六格恒有,与 config.MILESTONES.stat 同词表) */
+  key: MilestoneStat;
   /** 主数值,已格式化好的字符串 */
   num: string;
   /** 单位(「%」「拍」「分」);空串 = 不带单位 */
   unit: string;
   /** 副行:必须是真数据,空串 = 这一行不占位 */
   sub: string;
+  /** 可领取时的一次性奖励合计(面板把它点亮成金色领取行 + 整卡可点);缺省 = 不可领 */
+  claim?: { coin: number; exp: number };
   /** 这一格的角色色(色签面 / 引导线 / 数字 / 卡框 keyline 全读它) */
   role: Role;
 }
@@ -375,21 +596,53 @@ export function statCardFits(cells: StatCell[], w: number = SHOP.stats.cw, h: nu
  * **副行只写真从存档里算出来的数** —— 旧版六格里有四格下半截是空的,而空出来的地方一旦
  * 填上「手感火热」这类装饰口号,就成了「不报数据的漂亮话」。`hits` 为 0(新档没打过)时
  * 占比无意义,宁可不写。
+ *
+ * 里程碑三态(2026-10-07,mv 缺省 = 不挂里程碑,判据/旧调用方仍走纯展示):
+ * ① 可领 → 副行整行换成「点击领取 +N金币+N经验」,cell 带 claim(面板发光 + 整卡可点);
+ * ② 有下一档 → 原文案缀「 · 下一档 N{unit}」,**量过放得下才缀**(满档数据下退回原文案);
+ * ③ 已领满 → 缀「 · 已领满」,同样量宽。
+ * 胜率吃 core/milestone 的 statValue —— 它同时是里程碑判定的口径,两处不许各算一份。
  */
-export function statCells(p: Profile, drillStarsMax: number): StatCell[] {
+export function statCells(p: Profile, drillStarsMax: number, mv?: Record<MilestoneStat, MilestoneView>): StatCell[] {
   const st = p.stats;
-  const winRate = st.matches > 0 ? Math.round((st.wins / st.matches) * 100) : 0;
+  const winRate = statValue("winRate", st, p.bestEndlessScore);
   const share = (n: number): string => (st.hits > 0 ? `占击球 ${Math.round((n / st.hits) * 100)}%` : "");
   const stars = Object.values(p.drills).reduce((a, d) => a + ((d && d.stars) || 0), 0);
-  return [
-    { name: "生涯胜率", num: `${winRate}`, unit: "%", sub: `${st.wins} 胜 / ${st.matches} 战`, role: "primary" },
-    { name: "扣杀终结", num: `${st.smashes}`, unit: "", sub: share(st.smashes), role: "power" },
-    { name: "完美击球", num: `${st.perfects}`, unit: "", sub: share(st.perfects), role: "star" },
-    { name: "甜区命中", num: `${st.sweets}`, unit: "", sub: share(st.sweets), role: "drill" },
-    { name: "最长相持", num: `${st.maxRally}`, unit: "拍", sub: `累计击球 ${st.hits} 拍`, role: "info" },
-    { name: "无限模式纪录", num: `${p.bestEndlessScore || 0}`, unit: "分",
-      sub: `训练 ${stars}/${drillStarsMax} ★`, role: "record" },
+
+  const inner = SHOP.stats.cw - STAT.padX * 2;
+  const fitsSub = (s: string): boolean => textW(s, STAT.subSize) <= inner;
+  const decorate = (key: MilestoneStat, base: string): { sub: string; claim?: { coin: number; exp: number } } => {
+    const v = mv?.[key];
+    if (!v) return { sub: base };
+    if (v.claimable) {
+      return { sub: `点击领取 +${v.claimCoin}金币+${v.claimExp}经验`, claim: { coin: v.claimCoin, exp: v.claimExp } };
+    }
+    const sep = base ? " · " : "";
+    if (v.allDone) {
+      const s = `${base}${sep}已领满`;
+      return { sub: fitsSub(s) ? s : base };
+    }
+    if (v.nextAt != null) {
+      const s = `${base}${sep}下一档 ${v.nextAt}${v.unit}`;
+      return { sub: fitsSub(s) ? s : base };
+    }
+    return { sub: base };
+  };
+
+  const defs: Array<{ key: MilestoneStat; num: string; unit: string; base: string; role: Role }> = [
+    { key: "winRate", num: `${winRate}`, unit: "%", base: `${st.wins} 胜 / ${st.matches} 战`, role: "primary" },
+    { key: "smashes", num: `${st.smashes}`, unit: "", base: share(st.smashes), role: "power" },
+    { key: "perfects", num: `${st.perfects}`, unit: "", base: share(st.perfects), role: "star" },
+    { key: "sweets", num: `${st.sweets}`, unit: "", base: share(st.sweets), role: "drill" },
+    { key: "maxRally", num: `${st.maxRally}`, unit: "拍", base: `累计击球 ${st.hits} 拍`, role: "info" },
+    { key: "endless", num: `${p.bestEndlessScore || 0}`, unit: "分",
+      base: `训练 ${stars}/${drillStarsMax} ★`, role: "record" },
   ];
+  return defs.map(({ key, num, unit, base, role }) => {
+    const meta = MILESTONE_STATS.find((m) => m.key === key)!;
+    const { sub, claim } = decorate(key, base);
+    return { key, name: meta.label, num, unit, sub, role, ...(claim ? { claim } : {}) };
+  });
 }
 
 // ============================================================

@@ -82,7 +82,11 @@ export interface RulesState {
   prevState?: MatchState;
 }
 
-const R: RulesState = {
+/**
+ * 一局的全部状态。写成**工厂**而不是一个常量:离线烘焙要临时换上一块一次性的状态去跑,
+ * 跑完把引用换回来(见 isolated)—— 共用同一个对象就没有"换回来"这回事。
+ */
+const freshState = (): RulesState => ({
   state: "MENU",
   mode: "1p",
   diff: "normal",
@@ -106,7 +110,8 @@ const R: RulesState = {
   gustTick: 0,
   deuce: false,
   serveWait: 0,
-};
+});
+let R: RulesState = freshState();
 
 const emit = (t: string, data: Record<string, unknown>): void => { R.events.push(Object.assign({ t }, data)); };
 const other = (s: TeamSide): TeamSide => (s === "left" ? "right" : "left");
@@ -223,6 +228,38 @@ function resetModifiers(): void {
   R.activeStage = null;
   Physics.setEnvModifier(null);
   Pl.setPlayerModifier(null);
+}
+
+/**
+ * 换上一块一次性的对局状态跑 fn,跑完原样换回 —— 给**离线烘焙**用(core/skill-demo 的
+ * 「把真机跑一遍录帧」)。
+ *
+ * 为什么必须有它:烘焙必须真调 newMatch + step,否则教的就是另一套参数(这条仓库里翻过
+ * 两次车,见 skill-demo 文件头)。但那一跑**改的是全局状态**:state 从 MENU 变成 POINT、
+ * 比分被改成 1:0、球员换成演示那两个 —— 而界面层是靠轮询 `R.state` 换屏的,于是
+ * 「点一下技能卡片,游戏自己开打了」(2026-10-07 现场)。
+ *
+ * 所以换回去的不只是 R:`newMatch` 顺手写的几块逐局 scratch(审计 / 阵风累计 / 关卡环境
+ * 与球员修饰 / 两条模式门控)也一并复原,免得烘焙把正在跑那一局的风与门清空。
+ */
+function isolated<T>(fn: () => T): T {
+  const sR = R;
+  const sAudit = audit;
+  const sGust = { hold: gustW.hold, cool: gustW.cool, lastDir: gustW.lastDir };
+  const sEnv = Physics.getEnvModifier();
+  const sPlMod = Pl.getPlayerModifier();
+  R = freshState();
+  try {
+    return fn();
+  } finally {
+    R = sR;
+    audit = sAudit;
+    gustW.hold = sGust.hold; gustW.cool = sGust.cool; gustW.lastDir = sGust.lastDir;
+    Physics.setEnvModifier(sEnv);
+    Pl.setPlayerModifier(sPlMod);
+    AutoHit.onMatch(R.mode);
+    ShadowGate.onMatch(R.mode);
+  }
 }
 
 function newMatch(mode: string, diff: DiffKey, humans?: number): void {
@@ -1035,7 +1072,10 @@ function starFacts(won: boolean): StarFacts {
 }
 
 export const Rules = {
-  R, newMatch, startCampaign, resetModifiers, step, restart, pause, resume, endEndless, isMatchPoint, isPlaying, matchPointInfo, beginPoint, winTarget,
+  /** 当前对局状态。**getter** —— isolated() 会换对象,写成属性就把旧那块焊死了 */
+  get R() { return R; },
+  isolated,
+  newMatch, startCampaign, resetModifiers, step, restart, pause, resume, endEndless, isMatchPoint, isPlaying, matchPointInfo, beginPoint, winTarget,
   applyAiTier,
   teamOf, other, teamIdx, mateOf, rivalsOf, shouldChase, statsOf, starFacts, labelOf, setTrailHook,
 };

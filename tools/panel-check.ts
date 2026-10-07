@@ -29,7 +29,7 @@ import { join } from "path";
 import {
   C, CONTRAST_FLOOR, HALFTONE, ROLE, TOUCH, contrast, inkFor,
 } from "../assets/scripts/ui/p5-tokens";
-import { DRILLS, RARITY_META } from "../assets/scripts/core/config";
+import { DRILLS, RARITY_META, CFG } from "../assets/scripts/core/config";
 import type { DrillDef } from "../assets/scripts/core/types";
 import { halftoneCount, type Paint } from "../assets/scripts/ui/p5-shapes";
 import { aboutLayout, assistCopyLines, assistLayout, assistTextOverflow, box, boxOverflow, boxesOverlap, doneBox, LEFT_W, SET, TOG_W, TOG_TAIL, controlLayout, mediaLayout, settingsOverlaps, settingsOverflow } from "../assets/scripts/ui/settings-layout";
@@ -37,11 +37,13 @@ import { AIR_FRAMES, DIAG, SEG, beatOf, cropHeightPx, padDiagramDL, type Beat } 
 import { JOYSTICK_BASE, railGeo, type MoveMode } from "../assets/scripts/core/settings";
 import { campaignOverflow, campaignOverlaps, CMP } from "../assets/scripts/ui/campaign-layout";
 import { DRILL, drillOverflow, drillOverlaps, drillTouch } from "../assets/scripts/ui/drill-layout";
-import { SHOP, shopOverflow, shopOverlaps, shopTouch, statCardFits, statCells, TOAST, TOAST_FG, toastLane } from "../assets/scripts/ui/shop-shelf";
+import { accBandH, accShelf, accSlotOverlaps, accSlotRowCounts, CARD_TEXT, cardInnerW, cardTextFits, SHOP, shopContent, shopOverflow, shopOverlaps, shopTouch, SHELF, statCardFits, statCells, TOAST, TOAST_FG, toastLane } from "../assets/scripts/ui/shop-shelf";
 import {
-  CF, CONFIRM_PAD_RESET, confirmOverflow, confirmOverlaps, layoutConfirm,
+  CF, CONFIRM_PAD_RESET, CONFIRM_SKILLS_REQUIRED, confirmOverflow, confirmOverlaps, layoutConfirm,
 } from "../assets/scripts/ui/confirm-layout";
 import type { Profile } from "../assets/scripts/core/career";
+import { Career } from "../assets/scripts/core/career";
+import { milestoneViews } from "../assets/scripts/core/milestone";
 
 function findRoot(): string {
   let dir = __dirname;
@@ -273,6 +275,91 @@ export function checkConfirmWiring(raw: string, fileLabel: string): string[] {
   return out;
 }
 
+/**
+ * ⑫ 双技能闸的「接线完整性」(2026-10-06 用户指令:两槽配齐才许开赛):
+ * 三处开赛口(对练 / 无限练习 / 闯关,即 doStartMatch / doStartEndlessMatch /
+ * doStartCampaign)都要过 requireSkillsReady,且弹窗文案必须引用 confirm-layout 的
+ * CONFIRM_SKILLS_REQUIRED(不许把那句话抄回 ui-manager —— 闸门提示与判据各说一套,
+ * panel-check 量的就不再是面板真摆出去的字)。漏接闸的坏法**不崩、不报错、出图看不见**
+ * —— 槽2空着照样开局,只有想起技能2为什么按不出来时才回头翻配置。
+ */
+export function checkSkillsGateWiring(raw: string, fileLabel: string): string[] {
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const out: string[] = [];
+  if (!/CONFIRM_SKILLS_REQUIRED/.test(src)) {
+    out.push(`${fileLabel}:没引用 CONFIRM_SKILLS_REQUIRED —— 弹窗文案被抄回开赛口里了`);
+  }
+  const gates = (src.match(/requireSkillsReady\(/g) ?? []).length;
+  if (gates < 4) out.push(`${fileLabel}:requireSkillsReady 只出现 ${gates} 处(要 定义 + 对练/无限/闯关三处开赛口各一处)—— 有开赛口没接双技能闸`);
+  return out;
+}
+
+/**
+ * ⑬ 货架的「让位与文案」接线(2026-10-07 用户现场图:形象页子页签那两行下面全是别人的
+ * 商品名与价格,卡片底部那行卖点五张卡连成一句读不通的话)。两处都是**不崩、不报错、
+ * 静止出图也看不出来**的坏:
+ *   a) 可视窗高必须读 _curShelf —— 写死 CONTENT_H 就是那扇 330 的整窗,
+ *      卡片一滚就穿到钉住的 chip 背后(chip 是半透明凹陷槽,挡不住);
+ *   b) 卡上三行字必须过 cardLine / cardFxLines —— 直接摆 s.name / fx 原文,
+ *      Label 那个 w 参数拦不住任何东西(Overflow.NONE 只挪锚点不裁字)。
+ */
+export function checkShelfWiring(raw: string, fileLabel: string): string[] {
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const out: string[] = [];
+  if (/mkNode\(\s*"gridView"[\s\S]{0,60}CONTENT_H\s*\)/.test(src)) {
+    out.push(`${fileLabel}:可视窗高写死 CONTENT_H —— 形象页的子页签带没让出来,卡片会滚到 chip 背后`);
+  }
+  if (!/const vpH = this\._curShelf\.h/.test(src)) {
+    out.push(`${fileLabel}:可视窗没读 _curShelf.h —— 让位算术与货架几何(_curShelf)分成了两套`);
+  }
+  if (/mkLabel\(card, "name", s\.name/.test(src) || /mkLabel\(card, "status", statusText/.test(src)) {
+    out.push(`${fileLabel}:卡片名称/状态直接摆原文 —— 没走 cardLine,长一句就画到邻卡上`);
+  }
+  if (!/cardFxLines\(fxTag\(s\)\)/.test(src)) {
+    out.push(`${fileLabel}:卖点没走 cardFxLines(折行 + 截尾)—— 一行摆不下时它会横着溢出卡片`);
+  }
+  return out;
+}
+
+/** 面板 fxTag() 里**硬编码**那几条卖点(脸面/球拍/羽毛球的分支)。
+ *  从源码现取,判据里不抄第二份 —— 那边加一句新的,这里自动跟着量。 */
+function fxTagLiterals(raw: string): string[] {
+  const i = raw.indexOf("function fxTag(");
+  if (i < 0) return [];
+  const body = raw.slice(i, raw.indexOf("\n}", i));
+  return [...new Set([...body.matchAll(/return "([^"]{4,})"/g)].map((m) => m[1]))];
+}
+
+/** 货架上可能出现的每一张卡的三行字:商品名与卖点现读 config / 面板源码,
+ *  状态行按**最坏那句**喂(金币四位数、Lv.12 解锁、补齐 金币 888)——
+ *  它是运行期按存档算的,判据不该赌「这个存档的数还小」。 */
+function shelfCardRows(): Array<{ tag: string; name: string; status: string; fx: string }> {
+  const src = readFileSync(join(UI, "career-panel.ts"), "utf8");
+  const rows: Array<{ tag: string; name: string; status: string; fx: string }> = [];
+  for (const a of CFG.accessories) {
+    rows.push({ tag: `穿戴件「${a.name}」`, name: a.name, status: `金币 ${a.price}`, fx: a.desc });
+  }
+  for (const fam of Object.values(CFG.families)) {
+    rows.push({ tag: `族卡「${fam.name}」`, name: fam.name, status: `买断 ${fam.price}`, fx: fam.tag });
+  }
+  for (const s of CFG.skins.player) {
+    if (!s.parts) continue;
+    const pr = Career.setPrice(s.id);
+    const save = pr.total - s.price;
+    rows.push({
+      tag: `套装卡「${s.name}」`, name: s.name, status: `补齐 ${pr.charge}`,
+      fx: save > 0 ? `${pr.n} 件单品 · 整套省 ${save} 金币` : `${pr.n} 件单品 · 一次穿齐`,
+    });
+  }
+  for (const list of Object.values(CFG.skins)) {
+    for (const s of list) {
+      rows.push({ tag: `皮肤「${s.name}」`, name: s.name, status: "Lv.12 解锁", fx: "" });
+    }
+  }
+  for (const t of fxTagLiterals(src)) rows.push({ tag: `卖点「${t}」`, name: "深海蓝", status: "金币 88", fx: t });
+  return rows;
+}
+
 // ============================================================
 // 真实数据
 // ============================================================
@@ -485,6 +572,11 @@ if (selftest) {
         // 有人图省事,在别的入口上直接覆盖存档
         ["绕过确认直接 resetPad", checkConfirmWiring(
           `Settings.resetPad();\nSettings.resetPad();\nreset.on(CLICK, () => Settings.resetPad());`, "sample-bad")],
+        // 双技能闸(2026-10-06):新开赛口忘了接闸(闸与文案全缺),或接了闸却把弹窗文案抄回开赛口
+        ["新开赛口不接双技能闸", checkSkillsGateWiring(
+          `function doStartX() { slashWipe(this.node, () => {}); }`, "sample-bad")],
+        ["双技能闸弹窗文案抄回开赛口", checkSkillsGateWiring(
+          `function requireSkillsReady(run) { run(); }\nrequireSkillsReady(a);\nrequireSkillsReady(b);\nrequireSkillsReady(c);`, "sample-bad")],
       ] as Array<[string, string[]]>;
     })(),
     // ---------- 履历格的反例 ----------
@@ -492,9 +584,24 @@ if (selftest) {
     ["履历格压回 100 高还留 40 号大数(大数顶到色签行)",
       statCardFits(statCells(mockProfile(), 18), SHOP.stats.cw, 100)],
     ["指标名写成一句话,引导线被吃光",
-      statCardFits([{ name: "生涯累计完美击球占比统计·全平台同步", num: "1", unit: "", sub: "", role: "star" }])],
+      statCardFits([{ name: "生涯累计完美击球占比统计·全平台同步", key: "perfects", num: "1", unit: "", sub: "", role: "star" }])],
     ["大数涨到十一位(七位击球数再翻两档)",
-      statCardFits([{ name: "甜区命中", num: "12345678901", unit: "", sub: "", role: "drill" }])],
+      statCardFits([{ name: "甜区命中", key: "sweets", num: "12345678901", unit: "", sub: "", role: "drill" }])],
+    // ---------- 货架卡与子页签带的反例(2026-10-07 现场图那两处) ----------
+    // 让位做成抬 padTop:静止时确实不压 chip,一滚就穿 —— 所以判据量的是**窗**,不是静止坐标
+    ["子页签带只抬 padTop、可视窗仍是整扇 330(卡片滚起来穿过 chip)",
+      accSlotOverlaps(shopContent(SHELF.h).grid, accSlotRowCounts(CFG.accSlots.map((s) => s.row)),
+        { ...SHELF, padTop: SHELF.padTop + accBandH(2) })],
+    // 面板绕过排版:窗口尺寸写死常量 + 卡片直接摆原文(这两条都不崩、出图也看不出来)
+    ["货架接线退回旧写法(窗写死 CONTENT_H + 名称/卖点摆原文)", checkShelfWiring(
+      `const vp = mkNode("gridView", this._gridNode, GRID_W, CONTENT_H);\n`
+      + `mkLabel(card, "name", s.name, 12, c, { y: -8 });\nif (fx) mkLabel(card, "fx", fx, 9, c, { y: -47 });`,
+      "sample-bad")],
+    ["卖点写成 30 字长话(卡里排到第三行,只能靠截尾砍掉)",
+      cardTextFits([{ tag: "上衣「纯白衫」", name: "纯白衫", status: "金币 88",
+        fx: "纯黑衫的镜像 · 暗球馆里最亮的一件 · 穿上之后全场都看得见你" }])],
+    ["商品名写到七个字(12 号字排不进 96 宽的卡)",
+      cardTextFits([{ tag: "面饰「疾风限量款墨镜」", name: "疾风限量款墨镜", status: "金币 268", fx: "" }])],
   ];
   for (const [nm, msgs] of cases) {
     ok(msgs.length > 0, `反例 ${nm}:应被拦下,实得 ${msgs.length} 条${msgs.length ? ` —— ${msgs[0]}` : ""}`);
@@ -503,13 +610,21 @@ if (selftest) {
   // 反向:正确写法不该被咬
   ok(checkCopy('const e = "继续闯关 · 第 3 关「烈日刺目」"; const f = "开";', "good").length === 0,
     "正例:纯中文文案不被文案闸误咬");
+  ok(cardTextFits(shelfCardRows()).length === 0, "正例:现役货架卡的名称/状态/卖点整句装得下,判据不误咬现文案");
+  ok(accSlotOverlaps(shopContent(SHELF.h).grid, accSlotRowCounts(CFG.accSlots.map((s) => s.row))).length === 0,
+    "正例:两行子页签带整段落在裁切窗之外");
   ok(checkContrast([["primary", ROLE.primary.face, inkFor(ROLE.primary.face)]]).length === 0,
     "正例:斩劈红 + 纸白(4.18:1)过 4.0 线");
   const baseC = layoutConfirm(CONFIRM_PAD_RESET);
   ok(confirmOverflow(baseC).length === 0 && confirmOverlaps(baseC).length === 0,
     "正例:确认弹窗真文案既不溢出也不压字(判据不咬人)");
+  const baseS = layoutConfirm(CONFIRM_SKILLS_REQUIRED);
+  ok(confirmOverflow(baseS).length === 0 && confirmOverlaps(baseS).length === 0,
+    "正例:双技能闸真文案既不溢出也不压字(判据不咬人)");
   ok(checkConfirmWiring(readFileSync(join(UI, "settings-panel.ts"), "utf8"), "settings-panel").length === 0,
     "正例:真面板的接线过「两处都问」这道闸");
+  ok(checkSkillsGateWiring(readFileSync(join(UI, "ui-manager.ts"), "utf8"), "ui-manager").length === 0,
+    "正例:对练/无限/闯关三处开赛口都接了双技能闸,弹窗文案走 confirm-layout");
   process.exit(bad ? 1 : 0);
 }
 
@@ -619,6 +734,42 @@ for (const [nm, pw, ph] of [["闯关", CMP.pw, CMP.ph], ["训练场", DRILL.pw, 
   const bf = statCardFits(big);
   for (const m of bf) ok(false, `履历格(满档数据)${m}`);
   ok(bf.length === 0, "履历格六格:七位击球数 + 五位数 + 满星副行仍然装得下");
+  // 里程碑三态(2026-10-07):可领行 / 已领满缀是真视图喂出来的,同样要装得下。
+  // 摆拍存档把每项都顶过第 3 档 → 六格全部可领;再喂全量已领 → 全部「已领满」。
+  const claimP = mockProfile({}, 40);
+  const claimCells = statCells(claimP, 18, milestoneViews(claimP.stats, 40, []));
+  const cf = statCardFits(claimCells);
+  for (const m of cf) ok(false, `履历格(可领态)${m}`);
+  ok(cf.length === 0 && claimCells.every((c) => c.claim),
+    "履历格里程碑:六格全可领,「点击领取 +N金币+N经验」金色行装得下、claim 都在");
+  const doneP = mockProfile({}, 40);
+  const doneCells = statCells(doneP, 18, milestoneViews(doneP.stats, 40, CFG.milestones.map((m) => m.id)));
+  const df = statCardFits(doneCells);
+  for (const m of df) ok(false, `履历格(已领满态)${m}`);
+  ok(df.length === 0, "履历格里程碑:全领满后「已领满」缀不溢出");
+}
+
+// ---------- 货架卡上的三行字 + 钉住的子页签带(2026-10-07 用户现场图:「这里显示都溢出了」) ----------
+{
+  const rows = shelfCardRows();
+  const f = cardTextFits(rows);
+  for (const m of f) ok(false, `货架卡 ${m}`);
+  ok(f.length === 0,
+    `货架卡 ${rows.length} 张:名称 / 状态 / 卖点**整句**装进 ${SHELF.cardW}×${SHELF.cardH} 的卡`
+    + `(卡内宽 ${cardInnerW()},卖点最多 ${CARD_TEXT.fxLines} 行)`);
+
+  const grid = shopContent(SHELF.h).grid;
+  const counts = accSlotRowCounts(CFG.accSlots.map((s) => s.row));
+  const band = accBandH(counts.length);
+  const ov = accSlotOverlaps(grid, counts);
+  for (const m of ov) ok(false, `子页签带 ${m}`);
+  ok(ov.length === 0,
+    `子页签带 ${counts.join("+")} 行、整段高 ${band} 落在裁切窗**之外**(窗高 ${accShelf(counts.length).h} = 网格窗 ${SHELF.h} − 这条带)`
+    + ` —— chip 是半透明凹陷槽,让位只能靠裁,靠静止坐标一滚就穿帮`);
+
+  const wire = checkShelfWiring(readFileSync(join(UI, "career-panel.ts"), "utf8"), "career-panel");
+  for (const m of wire) ok(false, `货架接线 ${m}`);
+  ok(wire.length === 0, "可视窗读 _curShelf.h、卡上三行字都过 cardLine/cardFxLines(没有直接摆原文的第四条路)");
 }
 
 const c4: string[] = []; for (const f of copyTargets()) c4.push(...checkCopy(readFileSync(join(UI, f), "utf8"), f));

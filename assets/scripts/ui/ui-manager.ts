@@ -56,6 +56,8 @@ import { uiSlider, uiToggle } from "./widgets";
 import { UpdateDialog } from "./update-dialog";
 import { HistoryDialog } from "./history-dialog";
 import { MatchSetupScreen, EndlessScreen } from "./mode-screen";
+import { askConfirm } from "./confirm-dialog";
+import { CONFIRM_SKILLS_REQUIRED } from "./confirm-layout";
 import type { UpdateInfo } from "../game/update-service";
 
 const { ccclass } = _decorator;
@@ -709,21 +711,33 @@ export class UIManager extends Component {
 
   // ---------- 动作(kit 回调) ----------
 
+  // 双技能闸(用户指令 2026-10-06):两个技能槽都配好才放行开赛。判据在
+  // career.skillSlotsReady(槽1 恒有技能,"没配齐"只会是槽2空;新手解锁款不足两项时不拦,
+  // 不然新档根本无货可配、永远开不了赛)。拦下不静默:弹窗说破 + 「去配置」当场开技能弹窗;
+  // 装完由人自己回来再点开赛,闸门不替人自动开局(装哪款、调不调槽1 由人定)。
+  // 训练场/教学不挂 Career 装备(doStartDrill 不跑 applyToMatch,slot2 根本不上场),不在闸内。
+  private requireSkillsReady(run: () => void): void {
+    if (Career.skillSlotsReady()) { run(); return; }
+    this.sfx.play("ui");
+    askConfirm(this.uiRootNode ?? this.node, this.kit, CONFIRM_SKILLS_REQUIRED,
+      () => this.skillDialog.show());
+  }
+
   // 开赛三连都用斜切转场包住:状态切换放在黑带盖满屏的中点,切换过程观众看不到
   private doStartMatch(diff: DiffKey): void {
-    slashWipe(this.node, () => {
+    this.requireSkillsReady(() => slashWipe(this.node, () => {
       Rules.newMatch("1p", diff);
       Career.applyToMatch();               // 皮肤跟「你」走,换局也要重挂
       this.sfx.play("whistle");
-    });
+    }));
   }
 
   private doStartEndlessMatch(diff: DiffKey): void {
-    slashWipe(this.node, () => {
+    this.requireSkillsReady(() => slashWipe(this.node, () => {
       Rules.newMatch("endless", diff);
       Career.applyToMatch();
       this.sfx.play("whistle");
-    });
+    }));
   }
 
   private doStartDrill(id: string): void {
@@ -735,12 +749,12 @@ export class UIManager extends Component {
   }
 
   private doStartCampaign(stage: StageDef): void {
-    slashWipe(this.node, () => {
+    this.requireSkillsReady(() => slashWipe(this.node, () => {
       this.kit.setCourtTheme(stage.court);
       Rules.startCampaign(stage);
       Career.applyToMatch();
       this.sfx.play("whistle");
-    });
+    }));
   }
 
   private doRestart(): void {

@@ -40,8 +40,15 @@ export const SK = {
   slantDeg: 3,
 
   titleY: 192,
-  /** 槽位行:技能1/技能2 两颗等宽槽位 chip(≥ TOUCH_MIN),点选 = 选定「往哪一槽装」 */
-  slotW: 250, slotH: 48, slotGap: 24, slotY: 147,
+  /** 槽位行:两颗槽位 chip + 最右一颗「完成」键 —— 完成键从底部搬上来了,
+   *  因为底部那条 50 高的带子整个让给了演示盒(详情板从 104 长到 162)。
+   *  两颗 chip 从 250 收到 216:读数最长「技能1 · 跨步」实测 76 字宽,216 还空一大截,
+   *  收它只为给完成键让出 84 + 缝(整行 560 宽,面板在该高度处半宽 342,进得来)。 */
+  slotW: 216, slotH: 48, slotGap: 24, slotY: 147,
+  /** 完成键与第二颗 chip 之间的缝 */
+  finGap: 20, finW: 84, finH: 44, finY: 147,
+  /** uiButton 的斜切阴影向下探这么多 */
+  finShadow: 4,
 
   /** 卡片:瘦成「标签 + 名字 + CD + 装备」,说明整条搬进详情板。
    *  0.0.25 起 6 款技能:118/128 是按 5 张横排定的,6 张总半宽 384 直接出 700 面板 ——
@@ -60,18 +67,22 @@ export const SK = {
   /** 44 = TOUCH_MIN,uiButton 会把高度抬到这儿;写 28 是自欺欺人,见 skill-check */
   btnW: 80, btnH: 44, btnY: -34,
 
-  /** 详情板 */
-  plateW: 652, plateH: 104, plateY: -105, platePad: 14,
-  /** 内容列半宽:比「板宽/2 - 内边距」再收一点,给斜切和拇指留余量 */
-  contentHalf: 300,
+  /** 详情板:左列演示盒 + 右列文字(名称 / 读数 / 状态 / 完整说明) */
+  plateW: 652, plateH: 162, plateY: -131, platePad: 14,
+  /**
+   * 演示盒(图示)尺寸。高 150 是「板高 - 上下各 6」,不是拍的:
+   * 盒子里那张画面的取景宽高比由 ui/skill-diagram 的 SKD 决定(496×322 世界像素),
+   * 而缩放 k 取宽/高中较小的一边 —— 所以**高度才是决定人物大小的那一条边**,
+   * 板每矮 10 px,人物就矮一截。矮到读不懂不是判据能拦的,是出图肉眼看出来的
+   * (pad-diagram-preview 同一套理由)。
+   */
+  demoW: 250, demoH: 150,
+  /** 演示盒与文字列之间的缝 */
+  demoGap: 18,
   headSize: 17, headH: 22,
   metaSize: 12, metaH: 16, metaGap: 12,
-  descSize: 15, descLineH: 20, descLead: 8, descMaxLines: 2,
+  descSize: 15, descLineH: 20, descLead: 8, descMaxLines: 3,
   padBottom: 14,
-
-  finW: 140, finH: 46, finY: -186,
-  /** uiButton 的斜切阴影向下探这么多 */
-  finShadow: 4,
 } as const;
 
 /** 排版只用到 SkillDef 的这几个字段(投影成接口,单测可以手搓一个假技能) */
@@ -116,9 +127,11 @@ export interface PlateLayout {
   items: PlateItem[];
   plateW: number;
   plateH: number;
-  /** 内容列左右边界(已扣掉内边距与斜切最坏边) */
+  /** 内容列左右边界(左界 = 演示盒右缘 + 缝;右界扣掉内边距与斜切最坏边) */
   innerL: number;
   innerR: number;
+  /** 演示盒右缘:文字列不许越过它(压到画上 = 读不出在讲什么) */
+  demoRight: number;
   /** 文案可用宽 = innerR - innerL */
   availW: number;
   /** 当前这份文案**需要**多高的板;> plateH 就是排版不够用,skill-check 拿它当红线 */
@@ -197,23 +210,32 @@ export function slotChipText(slot: 1 | 2, shortName: string | null): string {
   return `技能${slot} · ${shortName ?? "空"}`;
 }
 
-/** 槽位 chip 的中心 x:两颗等宽整体居中 */
-export function slotChipX(slot: 1 | 2): number {
-  return (slot === 1 ? -1 : 1) * (SK.slotW + SK.slotGap) / 2;
+/** 槽位行整行的总宽(两颗 chip + 缝 + 完成键),用于居中 */
+function slotRowW(): number {
+  return SK.slotW * 2 + SK.slotGap + SK.finGap + SK.finW;
 }
 
-// ---------- 面板竖排判据(双槽版) ----------
+/** 槽位 chip 的中心 x:两颗 chip 与完成键排成一行,整行居中 */
+export function slotChipX(slot: 1 | 2): number {
+  return -slotRowW() / 2 + (slot - 1) * (SK.slotW + SK.slotGap) + SK.slotW / 2;
+}
+
+/** 完成键的中心 x:贴这一行的最右 */
+export function slotFinX(): number {
+  return slotRowW() / 2 - SK.finW / 2;
+}
+
+// ---------- 面板竖排判据(双槽 + 演示盒版) ----------
 
 export interface StackItem { key: string; cy: number; h: number; }
 
-/** 标题 / 槽位行 / 卡片行 / 详情板 / 完成按钮,自上而下五个盒子(渲染层与判据共用同一份几何) */
+/** 标题 / 槽位行 / 卡片行 / 详情板,自上而下四个盒子(渲染层与判据共用同一份几何) */
 export function panelStack(): StackItem[] {
   return [
     { key: "title", cy: SK.titleY, h: 30 },
     { key: "slots", cy: SK.slotY, h: SK.slotH },
     { key: "cards", cy: SK.cardsY, h: SK.cardH + SK.cardEdge },
     { key: "plate", cy: SK.plateY, h: SK.plateH },
-    { key: "fin", cy: SK.finY, h: SK.finH + SK.finShadow },
   ];
 }
 
@@ -242,25 +264,143 @@ export function panelStackFits(panelH: number = SK.panelH, margin = 6): string[]
   return bad;
 }
 
+/** 槽位行里的三颗可点件(两颗 chip + 完成键),横排几何 */
+export function slotRowBoxes(): Array<{ key: string; left: number; right: number; h: number }> {
+  return [
+    { key: "slot1", left: slotChipX(1) - SK.slotW / 2, right: slotChipX(1) + SK.slotW / 2, h: SK.slotH },
+    { key: "slot2", left: slotChipX(2) - SK.slotW / 2, right: slotChipX(2) + SK.slotW / 2, h: SK.slotH },
+    { key: "fin", left: slotFinX() - SK.finW / 2, right: slotFinX() + SK.finW / 2, h: SK.finH + SK.finShadow },
+  ];
+}
+
+/**
+ * 槽位行横排判据:三颗件互不压、每颗都不越出**该高度处的斜切边界**。
+ * 边界为什么按 y 现算:面板是个平行四边形,y=147 那一行的可用半宽是
+ * 350 - 147×tan3° ≈ 342,不是 350 —— 拿 350 量会把键画到斜边外面。
+ */
+export function slotRowFits(): string[] {
+  const bad: string[] = [];
+  const boxes = slotRowBoxes();
+  const edge = panelHalfAt(SK.slotY, SK.panelW, SK.slantDeg);
+  for (const b of boxes) {
+    if (b.right > edge) bad.push(`${b.key}:右缘 ${b.right.toFixed(1)} 出了斜切边界 ${edge.toFixed(1)}`);
+    if (b.left < -edge) bad.push(`${b.key}:左缘 ${b.left.toFixed(1)} 出了斜切边界 ${-edge.toFixed(1)}`);
+  }
+  for (let i = 0; i + 1 < boxes.length; i++) {
+    const gap = boxes[i + 1].left - boxes[i].right;
+    if (gap < 8) bad.push(`${boxes[i].key} 与 ${boxes[i + 1].key} 缝只有 ${gap.toFixed(1)}(< 8 会点错)`);
+  }
+  if (SK.finH < 44) bad.push(`完成键高 ${SK.finH} < TOUCH_MIN 44`);
+  return bad;
+}
+
 /** 第 i 张卡的中心 x:n 张横排整体居中 */
 export function skillCardX(i: number, n: number = 5): number {
   return (i - (n - 1) / 2) * SK.cardPitch;
 }
 
+// ---------- 放大窗(点演示盒开大的那一屏) ----------
+
+/**
+ * 演示放大窗的版式。为什么要有第二屏:详情板左列那格只有 250×150,画得下「谁在哪儿、
+ * 按下去发生了什么」,画不下**为什么** —— 分步讲解要一条能读完的文案 + 翻步的键。
+ * 同一份 ui/skill-diagram 点列,换个盒子再画一遍(尺寸是它的一个参数,不是第二套画面)。
+ */
+export const SD = {
+  panelW: 560, panelH: 420,
+  /** 顶行:标题(居中在剩余列里)+ 关闭键(贴右,按斜切边界倒推) */
+  titleY: 180, closeW: 84, closeH: 44,
+  /** 画布:456×260 —— 宽按窗口内容列给足,高是被"文案 + 底排三颗键"挤出来的 */
+  canvasW: 456, canvasH: 260, canvasY: 24,
+  /** 当前这一步:「2 · 等到点」+ 正文一行 */
+  capY: -128, capH: 34, capSize: 12, capLineH: 17, capMaxLines: 2,
+  /** 底排:上一步 / 定格·连播 / 下一步 */
+  keyY: -178, keyH: 44, keyW: 84, keyGap: 10,
+  pad: 14,
+} as const;
+
+/** 面板在某个高度处的可用半宽(平行四边形,越靠边越窄) */
+export function panelHalfAt(y: number, panelW: number, slantDeg: number): number {
+  return panelW / 2 - Math.abs(y) * Math.tan(slantDeg * Math.PI / 180);
+}
+
+/** 放大窗的关闭键中心 x:贴内容列右缘 */
+export function sdCloseX(): number {
+  return panelHalfAt(SD.titleY, SD.panelW, SK.slantDeg) - SD.pad - SD.closeW / 2;
+}
+
+/** 放大窗标题的居中 x:内容列左缘到关闭键左缘的中点 */
+export function sdTitleX(): number {
+  const l = -panelHalfAt(SD.titleY, SD.panelW, SK.slantDeg) + SD.pad;
+  return (l + (sdCloseX() - SD.closeW / 2)) / 2;
+}
+
+/** 放大窗竖排:顶行 / 画布 / 文案 / 底排,四格彼此留缝且不出窗口 */
+export function sdStack(): StackItem[] {
+  return [
+    { key: "head", cy: SD.titleY, h: SD.closeH },
+    { key: "canvas", cy: SD.canvasY, h: SD.canvasH },
+    { key: "cap", cy: SD.capY, h: SD.capH },
+    { key: "keys", cy: SD.keyY, h: SD.keyH },
+  ];
+}
+
+export function sdStackFits(panelH: number = SD.panelH, margin = 6): string[] {
+  const bad: string[] = [];
+  const half = panelH / 2;
+  const items = sdStack();
+  for (const it of items) {
+    if (it.cy + it.h / 2 > half - margin) bad.push(`${it.key}:上缘 ${it.cy + it.h / 2} 越过窗口上界 ${half - margin}`);
+    if (it.cy - it.h / 2 < -half + margin) bad.push(`${it.key}:下缘 ${it.cy - it.h / 2} 越过窗口下界 ${-half + margin}`);
+  }
+  for (let i = 0; i + 1 < items.length; i++) {
+    const A = items[i], B = items[i + 1];
+    const gap = (A.cy - A.h / 2) - (B.cy + B.h / 2);
+    if (gap < 4) bad.push(`${A.key} 与 ${B.key} 相撞(缝 ${gap.toFixed(1)})`);
+  }
+  const rowW = SD.keyW * 3 + SD.keyGap * 2;
+  const edge = panelHalfAt(SD.keyY, SD.panelW, SK.slantDeg) - SD.pad;
+  if (rowW / 2 > edge) bad.push(`底排三颗键半宽 ${rowW / 2} 出了内容列 ${edge.toFixed(1)}`);
+  if (SD.closeH < 44) bad.push(`关闭键高 ${SD.closeH} < TOUCH_MIN 44`);
+  for (const k of [SD.keyH, SD.closeH]) if (k < 44) bad.push(`键高 ${k} < TOUCH_MIN 44`);
+  return bad;
+}
+
 // ---------- 排版 ----------
 
 /**
- * 一个技能 → 详情板排版。
+ * 详情板左列那块演示盒的几何(板中心为原点)。面板照它摆节点、判据照它核「文字有没有压到画上」。
+ * 上下各留 6 贴着板,左右贴着内边距 —— 演示盒就是这块板的**左半边**,不是浮在上面的贴图。
+ */
+export function demoBox(): { cx: number; cy: number; w: number; h: number; left: number; right: number } {
+  const left = -SK.plateW / 2 + SK.platePad;
+  return { cx: left + SK.demoW / 2, cy: 0, w: SK.demoW, h: SK.demoH, left, right: left + SK.demoW };
+}
+
+/**
+ * 放大窗里这一步的文案:「2 · 等到点 —— 正文」折好行。
+ * 面板只管照行数摆 Label,判据拿同一个函数核「这一句放不放得进文案带」——
+ * 两边共用一份折行,不会出现"预览里两行、真机上一行半被切掉"。
+ */
+export function sdCaptionLines(step: number, name: string, text: string, measure: Measure = textW): string[] {
+  const avail = SD.panelW - 2 * SD.pad - shearOf(SD.capH, SK.slantDeg);
+  return wrapText(`${step + 1} · ${name} —— ${text}`, SD.capSize, avail, measure);
+}
+
+/**
+ * 一个技能 → 详情板排版(右列文字)。
  *
  * 头部一行(全名左 / 冷却 + 状态右),说明在剩下的带子里垂直居中 —— 所以说明 1 行还是
- * 2 行都不会把别的项挤走,面板尺寸恒定这件事是结构给的。
+ * 3 行都不会把别的项挤走,面板尺寸恒定这件事是结构给的。
+ * 内容列的左界 = 演示盒右缘 + 缝:文字与画面**由同一个数隔开**,不靠"这句刚好不长"。
  */
 export function layoutSkillPlate(
   def: SkillLike, unlocked: boolean, equipSlot: 0 | 1 | 2, measure: Measure = textW,
 ): PlateLayout {
   const shear = shearOf(SK.plateH, SK.slantDeg) / 2;
-  const half = Math.min(SK.plateW / 2 - SK.platePad - shear, SK.contentHalf);
-  const innerL = -half, innerR = half;
+  const demo = demoBox();
+  const innerL = demo.right + SK.demoGap;
+  const innerR = Math.min(SK.plateW / 2 - SK.platePad - shear, SK.plateW / 2 - SK.platePad);
   const availW = innerR - innerL;
 
   // 头部:全名左起,状态贴右,冷却排在状态左边 —— 三个 x 全是量出来的
@@ -306,7 +446,7 @@ export function layoutSkillPlate(
   // 当前这份文案**需要**多高的板;超过 SK.plateH 就是排版不够用,skill-check 判红
   const stackH = SK.platePad + SK.headH + SK.descLead + descH + SK.padBottom;
 
-  return { items, plateW: SK.plateW, plateH: SK.plateH, innerL, innerR, availW, stackH, descLines: lines.length };
+  return { items, plateW: SK.plateW, plateH: SK.plateH, innerL, innerR, demoRight: demo.right, availW, stackH, descLines: lines.length };
 }
 
 // ---------- 判据(回归用) ----------

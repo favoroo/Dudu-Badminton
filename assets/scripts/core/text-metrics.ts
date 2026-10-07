@@ -91,3 +91,22 @@ export function wrapText(text: string, size: number, availW: number, measure: Me
   }
   return rows;
 }
+
+/**
+ * 截成一行:装得下原样返回,装不下逐字退到能装下、末尾补省略号。
+ *
+ * 省略号**算进宽度**再决定退到哪儿 —— 先截后加是这类函数最常见的坏法:
+ * 表面上"截了",实际比原文还宽一格,溢出照旧。
+ * 只按码位退让(CJK 逐字可断),拉丁词中间切断不好看,但这类位置本来就是
+ * 「一行卡片小字」的兜底,宁可断在字里也不要断在框外。
+ */
+export function ellipsize(
+  text: string, size: number, availW: number,
+  measure: Measure = textW, mark = "…",
+): string {
+  const s = String(text ?? "");
+  if (measure(s, size) <= availW) return s;
+  let cut = s;
+  while (cut.length > 1 && measure(cut.replace(/\s+$/, "") + mark, size) > availW) cut = cut.slice(0, -1);
+  return `${cut.replace(/\s+$/, "")}${mark}`;
+}

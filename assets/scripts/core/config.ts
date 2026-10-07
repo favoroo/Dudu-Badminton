@@ -2,7 +2,7 @@
 // 全部平衡数值 / 键位 / 配色集中在这里 —— 想调手感只改这个文件
 // 单位约定:1 step = 1/60 s;长度 px;速度 px/step;加速度 px/step²
 // ============================================================
-import { DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, ShotKind, DrillDef, AiSmashDefenseDef, AiTier, ServeMixTier, SkillId, TutTopic } from "./types";
+import { AccSlot, AccessoryDef, CosmoSlot, CosmeticDef, DiffKey, MenuEntry, Rarity, SkinDef, SkinKind, ShotKind, DrillDef, AiSmashDefenseDef, AiTier, ServeMixTier, SkillId, TutTopic } from "./types";
 
 // ===== 稀有度元数据:商店卡片框色/角标用;配色只进 config =====
 export const RARITY_META: Record<Rarity, { name: string; color: string }> = {
@@ -19,35 +19,67 @@ export const RARITY_META: Record<Rarity, { name: string; color: string }> = {
 // 本表整体降价重构后,原高价纯色款下架,已购玩家按 SKIN_REFUNDS 自动退款(见 career.ts)
 export const SKINS: Record<SkinKind, SkinDef[]> = {
   player: [
-    { id: "p-red",     kind: "player", name: "经典红",   price: 0, main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a" },
-    { id: "p-orange",  kind: "player", name: "活力橙",   price: 88, rarity: "common", main: "#ff8a3d", dark: "#b34710", glow: "#ffb37a" },
-    { id: "p-navy",    kind: "player", name: "深海蓝",   price: 88, rarity: "common", main: "#3f6df0", dark: "#1c3480", glow: "#7ea2ff" },
-    { id: "p-sakura",  kind: "player", name: "樱花粉",   price: 88, rarity: "common", main: "#ff7bac", dark: "#b23368", glow: "#ffb3d1" },
+    // ↓ 2026-10-06 拆件重构:这一节里的每一条现在**是一个套装**,由 parts 指向 COSMETICS
+    //   里的单件。id/name/price/rarity/unlockLevel 与那几根外观旋钮**一律原样保留** ——
+    //   老档 owned 里就是这些 id,skinById 认不出来的 id 会被 refundDelisted 当下架退款删掉。
+    //   外观旋钮留着不删是「更新后外观一模一样」那条闸门的地基:套装逐件穿戴后合成出的
+    //   SkinDef 必须与这条 def 逐键相等。
+    { id: "p-red",     kind: "player", name: "经典红",   price: 0, main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a",
+      parts: { jersey: "j-red" } },
+    { id: "p-orange",  kind: "player", name: "活力橙",   price: 88, rarity: "common", main: "#ff8a3d", dark: "#b34710", glow: "#ffb37a",
+      parts: { jersey: "j-orange" } },
+    { id: "p-navy",    kind: "player", name: "深海蓝",   price: 88, rarity: "common", main: "#3f6df0", dark: "#1c3480", glow: "#7ea2ff",
+      parts: { jersey: "j-navy" } },
+    { id: "p-sakura",  kind: "player", name: "樱花粉",   price: 88, rarity: "common", main: "#ff7bac", dark: "#b23368", glow: "#ffb3d1",
+      parts: { jersey: "j-sakura" } },
     { id: "p-flame",   kind: "player", name: "烈焰少年", price: 158, rarity: "rare",
       main: "#ff5a2e", dark: "#8c2417", glow: "#ffb36b",
-      hairStyle: "spiky", hairColor: "#ff6a1f", jersey: "sash" },
+      hairStyle: "spiky", hairColor: "#ff6a1f", jersey: "sash",
+      parts: { jersey: "j-flame", hair: "hr-spiky" } },
     { id: "p-shinobi", kind: "player", name: "影忍",     price: 178, rarity: "rare",
       main: "#2a3d66", dark: "#141c33", glow: "#7e9bd8",
-      hairStyle: "bun", hairColor: "#1a1a22", headwear: "bandana" },
+      hairStyle: "bun", hairColor: "#1a1a22", headwear: "bandana",
+      parts: { jersey: "j-shinobi", hair: "hr-bun-ink", head: "hd-bandana" } },
+    // 全黑款「影分身」:身体与脸面**分开两根旋钮** —— 身体走 main/dark(球衣短裤手臂)+
+    // skinTone(手/膝/颈)+ sock/shoe(球袜鞋,全场唯一原先硬编码的浅色部件)全黑;
+    // 脸面指到「纯黑无面」(黑脸、无五官、无描边),想留白五官就在面部 tab 换回免费的经典墨面。
+    // 零新画法:全是既有字段的取值。glow 只在装备「标准拍」时露出来(标准拍拍框跟随人物 glow)。
+    // 拆件后这四根旋钮分属四个槽:上衣 j-void / 肤色 tn-ink / 球袜 sc-ink / 鞋 ft-ink。
+    { id: "p-shadow",  kind: "player", name: "影分身",   price: 178, rarity: "rare",
+      main: "#000000", dark: "#000000", glow: "#e8ecff",
+      skinTone: "#000000", sock: "#000000", shoe: "#000000", face: "void",
+      parts: { jersey: "j-void", tone: "tn-ink", sock: "sc-ink", lower: "ft-ink" } },
+    // 纯白款「纯白分身」:影分身的镜像,同样零新画法、同样身体/脸面两根旋钮。
+    // 脸面指到「纯白无面」(白脸、无五官、无描边),想看见眼神表情就在面部 tab 换一款。
+    { id: "p-white",   kind: "player", name: "纯白分身", price: 178, rarity: "rare",
+      main: "#ffffff", dark: "#ffffff", glow: "#dfe6f5",
+      skinTone: "#ffffff", sock: "#ffffff", shoe: "#ffffff", face: "snow",
+      parts: { jersey: "j-snow", tone: "tn-snow", sock: "sc-snow", lower: "ft-snow" } },
     { id: "p-blossom", kind: "player", name: "樱花少女", price: 288, unlockLevel: 3, rarity: "epic",
       main: "#ff8fb8", dark: "#a34368", glow: "#ffc9dc",
-      hairStyle: "twin", hairColor: "#ff9fc0", headwear: "ribbon", jersey: "trim" },
+      hairStyle: "twin", hairColor: "#ff9fc0", headwear: "ribbon", jersey: "trim",
+      parts: { jersey: "j-blossom", hair: "hr-twin", head: "hd-ribbon" } },
     { id: "p-cyber",   kind: "player", name: "赛博骇客", price: 328, unlockLevel: 4, rarity: "epic",
       main: "#19d3a2", dark: "#0d3b3f", glow: "#7dffe0",
-      hairStyle: "mohawk", hairColor: "#3dffa8", headwear: "goggles", jersey: "stripes" },
+      hairStyle: "mohawk", hairColor: "#3dffa8", headwear: "goggles", jersey: "stripes",
+      parts: { jersey: "j-cyber", hair: "hr-mohawk", head: "hd-goggles" } },
     { id: "p-king",    kind: "player", name: "球场之王", price: 888, unlockLevel: 8, rarity: "legendary",
       main: "#f5f2e6", dark: "#8a6a1c", glow: "#ffd24d",
-      hairStyle: "bun", hairColor: "#3a2e20", headwear: "crown", jersey: "twoTone", aura: "gold" },
+      hairStyle: "bun", hairColor: "#3a2e20", headwear: "crown", jersey: "twoTone", aura: "gold",
+      parts: { jersey: "j-king", hair: "hr-bun-royal", head: "hd-crown", aura: "au-gold" } },
     // --- 首批「整套人物形象」新档:走 CharacterDef 管线(体型档/默认脸面/新特征注册表) ---
     { id: "p-sprout",  kind: "player", name: "萌芽豆丁", price: 168, rarity: "rare",
       main: "#4fae5a", dark: "#1e5c31", glow: "#a8e6b0",
-      hairStyle: "bob", hairColor: "#58b24d", jersey: "trim", body: "compact", face: "freckle" },
+      hairStyle: "bob", hairColor: "#58b24d", jersey: "trim", body: "compact", face: "freckle",
+      parts: { jersey: "j-sprout", hair: "hr-bob", body: "bd-compact" } },
     { id: "p-cat",     kind: "player", name: "猫系少女", price: 328, unlockLevel: 5, rarity: "epic",
       main: "#b06bff", dark: "#4a2a80", glow: "#d8b8ff",
-      hairStyle: "long", hairColor: "#c9a8ff", headwear: "catears", jersey: "sash", face: "cat" },
+      hairStyle: "long", hairColor: "#c9a8ff", headwear: "catears", jersey: "sash", face: "cat",
+      parts: { jersey: "j-cat", hair: "hr-long", head: "hd-catears" } },
     { id: "p-sage",    kind: "player", name: "金羽宗师", price: 888, unlockLevel: 8, rarity: "legendary",
       main: "#e8e4f0", dark: "#4a4660", glow: "#b8c8e8",
-      hairStyle: "bun", hairColor: "#d8dce8", jersey: "twoTone", aura: "ice", body: "tall", face: "sage" },
+      hairStyle: "bun", hairColor: "#d8dce8", jersey: "twoTone", aura: "ice", body: "tall", face: "sage",
+      parts: { jersey: "j-sage", hair: "hr-bun-silver", aura: "au-ice", body: "bd-tall" } },
   ],
   // 拍框 frame 留空 = 跟随人物主题 glow 色(默认拍的现状)
   racket: [
@@ -80,17 +112,59 @@ export const SKINS: Record<SkinKind, SkinDef[]> = {
     { id: "s-galaxy",  kind: "shuttle", name: "星河羽", price: 788, unlockLevel: 9, rarity: "legendary",
       cap: "#e0d4ff", band: "#8b5cf6", skirt: "#f4eeff", vein: "rgba(160,120,240,0.72)", trailStyle: "rainbow" },
   ],
-  // 脸面商品:face-auto(人物默认)= 免费默认款,肤色脸随人物形象走;
+  // 脸面商品:face-auto(人物默认)= 免费默认款,指到当前人物形象自带的那张脸;
   // face-ink 转免费情怀款(老档人人已有);face-sun(阳光肤色 88)已被 face-auto
   // 取代而下架,已购玩家按 SKIN_REFUNDS 原价退款;新付费脸面 = 特征标记款。
   // 面部是真人 0 号专属穿戴位(CPU/P2 恒为墨面,敌我一眼分明);只换脸面配色,不碰任何判定
+  // 每张脸的底色只在自己的 FACE_STYLES.base 里(人物形象的「肤色」槽不上脸,2026-10-07 解耦)
+  // 肤色系四款(默认/雀斑/泪痣/猫须)在货架上合成一张「肤色脸面」族卡,见 SKIN_FAMILIES
   face: [
     { id: "face-auto",    kind: "face", name: "人物默认", price: 0, faceStyle: "auto" },
     { id: "face-ink",     kind: "face", name: "经典墨面", price: 0, faceStyle: "ink" },
+    { id: "face-void",    kind: "face", name: "纯黑无面", price: 88, rarity: "common", faceStyle: "void" },
+    { id: "face-snow",    kind: "face", name: "纯白无面", price: 88, rarity: "common", faceStyle: "snow" },
     { id: "face-freckle", kind: "face", name: "雀斑肤色", price: 88, rarity: "common", faceStyle: "freckle" },
     { id: "face-tear",    kind: "face", name: "泪痣肤色", price: 88, rarity: "common", faceStyle: "tear" },
     { id: "face-cat",     kind: "face", name: "猫系脸面", price: 168, rarity: "rare", faceStyle: "cat" },
+    // 宗师脸(白眉须):金羽宗师 p-sage 的自带脸面。FACE_STYLES.sage 一直有画法、
+    // p-sage 一直写着 face:"sage",但脸面货架上从没这件商品 —— tools/shop-bundle-check.ts
+    // 的 ⑤ 号断言把这件事当「已知缺口」点名报出来好几天了(那张脸没法单独买/换)。
+    // 拆件重构顺手补上:套装的「补齐差价」要能把它当一件真商品算进去。
+    { id: "face-sage",    kind: "face", name: "宗师脸面", price: 168, rarity: "rare", faceStyle: "sage" },
   ],
+};
+
+// ===== 皮肤族:货架上只占一张卡,一次买断 ⇒ 族内成员全部免费切换 =====
+// 为什么要族(用户 2026-10-06):「商店里面这四个同类型的面部合并成一个吧,
+// 然后可以在二级界面去选择对应的面部特征」—— 同一张脸换特征的四款各占一格,
+// 货架被同类排满,买家扫一眼以为商店只有脸面这一件事。
+// 三条口径别改回去:
+//  ① 买断价 = 族内**最贵单款**的价格,不是各款相加。合并对已经只买得起一款的人是涨价,
+//     对全想要的人是打折;取「最贵单款」是那个不让任何人多花的交点。
+//  ② price 0 的成员(人物默认)人人有份,**不算入族所有权**
+//     (见 career.ownsFamily),否则新档一出生就白拿一个付费族。
+//  ③ 成员照常留在 SKINS 与存档 owned 里,equipped.face 存的仍是**成员 id** ——
+//     族卡只是货架入口,渲染层(faceSkin / FACE_STYLES / drawHead)零改动。
+// members 的顺序 = 二级货架的展示顺序,首项是免费底款。
+export interface SkinFamily {
+  /** "fam-" 前缀:与皮肤 id 命名空间隔开,货架据此区分「族卡」与「商品卡」 */
+  id: string;
+  kind: SkinKind;
+  name: string;
+  /** 卖点小字(货架卡面,与 SkinDef 那行 fx 同一条车道) */
+  tag: string;
+  price: number;
+  rarity: Rarity;
+  members: string[];
+}
+
+export const SKIN_FAMILIES: Record<string, SkinFamily> = {
+  "fam-face-skin": {
+    id: "fam-face-skin", kind: "face", name: "肤色脸面",
+    tag: "雀斑 · 泪痣 · 猫须 任选",
+    price: 168, rarity: "rare",
+    members: ["face-auto", "face-freckle", "face-tear", "face-cat"],
+  },
 };
 
 // ===== 下架皮肤退款表:本轮商店重构中被设计款替代的纯色款(id → 当年售价) =====
@@ -102,15 +176,195 @@ export const SKIN_REFUNDS: Record<string, number> = {
   "face-sun": 88,   // 肤色脸转为人物默认款(免费)后下架,已购原价退
 };
 
+// ===== 穿戴件表(纯装饰):一槽一件、跨槽叠加,与皮肤共用 owned 数组与金币钱包 =====
+// 2026-10-06 拆件重构。原先这张表只有 5 件挂件(acc-*),人物外观全锁在 SKINS.player
+// 那一颗打包旋钮里;现在人物的每个部位各成一槽、各是一件商品。
+// 三条口径:
+//  ① kind:"wear" 自带 ACC_STYLES 画法(style/main 必有);kind:"part" 不自己画,
+//     只把旋钮写进 career.look() 合成出的 SkinDef —— 字段名与 SkinDef 同源,不二次翻译。
+//  ② 恒有一件的槽(肤色/体型/发型/上衣/袜/鞋)各配一张 price 0 底款,「回到原版」是**一张卡**,
+//     不是一枚空槽封条;可以整槽不戴的(头饰/光环/面饰/颈饰/手部)不设底款,走「卸下」。
+//  ③ 底款的旋钮**一律留空**,让 sprites 的各自兜底去复现原版(远近腿两档袜/鞋色就是这么来的)。
+//     填单值 = 两腿同色(影分身从头黑到脚靠的就是这条)。
+// 排列约定:每槽默认款在前,其余按 price 升序。
+export const COSMETICS: CosmeticDef[] = [
+  // ---------- 上衣(slot jersey):torso 主色 + 袖/领暗色 + 点缀色 + 纹样 ----------
+  // 短裤色今天仍与袖子同源(sprites 的 th.dark 一处两用),13 款人物里没有一款单独变过它,
+  // 所以这一轮**不开下装槽**:上衣 = 衣+袖+裤,与拆件前逐字节一致。真出独立短裤配色时再加槽。
+  { id: "j-red",      slot: "jersey", kind: "part", name: "经典红", price: 0, rarity: "common",
+    desc: "队服原色 · 人人有份", main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a" },
+  { id: "j-orange",   slot: "jersey", kind: "part", name: "活力橙", price: 88, rarity: "common",
+    desc: "纯色 · 不加纹样", main: "#ff8a3d", dark: "#b34710", glow: "#ffb37a" },
+  { id: "j-navy",     slot: "jersey", kind: "part", name: "深海蓝", price: 88, rarity: "common",
+    desc: "纯色 · 不加纹样", main: "#3f6df0", dark: "#1c3480", glow: "#7ea2ff" },
+  { id: "j-sakura",   slot: "jersey", kind: "part", name: "樱花粉", price: 88, rarity: "common",
+    desc: "纯色 · 不加纹样", main: "#ff7bac", dark: "#b23368", glow: "#ffb3d1" },
+  { id: "j-sprout",   slot: "jersey", kind: "part", name: "萌芽滚边", price: 88, rarity: "rare",
+    desc: "草绿底 · 领口滚一道亮边", main: "#4fae5a", dark: "#1e5c31", glow: "#a8e6b0", jersey: "trim" },
+  { id: "j-shinobi",  slot: "jersey", kind: "part", name: "影忍藏青", price: 98, rarity: "rare",
+    desc: "藏青素色 · 夜里只剩轮廓", main: "#2a3d66", dark: "#141c33", glow: "#7e9bd8" },
+  { id: "j-cat",      slot: "jersey", kind: "part", name: "猫系斜披", price: 118, rarity: "epic", unlockLevel: 5,
+    desc: "紫底斜披一条亮巾", main: "#b06bff", dark: "#4a2a80", glow: "#d8b8ff", jersey: "sash" },
+  { id: "j-flame",    slot: "jersey", kind: "part", name: "烈焰斜披", price: 138, rarity: "rare",
+    desc: "橙红底 · 斜披一条火", main: "#ff5a2e", dark: "#8c2417", glow: "#ffb36b", jersey: "sash" },
+  { id: "j-blossom",  slot: "jersey", kind: "part", name: "樱花滚边", price: 158, rarity: "epic", unlockLevel: 3,
+    desc: "粉底滚一道亮边", main: "#ff8fb8", dark: "#a34368", glow: "#ffc9dc", jersey: "trim" },
+  { id: "j-cyber",    slot: "jersey", kind: "part", name: "赛博条纹", price: 178, rarity: "epic", unlockLevel: 4,
+    desc: "薄荷底 · 两道荧光横条", main: "#19d3a2", dark: "#0d3b3f", glow: "#7dffe0", jersey: "stripes" },
+  { id: "j-void",     slot: "jersey", kind: "part", name: "纯黑衫", price: 88, rarity: "rare",
+    desc: "衣裤袖全黑 · 只留一圈亮边", main: "#000000", dark: "#000000", glow: "#e8ecff" },
+  { id: "j-snow",     slot: "jersey", kind: "part", name: "纯白衫", price: 88, rarity: "rare",
+    desc: "纯黑衫的镜像 · 暗球馆里最亮的一件", main: "#ffffff", dark: "#ffffff", glow: "#dfe6f5" },
+  { id: "j-sage",     slot: "jersey", kind: "part", name: "宗师拼色", price: 398, rarity: "legendary", unlockLevel: 8,
+    desc: "月白压青灰 · 上下两段拼", main: "#e8e4f0", dark: "#4a4660", glow: "#b8c8e8", jersey: "twoTone" },
+  { id: "j-king",     slot: "jersey", kind: "part", name: "王者拼色", price: 388, rarity: "legendary", unlockLevel: 8,
+    desc: "米白压金 · 上下两段拼", main: "#f5f2e6", dark: "#8a6a1c", glow: "#ffd24d", jersey: "twoTone" },
+
+  // ---------- 发型(slot hair):样式与发色成对卖,不做颜色×样式矩阵 ----------
+  // 同一个样式配不同发色就是两件商品(丸子头有三款色)—— 买家看到的是一件完整的头发,
+  // 不必先买发型再赌一个颜色能不能搭。
+  { id: "hr-none",        slot: "hair", kind: "part", name: "原版短发", price: 0, rarity: "common",
+    desc: "不额外画发 · 人物本来的头型" },
+  { id: "hr-bob",         slot: "hair", kind: "part", name: "嫩叶波波头", price: 58, rarity: "rare",
+    desc: "齐耳一团草绿", hairStyle: "bob", hairColor: "#58b24d" },
+  { id: "hr-bun-ink",     slot: "hair", kind: "part", name: "墨色丸子头", price: 78, rarity: "rare",
+    desc: "脑后一束墨", hairStyle: "bun", hairColor: "#1a1a22" },
+  { id: "hr-spiky",       slot: "hair", kind: "part", name: "烈焰短刺", price: 88, rarity: "rare",
+    desc: "炸起来的一撮橙", hairStyle: "spiky", hairColor: "#ff6a1f" },
+  { id: "hr-long",        slot: "hair", kind: "part", name: "紫猫长发", price: 88, rarity: "epic", unlockLevel: 5,
+    desc: "过肩一束淡紫", hairStyle: "long", hairColor: "#c9a8ff" },
+  { id: "hr-twin",        slot: "hair", kind: "part", name: "樱粉双马尾", price: 118, rarity: "epic", unlockLevel: 3,
+    desc: "两侧各一束粉", hairStyle: "twin", hairColor: "#ff9fc0" },
+  { id: "hr-mohawk",      slot: "hair", kind: "part", name: "薄荷莫西干", price: 148, rarity: "epic", unlockLevel: 4,
+    desc: "一道立起来的荧光绿", hairStyle: "mohawk", hairColor: "#3dffa8" },
+  { id: "hr-bun-royal",   slot: "hair", kind: "part", name: "王室丸子头", price: 228, rarity: "legendary", unlockLevel: 8,
+    desc: "束得一丝不苟的深棕", hairStyle: "bun", hairColor: "#3a2e20" },
+  { id: "hr-bun-silver",  slot: "hair", kind: "part", name: "银丝丸子头", price: 248, rarity: "legendary", unlockLevel: 8,
+    desc: "同一束髻,换了银白", hairStyle: "bun", hairColor: "#d8dce8" },
+
+  // ---------- 头饰(slot head):可以整槽不戴,所以不设底款 ----------
+  { id: "hd-bandana",   slot: "head", kind: "part", name: "影忍束带", price: 88, rarity: "rare",
+    desc: "额上一条,尾端在风里飘", headwear: "bandana" },
+  { id: "hd-catears",   slot: "head", kind: "part", name: "猫耳发箍", price: 108, rarity: "epic", unlockLevel: 5,
+    desc: "两只耳朵,内侧点紫", headwear: "catears" },
+  { id: "hd-ribbon",    slot: "head", kind: "part", name: "樱花缎带", price: 118, rarity: "epic", unlockLevel: 3,
+    desc: "头顶一个蝴蝶结", headwear: "ribbon" },
+  { id: "hd-goggles",   slot: "head", kind: "part", name: "赛博护目镜", price: 148, rarity: "epic", unlockLevel: 4,
+    desc: "推到额上,镜片透亮", headwear: "goggles" },
+  { id: "hd-crown",     slot: "head", kind: "part", name: "王者金冠", price: 328, rarity: "legendary", unlockLevel: 8,
+    desc: "三齿金冠 · 全场只有这一顶", headwear: "crown" },
+
+  // ---------- 肤色(slot tone):手臂/手/膝盖/颈的那一号色,不上脸(脸面另有自己的一颗 chip) ----------
+  { id: "tn-honey", slot: "tone", kind: "part", name: "原肤色", price: 0, rarity: "common",
+    desc: "人物本来的蜜色" },
+  { id: "tn-ink",   slot: "tone", kind: "part", name: "纯黑肤", price: 48, rarity: "rare",
+    desc: "手臂膝盖全黑 · 剪影系", skinTone: "#000000" },
+  { id: "tn-snow",  slot: "tone", kind: "part", name: "纯白肤", price: 48, rarity: "rare",
+    desc: "纯黑肤的镜像", skinTone: "#ffffff" },
+
+  // ---------- 体型(slot body):髋高/躯干/头身比微调,挥拍肩点是判定锁定位故不受影响 ----------
+  { id: "bd-standard", slot: "body", kind: "part", name: "标准体型", price: 0, rarity: "common",
+    desc: "原版身量" },   // 旋钮留空:13 条原始 def 里 body 就是 undefined(sprites 自己兜 standard)
+  { id: "bd-compact",  slot: "body", kind: "part", name: "小巧体型", price: 88, rarity: "rare",
+    desc: "头大身小 · 矮半档", body: "compact" },
+  { id: "bd-tall",     slot: "body", kind: "part", name: "高挑体型", price: 128, rarity: "rare",
+    desc: "腿长腰短 · 高半档", body: "tall" },
+
+  // ---------- 球袜(slot sock)与 鞋(slot lower):两条独立通道,合成一件会回退 ----------
+  // 今天「疾步球鞋(替换鞋块)」与「袜色」本就是两回事 —— 影分身配球鞋时黑袜还得留着。
+  // 所以鞋槽 = 原版/墨黑/纸白三件 + 既有的 acc-sneaker(wear,自带画法)。
+  { id: "sc-classic", slot: "sock", kind: "part", name: "原版球袜", price: 0, rarity: "common",
+    desc: "奶白袜 · 远侧自动压暗" },
+  { id: "sc-ink",     slot: "sock", kind: "part", name: "墨黑球袜", price: 38, rarity: "rare",
+    desc: "两腿同黑,不留景深", sock: "#000000" },
+  { id: "sc-snow",    slot: "sock", kind: "part", name: "纸白球袜", price: 38, rarity: "rare",
+    desc: "两腿同白", sock: "#ffffff" },
+  { id: "ft-classic", slot: "lower", kind: "part", name: "原版球鞋", price: 0, rarity: "common",
+    desc: "深墨鞋 · 远侧自动压暗" },
+  { id: "ft-ink",     slot: "lower", kind: "part", name: "墨黑球鞋", price: 38, rarity: "rare",
+    desc: "从头黑到脚的最后一步", shoe: "#000000" },
+  { id: "ft-snow",    slot: "lower", kind: "part", name: "纸白球鞋", price: 38, rarity: "rare",
+    desc: "素面白鞋,没有网侧那道红", shoe: "#ffffff" },
+
+  // ---------- 光环(slot aura):可以整槽不戴,所以不设底款 ----------
+  { id: "au-gold", slot: "aura", kind: "part", name: "王者金阵", price: 328, rarity: "legendary", unlockLevel: 8,
+    desc: "脚下齿环 + 升尘 · 传说专属", aura: "gold" },
+  { id: "au-ice",  slot: "aura", kind: "part", name: "宗师冰阵", price: 268, rarity: "epic", unlockLevel: 5,
+    desc: "同一座法阵,换了冷色", aura: "ice" },
+
+  // ---------- 挂件(2026-10-06 配饰板块首批五件,原样迁入本表) ----------
+  // 槽位显示名随拆件重构收窄:face 由「面部」改叫「面饰」、upper 由「上身」改叫「颈饰」、
+  // lower 由「下身」改叫「球鞋」—— 存档键与挂载点一个都没动,只是不再和肤色/上衣/球袜抢名字。
+  { id: "acc-mask",   slot: "face",  kind: "wear", name: "赛场口罩", price: 88,  rarity: "common",
+    style: "mask", desc: "斜褶罩面 · 呼吸微微起伏",
+    main: "#f2efe6", dark: "#c9c4b4", accent: "#e60012" },
+  { id: "acc-shades", slot: "face",  kind: "wear", name: "疾风墨镜", price: 268, unlockLevel: 2, rarity: "rare",
+    style: "shades", desc: "斜切镜片 · 眼神不许读",
+    main: "#1b2233", dark: "#0c0e14", accent: "#ffe14d" },
+  { id: "acc-scarf",  slot: "upper", kind: "wear", name: "飘云围巾", price: 488, unlockLevel: 4, rarity: "epic",
+    style: "scarf", desc: "赛场风里飘起来的那条",
+    main: "#ff4d5e", dark: "#8c1f30", accent: "#ffe14d" },
+  { id: "acc-sneaker", slot: "lower", kind: "wear", name: "疾步球鞋", price: 288, unlockLevel: 3, rarity: "rare",
+    style: "sneaker", desc: "纸白厚底 · 网侧一道红",
+    main: "#eef0f4", dark: "#20242f", accent: "#e60012" },
+  { id: "acc-gloves", slot: "hand",  kind: "wear", name: "防滑手套", price: 198, unlockLevel: 2, rarity: "rare",
+    style: "gloves", desc: "腕口束带 · 握拍更稳",
+    main: "#20242f", dark: "#0c0e14", accent: "#ffe14d" },
+];
+
+/**
+ * 槽位元数据:商店 chip 的文案、顺序与分组。
+ * `store` 说这件槽落到存档的哪里 —— `"acc"` = Profile.acc[key],`"kind"` = equipped.face。
+ * 全代码库只有 career 的佩戴门面读这个字段,别在 UI 层第二处判。
+ * `base` = 恒有一件的槽的那张免费底款(「回到原版」);可整槽不戴的槽留空,UI 走「卸下」。
+ * 以后加新槽位 = AccSlot 加一个成员 + 这里加一行,佩戴/存档/商店零改动。
+ */
+export interface CosmoSlotMeta {
+  key: CosmoSlot;
+  name: string;
+  /** 商店 chip 的两行分组:0 = 本体,1 = 配件 */
+  row: 0 | 1;
+  store: "acc" | "kind";
+  /** 该槽的免费底款 id;不填 = 这一槽允许空着 */
+  base?: string;
+}
+
+export const COSMO_SLOTS: CosmoSlotMeta[] = [
+  { key: "tone",     name: "肤色", row: 0, store: "acc",  base: "tn-honey" },
+  { key: "body",     name: "体型", row: 0, store: "acc",  base: "bd-standard" },
+  { key: "hair",     name: "发型", row: 0, store: "acc",  base: "hr-none" },
+  { key: "jersey",   name: "上衣", row: 0, store: "acc",  base: "j-red" },
+  { key: "faceStyle", name: "脸面", row: 0, store: "kind", base: "face-auto" },
+  { key: "aura",     name: "光环", row: 0, store: "acc" },
+  { key: "head",     name: "头饰", row: 1, store: "acc" },
+  { key: "face",     name: "面饰", row: 1, store: "acc" },
+  { key: "upper",    name: "颈饰", row: 1, store: "acc" },
+  { key: "hand",     name: "手部", row: 1, store: "acc" },
+  { key: "lower",    name: "球鞋", row: 1, store: "acc",  base: "ft-classic" },
+  { key: "sock",     name: "球袜", row: 1, store: "acc",  base: "sc-classic" },
+];
+
+/** 既有引用名:CFG 与 tools 里几十处吃的都是这两个名字,拆件这一轮不改名,少动一片 */
+export const ACCESSORIES: CosmeticDef[] = COSMETICS;
+export const ACC_SLOTS: CosmoSlotMeta[] = COSMO_SLOTS;
+
 // ===== 脸面款式注册表(数据):faceStyle key → 脸底/描边/五官墨色/腮红/特征标记 =====
 // 五官与特征的**笔画**在 sprites.drawHead;这里只放配色与开关(数值只进 config)。
 // "ink" 墨面=黑色剪影+白五官(经典/CPU 默认);"skin" 系=肤色底+暖棕墨+心情腮红。
 // mark 交给 sprites 的 FACE_MARKS 函数表渲染(雀斑/泪痣/猫须/白眉须)。
+// line 缺省 = 脸圆不描边。剪影系(墨面/无面)一律不描:淡白描边压在黑脸上读起来就是一层灰壳,
+// 而且它在深色球馆背景上并不是"勾轮廓",是把剪影的边缘糊成了灰。
 // hi = 头顶高光弧的透明度(墨面深底更淡、浅色脸稍亮才看得见)。
+// base 就是这张脸的全部颜色:人物的「肤色」槽不往脸上着色(2026-10-07 解耦,见 drawHead)。
 export const FACE_STYLES: Record<string, {
-  base: string; line: string; ink: string; blush: boolean; hi: number; mark?: string;
+  base: string; line?: string; ink: string; blush: boolean; hi: number; mark?: string;
 }> = {
-  ink:     { base: "#0a0e18", line: "rgba(235,240,255,0.5)", ink: "#ffffff", blush: false, hi: 0.15 },
+  ink:     { base: "#0a0e18", ink: "#ffffff", blush: false, hi: 0.15 },
+  // 全黑无面:五官墨色与脸底同黑 ⇒ 白五官"画了但看不见",hi 归零关掉头顶高光弧。
+  // 零新画法,走的还是 drawHead 那几笔。
+  void:    { base: "#000000", ink: "#000000", blush: false, hi: 0 },
+  // 纯白无面:void 的镜像 —— 五官与脸底同白,"画了但看不见"
+  snow:    { base: "#ffffff", ink: "#ffffff", blush: false, hi: 0 },
   skin:    { base: "#f2c491", line: "rgba(10,13,24,0.55)", ink: "#4a2b16", blush: true, hi: 0.22 },
   freckle: { base: "#f6cd9d", line: "rgba(10,13,24,0.55)", ink: "#4a2b16", blush: true, hi: 0.22, mark: "freckle" },
   tear:    { base: "#f2c491", line: "rgba(10,13,24,0.55)", ink: "#4a2b16", blush: true, hi: 0.22, mark: "tear" },
@@ -127,6 +381,55 @@ export const BODIES: Record<string, { hip: number; torso: number; headMul: numbe
   compact:  { hip: 0.31, torso: 0.41, headMul: 1.08, limbMul: 1.06 },
   tall:     { hip: 0.40, torso: 0.32, headMul: 0.90, limbMul: 0.96 },
 };
+
+// ============================================================
+// 生涯里程碑(2026-10-07):六格生涯统计的达成档位,达成后在生涯面板
+// 「生涯战绩」页整卡点击一次性领金币+经验。三条口径:
+// ① id 恒为 ms-<stat>-<档位序号> —— 阈值日后调整不换 id,老档的已领记录不失义,
+//    所以**不许**把阈值写进 id(判据 tools/milestone-check.ts ①)。
+// ② stat 与 shop-shelf.statCells 六格一一对应(winRate 是现算派生值,不落盘);
+//    六格之外没有卡片承载,不给隐藏统计(总击球/连胜/训练星)设档。
+// ③ 奖励量级对标 normal 胜场(50币+36经验):全部领完 ≈ 6 个 normal 胜场,
+//    一次性发放,不存在刷取通道,不参与结算通胀。
+// ============================================================
+
+export type MilestoneStat = "winRate" | "smashes" | "perfects" | "sweets" | "maxRally" | "endless";
+
+export interface MilestoneDef {
+  id: string;
+  stat: MilestoneStat;
+  /** 达成阈值(现值口径见 core/milestone.ts 的 statValue,胜率是 round(wins/matches*100)) */
+  at: number;
+  coin: number;
+  exp: number;
+}
+
+export const MILESTONES: MilestoneDef[] = [
+  // 生涯胜率
+  { id: "ms-winRate-1", stat: "winRate", at: 30, coin: 40, exp: 25 },
+  { id: "ms-winRate-2", stat: "winRate", at: 45, coin: 80, exp: 50 },
+  { id: "ms-winRate-3", stat: "winRate", at: 60, coin: 150, exp: 100 },
+  // 扣杀终结
+  { id: "ms-smashes-1", stat: "smashes", at: 20, coin: 40, exp: 25 },
+  { id: "ms-smashes-2", stat: "smashes", at: 60, coin: 80, exp: 50 },
+  { id: "ms-smashes-3", stat: "smashes", at: 150, coin: 150, exp: 100 },
+  // 完美击球
+  { id: "ms-perfects-1", stat: "perfects", at: 15, coin: 40, exp: 25 },
+  { id: "ms-perfects-2", stat: "perfects", at: 50, coin: 80, exp: 50 },
+  { id: "ms-perfects-3", stat: "perfects", at: 120, coin: 150, exp: 100 },
+  // 甜区命中
+  { id: "ms-sweets-1", stat: "sweets", at: 40, coin: 40, exp: 25 },
+  { id: "ms-sweets-2", stat: "sweets", at: 120, coin: 80, exp: 50 },
+  { id: "ms-sweets-3", stat: "sweets", at: 300, coin: 150, exp: 100 },
+  // 最长相持
+  { id: "ms-maxRally-1", stat: "maxRally", at: 10, coin: 40, exp: 25 },
+  { id: "ms-maxRally-2", stat: "maxRally", at: 16, coin: 80, exp: 50 },
+  { id: "ms-maxRally-3", stat: "maxRally", at: 24, coin: 150, exp: 100 },
+  // 无限模式纪录(单局最高分)
+  { id: "ms-endless-1", stat: "endless", at: 5, coin: 40, exp: 25 },
+  { id: "ms-endless-2", stat: "endless", at: 15, coin: 80, exp: 50 },
+  { id: "ms-endless-3", stat: "endless", at: 30, coin: 150, exp: 100 },
+];
 
 /** 飘字文案档位(夸奖/技能/瞄准共用):plate 指定 P5 底板样式(缺省 = 无底板);
  * dy 为贴球小字的偏移(现在只剩瞄准确认在用),评价/技能字改挂场边锚点不再用 dy */
@@ -2307,10 +2610,17 @@ export const CFG = {
 
   // 皮肤表(见文件顶部的 SKINS):挂在 CFG 树上,沿用「手感与经济之外的一切数据都在 CFG」的心智
   skins: SKINS,
+  // 配饰表与槽位元数据(2026-10-06 配饰板块):career 装备链与 render/acc.ts 消费
+  accessories: ACCESSORIES,
+  accSlots: ACC_SLOTS,
+  // 皮肤族(货架合并 + 一次买断),career.ownsFamily / 商店二级货架消费
+  families: SKIN_FAMILIES,
   // 稀有度元数据(名称/徽章色),商店卡片渲染用
   rarity: RARITY_META,
   // 下架皮肤退款表,career.profile() 归一化存档时消费
   refunds: SKIN_REFUNDS,
+  // 生涯里程碑档位表(2026-10-07):career 领取链与 shop-shelf 副行消费
+  milestones: MILESTONES,
   // 脸面款式注册表(数据)与体型档:sprites.drawHead/drawPlayer 消费
   faceStyles: FACE_STYLES,
   bodies: BODIES,

@@ -231,12 +231,12 @@ export class GameRoot extends Component {
     // 若跟着模拟帧放,恢复的那一瞬间会一口气震一串
     hapticTick();
     this.updateSwingCue();
-    // 同步玩家技能按键状态至触屏(双槽 2026-10-06:技能1 键 + 技能2 键各喂各的,空槽画空态)
+    // 同步玩家技能按键状态至触屏(双槽 2026-10-06:技能1 键 + 技能2 键各喂各的)
     const human = R.players[0];
     const feedSkillKey = (target: "lunge" | "skill2", s: typeof human.skill): void => {
       if (!s) {
-        // 空槽:键面画空槽横杠 + 「未携带」封条,按下走 down() 的拒按抖动(ready=false)
-        touchPad.setSkillState(target, 0, false, "", "空", 0, C.skills.blockText.emptySlot, 0, 0);
+        // 空槽只报"这一槽没技能"(skillId 传空串)⇒ touchpad 整颗键不显示,也不收手指
+        touchPad.setSkillState(target, 0, false, "");
         return;
       }
       const cdRatio = s.maxCd > 0 ? clamp(s.cd / s.maxCd, 0, 1) : 0;

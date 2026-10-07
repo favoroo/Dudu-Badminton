@@ -4,9 +4,13 @@
 // 设计动机:
 // - 用户指令:模式选择不再用弹窗 —— 点首页大色块要「斩进一块新界面」,
 //   返回时斩回来,进出都走 ui-arcade.screenSwap 的斜带转场。
-// - 两块屏骨架同构(暗底 + 氛围 + 右上 ✕ 关闭键 + 四档难度 2×2 实底大色块),
+// - 两块屏骨架同构(半透纱底 + 氛围 + 右上 ✕ 关闭键 + 四档难度 2×2 实底大色块),
 //   差异只在赛前准备区(技能胶囊两块屏都有,基类提供;球馆是对练屏独有)与选档后的去向 ——
 //   抽成基类 + buildExtra/onPick 钩子,子类只补差异,不复制骨架。
+// - 纱底下露出的是世界画布的**实时当前球馆**(用户指令 2026-10-07:选场地时背景
+//   要跟着变成对应球馆,不要糊成纯黑)。身后的一级界面不靠这层纱挡 —— screenSwap
+//   进本屏时已把主菜单 fadeOutHide,纱下只有球场;纱比首页(0.22/0.5)略深一档,
+//   因为这屏文字密度更高。
 // - 四档难度文案统一吃 config.DIFF_PICKS(主菜单旧三卡的展示表收编于此),
 //   色面用 drawSolidBlock 实底大色块,文字用色由 inkOn(accent) 决定。
 // - 触摸卫生沿用仓库契约:hide 走 fadeOutHide(禁交互件、不 deactivate),
@@ -50,7 +54,9 @@ export abstract class ModeScreen {
     this.goBack = goBack;
     this.root = kit.root(parent, name);
     this.root.active = false;
-    kit.dim(this.root, 1, 1, { bands: false });        // 二级界面底即墨黑:身后的一级界面一律不露(用户指令)
+    // 半透纱露出世界画布的当前球馆(切球馆 tab 时 courtRenderer.setTheme 重画静态层,
+    // 背景立刻跟着换)。一级界面由 screenSwap 收掉,不靠这层纱挡(见文件头 2026-10-07 指令)。
+    kit.dim(this.root, 0.35, 0.68, { bands: false });
     kit.atmosphere(this.root);
     this.buildHeader();
     this.buildBars();
@@ -175,15 +181,16 @@ export abstract class ModeScreen {
    * 建在基类,子类只决定摆在哪个 y。
    */
   protected buildSkillBadge(y: number): void {
+    const W = 640, H = 46, PAD = 18;
     const skill = new Node("badge:skill");
     skill.layer = this.root.layer;
-    skill.addComponent(UITransform).setContentSize(640, 46);
+    skill.addComponent(UITransform).setContentSize(W, H);
     const sg = skill.addComponent(Graphics);
-    drawSlantShadow(sg, 640, 46, skewOf(46, 4), 4, 5, 0.5);
-    drawSlantPanel(sg, 640, 46, skewOf(46, 4), { face: "#16161f", alpha: 0.94, edge: "#38bdf8", edgeA: 0.5 });
+    drawSlantShadow(sg, W, H, skewOf(H, 4), 4, 5, 0.5);
+    drawSlantPanel(sg, W, H, skewOf(H, 4), { face: "#16161f", alpha: 0.94, edge: "#38bdf8", edgeA: 0.5 });
     makeChip(skill, "SKILL", 9, "#38bdf8", "#0a0e1c").setPosition(-262, 0, 0);
     this.skillNameLabel = this.txt(skill, "强力跨步", 14, "#38bdf8", -216, 0, 200);
-    this.txt(skill, "赛前可选主动技能 · 更换 ›", 12, DIM_FAINT, 180, 0, 220);
+    this.txtRight(skill, "赛前可选主动技能 · 更换 ›", 12, DIM_FAINT, W / 2 - PAD, 0);
     this.pressable(skill, 0.96);
     skill.on(Button.EventType.CLICK, () => {
       this.kit.sfx.play("ui");
@@ -239,6 +246,23 @@ export abstract class ModeScreen {
     l.node.setPosition(left + w / 2, y, 0);
     return l;
   }
+
+  /**
+   * 右对齐文本:right 传「文字右缘」(通常是 面板半宽 - 内边距)。
+   * 行尾的提示/动作读数(「… · 更换 ›」)必须走这一手:左对齐摆 fixed left 时,
+   * 文案一长就从面板右边框**探出去**(旧写法 left=180 + 估宽 220 → 盒右缘 400,
+   * 而面板只有 640 宽、边框在 320),箭标正好压在框线上。
+   */
+  protected txtRight(parent: Node, text: string, size: number, colorHex: string | Color,
+    right: number, y: number, left = 0): Label {
+    const l = this.kit.label(parent, text, size, colorHex, { align: 2 });
+    const ut = l.node.getComponent(UITransform)!;
+    ut.setContentSize(right - left, Math.round(size * 1.35));
+    ut.setAnchorPoint(1, 0.5);
+    l.overflow = Label.Overflow.CLAMP;
+    l.node.setPosition(right, y, 0);
+    return l;
+  }
 }
 
 // ============================================================
@@ -261,7 +285,7 @@ export class MatchSetupScreen extends ModeScreen {
   }
 
   protected buildExtra(): void {
-    // 球馆选择(自主菜单迁入):选中 = 该馆主题色描边点亮 + 「使用中」角标
+    // 球馆选择(自主菜单迁入):选中 = 该馆主题色描边点亮 + 卡内右侧亮「使用中」读数
     const courts = new Node("courts");
     courts.layer = this.root.layer;
     courts.addComponent(UITransform).setContentSize(640, TOUCH_MIN);
@@ -272,8 +296,11 @@ export class MatchSetupScreen extends ModeScreen {
       // 命中框吃 TOUCH_MIN 下限,墨仍按 42 画(「视觉小、命中大」,同 uiIconButton 那一手)
       tab.addComponent(UITransform).setContentSize(148, TOUCH_MIN);
       const g = tab.addComponent(Graphics);
+      // 馆名贴左、「使用中」贴右,两栏同排(与下方技能胶囊同一版式):
+      // 名字居中时右半只留 48,那颗 52 宽的角标怎么摆都要么压字要么探出卡框(旧写法探出 11)。
       const name = this.kit.label(tab, c.name, 13, ARCADE.paper);
-      // 「使用中」角标:选中才亮,斜切小片贴在卡片右上角。
+      name.node.setPosition(-64 + textW(c.name, 13) / 2, 0, 0);
+      // 「使用中」读数:选中才亮,斜切小片贴在卡片右侧内缘。
       // 这颗角标按选中态 active 开关,而原生侧 Graphics 的渲染数据会在 onDisable 被清、
       // 重激活不重传 —— 一次画完的它第二次点亮就只剩字没有底,所以登记成可重放。
       const flag = new Node("flag");
@@ -286,7 +313,7 @@ export class MatchSetupScreen extends ModeScreen {
         fg.fill();
       });
       this.kit.label(flag, "使用中", 10, "#0a0e1c").node.setPosition(0, 0, 0);
-      flag.setPosition(58, 12, 0);
+      flag.setPosition(38, 0, 0);
       flag.setParent(tab);
 
       this.pressable(tab, 0.94);
@@ -318,7 +345,7 @@ export class MatchSetupScreen extends ModeScreen {
 
   // ---------- 状态描绘 ----------
 
-  /** 球馆 tab:选中 = 该馆主题色实底 + 描边点亮 + 亮「使用中」角标(主菜单同款) */
+  /** 球馆 tab:选中 = 该馆主题色实底 + 描边点亮 + 亮右侧「使用中」读数 */
   private paintCourts(): void {
     const curId = this.kit.getCourtTheme().id;
     for (const t of this.courtTabs) {
