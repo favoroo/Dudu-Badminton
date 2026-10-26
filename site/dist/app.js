@@ -337,6 +337,48 @@
     });
   })();
 
+  /* ---------- 宣传片:自绘播放键 + 进度条 ---------- */
+
+  (function heroVideo() {
+    var video = $("[data-video]");
+    var playBtn = $("[data-video-play]");
+    var box = $("[data-shot]");
+    var bar = $("[data-video-bar]");
+    var fill = $("[data-video-fill]");
+    if (!video || !playBtn || !box) return;
+
+    // 不用原生 controls:未播放时它会在画面底部压一条黑带,和全站 P5 语汇也不搭。
+    // 播放键自绘;进度条是画面底缘那道荧光黄细线(纯装饰,不可拖)。
+    function start() {
+      var p = video.play();
+      if (p && typeof p.catch === "function") {
+        // 被自动播放策略拦下时不要把键淡掉(否则画面里一个可点的东西都没有)
+        p.catch(function () { box.classList.remove("playing"); });
+      }
+    }
+
+    playBtn.addEventListener("click", start);
+
+    // 点画面本身 = 播放/暂停(替代原生 controls 的常用交互)
+    video.addEventListener("click", function () {
+      if (video.paused) start();
+      else video.pause();
+    });
+
+    video.addEventListener("play", function () { box.classList.add("playing"); });
+    video.addEventListener("pause", function () { box.classList.remove("playing"); });
+    video.addEventListener("ended", function () {
+      box.classList.remove("playing");
+      video.currentTime = 0;
+      if (fill) fill.style.width = "0%";
+    });
+    video.addEventListener("timeupdate", function () {
+      if (!fill || !video.duration) return;
+      fill.style.width = (video.currentTime / video.duration * 100).toFixed(2) + "%";
+    });
+    if (bar) bar.hidden = false;
+  })();
+
   /* ---------- 图片放大窗 ---------- */
 
   (function lightbox() {

@@ -282,6 +282,20 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   align-items: center;
 }
 
+/* 文案在上、视频通栏在下 —— 视频是 20:9 超宽(手机全屏录制),
+   挤进半宽列里只会剩一条小带子,通栏才看得清游戏 UI */
+.hero .wrap { position: relative; z-index: 1; }
+.hero-copy { max-width: 62em; }
+
+.hero-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 18px;
+  margin-bottom: 0;
+}
+.hero-cta .hero-fine { margin-bottom: 0; }
+
 .kicker {
   display: flex;
   align-items: center;
@@ -375,75 +389,104 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 
 /* ---- 宣传片框 ---- */
-.hero-shot { margin: 0; }
+.hero-shot {
+  margin: 40px 0 0;
+  position: relative;
+}
 .shot {
   position: relative;
-  aspect-ratio: 16 / 9;
-  background: var(--c-navy);
+  /* 与源同比例 1920:862(20:9 手机全屏录制)—— 换成 16:9 会把两侧游戏 UI 裁掉 */
+  aspect-ratio: 1920 / 862;
+  background: #000;
   border: var(--bw) solid var(--c-line);
-  box-shadow: 8px 9px 0 #000;
+  box-shadow: 10px 11px 0 #000;
   overflow: hidden;
 }
-.shot-ph, .shot-video {
+.shot-video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  object-fit: contain;
+  background: #000;
 }
-.shot-ph img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center 40%;
-  filter: saturate(1.05) brightness(.72);
-}
-/* 扫描线:两像素一档的横纹,压在占位画面上读成"信号待接通" */
-.shot-scan {
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    180deg,
-    rgba(7, 7, 13, .34) 0 1px,
-    transparent 1px 3px
-  );
-  pointer-events: none;
-}
+/* 自绘播放键:video 原生 controls 在未播放时是浏览器默认样式,与全站 P5 语汇不搭。
+   点它 = play(),播放中淡出(见 app.js)。 */
 .shot-play {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 84px;
-  height: 84px;
-  margin: -42px 0 0 -42px;
+  width: 92px;
+  height: 92px;
+  margin: -46px 0 0 -46px;
+  padding: 0;
+  border: 0;
   display: grid;
   place-items: center;
   background: var(--c-slash);
+  cursor: pointer;
   transform: skewX(calc(var(--slant-band) * -1));
-  box-shadow: 6px 7px 0 rgba(0, 0, 0, .8);
+  box-shadow: 7px 8px 0 rgba(0, 0, 0, .82);
+  transition: opacity .22s var(--ease), transform .12s var(--ease),
+              box-shadow .12s var(--ease);
+}
+.shot-play:hover {
+  box-shadow: 9px 11px 0 rgba(0, 0, 0, .82);
+}
+.shot-play:active {
+  transform: skewX(calc(var(--slant-band) * -1)) translate(4px, 5px);
+  box-shadow: none;
+  transition-duration: 0s;
 }
 .shot-play i {
   display: block;
   width: 0;
   height: 0;
-  margin-left: 5px;
-  border-left: 22px solid var(--c-paper);
-  border-top: 14px solid transparent;
-  border-bottom: 14px solid transparent;
+  margin-left: 6px;
+  border-left: 24px solid var(--c-paper);
+  border-top: 15px solid transparent;
+  border-bottom: 15px solid transparent;
   transform: skewX(var(--slant-band));
 }
-.shot-badge {
+/* 播放中:键淡出并让出点击(点画面本身由 controls 接管) */
+.shot.playing .shot-play {
+  opacity: 0;
+  pointer-events: none;
+}
+.shot-tag {
   position: absolute;
   left: 0;
-  bottom: 0;
+  top: 0;
+  z-index: 2;
   background: var(--c-acid);
   color: var(--c-ink);
   font-family: var(--f-display);
   font-weight: 900;
   font-size: 13px;
-  letter-spacing: .08em;
-  padding: 5px 14px;
+  letter-spacing: .1em;
+  padding: 5px 15px;
   transform: skewX(calc(var(--slant-band) * -1));
-  transform-origin: left bottom;
+  transform-origin: left top;
+  pointer-events: none;
+}
+/* 进度条:画面底缘一道荧光黄细线(替代原生 controls,不可拖) */
+.shot-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(7, 7, 13, .55);
+  z-index: 2;
+  pointer-events: none;
+}
+.shot-bar[hidden] { display: none; }
+.shot-bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--c-acid);
+  transition: width .12s linear;
 }
 .shot-cap {
   display: flex;
@@ -1477,8 +1520,7 @@ kbd {
    ============================================================ */
 
 @media (max-width: 1000px) {
-  .hero-in { grid-template-columns: 1fr; gap: 40px; }
-  .hero-shot { order: -1; }
+  .hero-copy { max-width: none; }
   .skills { grid-template-columns: 1fr; }
   .skill-list {
     flex-direction: row;
@@ -1510,6 +1552,16 @@ kbd {
   .hero-lead { font-size: 15.5px; }
   .hero-cta { gap: 12px; }
   .btn-lg { padding: 13px 22px; font-size: 17px; flex: 1 1 100%; }
+
+  /* 20:9 的视频在 390 宽屏上只有 150 高 —— 让它在手机上出血到屏幕两边,
+     把每一个像素都用来显示游戏画面,而不是被 18px 内边距再吃掉一圈 */
+  .hero-shot {
+    margin-top: 28px;
+    margin-left: -18px;
+    margin-right: -18px;
+  }
+  .shot { border-left: 0; border-right: 0; box-shadow: 0 8px 0 #000; }
+  .shot-cap { padding: 0 18px; font-size: 12.5px; }
   .shot-play { width: 62px; height: 62px; margin: -31px 0 0 -31px; }
   .shot-play i { border-left-width: 16px; border-top-width: 10px; border-bottom-width: 10px; }
 

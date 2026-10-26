@@ -47,8 +47,7 @@
     <div class="hero-dots"></div>
     <div class="hero-ray"></div>
   </div>
-  <div class="wrap hero-in">
-
+  <div class="wrap">
     <div class="hero-copy">
       <p class="kicker">
         <span class="kicker-tag">P5 STYLE</span>
@@ -73,39 +72,33 @@
         <a class="btn btn-ghost btn-lg" href="https://gitee.com/favo9/dudu-badminton/releases/latest">
           <span>下载安卓版</span><small>约 32 MB · 免费</small>
         </a>
+        <p class="hero-fine">
+          <span class="chip chip-acid" data-version>v0.0.39</span>
+          <span>Android 8.0 及以上 · 存档在本地</span>
+        </p>
       </div>
-
-      <p class="hero-fine">
-        <span class="chip chip-acid" data-version>v0.0.39</span>
-        <span>Android 8.0 及以上 · 竖横屏自适应 · 存档在本地</span>
-      </p>
     </div>
 
-    <!-- ---------------------------------------------------------------
-         宣传片位。视频做好后:
-         ① 把 mp4 放到 site/dist/video/promo.mp4
-         ② 把下面 <div class="shot-ph"> … </div> 整块换成:
-            <video class="shot-video" controls playsinline preload="none"
-                   poster="img/court/arena.png" width="960" height="540">
-              <source src="video/promo.mp4" type="video/mp4">
-              您的浏览器不支持视频播放。
-            </video>
-            <span class="shot-tag">实机预告片</span>
-         ③ 删掉 .shot-ph 与 figcaption 里的「制作中」角签
-         尺寸/裁切/圆角都由 .shot 容器管,不用改 CSS。
-         --------------------------------------------------------------- -->
+    <!-- 宣传片:1920×862(20:9 手机全屏录制)。preload=none + poster —— 11MB 视频
+         不该在首屏抢带宽,点播放才拉流。容器比例与源一致,两侧游戏 UI 不会被裁。 -->
     <figure class="hero-shot">
       <div class="shot" data-shot>
-        <div class="shot-ph" aria-hidden="true">
-          <img src="img/court/arena.png" alt="" width="1480" height="720">
-          <span class="shot-scan"></span>
-          <span class="shot-play"><i></i></span>
-          <span class="shot-badge">预告片 · 制作中</span>
+        <video class="shot-video" data-video playsinline preload="none"
+               poster="img/poster.webp" width="1920" height="862">
+          <source src="video/promo.mp4" type="video/mp4">
+          您的浏览器不支持视频播放。
+        </video>
+        <button class="shot-play" type="button" data-video-play aria-label="播放实机演示">
+          <i></i>
+        </button>
+        <span class="shot-tag">实机演示</span>
+        <div class="shot-bar" data-video-bar hidden aria-hidden="true">
+          <i data-video-fill></i>
         </div>
       </div>
       <figcaption class="shot-cap">
         <span class="shot-cap-dot" aria-hidden="true"></span>
-        一分钟实机预告 · 即将上线
+        17 秒实机片段 · 海滩场对练 · 含闪现扣杀与连击
       </figcaption>
     </figure>
 
