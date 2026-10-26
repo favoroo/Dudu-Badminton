@@ -387,7 +387,8 @@ export class MatchSetupScreen extends ModeScreen {
       this.authorTaps = 0;
       this.authorMaxed = false;
       this.profilerOn = !this.profilerOn;
-      if (this.profilerOn) profiler.showStats(); else profiler.hideStats();
+      // 同上:web-mobile 的 release 构建会裁掉 profiler 模块,判空后再用
+      if (this.profilerOn) profiler?.showStats(); else profiler?.hideStats();
       this.kit.sfx.play("ui");
       this.kit.toast(this.profilerOn ? "性能统计 · 开(再连点关)" : "性能统计 · 关");
       return true;

@@ -92,8 +92,12 @@ export class GameRoot extends Component {
     Settings.onChange((s) => { Pace.request(s.paceTier); Gait.apply(s.gaitTier); AutoHit.request(s.autoHit); });
     // 强制固定高度 540，宽度自适应扩展，保证上下视野和按钮在任何长宽比屏幕上都不被裁剪
     view.setDesignResolutionSize(C.world.w, C.world.h, ResolutionPolicy.FIXED_HEIGHT);
-    // 隐藏 Cocos 左下角性能监控/FPS面板
-    profiler.hideStats();
+    // 隐藏 Cocos 左下角性能监控/FPS面板。
+    // **必须判空**:web-mobile 的 release 构建会把 profiler 整块裁掉(构建配置里
+    // debug=false + 无调试面板),此时 `profiler` 是 undefined —— 直接调 hideStats()
+    // 会在 onLoad 抛 TypeError,表现是画布一片黑、控制台一条 "Cannot read properties
+    // of undefined (reading 'hideStats')",真机上则是启动即黑屏。原生/编辑器里它有值。
+    profiler?.hideStats();
     // 锁渲染帧率(config.perf.frameRate):逻辑本就固定 60Hz 步进,高刷屏裸跑只会把
     // 每帧重绘成本 ×2、发热触发温控降频 —— 见 config.perf 注释
     game.frameRate = C.perf.frameRate;

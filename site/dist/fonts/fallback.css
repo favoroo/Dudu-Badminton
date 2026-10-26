@@ -1,0 +1,12 @@
+@font-face {
+  font-family: "DuduDisplay";
+  src: url("display-fallback.woff2") format("woff2");
+  unicode-range: U+2715,U+561F,U+5C9A,U+69BB,U+75E3;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DuduBody";
+  src: url("body-fallback.woff2") format("woff2");
+  unicode-range: U+2715,U+561F,U+5C9A,U+69BB,U+75E3;
+  font-display: swap;
+}

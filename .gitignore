@@ -10,6 +10,12 @@
 .tools-build/
 node_modules/
 
+# 部署时的 gh-pages 临时 worktree(tools/deploy-site.py 用完即删)
+.gh-pages-work/
+
+# 宣传片中间产物(逐帧 PNG 序列 / 成片,体积大且可重出)
+.promo/
+
 # 编辑器与代理工具缓存
 .trae/
 .zcode/
