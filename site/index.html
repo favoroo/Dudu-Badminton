@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>嘟嘟羽毛球 · Dudu Badminton</title>
+<meta name="description" content="一款为手机做的羽毛球对战游戏。摇杆跑位、滑动出球，七个主动技能、二十关闯关、三十九款皮肤。网页版可直接试玩，安卓版免费下载。">
+<meta name="theme-color" content="#07070d">
+<meta property="og:type" content="website">
+<meta property="og:title" content="嘟嘟羽毛球 · Dudu Badminton">
+<meta property="og:description" content="摇杆跑位、滑动出球。七个主动技能、二十关闯关、三十九款皮肤。">
+<meta property="og:image" content="img/court/arena.png">
+<link rel="icon" href="img/app-icon.png">
+<link rel="apple-touch-icon" href="img/app-icon-180.png">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip" href="#main">跳到正文</a>
+
+<!-- ============ 顶栏 ============ -->
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="#top">
+      <img class="brand-icon" src="img/app-icon.png" alt="" width="40" height="40">
+      <span class="brand-txt">嘟嘟<b>羽毛球</b></span>
+    </a>
+    <nav class="nav" aria-label="页面导航">
+      <a href="#modes">玩法</a>
+      <a href="#skills">技能</a>
+      <a href="#skins">皮肤</a>
+      <a href="#courts">球馆</a>
+      <a href="#controls">操作</a>
+      <a href="#get">下载</a>
+      <span class="nav-ind" aria-hidden="true"></span>
+    </nav>
+    <a class="btn btn-slash btn-sm topbar-cta" href="https://favoroo.github.io/Dudu-Badminton/">立即试玩</a>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ============ 首屏 ============ -->
+<section class="hero" id="top">
+  <div class="hero-bg" aria-hidden="true">
+    <div class="hero-dots"></div>
+    <div class="hero-ray"></div>
+  </div>
+  <div class="wrap">
+    <div class="hero-copy">
+      <p class="kicker">
+        <span class="kicker-tag">P5 STYLE</span>
+        <span>羽毛球 · 单人对决 · 手机优先</span>
+      </p>
+
+      <h1 class="hero-title">
+        <span class="hero-title-band">嘟嘟羽毛球</span>
+        <span class="hero-title-sub">DUDU BADMINTON</span>
+      </h1>
+
+      <p class="hero-lead">
+        一根手指跑位，四个方向出球。七个主动技能随时打断对手节奏，
+        二十关闯关各带一条独立机制，三十九款皮肤从球衣换到脸面。
+        <b>没有体力，没有广告，打开就打。</b>
+      </p>
+
+      <div class="hero-cta">
+        <a class="btn btn-slash btn-lg" href="https://favoroo.github.io/Dudu-Badminton/">
+          <span>网页版试玩</span><small>浏览器直接开打</small>
+        </a>
+        <a class="btn btn-ghost btn-lg" href="https://gitee.com/favo9/dudu-badminton/releases/latest">
+          <span>下载安卓版</span><small>约 32 MB · 免费</small>
+        </a>
+        <p class="hero-fine">
+          <span class="chip chip-acid" data-version>v0.0.39</span>
+          <span>Android 8.0 及以上 · 存档在本地</span>
+        </p>
+      </div>
+    </div>
+
+    <!-- 宣传片:1920×862(20:9 手机全屏录制)。preload=none + poster —— 11MB 视频
+         不该在首屏抢带宽,点播放才拉流。容器比例与源一致,两侧游戏 UI 不会被裁。 -->
+    <figure class="hero-shot">
+      <div class="shot" data-shot>
+        <video class="shot-video" data-video playsinline preload="none"
+               poster="img/poster.webp" width="1920" height="862">
+          <source src="video/promo.mp4" type="video/mp4">
+          您的浏览器不支持视频播放。
+        </video>
+        <button class="shot-play" type="button" data-video-play aria-label="播放实机演示">
+          <i></i>
+        </button>
+        <span class="shot-tag">实机演示</span>
+        <div class="shot-bar" data-video-bar hidden aria-hidden="true">
+          <i data-video-fill></i>
+        </div>
+      </div>
+      <figcaption class="shot-cap">
+        <span class="shot-cap-dot" aria-hidden="true"></span>
+        15 秒实机片段 · 海滩场对练 · 含闪现扣杀与连击
+      </figcaption>
+    </figure>
+
+  </div>
+</section>
+
+<!-- ============ 数据带 ============ -->
+<section class="band" aria-label="游戏规模">
+  <div class="band-in">
+    <ul class="stats" data-stats>
+      <li><b>20</b><i>关</i><span>闯关关卡</span></li>
+      <li><b>7</b><i>款</i><span>主动技能</span></li>
+      <li><b>39</b><i>款</i><span>皮肤与球具</span></li>
+      <li><b>47</b><i>件</i><span>可换装扮</span></li>
+      <li><b>4</b><i>座</i><span>主题球馆</span></li>
+      <li><b>4</b><i>档</i><span>AI 难度</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 玩法 ============ -->
+<section class="sec" id="modes">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="sec-tag">MODES</p>
+      <h2 class="sec-title"><span>玩法</span></h2>
+      <p class="sec-sub">五个入口，一张首页。想打一场就点最大的那块红。</p>
+    </header>
+
+    <div class="modes" data-modes>
+      <!-- JS 渲染 -->
+    </div>
+
+    <div class="difftable">
+      <div class="difftable-head">
+        <h3>四档难度</h3>
+        <p>同一套物理与 AI，只调「看走眼」的程度。球速与移速另有滑杆，下一球生效。</p>
+      </div>
+      <ul class="diffs" data-diffs></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 技能 ============ -->
+<section class="sec sec-alt" id="skills">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="sec-tag">SKILLS</p>
+      <h2 class="sec-title"><span>七个技能</span></h2>
+      <p class="sec-sub">同时带两个，按等级逐个解锁。点开看它到底怎么用 —— 演示是拿真物理跑出来的，不是画的示意图。</p>
+    </header>
+
+    <div class="skills">
+      <ul class="skill-list" data-skills role="tablist" aria-label="技能列表"></ul>
+      <div class="skill-stage">
+        <div class="skill-shot" data-skill-shot>
+          <div class="skill-frames" data-skill-frames aria-hidden="true"></div>
+          <span class="skill-shot-tag" data-skill-shot-tag>闪现扣杀</span>
+        </div>
+        <div class="skill-info">
+          <h3 data-skill-name>闪现扣杀</h3>
+          <p data-skill-desc>折跃瞬间时停悬空，闪至羽毛球下方高点，必定凌空劈扣。</p>
+          <ul class="skill-meta">
+            <li><b data-skill-cd>5.0</b><span>秒冷却</span></li>
+            <li><b data-skill-lv>Lv.3</b><span>解锁等级</span></li>
+            <li><b data-skill-tag>空中折跃</b><span>定位</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 皮肤 ============ -->
+<section class="sec" id="skins">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="sec-tag">SKINS</p>
+      <h2 class="sec-title"><span>皮肤与装扮</span></h2>
+      <p class="sec-sub">十四套人物形象，十二个可换部位。同一张脸可以换雀斑、泪痣、猫须 —— 换外观，不碰任何判定。</p>
+    </header>
+
+    <div class="skinbar" data-skinbar></div>
+    <div class="skins" data-skins></div>
+
+    <div class="skin-note">
+      <div class="skin-note-card">
+        <h3>拆件穿戴</h3>
+        <p>肤色、体型、发型、上衣、脸面、光环、头饰、面饰、颈饰、手部、球鞋、球袜 —— 十二个槽各穿一件，跨槽叠加。四十七件装扮与皮肤共用同一份金币钱包。</p>
+      </div>
+      <div class="skin-note-card">
+        <h3>四档稀有度</h3>
+        <p>经典、稀有、史诗、传说。传说款脚下会亮起专属法阵，球拍与羽毛球也各有八款、八款可选，全部纯装饰。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 球馆 ============ -->
+<section class="sec sec-alt" id="courts">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="sec-tag">COURTS</p>
+      <h2 class="sec-title"><span>四座球馆</span></h2>
+      <p class="sec-sub">黄昏馆的钢架聚光、海滩的椰林浪花、赛博场的霓虹矩阵、竹林道场的和纸灯笼 —— 每一座都是逐笔画出来的。</p>
+    </header>
+    <div class="courts" data-courts></div>
+  </div>
+</section>
+
+<!-- ============ 操作 ============ -->
+<section class="sec" id="controls">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="sec-tag">CONTROLS</p>
+      <h2 class="sec-title"><span>怎么玩</span></h2>
+      <p class="sec-sub">左手跑位，右手出球。滑动决定球的深浅与高低，长滑把方向锁住。</p>
+    </header>
+
+    <div class="controls">
+      <div class="ctrl-left">
+        <h3>三种移动方式</h3>
+        <figure class="padfig">
+          <button class="padfig-btn" type="button" data-zoom="img/pad-diagram.png" data-zoom-alt="三种移动方式的完整图示">
+            <img src="img/pad-diagram.png" alt="三种移动方式：摇杆、滑轨、左右跳三键，各自的手指动作与人物响应" width="1300" height="420" loading="eager">
+            <span class="padfig-zoom">点开看大图</span>
+          </button>
+          <figcaption>摇杆有起步与刹车，滑轨是手指在哪人就在哪，三键按下即满速。上推摇杆、上滑滑轨或双击滑轨都能起跳。</figcaption>
+        </figure>
+
+        <h3 class="mt">四个出球方向</h3>
+        <div class="swingpad" aria-hidden="true">
+          <span class="sp-key">击球</span>
+          <span class="sp-arrow sp-r">→ 深球</span>
+          <span class="sp-arrow sp-l">← 网前</span>
+          <span class="sp-arrow sp-u">↑ 挑高</span>
+          <span class="sp-arrow sp-d">↓ 平抽</span>
+        </div>
+        <p class="fine">按住击球键再滑 —— 横向定落点深浅，纵向定弧线高低。滑得够远会浮现小锁，松手即锁定方向，之后不滑只按也一直按锁向打。</p>
+      </div>
+
+      <div class="ctrl-side">
+        <h3>击球手势</h3>
+        <ul class="gestures" data-gestures></ul>
+
+        <h3 class="mt">桌面键位</h3>
+        <table class="keys">
+          <thead><tr><th>动作</th><th>1P</th><th>2P</th></tr></thead>
+          <tbody>
+            <tr><td>左右移动</td><td><kbd>A</kbd><kbd>D</kbd></td><td><kbd>←</kbd><kbd>→</kbd></td></tr>
+            <tr><td>起跳</td><td><kbd>W</kbd></td><td><kbd>↑</kbd></td></tr>
+            <tr><td>击球</td><td><kbd>J</kbd><kbd>K</kbd><kbd>U</kbd><kbd>I</kbd></td><td><kbd>,</kbd><kbd>.</kbd><kbd>;</kbd><kbd>'</kbd></td></tr>
+            <tr><td>技能 1 / 2</td><td><kbd>L</kbd><kbd>O</kbd></td><td><kbd>\</kbd><kbd>]</kbd></td></tr>
+          </tbody>
+        </table>
+        <p class="fine">J 深球 · K 网前 · U 挑高 · I 平抽 —— 与触屏四向滑动一一对应。</p>
+
+        <h3 class="mt">两个手感旋钮</h3>
+        <p class="fine">球速八档、人物移速六档，各自独立。球速改的是「留给你几帧」，移速改的是「这几帧能跑多远」。设置里随时可调，球速下一球生效。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 下载 ============ -->
+<section class="sec sec-get" id="get">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="sec-tag">GET IT</p>
+      <h2 class="sec-title"><span>开始打</span></h2>
+      <p class="sec-sub">网页版点开就玩，安卓版装上更跟手。两端进度各自存在本机。</p>
+    </header>
+
+    <div class="getgrid">
+      <a class="getcard getcard-main" href="https://favoroo.github.io/Dudu-Badminton/">
+        <span class="getcard-tag">WEB</span>
+        <h3>网页版</h3>
+        <p>不用安装，浏览器直接开打。适合先摸两把手感。</p>
+        <span class="getcard-go">立即试玩 →</span>
+      </a>
+
+      <a class="getcard" href="https://gitee.com/favo9/dudu-badminton/releases/latest">
+        <span class="getcard-tag">ANDROID</span>
+        <h3>安卓版 · 国内</h3>
+        <p>Gitee 下载，国内速度更快。最新版本与历史版本都在这里。</p>
+        <span class="getcard-go">下载 APK →</span>
+      </a>
+
+      <a class="getcard" href="https://github.com/favoroo/Dudu-Badminton/releases/latest">
+        <span class="getcard-tag">ANDROID</span>
+        <h3>安卓版 · 海外</h3>
+        <p>GitHub Releases。同样的包，附 SHA-256 校验值。</p>
+        <span class="getcard-go">下载 APK →</span>
+      </a>
+    </div>
+
+    <div class="faq">
+      <details>
+        <summary>要钱吗？有广告吗？</summary>
+        <p>免费，没有广告，也没有内购抽卡。皮肤和装扮用打赢比赛攒的金币换。</p>
+      </details>
+      <details>
+        <summary>手机要什么配置？</summary>
+        <p>Android 8.0 及以上，arm64 设备。包体约 32 MB，装完不额外下载资源。</p>
+      </details>
+      <details>
+        <summary>存档存在哪？换手机会丢吗？</summary>
+        <p>存在本机，不上传。换设备或卸载会丢，目前没有云同步。</p>
+      </details>
+      <details>
+        <summary>网页版和安卓版有什么区别？</summary>
+        <p>玩法完全一致。安卓版有震动反馈、原生更新下载，手感也更稳；网页版省掉安装这一步。</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div class="foot-brand">
+      <img src="img/app-icon.png" alt="" width="44" height="44">
+      <div>
+        <b>嘟嘟羽毛球</b>
+        <span>Dudu Badminton</span>
+      </div>
+    </div>
+    <nav class="foot-nav">
+      <a href="https://github.com/favoroo/Dudu-Badminton">GitHub</a>
+      <a href="https://gitee.com/favo9/dudu-badminton">Gitee</a>
+      <a href="https://gitee.com/favo9/dudu-badminton/releases">更新记录</a>
+    </nav>
+    <p class="foot-fine">
+      <span data-version>v0.0.39</span> · Cocos Creator 3.8.8 · 由 favo 制作
+    </p>
+  </div>
+</footer>
+
+<!-- 图片放大窗:点图示时用,内容由 app.js 填 -->
+<div class="lightbox" data-lightbox hidden>
+  <button class="lightbox-close" type="button" aria-label="关闭">✕</button>
+  <img alt="">
+</div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

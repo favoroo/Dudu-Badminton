@@ -1,0 +1,28 @@
+/* 由 tools/export-site-data.ts 生成 —— 不要手改。改色请改 assets/scripts/ui/p5-tokens.ts */
+:root {
+  --c-ink: #07070d;
+  --c-navy: #101018;
+  --c-navy2: #1a1a26;
+  --c-panel-top: #20202e;
+  --c-line: #2c2c3a;
+  --c-paper: #f5efe1;
+  --c-paper-dim: #cfc7b4;
+  --c-acid: #ffe14d;
+  --c-acid-edge: #b79b12;
+  --c-acid-dk: #8a7514;
+  --c-slash: #e60012;
+  --c-slash-dk: #8f000b;
+  --c-red: #ff4d4d;
+  --c-blue: #3ea8ff;
+  --c-wood: #c8703a;
+  --c-good: #7dff9e;
+  --c-bad: #ff6b6b;
+  --c-hot: #ff6a1f;
+  --c-cyan: #00f0ff;
+  --c-dim: #8f9cbe;
+  --c-dim-deep: #6f7ca6;
+  --slant-plate: 3deg;
+  --slant-block: 5deg;
+  --slant-button: 6deg;
+  --slant-band: 10deg;
+}
