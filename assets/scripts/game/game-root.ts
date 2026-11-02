@@ -647,6 +647,52 @@ export class GameRoot extends Component {
     else this.world.float(x, A.y, lab.text, lab.color, lab.size, lab.life, -1, pl);
   }
 
+  /**
+   * 击球飘字的**唯一出口**:hit 分支里不许再直接调 world.float / world.floatSys /
+   * floatSideLab(闸门 tools/hit-label-check.ts 扫源码钉死)。
+   *
+   * 只有**玩家自己打出来的那一拍**才飘字 —— 对手(AI)、CPU 搭档、影分身、喂球机的
+   * 每一次出球都只放特效与音效,不生成任何一个字。理由:一场球两边各飘一列,对手那一侧
+   * 尤其密(2026-10-27 用户指令「AI 击球不要弹右侧那些标签,只有玩家击打才触发,
+   * 不然标签太多了 太乱了」);对手的高光由火花/震屏/推镜/血条去说,不需要字。
+   *
+   * 为什么闸长在出口而不是每个调用点:0.0.17 那轮同类指令(「AI 的特殊击球标签不要显示,
+   * 只显示玩家的」)是逐条加的,于是档位「扣杀!!/好球」与球种小字「平抽/劈吊/放网」
+   * 漏在了闸外 —— 逐条加闸这件事本身就是漏的来源。归因只认 hit 事件自己申报的
+   * `e.isAI`(影分身 idx=-1,不许按位反查 R.players,见 applyShot)。
+   *
+   * anchor:"side" = 按击球方挂场边锚点(floatSide,底板字同侧自动错行);
+   *         "ball" = 贴击球点(瞄准确认/球种小字:空间反馈就跟在球边上,不跟着去场边),
+   *                  纵向偏移取 lab.dy,缺省 -22(= 接触点上方)。
+   */
+  private hitLabel(e: GameEvent, lab: FloatLabel | null | undefined, anchor: "side" | "ball" = "side"): void {
+    if (!lab || e.isAI === true) return;
+    const x = e.x as number, y = e.y as number;
+    if (anchor === "side") this.floatSideLab(lab, x);
+    else this.world.float(x, y + (lab.dy ?? -22), lab.text, lab.color, lab.size, lab.life, -1, lab.plate);
+  }
+
+  /**
+   * 多拍相持里程碑(老 game.js#L314-322;emoji 换 BMP 安全符号):6/10/15 拍各一档,
+   * 里程碑瞬间欢呼 + 震屏,数字大字之外再给一记「阶段性胜利」的体感。
+   *
+   * **两侧都放**:它说的是「这一分打到第 N 拍了」,不是谁打得好 —— 与击球归因的飘字
+   * (hitLabel,只认玩家自己那一拍)不是一回事,所以本方法不吃那道闸;它也从 hit 分支里
+   * 搬了出来(住在那儿会被「hit 分支只许出自己那一拍的字」的闸门拦下)。
+   */
+  private rallyMilestone(e: GameEvent): void {
+    if (e.rally === 6) {
+      this.world.float(C.world.w / 2, 72, "★ 6 拍激烈相持! ★", "#ffe14d", 18, 38);
+      this.sfx.cheer(0.4); this.world.shake(3);
+    } else if (e.rally === 10) {
+      this.world.float(C.world.w / 2, 72, "★ 10 拍巅峰对攻!! ★", "#ff6a1f", 22, 46);
+      this.sfx.cheer(0.7); this.world.shake(4);
+    } else if (e.rally === 15) {
+      this.world.float(C.world.w / 2, 72, "★ 15 拍神仙之战!!! ★", "#00f0ff", 24, 52);
+      this.sfx.cheer(1); this.world.shake(5);
+    }
+  }
+
   private drain(): void {
     const R = Rules.R;
     for (const e of R.events) {
@@ -704,44 +750,48 @@ export class GameRoot extends Component {
             this.world.fx.miniSpark(e.x as number, e.y as number, hitAng);
           }
 
-          // 夸奖只给真人:喂球那拍不飘字(判据可信度)
-          const praise = !((R.mode === "drill" || R.mode === "tutorial") && e.side === "right");
           // 击球者是不是 AI 直接读事件申报(applyShot 写入):不许再用 R.players[hitterIdx]
           // 按位反查 —— 影分身(idx=-1)不在名单里,反查 undefined 会被误判成真人,
           // 触发不该有的赞美飘字/时机条/触觉反馈(2026-10-04 影分身)。
           const hitterIsAI = e.isAI === true;
+          // 击球表现的两条**分开的**口径,别把两件事合成一个门:
+          //  · 飘字 —— 一律只认玩家自己打出来的那一拍,唯一出口是 hitLabel(归因闸长在它
+          //    身上)。对手/CPU 搭档/影分身/喂球机的每一拍连字形都不生成,下面每一处出字
+          //    都不再自己判一次(判两次 = 第二把尺子)。
+          //  · 特效/震屏 —— 对手的高光照样放(打击感是双方的),只把训练场/教学的喂球机
+          //    除外:它不是对手、是设备。下面用 fxOn 表达这件事。
+          const fxOn = !((R.mode === "drill" || R.mode === "tutorial") && e.side === "right");
           // 触觉:只给真人打出来的特殊击球 —— 普通对拉不震、AI 击球不震(旧写法两条都没挡住,
           // 结果是"每拍都在嗡嗡"反而什么都读不出来)。档位判据在 core/haptic.ts 的 shotKey
+          // (喂球机是右队 AI,`!hitterIsAI` 一并把它挡在门外,不必再叠 mode/side 那一条)
           const hk = shotKey(smash, sweet, perfect);
-          if (praise && hk && !hitterIsAI) haptic(hk);
+          if (hk && !hitterIsAI) haptic(hk);
           // 甜蜜/完美 → 击球两键档位辉光:飘字在球边上,拇指边的按键也直接亮一拍。
           // 只认真人自己打出来的 —— 对手/AI 的好球不是你的操作反馈,亮了反而误导
-          if (praise && !hitterIsAI && (sweet || perfect)) {
+          if (!hitterIsAI && (sweet || perfect)) {
             touchPad.pulseSwing(perfect ? "perfect" : "sweet");
           }
+          // 下面一整段到球种标签为止,都是「击球归因的飘字」:文案/档位照算,出不出字
+          // 一律由 hitLabel 判(它挡的是 AI/搭档/分身/喂球机那一拍)—— 出口只有一个,闸也
+          // 只有一道,新增一条标签时不会再漏一次。
+          const K = C.fx as unknown as Record<string, FloatLabel>;
           // 深浅瞄准的命中确认:右滑深球(重)/左滑短球(轻)飘小字,键盘 J/K 同链路;
           // mid(没滑直接点)不飘 —— 默认档不打扰。贴着击球点做空间反馈,不随档位字去场边
-          if (praise && !hitterIsAI) {
-            const K = C.fx as unknown as Record<string, FloatLabel>;
-            const aimLab = e.aim === "deep" ? K.floatAimDeep : e.aim === "near" ? K.floatAimNear : null;
-            if (aimLab) this.world.float(e.x as number, (e.y as number) + (aimLab.dy ?? 0), aimLab.text, aimLab.color, aimLab.size, aimLab.life, -1, aimLab.plate);
+          if (e.aim === "deep" || e.aim === "near") {
+            this.hitLabel(e, e.aim === "deep" ? K.floatAimDeep : K.floatAimNear, "ball");
           }
-          if (praise) {
-            // 档位文案/字号/寿命来自 config.fx.floatTier*;位置挂击球方场边锚点 ——
-            // 评价字贴球会盖住飞行路径,挪开后底板再实也不挡视线
-            const K = C.fx as unknown as Record<string, FloatLabel>;
-            const lab = (perfect && smash) ? K.floatTierPerfectSmash
-              : perfect ? K.floatTierPerfect
-                : (smash && sweet) ? K.floatTierSweetSmash
-                  : smash ? K.floatTierSmash
-                    : sweet ? K.floatTierSweet
-                      : (e.q as number) > 0.86 ? K.floatTierGood : null;
-            if (lab) this.floatSideLab(lab, e.x as number);
-          }
+          // 档位评价字(完美重扣!!/黄金重扣!!/扣杀!!/好球):文案/字号/寿命来自
+          // config.fx.floatTier*;位置挂击球方场边锚点 —— 评价字贴球会盖住飞行路径,
+          // 挪开后底板再实也不挡视线
+          this.hitLabel(e, (perfect && smash) ? K.floatTierPerfectSmash
+            : perfect ? K.floatTierPerfect
+              : (smash && sweet) ? K.floatTierSweetSmash
+                : smash ? K.floatTierSmash
+                  : sweet ? K.floatTierSweet
+                    : (e.q as number) > 0.86 ? K.floatTierGood : null);
           // 技能专属击球飘字与强化特效
           const skillKind = e.skillKind as string | null;
-          if (praise && skillKind) {
-            const K = C.fx as unknown as Record<string, FloatLabel>;
+          if (fxOn && skillKind) {
             const sLab = skillKind === "lunge" ? K.floatSkillLunge
               : skillKind === "smash" ? K.floatSkillSmash
               : skillKind === "flash" ? (e.flashApex === true ? K.floatSkillFlashHigh : K.floatSkillFlash)
@@ -751,10 +801,8 @@ export class GameRoot extends Component {
               // 档位读的是兑现那一刻的快照 e.rageRatio —— p.rage 在同一帧已被清零。
               : skillKind === "rage" ? (C.skills.rage.tiers[Skills.rageTierOf((e.rageRatio as number) ?? 0)].lab as FloatLabel)
               : null;
-            // 技能命中字只给真人:AI 的命中特效/震屏保留,不再飘同款标签
-            if (sLab && !hitterIsAI) {
-              this.floatSideLab(sLab, e.x as number);
-            }
+            // 技能命中字同样只给自己的拍(hitLabel 判);AI 的命中特效/震屏保留
+            this.hitLabel(e, sLab);
             if (skillKind === "lunge") {
               const ang = hitAng ?? this.hitAngOf(e);
               this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET_SMASH);
@@ -826,49 +874,39 @@ export class GameRoot extends Component {
               this.sfx.play("smash", 0.9 + 0.05 * RT);
               if (!hitterIsAI) haptic(t.haptic as Parameters<typeof haptic>[0]);
             }
-          } else if (praise && e.lungeShot) {
-            if (!hitterIsAI) this.floatSideLab({ text: "跨步重击!", color: "#38bdf8", size: 24, life: 48, plate: "slant" }, e.x as number);
+          } else if (fxOn && e.lungeShot) {
+            // 跨步救球那一拍:字给自己的拍(hitLabel 判),破风特效两侧都放
+            this.hitLabel(e, { text: "跨步重击!", color: "#38bdf8", size: 24, life: 48, plate: "slant" });
             const ang = hitAng ?? this.hitAngOf(e);
             this.world.fx.smash(e.x as number, e.y as number, ang, TIER_SWEET);
           }
           // 连击热手提示:热度首次烧到 fireAt 时飘一次(连打好球的人才看得到)
-          if (praise && !hitterIsAI && (e.heat as number) === (C.heat.fireAt || 3)) {
-            this.floatSideLab({ text: "手感火热!", color: "#ff6a1f", size: 21, life: 46, plate: "slant" }, e.x as number);
+          if ((e.heat as number) === (C.heat.fireAt || 3)) {
+            this.hitLabel(e, { text: "手感火热!", color: "#ff6a1f", size: 21, life: 46, plate: "slant" });
           }
-          // 跳杀:空中高球必然扣杀的专属飘字(挂场边,与档位字同侧自动错行)
-          // 真人看「跳杀!!」学成因,AI 打出来只当对手的高光,不飘教学字
-          if (praise && e.jumpSmash && !hitterIsAI) {
-            const K = C.fx as unknown as Record<string, FloatLabel>;
-            this.floatSideLab(K.floatJumpSmash, e.x as number);
-          }
-          // 放网提示 + 球种标签:非扣杀类技术球一闪即逝的类型提示(老 game.js#L308-313)
-          if (e.kind === "netshot") this.world.float(e.x as number, (e.y as number) - 22, "放网", "#cfe0ff", 13, 28);
-          if (praise && e.kind !== "smash") {
+          // 跳杀:空中高球必然扣杀的专属飘字(挂场边,与档位字同侧自动错行)。
+          // 真人看「跳杀!!」学成因;对手那一拍连字都没有(hitLabel 判)—— 它的高光是那记重扣本身
+          if (e.jumpSmash) this.hitLabel(e, K.floatJumpSmash);
+          // 放网提示 + 球种标签:非扣杀类技术球一闪即逝的类型提示(老 game.js#L308-313),
+          // 同样只认自己那一拍 —— 对手刚才打的是什么球,由球的丝带形态与速度去说
+          if (e.kind === "netshot") this.hitLabel(e, { text: "放网", color: "#cfe0ff", size: 13, life: 28 }, "ball");
+          if (e.kind !== "smash") {
             const lblMap: Record<string, string> = { drive: "shotLabelDrive", lob: "shotLabelLob", slash: "shotLabelSlash", clear: "shotLabelClear" };
-            const lbl = (C.fx as unknown as Record<string, { text: string; color: string; size: number; life: number }>)[lblMap[e.kind as string] ?? ""];
-            if (lbl) this.world.float(e.x as number, (e.y as number) - 22, lbl.text, lbl.color, lbl.size, lbl.life);
+            this.hitLabel(e, K[lblMap[e.kind as string] ?? ""], "ball");
           }
           // 多拍相持里程碑爽点反馈(老 game.js#L314-322;emoji 换 BMP 安全符号)。
-          // 里程碑瞬间欢呼 + 震屏,数字大字之外再给一记「阶段性胜利」的体感
-          if (e.rally === 6) {
-            this.world.float(C.world.w / 2, 72, "★ 6 拍激烈相持! ★", "#ffe14d", 18, 38);
-            this.sfx.cheer(0.4); this.world.shake(3);
-          } else if (e.rally === 10) {
-            this.world.float(C.world.w / 2, 72, "★ 10 拍巅峰对攻!! ★", "#ff6a1f", 22, 46);
-            this.sfx.cheer(0.7); this.world.shake(4);
-          } else if (e.rally === 15) {
-            this.world.float(C.world.w / 2, 72, "★ 15 拍神仙之战!!! ★", "#00f0ff", 24, 52);
-            this.sfx.cheer(1); this.world.shake(5);
-          }
+          // 里程碑瞬间欢呼 + 震屏,数字大字之外再给一记「阶段性胜利」的体感 ——
+          // rally 级的两侧字,住在 rallyMilestone 里,不吃 hitLabel 的归因闸
+          this.rallyMilestone(e);
           // (连击压力的玩家反馈已整体迁往 syncPressureCue:血条阶段上升沿统一播,
           //  「对手体力下降!」这句旧飘字与血条信号打架,已删 —— 同一件事不在两处念)
           if (e.timingHint && !e.autoHit) {
-            this.world.float(e.x as number, (e.y as number) - 44, e.timingHint === "early" ? "早了!" : "晚了!", "#ff9664", 14, 36);
+            this.hitLabel(e, { text: e.timingHint === "early" ? "早了!" : "晚了!", color: "#ff9664", size: 14, life: 36, dy: -44 }, "ball");
           }
           // 表情:扣杀凶相 / 完美星眼 / 下网冒汗(训练场喂球机不做人,不给它表情)。
           // faceOf 按名单 idx 定位(双打也不挂错人);影分身 idx=-1 查不到人 → 自然跳过,
-          // 无面之影不做表情,正确。
-          if (!((R.mode === "drill" || R.mode === "tutorial") && e.side === "right")) {
+          // 无面之影不做表情,正确。喂球机那一条走 fxOn(与上面特效同一个门,别再抄第三份)
+          if (fxOn) {
             if (e.intoNet) this.faceOf(e.idx as number, "oops", 50);
             else if (perfect) this.faceOf(e.idx as number, "star", 55);
             else if (smash) this.faceOf(e.idx as number, "fierce", 45);

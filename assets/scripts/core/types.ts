@@ -560,6 +560,8 @@ export interface Player {
   zenMeter?: number;
   /** 闯关挑战模式:踩入禁区触电僵直倒计时帧 */
   forbiddenWarn?: number;
+  /** 闯关挑战模式:触电后的罚后豁免倒计时帧(豁免期内再踩禁区不连锁触发) */
+  forbiddenImmune?: number;
   /** 闯关挑战模式:极滑地面滑行状态 (正负代表方向,>0绘制溜冰高光轨迹) */
   sliding?: number;
 }

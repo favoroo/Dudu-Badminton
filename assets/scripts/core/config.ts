@@ -2651,6 +2651,10 @@ export const CFG = {
       spectatorFlash:{ read: 6, shotErr: 6 },      // 第 16 关 全场镁光灯
       sakuraFlurry:  { read: 5 },                  // 第 8 关 落樱(与 erratic 同关,会叠加后被夹住)
       erratic:       { read: 6, shotErr: 8 },      // 第 8/19 关 破损球飘忽
+      // 第 10 关 画地为牢:禁区只罚左队(player.ts p.side === "left")。
+      // 2026-11-02 罚后豁免(110 帧)落地后,连锁罚没了,减免从 {45,14} 收到 {12,6} ——
+      // 只保留"机制本身只罚玩家一个人"的象征性补偿,别把老道调成靶子。
+      forbiddenNet:  { read: 12, shotErr: 6 },     // 第 10 关 画地为牢
     },
     /** 减免的量纲范围:两条机制同时命中时不许把 AI 调成纯靶子 */
     aiReliefCap: {

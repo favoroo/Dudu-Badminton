@@ -28,6 +28,7 @@
 | 改传说皮肤「脚下法阵」 | 画法 [aura.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/aura.ts)(零状态,只画不算),数值与配色在 `config.ts` 的 `fx.aura` 段;**别再画光滑椭圆环**(与全站 P5 语汇相反);验收 `aura-preview` |
 | 改击打/轨迹/球体特效 | 数值在 `config.ts` 的 `fx` 段;丝带 [ribbon.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/ribbon.ts) + 球体运动学 [shuttle-motion.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/shuttle-motion.ts) + 粒子 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts) + 缓动 [easing.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/easing.ts);出图 `fx-preview` |
 | 改胜利礼花/终局庆祝时钟 | 弹道与喷口在 `config.ts` 的 `fx.confetti` 段,池与画法在 [fx.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/fx.ts);时钟档位纯函数 [celebration.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/celebration.ts);验收 `confetti-check` |
+| 改击球飘字(谁有资格飘) | **唯一出口** [game-root.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/game-root.ts) 的 `hitLabel(e, lab, anchor)` —— hit 分支里所有击球归因的字(档位「扣杀!!/好球」、球种小字「平抽/劈吊/放网」、瞄准确认、技能名、跨步/热手/跳杀)都从它出,归因闸长在它身上(**只有玩家自己打出来的那一拍**,`e.isAI === true` 直接早退:对手/CPU 搭档/影分身/喂球机一律不飘字,只留特效音效);`anchor:"side"` = 挂场边锚点(同侧自动错行),`"ball"` = 贴击球点。两条口径别混:① **字**只给自己的拍(2026-10-27 用户指令「AI 击球不要弹右侧那些标签,只有玩家击打才触发,不然标签太多了 太乱了」;0.0.17 那轮是逐条加闸,档位字与球种小字就漏了)② **特效/震屏/表情** 对手的高光照样放,只有训练场/教学的喂球机除外(`fxOn`)。连拍里程碑(★N 拍)是 rally 级两侧都放,住 `rallyMilestone`,**不许搬回 hit 分支**;触觉/按键辉光按 `!hitterIsAI` 判;闸门 `hit-label-check`(+`--selftest` 五份反例)扫源码钉死「hit 分支里只许从 hitLabel 出字」 |
 | 改手机震动(触觉) | 强度表 `config.ts` 的 `haptic` 段;判据与排队 [haptic.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/core/haptic.ts);平台出口 [haptics.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/game/haptics.ts);Java 桥在 `native/engine/android/app/src/com/cocos/game/AppActivity.java`。**改 Java 侧必须重打 APK**;**Android 12+ 需显式声明 `USAGE_PHYSICAL_EMULATION`**(否则被归到 TOUCH 档跟着系统总闸走,静默丢掉不抛异常);波形形状这一层做过又撤了(恒幅 one-shot 是已知取舍,别再加 steps/preset);验收 `haptic-check` |
 | 改 P5 视觉构件 | render 层 [p5kit.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/render/p5kit.ts),UI 层 [ui-arcade.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/ui-arcade.ts) |
 | 改面板层配色/斜切档 | 令牌唯一真话 [p5-tokens.ts](file:///Users/a1/Documents/01Code/dudu-cocos/assets/scripts/ui/p5-tokens.ts)(`C` 色板、`SLANT` 只许 3/5/6/10 四档、`ROLE` 七个角色);`ARCADE`/`PAL` 是它的派生,**别再抄一份色表** |
@@ -103,7 +104,7 @@
 
 ## 回归测试
 
-一键跑全部(`npm test` = 编译 + [test-all.mjs](file:///Users/a1/Documents/01Code/dudu-cocos/tools/test-all.mjs)):65 个 check + 41 个 `--selftest`(数字以 test-all 开头那行打印为准),任何非零都算失败。**[test-all.mjs](file:///Users/a1/Documents/01Code/dudu-cocos/tools/test-all.mjs) 是「哪些工具存在且必须绿」的唯一事实源**,加新 check 记得登记。
+一键跑全部(`npm test` = 编译 + [test-all.mjs](file:///Users/a1/Documents/01Code/dudu-cocos/tools/test-all.mjs)):66 个 check + 42 个 `--selftest`(数字以 test-all 开头那行打印为准),任何非零都算失败。**[test-all.mjs](file:///Users/a1/Documents/01Code/dudu-cocos/tools/test-all.mjs) 是「哪些工具存在且必须绿」的唯一事实源**,加新 check 记得登记。
 
 改了具体模块后,可单独跑对应的 check(源在 `tools/`,编译后产物在 `.tools-build/tools/`):
 
@@ -126,6 +127,7 @@
 | 网前击球/物理判定 | `net-shot-check` |
 | AI 体力账本 | `stamina-check` |
 | 闯关进度/下一关 | `campaign-check` |
+| 闯关逐关可通关性(normal 替身 vs 关卡 AI 仿真,死局/难度曲线) | `campaign-balance-check` |
 | 触觉(震动) | `haptic-check` |
 | BGM 结构 | `bgm-check` |
 | AI 对 AI 冒烟 | `sim-check` |
@@ -143,8 +145,9 @@
 | 首页排版(五块色块 + 底部活动横幅,逐档长宽比) | `menu-check`(+`--selftest`)+ 出图 `menu-preview`(16:9/18:9/20:9/21:9 四屏并排) |
 | 移动方式图示 | `pad-diagram-preview`(判据在 `panel-check` ⑨) |
 | 技能演示图示(弹窗那格 + 放大窗) | `skill-check`(+selftest)+ `skill-demo-preview` |
+| 击球飘字的归因(只有玩家自己那一拍出字,AI/搭档/分身/喂球机不飘) | `hit-label-check`(+`--selftest`) |
 | 特效预览 | `fx-preview` |
-| 场边飘字车道 | `float-lane-check` |
+| 场边飘字车道(叠字/容量驱逐) | `float-lane-check`(+`--selftest`) |
 | 传说皮肤法阵 | `aura-preview` |
 | 启动画面 | `splash-check.py`(Python) |
 | 胜利礼花/庆祝时钟 | `confetti-check` |

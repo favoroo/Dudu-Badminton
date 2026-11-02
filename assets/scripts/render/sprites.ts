@@ -1547,9 +1547,12 @@ const HAIRS: Record<string, HairFn> = {
   mohawk: drawHairMohawk,
   short: drawHairCover,
   bun: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairBun(g, f, c, hr, cx, cy); },
-  twin: drawHairCover,
+  // 覆盖 + 双辫:拆件重构时 twin 曾只注册成发盖,两条束发从没上过场
+  // (2026-11-02 皮肤巡检发现)—— 商品叫「双马尾」就必须真的有马尾
+  twin: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairTwin(g, f, c, hr, cx, cy); },
   bob: (g, f, c, hr, cx, cy) => { drawHairBob(g, f, c, hr, cx, cy); drawHairSprout(g, f, c, hr, cx, cy); },
-  long: drawHairCover,
+  // 覆盖 + 长发束:同上,长发商品此前只有一个发盖
+  long: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairLong(g, f, c, hr, cx, cy); },
 };
 
 /** 头饰注册表:key → 绘制函数;无 key 或未知 key = 头顶不画东西 */
@@ -1808,7 +1811,9 @@ function drawCrown(g: Graphics, f: Frame, hr: number, cx: number, cy: number): v
   g.fill();
 }
 
-// 赛博科技发带(赛博骇客):移除原本沉重黑带与额前圆圈绿泡泡,改为清爽干练的霓虹双色科技发带
+// 赛博护目镜(赛博骇客):霓虹双色科技发带 + 推上额头的斜切透镜片。
+// 旧版是沉重黑带与额前圆圈绿泡泡;2026-11-02 巡检发现只剩发带没有镜片,
+// 商品名叫「护目镜」名实不符 —— 补一片斜切半透明镜(P5 斜切语汇,不是圆圈)
 function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
   // 青绿主色底座:贴合额头轮廓与莫霍克发根
   g.strokeColor = pal(th.main);
@@ -1819,6 +1824,24 @@ function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, c
   g.strokeColor = withAlpha(pal(th.glow), 0.85);
   g.lineWidth = f.lw(1.4);
   polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.16, Math.PI * 1.84, false), false);
+  g.stroke();
+  // 推上额头的斜切镜片:半透明 glow 面 + 同色描边 + 一道白色斜高光
+  const lens: Pt[] = [
+    f.pt(cx - hr * 0.72, cy - hr * 0.58),
+    f.pt(cx + hr * 0.68, cy - hr * 0.44),
+    f.pt(cx + hr * 0.60, cy - hr * 0.16),
+    f.pt(cx - hr * 0.68, cy - hr * 0.28),
+  ];
+  g.fillColor = withAlpha(pal(th.glow), 0.30);
+  polyPath(g, lens, true);
+  g.fill();
+  g.strokeColor = withAlpha(pal(th.glow), 0.92);
+  g.lineWidth = f.lw(1.2);
+  polyPath(g, lens, true);
+  g.stroke();
+  g.strokeColor = withAlpha(pal("#ffffff"), 0.55);
+  g.lineWidth = f.lw(0.7);
+  lineSeg(g, f, cx - hr * 0.44, cy - hr * 0.52, cx - hr * 0.12, cy - hr * 0.46);
   g.stroke();
 }
 
@@ -2286,10 +2309,23 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   g.fill();
 
   // 拍框外圈主色描边(修复之前 fill 吃掉 path 导致无边线的重大 bug)
-  g.strokeColor = pal(frame);
-  g.lineWidth = R.lw(2.4);
-  polyPath(g, head, true);
-  g.stroke();
+  if (sk.swingFx === "rainbow") {
+    // 虹光拍(传说 688):拍框沿周向分 6 段虹彩 —— 静态也有辨识度,不再只是
+    // 「紫框 + 挥拍才有彩虹」;与挥拍 rainbow 拖尾同一把 hueColor 尺,零动画零状态
+    for (let si = 0; si < 6; si++) {
+      const a0 = Math.floor((si / 6) * head.length);
+      const a1 = Math.min(head.length - 1, Math.floor(((si + 1) / 6) * head.length) + 1);
+      g.strokeColor = pal(hueColor(si * 60, 0.8, 0.66));
+      g.lineWidth = R.lw(2.4);
+      polyPath(g, head.slice(a0, a1 + 1), false);
+      g.stroke();
+    }
+  } else {
+    g.strokeColor = pal(frame);
+    g.lineWidth = R.lw(2.4);
+    polyPath(g, head, true);
+    g.stroke();
+  }
 
   // 拍顶破风刃高光弧(Aero Top Crown Highlight):10 点到 2 点钟的刃口反光
   const crownPts = head.filter((_, idx) => {
@@ -2612,6 +2648,47 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
       g.lineWidth = S.lw(0.7);
       polyPath(g, [S.pt(baseX + 0.4, y0), S.pt(midX, midY + flut * 0.05), S.pt(tipX, y1)], false);
       g.stroke();
+    }
+  }
+
+  // 个性裙羽点缀(2026-11-02 皮肤巡检):高档球静止时与白羽球几乎分不清,
+  // 按拖尾款式补**静态**辨识细节(商店/试衣间没有拖尾也分得出档);
+  // 每款 ≤4 笔、零状态零动画,强度克制不盖过球体本身
+  const flair = skin?.trailStyle;
+  if (flair === "star") {
+    // 彗星羽:裙身三颗四芒小金点
+    g.fillColor = withAlpha(pal("#ffe14d"), 0.85);
+    for (const [sx, sy, sr] of [[-5.2, -3.4, 1.4], [-8.8, 2.4, 1.2], [-12.0, -1.4, 1.0]] as const) {
+      const pts: Pt[] = [];
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU - Math.PI / 2;
+        const rr = i % 2 === 0 ? sr : sr * 0.38;
+        pts.push(S.pt(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr));
+      }
+      polyPath(g, pts, true);
+      g.fill();
+    }
+  } else if (flair === "flame") {
+    // 凤凰羽:羽尖常驻一层暖金烧色(比扣杀烧色淡一个量级,静止也看得出烫)
+    const k = 0.42;
+    const hx0 = tipX + (midX - tipX) * k;
+    const hin = baseR + (tipR - baseR) * (1 - k);
+    g.fillColor = withAlpha(pal("#ff7a3d"), 0.22);
+    polyPath(g, [S.pt(hx0, -hin), S.pt(tipX, -tipR), S.pt(tipX, tipR), S.pt(hx0, hin)], true);
+    g.fill();
+  } else if (flair === "petal") {
+    // 花语羽:裙身两粒粉瓣斑
+    g.fillColor = withAlpha(pal("#ff9eb8"), 0.55);
+    polyPath(g, ellipsePts(S, -6.4, -2.6, 1.5, 1.0), true);
+    g.fill();
+    polyPath(g, ellipsePts(S, -9.8, 1.8, 1.3, 0.9), true);
+    g.fill();
+  } else if (flair === "rainbow") {
+    // 星河羽:四色小星点沿裙身排一条小星河(与彩虹拖尾同一把 hueColor 尺)
+    for (let i = 0; i < 4; i++) {
+      g.fillColor = withAlpha(pal(hueColor(i * 90 + 20, 0.75, 0.72)), 0.85);
+      polyPath(g, ellipsePts(S, -4.8 - i * 2.6, Math.sin(i * 1.7) * 2.6, 1.1, 0.8), true);
+      g.fill();
     }
   }
 

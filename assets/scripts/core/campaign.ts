@@ -225,6 +225,9 @@ export function aiReliefFor(stage: StageDef): AiDelta {
   addDelta(out, e?.spectatorFlash ? R.spectatorFlash : undefined);
   addDelta(out, e?.sakuraFlurry ? R.sakuraFlurry : undefined);
   addDelta(out, ph?.erratic ? R.erratic : undefined);
+  // 禁区是 player 段里**唯一不对称**的机制:只罚左队(player.ts 的 p.side === "left"),
+  // AI 在禁区里来去自由 —— 它属于"这关残酷只付一次"该补的那侧,不是对称移动类。
+  addDelta(out, stage.modifiers.player?.forbiddenNetZone ? R.forbiddenNet : undefined);
   return out;
 }
 
@@ -361,17 +364,22 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     title: "热浪低重力",
     subtitle: "HEATWAVE FLOAT",
     badge: "热浪浮空",
-    desc: "地表升腾的热气流消解了一半重力，双方获得超级滞空！最高制空点扣杀爆发烈焰暴击！",
+    desc: "地表升腾的热气流消解了近四成重力，双方获得超级滞空！最高制空点扣杀爆发烈焰暴击！",
     hint: "充分利用超长滞空时间在最高点蓄力暴扣，享受太空羽毛球般的二段慢动作！",
     targetScore: 7,
     aiDiff: "normal",
     aiSkill: "smash",
+    // 2026-11-02 死局修复:替身(normal 脑子+真人身体)原值实测 0/24 ——
+    // 低重力把 AI 指定的 smash 技能放大成必杀(高跳+附魔重扣),替身只有默认跨步。
+    // 重力 0.52→0.62 + 跳 1.35→1.5,并给 aiTune 特例减免(「机制表说不准」那一档,
+    // 见 aiReliefFor):浮空球路对按重模拟跑位的 AI 零成本,对人眼却是读秒考试。
+    aiTune: { read: 25, shotErr: 10 },
     modifiers: {
-      physics: { gravityMul: 0.52 },
-      player: { jumpMul: 1.35 },
+      physics: { gravityMul: 0.62 },
+      player: { jumpMul: 1.5 },
     },
     rewards: { coins: 300, exp: 120 },
-    // 抢 7 分制要求净胜 3 = 7-4 起步;这一关重力只剩 0.52,双方都在飘,净胜 2 已经够挑。
+    // 抢 7 分制要求净胜 3 = 7-4 起步;这一关重力只剩 0.62,双方都在飘,净胜 2 已经够挑。
     starsCheck: [{ k: "win" }, { k: "jumpSmashes", n: 3 }, { k: "netLead", n: 2 }],
   },
 
@@ -470,7 +478,9 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     hint: "切忌无脑冲网！利用身体长臂极限捞球与挑后场，通过大角度调角逼老道 AI 失误！",
     targetScore: 7,
     aiDiff: "hard",
-    aiSkill: "magnet",
+    // 2026-11-02 死局修复:撤掉 aiSkill magnet —— 对照实测替身对「纯 hard+magnet、
+    // 无禁区」也是 0/16(引力吸球是永不绝杀的防御必杀,替身只有默认跨步),
+    // 禁区反而不是死因。换回难度档默认技能,这一关的考题回到「别进禁区」本身。
     modifiers: {
       player: { forbiddenNetZone: 110 },
     },
@@ -546,15 +556,20 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     court: "cyber",
     title: "反重力力场",
     subtitle: "ZERO-G CHAMBER",
-    badge: "太空漫步",
-    desc: "球场反重力发生器开启！重力暴降至 20%，起跳高度暴增 2.2 倍，展开三维空战！",
-    hint: "体验高空飞仙般的滞空漫步，在半空中连续二段起跳与凌空拦截！",
+    badge: "太空滑步",
+    desc: "重力暴降至 20%、地板磁场打滑，起跳暴增 2.2 倍，展开三维空战！",
+    hint: "滞空漫步加打滑地板：提前松手滑行到位，半空中连续二段起跳凌空拦截！",
     targetScore: 7,
     aiDiff: "hard",
     aiSkill: "flash",
+    // 2026-11-02 死局修复:替身实测 13%(3/24)—— 与第 5 关同族病:
+    // 深度低重力对按重模拟跑位的 AI 零成本,flash 技能在浮空里被放大。
+    aiTune: { read: 25, shotErr: 10 },
     modifiers: {
+      // 2026-11-02 差异化:加 frictionMul 0.55「月面滑步」—— 与第 5 关(纯浮空 0.62)
+      // 和第 18 关(纯冰面 0.25)拉开,这关是「低重力 + 滑地板」的组合手感。
       physics: { gravityMul: 0.22, dragMul: 1.2 },
-      player: { jumpMul: 2.1 },
+      player: { jumpMul: 2.1, frictionMul: 0.55 },
     },
     rewards: { coins: 420, exp: 170 },
     starsCheck: [{ k: "win" }, { k: "airShotRatio", pct: 70 }, { k: "netLead", n: 2 }],
@@ -593,7 +608,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     desc: "世界级职业大赛看台座无虚席，多拍缠斗时爆发出密集闪光灯，在球场正中产生白晕残影！",
     hint: "保持肌肉记忆与节奏感，顶住全场闪光灯的视觉压迫，沉着回击！",
     targetScore: 7,
-    aiDiff: "normal",
+    aiDiff: "hard",
     modifiers: {
       environment: { spectatorFlash: true },
     },
@@ -633,7 +648,7 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     desc: "地板保养过度打蜡！地面摩擦力骤降 75%，角色如同在光滑冰面上溜冰滑行，急停需反向拉摇杆！",
     hint: "魔性溜冰手感！起跑后利用惯性长距离滑行，松手前提前反向急停刹车，在滑行中帅气起跳击球！",
     targetScore: 7,
-    aiDiff: "normal",
+    aiDiff: "hard",
     modifiers: {
       player: { frictionMul: 0.25 },
     },
@@ -646,18 +661,21 @@ export const CAMPAIGN_STAGES: StageDef[] = [
     chapter: 4,
     chapterName: "黄昏馆",
     court: "arena",
-    title: "破损的战球",
-    subtitle: "WOBBLE SHUTTLE",
-    badge: "蝴蝶诡球",
-    desc: "使用了一颗羽毛打裂的破损羽毛球，飞行中高频上下抖动，后半程还会随机失速急坠！",
-    hint: "球路不走寻常抛物线，保持双脚敏捷移动，给拍面留出足够的容错余量！",
+    title: "暴走磁轨破球",
+    subtitle: "RAILGUN WOBBLE",
+    badge: "诡球电浆",
+    desc: "决赛之夜装备集体失控：羽毛开裂的破损球高频抖动急坠，球网磁轨过充暴走——擦网诡球会化作 1.75 倍速电浆重炮！",
+    hint: "别只顾着躲诡球！主动争夺网前，把贴网球送上暴走磁轨，让失控的电浆替你轰穿对手防线！",
     targetScore: 7,
     aiDiff: "hard",
     modifiers: {
-      physics: { erratic: true },
+      // 2026-11-02 重做:从前只有 erratic,是第 8 关(erratic+落樱)的严格子集。
+      // 加 laserRail 组成「诡球 + 暴走磁轨」双系统:读球难(S8 系)之外多一条
+      // 主动进攻杠杆(磁轨电浆,S13 系),成为终章的「机制合体」关。
+      physics: { erratic: true, laserRail: true },
     },
     rewards: { coins: 450, exp: 180 },
-    starsCheck: [{ k: "win" }, { k: "opScoreAtMost", n: 1 }, { k: "netIntercepts", n: 2 }],
+    starsCheck: [{ k: "win" }, { k: "laserBoosts", n: 2 }, { k: "netIntercepts", n: 2 }],
   },
   {
     id: "arena_5",

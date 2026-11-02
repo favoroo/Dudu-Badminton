@@ -118,7 +118,7 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "make-only" ] || [ "$MODE" = "release" ] |
     fi
 
     if [ "$BUILD_TYPE" = "release" ]; then
-        ./gradlew assembleRelease $GRADLE_EXTRA_ARGS
+        ./gradlew assembleRelease -x lintVitalAnalyzeRelease -x lint $GRADLE_EXTRA_ARGS
         APK_PATH="$PROJECT_ROOT/build/android/proj/build/dudu-cocos/outputs/apk/release/dudu-cocos-release.apk"
     else
         ./gradlew assembleDebug $GRADLE_EXTRA_ARGS

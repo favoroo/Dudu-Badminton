@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "retrieved_at": "2026-08-27",
+  "converter": "scripts/snapshot-operation-handbooks.mjs",
+  "sources": [
+    {
+      "id": "overview",
+      "stage": "unknown",
+      "title": "TapTap 开发者快速入门指南",
+      "url": "https://developer.taptap.cn/docs/store/standardies-operation/",
+      "description": "本文档面向 TapTap 开发者，涵盖行业分析、游戏上架、游戏生命周期管理及运营支持体系等核心环节指南，助力开发者快速掌握平台运营全流程。",
+      "description_source": "meta[name=description]",
+      "source_html_sha256": "6757d19c735fe7f04d01550129088838601d9f53cc80f369289e44e9d05f63d9",
+      "description_sha256": "1cfc4e5dc4c78b85d4af5f2dd58c482c8a8f7dbc38aea266a54ae34546a3bdf0"
+    },
+    {
+      "id": "reservation",
+      "stage": "reservation",
+      "title": "预约首曝期运营手册",
+      "url": "https://developer.taptap.cn/docs/store/operation/teaser/reserve-handbook/",
+      "description": "预约首爆期开发者可以通过申请和配置 TapTap 站内资源位来帮助游戏获得更多曝光。此外，开放预约的新游戏还将自动获得平台首页推荐流量扶持，具体流量倾斜情况依据游戏的预约/下载量变化（预约/下载量越高，给予的曝光扶持越多）",
+      "description_source": "meta[name=description]",
+      "source_html_sha256": "2fce5d69b16a6813732fa1e2c174693369af4a97e362e31109794bf64315bda6",
+      "description_sha256": "72cbe8af329703a1dd81d3c1d16c1b6f28d6b5e7ef42778616ca3902b3ffa019"
+    },
+    {
+      "id": "testing",
+      "stage": "testing",
+      "title": "测试期运营手册",
+      "url": "https://developer.taptap.cn/docs/store/operation/test/test-handbook/",
+      "description": "封闭测，开放式测试和公测各有 2 种资源位可申请，每种资源位每次测试仅可申请一次（封闭测中如需进行招募，则还可额外申请 1 次测试招募资源位），日均曝光量预期最高可达约 11 万次（实际曝光情况与游戏热度以及资源位排序相关）。",
+      "description_source": "meta[name=description]",
+      "source_html_sha256": "1df408fc840c1e2a44afe1b8c47c12eac825476fbc915ac109074c07b86907ff",
+      "description_sha256": "b43984d5f119b8361c06b37694255946323b21d6733a9d34620f049c9106b25c"
+    },
+    {
+      "id": "first_launch",
+      "stage": "first_launch",
+      "title": "首发上线期运营手册",
+      "url": "https://developer.taptap.cn/docs/store/operation/events/events-handbook/",
+      "description": "游戏首发上线期期间，首发游戏还将再次自动获得平台首页推荐流量扶持，具体流量倾斜情况依据游戏的预约/下载量变化（预约/下载量越高，给予的曝光扶持越多）。同时，开发者还可以根据指南，利用社区模块发布社区活动，获得更多流量。",
+      "description_source": "meta[name=description]",
+      "source_html_sha256": "e0adbd7f22326931b55de07da1f8d03a6c47e9bfea17375e806c76d7a5454073",
+      "description_sha256": "5b9cf40838cfe6c6e6471fdb3c3b94437f21cf230b6c6efe44cee658187070e7"
+    },
+    {
+      "id": "long_term",
+      "stage": "long_term",
+      "title": "长线运营期运营手册",
+      "url": "https://developer.taptap.cn/docs/store/operation/long-term/long-term-handbook/",
+      "description": "游戏正式上线后，厂商可以根据自己的运营节奏，上线日常运营活动以拉新促活（论坛活动，签到活动，礼包发放等）；每项活动每次可申请一次活动中心曝光，活动中心页面总体每日可获得约 6 万次曝光，各板块曝光情况不同，最终实际曝光情况与游戏热度强相关。如遇重大版本更新，站内支持申请新版本详情页模块，以单独的 SKU 形式在站内分发。",
+      "description_source": "meta[name=description]",
+      "source_html_sha256": "6eee021841f4000e8e0bebaf93bdc8ea56af5723c8974b81508ce1a6f4a9da83",
+      "description_sha256": "2aa531f31436b8d63e5737795f58956bbb38ceb59fdcd3b4f3ab61f1c826a079"
+    }
+  ]
+}

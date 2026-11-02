@@ -492,14 +492,20 @@ function update(p: PlayerEntity, inp: PlayerInput, ball: Ball | null): void {
     if (p.isExhausted) p.stats.exhausted = 1;
   }
 
-  // 禁足区警报与僵直
+  // 禁足区警报与僵直(2026-11-02 修触电弹开 + 罚后豁免:旧写法 warn 期间每帧 vx=0,
+  // 把 -3.5 的弹开冲量当场吃掉 —— 人冻在禁区里 0.4s,解冻瞬间还在禁区 ⇒ 立刻再罚,
+  // 替身实测一场连锁被罚 130+ 次。现在:① 只有前 8 帧是真硬直(触电那一下),
+  // 之后弹开冲量生效把人推出禁区;② 罚后 110 帧豁免期,期内再踩不连锁触发 ——
+  // 一次踩线只付一次代价,读秒回来再战)
+  if (p.forbiddenImmune && p.forbiddenImmune > 0) p.forbiddenImmune--;
   if (p.forbiddenWarn && p.forbiddenWarn > 0) {
     p.forbiddenWarn--;
-    p.vx = 0;
-  } else if (mod?.forbiddenNetZone && p.side === "left") {
+    if (p.forbiddenWarn > 16) p.vx = 0;
+  } else if (mod?.forbiddenNetZone && p.side === "left" && !(p.forbiddenImmune && p.forbiddenImmune > 0)) {
     const dangerX = CO.netX - mod.forbiddenNetZone;
     if (p.x >= dangerX) {
       p.forbiddenWarn = 24;
+      p.forbiddenImmune = 110;
       p.vx = -3.5;
       p.stats.zonePenalties++;          // 三星判据「未触发任何禁区惩罚」
     }
