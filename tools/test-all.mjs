@@ -37,6 +37,10 @@ const CHECKS = [
   "serve-check",
   "reach-check",
   "ai-check",
+  // AI 击球后的回位(2026-11-03):旧写法每拍机械回 homeX,近球/远球没有战术回报。
+  // 坏法全静默:锚点算反、四档一样、夹歪出墙、把影分身/CPU 搭档一起改了 ——
+  // 都不是崩,是手感,所以纯函数判据 + 接线判据必须常驻。
+  "ai-recover-check",
   // AI 体力账本的闸门:成本表是纯函数打表(替身从不杀球,「重杀才掉/软球回气」
   // 只有这里验得到);发球零成本、直觉钉子、归一化契约都钉在这份工具里
   "stamina-check",
@@ -255,6 +259,8 @@ const SELFTESTS = [
   // 反例:旧式无条件放行的门控、手编贝塞尔的假演示真值、0.0.32 那两份「左缘当盒心」的摆字源码
   "tutorial-check",
   "stamina-check",
+  // 反例:旧「恒回 homeX」/ 忽略难度档 / 不 clamp 出墙 / 资格闸恒真(影分身与 CPU 搭档被误伤)
+  "ai-recover-check",
   "aura-preview",
   // 反例:三色填成同一色 / 身份色写成纯黑 / 辉光浓度拉爆 / pips 不错行 / 辉光逐帧重掷
   "shadow-preview",

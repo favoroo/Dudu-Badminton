@@ -24,7 +24,7 @@ const OUT = (() => {
 })();
 fs.mkdirSync(OUT, { recursive: true });
 
-const T = 30;
+const T = Number(process.env.GAL_T ?? 30);  // 固定帧;env 换相位可出「动画第二帧」
 const vp: Viewport = { x: (wx: number) => wx, y: (wy: number) => -wy };
 
 function dummyPlayer(racketSkin: SkinDef | null): Player {
@@ -89,7 +89,7 @@ function audit(label: string, ops: StubOp[]): void {
 // ---------- 球拍 8 款 ----------
 for (const s of CFG.skins.racket) {
   const g = new StubGraphics();
-  drawRacketStill(g as never, vp, 0, 0, 1, dummyPlayer(s.id === "r-std" ? null : s));
+  drawRacketStill(g as never, vp, 0, 0, 1, dummyPlayer(s.id === "r-std" ? null : s), T);
   audit(`拍 ${s.id}`, g.ops);
   const tag = [s.rarity ?? "经典", s.price ? `${s.price} 金币` : "默认", s.decal ? `贴章 ${s.decal}` : "", s.swingFx ? `挥光 ${s.swingFx}` : ""].filter(Boolean).join(" · ");
   cells.push(`<div class="cell"><span class="lab">${s.name}(${tag})</span>${frame(g.ops, 190, 260, 2.4, 30)}</div>`);
@@ -98,9 +98,12 @@ for (const s of CFG.skins.racket) {
 cells.push(`<div class="sep"></div>`);
 
 // ---------- 羽毛球 8 款 ----------
+// 点缀动画吃球的翻滚钟 roll:T=30 复刻 baseline 的 0.9,换相位时裙羽点缀跟着转
 for (const s of CFG.skins.shuttle) {
   const g = new StubGraphics();
-  drawShuttle(g as never, vp, dummyBall(), s.id === "s-std" ? null : s);
+  const motion = { ang: Math.PI / 2, angVel: 0, roll: 0.9 + (T - 30) * 0.05, splay: 0,
+    wob: 0, wobPhase: 0, pop: 0, tier: 0, heat: 0, lastSpeed: 0, idle: 0 };
+  drawShuttle(g as never, vp, dummyBall(), s.id === "s-std" ? null : s, 0, motion as never);
   audit(`球 ${s.id}`, g.ops);
   const tag = [s.rarity ?? "经典", s.price ? `${s.price} 金币` : "默认", s.trailStyle ? `拖尾 ${s.trailStyle}` : ""].filter(Boolean).join(" · ");
   cells.push(`<div class="cell"><span class="lab">${s.name}(${tag})</span>${frame(g.ops, 190, 190, 3.2, 95)}</div>`);

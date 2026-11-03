@@ -2430,6 +2430,38 @@ export const CFG = {
   aiReach: { stand: 140, attack: 182, jump: 236, contact: 72, contactDrift: 48,
     scrambleFrames: 16, scrambleLean: 9, scrambleDip: 14, backBias: 15 },
 
+  // ===== AI 击球后的回位(2026-11-03 用户指令:别每拍都从中间起跑)=====
+  // 旧行为:击球**下一帧**就把目标点切回 homeX(ai.ts 的非来球分支),满速跑回中场。
+  // 于是玩家把球打到近网或底线,AI 下一拍仍从同一个"最舒服的站位"起跑 —— 近球/远球
+  // 没有战术回报。现在的两段:
+  //   ① dwell:击球后原地收拍停这么多帧(不踩左右键,惯性自然滑停);
+  //   ② 停顿结束后走向「按刚打出的球种算出的战术位」:
+  //        baseX = homeX + facing × leanPx × kindLean[kind]   (正 = 压向网)
+  //        anchorX = hitX + (baseX - hitX) × backK           (这一档实际走到几成)
+  //      放网/劈吊 → 压上守网前;平抽/高远/挑高 → 回中场;重杀 → 留在后场。
+  // backK 分档:简单档只走一半(站位永远差一口气),极限档走到位 —— 站位纪律本身就是难度。
+  // 两条口径别改回去:
+  //   ① 只按 **aiDiff** 取档,不读 p.aiTier —— campaign 的 aiTune 微调的是 read/shotErr/
+  //      timingErr/aggr,不该顺手改写走位;
+  //   ② anchorX 必须夹在本方半场(core/ai-recover.ts 做),AI 至少还在半场里,不会撞网/出墙。
+  // 资格闸在 ai-recover.ts 的 recoverEligible:影分身(idx=-1)要守防区、同侧有真人的
+  // CPU 搭档是队友,两者都不吃这套;喂球机根本走不到 AI.think 这条分支。
+  aiRecover: {
+    dwell: { easy: 28, normal: 18, hard: 10, expert: 3 } as Record<DiffKey, number>,
+    backK: { easy: 0.5, normal: 0.7, hard: 0.9, expert: 1 } as Record<DiffKey, number>,
+    leanPx: 90,         // 战术位离中场的最大横移(px):放网压上 90、重杀压后 45
+    // 球种 → 站位倾向(-1 = 往底线退,0 = 中场,+1 = 往网前压)。六种球种必须全给:
+    // 漏一个就是编译错(Record<ShotKind, number>),不许静默兜 0。
+    kindLean: {
+      netshot: 1,       // 放网:球短,对手最可能回放/推腰 → 压网前
+      slash: 0.5,       // 劈吊:也是短球,压一半
+      drive: 0,         // 平抽:中场对抽
+      lob: 0,           // 挑高:深防守球,回中场
+      clear: 0,         // 高远:回中场
+      smash: -0.5,      // 重杀:起跳落地惯性留在后场(别再追加一次前扑)
+    } as Record<ShotKind, number>,
+  },
+
   // ===== AI 预判(read):它每记来球只「认定」一次站位偏差,之后一路认账 =====
   // 旧写法是每次重规划(tick 帧一次)重掷 ±aimErr —— 均值归零,几次重规划下来
   // 收敛到真实落点,92px 这个数字等于没写(用户反馈「入门 AI 怎么都能接住」的根因之一)。

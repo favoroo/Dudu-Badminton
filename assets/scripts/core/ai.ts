@@ -12,6 +12,7 @@ import { clamp, approach, rand } from "./utils";
 import { Physics, FuturePt } from "./physics";
 import { Pace } from "./pace";
 import { Player as Pl } from "./player";
+import { planRecover, recoverEligible } from "./ai-recover";
 import { Rules, RulesState } from "./rules";
 import { Skills } from "./skills";
 import { AiState, Ball, HitCostInput, Intercept, Player, PlayerInput } from "./types";
@@ -47,6 +48,17 @@ const CO = C.court;
  * 验收:tools/ai-check.ts 的「AI 强度 vs 球速档」那一段(配对同种子,逐档比 AI 与真人各自每拍命中率)。
  */
 
+/**
+ * ===== 击球后的回位:不是每拍都回中场 =====
+ * 击球那一刻由 `noteHit` 用 `planRecover` 算好 (dwell, recoverX):
+ *   · dwell 帧原地收拍(不踩左右键);
+ *   · 之后走向按**刚打出去的球种**决定的战术位(放网压网前 / 重杀留后场 / 高远回中场),
+ *     难度档再用 backK 决定走到几成。
+ * 旧写法在非来球分支下一帧就把 targetX 设回 homeX,玩家把球打到近网或底线都等于
+ * 喂到"最舒服的站位"。完整动机、数值与三条硬约束在 core/ai-recover.ts 的文件头;
+ * 验收 tools/ai-recover-check.ts(含反例自检)。
+ */
+
 function fresh(): AiState {
   return { tick: 0, targetX: 0, serveT: 0, serveDelay: 0, serveAim: C.aimDepth.deep, wantSmash: false, ic: null, swingLead: null, chasing: true,
     readErr: 0,       // 本记来球认定的站位偏差(px):每记球掷一次,之后一路认账
@@ -66,6 +78,8 @@ function fresh(): AiState {
     recvKind: null,       // 快照:来球球种(lob/netshot/clear = 慢软球)
     recvRun: 0,           // 快照:起手时离防区中心的距离(px)—— 体力账本的主力项
     recvPower: 0,         // 快照:起手时来球有多重(0 = 读不到)
+    dwellT: 0,            // 击球后收拍停顿剩余帧(见 planRecover)
+    recoverX: 0,          // 停顿结束后的战术回位点(不是 homeX)
   };
 }
 
@@ -307,7 +321,24 @@ function pressureOf(d: ReturnType<typeof D>, S: AiState): number {
  */
 function noteHit(p: Player, shot: NonNullable<Ball["shot"]>): void {
   const S = p.ai;
-  if (!S || !S.recvNoted) return;
+  if (!S) return;
+  // 回位与体力是两本账:回位只看「这一拍打的是什么球」,不需要起手快照 ⇒ 放在早退之前
+  // (发球也记一次,反正发球后它本来就站在发球位,算出来的战术位≈homeX)。
+  // 先判 isAI/idx 再碰 Rules.teamOf:tools/stamina-check 的窄桩没有 side/homeX,
+  // 不能把 teamOf 拖进来(stub 的 isAI 是 undefined,这里直接短路)。
+  const humanMate = p.isAI && p.idx >= 0 && Rules.teamOf(p.side).some((q) => q !== p && !q.isAI);
+  if (recoverEligible(p, humanMate)) {
+    const plan = planRecover({
+      side: p.side,
+      homeX: p.homeX,
+      hitX: p.x,                            // 击球瞬间站的位置,不是球的落点
+      kind: shot.kind,
+      diff: p.aiDiff ?? "normal",
+    });
+    S.dwellT = plan.dwell;
+    S.recoverX = plan.anchorX;
+  }
+  if (!S.recvNoted) return;
   S.recvNoted = false;                     // 无论扣不扣,快照都要消费掉(每拍一次)
   const d = D(p);
   const c = staminaCost({
@@ -437,6 +468,8 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   }
 
   S.tick--;
+  // 对手已经出拍:收拍停顿作废 —— 下一拍该追球了(targetX 会被 intercept 覆盖)
+  if (incoming) S.dwellT = 0;
   if (incoming && S.tick <= 0) {
     S.tick = d.tick;
     const runTo = (x: number) => Math.abs(x - p.x) / selfVmax(p, em);
@@ -486,13 +519,29 @@ function think(p: Player, ball: Ball, state: string): PlayerInput {
   } else if (!incoming) {
     p.zoneScale = baseZone;
     p.aiAimErr = d.shotErr;
-    S.targetX = p.homeX;
     S.wantSmash = false;
     S.ic = null;
     S.chasing = false;
     S.panicSwung = false;                   // 新来球:绝望挥拍额度复位
     S.hopeless = false;
     S.noticeT = d.notice;                   // 球在对面手/飞向别处时,把"愣神"预置好
+    // 回位:自己打出去的球还在飞 = 这段空档决定下一拍从哪儿起跑。
+    // 旧写法 targetX = p.homeX(每拍机械回中场);现在先原地收拍 dwell 帧,
+    // 再走向按球种定的战术位(放网压网前/重杀留后场/高远回中场,见 core/ai-recover.ts)。
+    // 影分身(idx=-1)/同侧有真人的 CPU 搭档/喂球机保持旧行为;死球或对手持球时也回 homeX。
+    const ownLive = ball.live && !ball.held && ball.lastHitter === p.side;
+    const humanMate = ownLive && p.isAI && p.idx >= 0 && Rules.teamOf(p.side).some((q) => q !== p && !q.isAI);
+    if (ownLive && recoverEligible(p, humanMate)) {
+      if (S.dwellT > 0) {
+        S.dwellT--;
+        S.targetX = p.x;                    // 原地收拍:目标点跟着自己,左右键都不踩(惯性自然滑停)
+      } else {
+        S.targetX = S.recoverX;
+      }
+    } else {
+      S.dwellT = 0;
+      S.targetX = p.homeX;
+    }
   }
 
   // ---------- 反应延迟(拟人) ----------

@@ -76,7 +76,8 @@ function mkAi(ov: Partial<NonNullable<Player["ai"]>> = {}): NonNullable<Player["
     readErr: 0, readRolled: false,
     chasing: false, emotion: 0, tauntCd: 0, celebrateT: 0, frustrateT: 0,
     pressure: 0, fatigue: 0, noticeT: 0, scrambleT: 0, whiffsSeen: 0, panicSwung: false, hopeless: false,
-    recvNoted: false, recvKind: null, recvRun: 0, recvPower: 0, ...ov,
+    recvNoted: false, recvKind: null, recvRun: 0, recvPower: 0,
+    dwellT: 0, recoverX: 0, ...ov,
   };
 }
 

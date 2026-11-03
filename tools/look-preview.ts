@@ -37,7 +37,7 @@ fs.mkdirSync(OUT, { recursive: true });
 const h = { checks: 0, fails: 0 };
 const ok = (c: boolean, m: string): void => { h.checks++; if (!c) h.fails++; console.log(`${c ? "✓" : "✗"} ${m}`); };
 
-const T = 30;               // 固定帧:同帧重画才可比
+const T = Number(process.env.LOOK_T ?? 30);  // 固定帧:同帧重画才可比(env 可换相位出图)
 const BASE: string[] = (["player", "racket", "shuttle", "face"] as const).map((k) => CFG.skins[k][0].id);
 
 function dummy(skin: SkinDef, theme: { main: string; dark: string; glow: string; name: string }): Player {
@@ -168,7 +168,14 @@ const frame = (ops: StubOp[], bg: string): string =>
   + `</svg>`;
 
 const cells: string[] = [];
-// A. 13 套:老路径 | 新路径 并排
+// A. 13 套:老路径 | 新路径 并排(+第三格相位 B:与 T 差半周期的另一帧,肉眼读摆动幅度)
+const renderAt = (p: Player, t: number): StubOp[] => {
+  __resetPoseState();
+  const vp: Viewport = { x: (wx: number) => wx, y: (wy: number) => CFG.court.groundY - wy };
+  const g = new StubGraphics();
+  drawPlayer(g as unknown as Parameters<typeof drawPlayer>[0], vp, p, t, 1, null);
+  return g.ops;
+};
 for (const s of CFG.skins.player) {
   asOldSave(s.id);
   const L = Career.look();
@@ -176,8 +183,9 @@ for (const s of CFG.skins.player) {
     main: s.main || "#ff4d4d", dark: s.dark || "#a8202c", glow: s.glow || "#ff8a6a", name: s.name,
   }));
   const newOps = render(dummy(L.skin, L.theme));
-  cells.push(`<div class="row"><span class="lab">${s.name} · 老路径 | 新路径(逐槽合成)</span>`
-    + `<span class="pair">${frame(oldOps, "#151a26")}${frame(newOps, "#151a26")}`
+  const phaseB = renderAt(dummy(L.skin, L.theme), T + 45);
+  cells.push(`<div class="row"><span class="lab">${s.name} · 老路径 | 新路径 | 相位B(t+45)</span>`
+    + `<span class="pair">${frame(oldOps, "#151a26")}${frame(newOps, "#151a26")}${frame(phaseB, "#10141d")}`
     + `<em>${sig(oldOps) === sig(newOps) ? "一致" : "不一致"}</em></span></div>`);
 }
 // B. 本体件逐件穿在身上(商店卡片就是这条通道)

@@ -288,6 +288,14 @@ export interface AiState {
   recvRun: number;
   /** 快照:起手时来球的力度(Physics.classify 的 power;0 = 没球可读) */
   recvPower: number;
+  /**
+   * 击球后「收拍停顿」剩余帧(>0 = 站在原地不动,见 core/ai-recover.ts)。
+   * 旧行为是击球下一帧就满速跑回 homeX,于是玩家打近球/远球都等于喂到最舒服的站位。
+   * 每拍由 `AI.noteHit` 按「刚打出去的球种 + 难度档」重算,对手击球时立刻清零。
+   */
+  dwellT: number;
+  /** 停顿结束后要走向的战术回位点(不是 homeX:放网压上网前、重杀留在后场,见 planRecover) */
+  recoverX: number;
 }
 
 /**

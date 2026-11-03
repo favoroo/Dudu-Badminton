@@ -1044,6 +1044,23 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   if (ps?.jersey && OUTFITS[ps.jersey]) {
     OUTFITS[ps.jersey](g, F, th, T);
   }
+
+  // ---------- 传说人物(aura 款)常驻微特效:人本身在发光 ----------
+  // 与脚下法阵同一份稀有度语汇,分工是:法阵管脚底,这里管身体 —— 躯干外缘一档
+  // 极淡 glow 晕(呼吸式涨落)+ 三颗绕体星尘(轨道零随机,相位按 i 错开)。
+  // 共 +4 笔;isShadow 不吃(影分身恒纯黑剪影),CPU/P2 没挂 playerSkin 天然不进。
+  if (ps?.aura && !isShadow) {
+    torsoBand(g, F, T, -2 / bodyH, 1 + 2 / bodyH, -2 / tw, 1 + 2 / tw,
+      withAlpha(pal(th.glow), 0.08 + 0.03 * Math.sin(t * 0.07)));
+    const mcx = tx + tw * 0.5, mcy = bodyTop + bodyH * 0.45;
+    for (let i = 0; i < 3; i++) {
+      const pa = t * 0.05 + i * (TAU / 3);
+      const ma = 0.30 + 0.22 * Math.sin(t * 0.12 + i * 2.1);
+      g.fillColor = withAlpha(pal(th.glow), ma);
+      circleAA(g, F, mcx + Math.cos(pa) * W * 0.58, mcy + Math.sin(pa) * bodyH * 0.42, 1.15);
+      g.fill();
+    }
+  }
   // 胸前号码:已取消(不画、也不由表现层挂 Label)。老版曾在局部 (1, bodyTop + bodyH*0.40)
   // 以 700 H*0.115px "DIN Alternate" 居中画 p.jersey,色 rgba(255,255,255,0.8);
   // p.jersey 仅作数据保留,world.ts 的名牌池只喂头顶名牌。
@@ -1079,9 +1096,11 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
       x: 2 + (lean - 2) * 0.6, y: bodyTop - 3, t, run: runAmt, air,
     });
   }
+  // 发型/头饰的飘动激励:跑动 + 离地 + 挥拍 + 跨步加权,商店静展(dummy 全 0)不飘
+  const hairSway = clamp(runAmt + (airborne ? 0.8 : 0) + (swinging ? 0.9 : 0) + lungeLegExt * 0.8, 0, 1.8);
   drawHead(g, F, th, hr, 2 + (lean - 2) * 0.6, bodyTop - hr * 1.12 + headDy,
     { lookX, lookY, blink, t, face: p.face, faceT: p.faceT, faceD: p.faceD, skin: ps,
-      faceStyle, focusT: p.focusT, isShadow, accFace });
+      faceStyle, focusT: p.focusT, isShadow, sway: hairSway, accFace });
 
   // ---------- 持拍臂:一条姿势管线,挥拍弧线 ↔ 待机收拍全程连续 ----------
   // 命中后持拍臂横拉过身体:肩点朝网侧额外偏移(增强跟随感)
@@ -1200,7 +1219,7 @@ export function drawPlayer(g: Graphics, vp: Viewport, p: Player, animT: number, 
   const ik = armIK(pose.hand, pose.bend);
   arm(g, A, th.dark, [{ x: 0, y: 0 }, ik.elbow], 5.5 * body.limbMul);
   arm(g, A, skinCol, [ik.elbow, pose.hand], 5.5 * body.limbMul);
-  drawRacket(g, A, pose.hand.x, pose.hand.y, pose.ang, pose.len, th, p, isShadow);
+  drawRacket(g, A, pose.hand.x, pose.hand.y, pose.ang, pose.len, th, p, isShadow, t);
   // 手套(手部槽):腕向 = 手 → 肘,腕口束带垂直于小臂
   {
     const gvx = ik.elbow.x - pose.hand.x, gvy = ik.elbow.y - pose.hand.y;
@@ -1338,7 +1357,7 @@ function drawPlayerCursor(g: Graphics, vp: Viewport, p: Player, x: number, y: nu
 function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number,
   opt: { lookX?: number; lookY?: number; blink?: boolean; t?: number; face?: FaceKind; faceT?: number; faceD?: number;
     skin?: SkinDef | null; faceStyle?: string; focusT?: number; isShadow?: boolean;
-    accFace?: AccessoryDef | null } = {}): void {
+    sway?: number; accFace?: AccessoryDef | null } = {}): void {
   // 影分身纯黑无面剪影:零发带、零头饰、零高光、零五官,纯黑圆底一笔而成。
   // 2026-10-05 三色:黑底之外补**一圈身份色细描边** —— 无脸是这款的身份不能丢,
   // 但三个剪影在同屏距离下必须一眼分得开,头上一圈是离脸最近、最不像"染色"的那一笔。
@@ -1379,7 +1398,8 @@ function drawHead(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
 
   // ---------- 发型/头饰(设计款):注册表分发,未知 key 兜回默认 ----------
   if (sk?.hairStyle && sk.hairColor) {
-    (HAIRS[sk.hairStyle] ?? HAIRS.short)(g, f, sk.hairColor, hr, cx, cy);
+    (HAIRS[sk.hairStyle] ?? HAIRS.short)(g, f, sk.hairColor, hr, cx, cy,
+      { t: opt.t ?? 0, sway: opt.sway ?? 0 });
   }
 
   // 头饰(设计款):戴了才往头顶画东西,ribbon 自带头带 + 结饰。
@@ -1538,7 +1558,11 @@ export function drawHeadStill(g: Graphics, vp: Viewport, wx: number, wy: number,
 // 注册表模式:新发型/头饰 = 写一个绘制函数挂进 HAIRS/HEADWEARS,再到 config.SKINS
 // 引用 key —— 新人物形象零改动 sprites 的分发逻辑。
 
-type HairFn = (g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number) => void;
+// 发型动画环境(2026-11-03 皮肤逐件美化):t = 渲染时钟,sway = 运动激励
+// (跑动/离地/挥拍/跨步的加权和,drawPlayer 现算;商店静展恒 0)。束发/呆毛类发型
+// 按它做根部钉住、梢部摆动的程序化飘动;短硬发型(spiky/mohawk)只吃很小一档。
+interface HairEnv { t: number; sway: number }
+type HairFn = (g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number, env?: HairEnv) => void;
 type HwFn = (g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number, t: number) => void;
 
 /** 发型注册表:key → 绘制函数(sprites 消费 config.SKINS.player[].hairStyle) */
@@ -1546,22 +1570,22 @@ const HAIRS: Record<string, HairFn> = {
   spiky: drawHairSpiky,
   mohawk: drawHairMohawk,
   short: drawHairCover,
-  bun: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairBun(g, f, c, hr, cx, cy); },
+  bun: (g, f, c, hr, cx, cy, e) => { drawHairCover(g, f, c, hr, cx, cy); drawHairBun(g, f, c, hr, cx, cy, e); },
   // 覆盖 + 双辫:拆件重构时 twin 曾只注册成发盖,两条束发从没上过场
   // (2026-11-02 皮肤巡检发现)—— 商品叫「双马尾」就必须真的有马尾
-  twin: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairTwin(g, f, c, hr, cx, cy); },
-  bob: (g, f, c, hr, cx, cy) => { drawHairBob(g, f, c, hr, cx, cy); drawHairSprout(g, f, c, hr, cx, cy); },
+  twin: (g, f, c, hr, cx, cy, e) => { drawHairCover(g, f, c, hr, cx, cy); drawHairTwin(g, f, c, hr, cx, cy, e); },
+  bob: (g, f, c, hr, cx, cy, e) => { drawHairBob(g, f, c, hr, cx, cy); drawHairSprout(g, f, c, hr, cx, cy, e); },
   // 覆盖 + 长发束:同上,长发商品此前只有一个发盖
-  long: (g, f, c, hr, cx, cy) => { drawHairCover(g, f, c, hr, cx, cy); drawHairLong(g, f, c, hr, cx, cy); },
+  long: (g, f, c, hr, cx, cy, e) => { drawHairCover(g, f, c, hr, cx, cy); drawHairLong(g, f, c, hr, cx, cy, e); },
 };
 
 /** 头饰注册表:key → 绘制函数;无 key 或未知 key = 头顶不画东西 */
 const HEADWEARS: Record<string, HwFn> = {
   cap: drawCap,
-  crown: (g, f, _th, hr, cx, cy) => drawCrown(g, f, hr, cx, cy),
+  crown: (g, f, _th, hr, cx, cy, t) => drawCrown(g, f, hr, cx, cy, t),
   goggles: drawGoggles,
   bandana: drawBandana,
-  ribbon: (g, f, th, hr, cx, cy) => { drawBand(g, f, th, hr, cx, cy); drawRibbon(g, f, th, hr, cx, cy); },
+  ribbon: (g, f, th, hr, cx, cy, t) => { drawBand(g, f, th, hr, cx, cy); drawRibbon(g, f, th, hr, cx, cy, t); },
   catears: drawCatEars,
 };
 
@@ -1631,8 +1655,11 @@ function drawHairCover(g: Graphics, f: Frame, color: string, hr: number, cx: num
   hairFillStroke(g, f, outer.concat(inner), color, 1.0);
 }
 
-// 刺猬头:沿头顶轮廓向外扎 7 根尖刺(长短错落),根部埋进头圆
-function drawHairSpiky(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
+// 刺猬头:沿头顶轮廓向外扎 7 根尖刺(长短错落),根部埋进头圆。
+// 烈焰少年的「火」:刺尖长度随 t 错相位微颤(sway 越大越烈)—— 形状逐帧算但
+// 零随机,出生定形原则不适用(sin 是确定函数),静止时只剩极轻呼吸
+function drawHairSpiky(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number, env?: HairEnv): void {
+  const t = env?.t ?? 0, sway = env?.sway ?? 0;
   const N = 7, a0 = Math.PI * 1.06, a1 = Math.PI * 1.94;
   const pts = pooledPts();
   for (let i = 0; i <= N; i++) {
@@ -1640,15 +1667,18 @@ function drawHairSpiky(g: Graphics, f: Frame, color: string, hr: number, cx: num
     pts.push(f.pt(cx + Math.cos(a) * hr * 1.02, cy + Math.sin(a) * hr * 1.02));
     if (i < N) {
       const am = a + (a1 - a0) / N / 2;
-      const spike = hr * (1.3 + 0.09 * Math.sin(i * 2.7));
+      const flicker = Math.sin(t * 0.21 + i * 1.7) * (0.03 + 0.06 * sway);
+      const spike = hr * (1.3 + 0.09 * Math.sin(i * 2.7) + flicker);
       pts.push(f.pt(cx + Math.cos(am) * spike, cy + Math.sin(am) * spike));
     }
   }
   hairFillStroke(g, f, pts, color, 1.0);
 }
 
-// 莫霍克:头顶正中一排高耸窄刺,从后脑排到额前
-function drawHairMohawk(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
+// 莫霍克:头顶正中一排高耸窄刺,从后脑排到额前。硬胶造型,只吃极小一档摆动
+// (赛博骇客的霓虹莫霍克是「定型」的,大幅飘会读成假发)
+function drawHairMohawk(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number, env?: HairEnv): void {
+  const t = env?.t ?? 0, sway = env?.sway ?? 0;
   const N = 5, a0 = Math.PI * 1.22, a1 = Math.PI * 1.78;
   const pts = pooledPts();
   for (let i = 0; i <= N; i++) {
@@ -1656,15 +1686,19 @@ function drawHairMohawk(g: Graphics, f: Frame, color: string, hr: number, cx: nu
     pts.push(f.pt(cx + Math.cos(a) * hr * 0.98, cy + Math.sin(a) * hr * 0.98));
     if (i < N) {
       const am = a + (a1 - a0) / N / 2;
-      pts.push(f.pt(cx + Math.cos(am) * hr * 1.52, cy + Math.sin(am) * hr * 1.52));
+      const spike = hr * (1.52 + Math.sin(t * 0.16 + i * 1.1) * (0.015 + 0.025 * sway));
+      pts.push(f.pt(cx + Math.cos(am) * spike, cy + Math.sin(am) * spike));
     }
   }
   hairFillStroke(g, f, pts, color, 1.0);
 }
 
-// 发髻:头顶后侧一枚圆髻(叠在基础发盖上)
-function drawHairBun(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
-  const bx = cx - hr * 0.62, by = cy - hr * 0.88;
+// 发髻:头顶后侧一枚圆髻(叠在基础发盖上)。束紧的髻不该甩,只给一点
+// 跟随身体的滞后微晃(sway 大时才看得见)
+function drawHairBun(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number, env?: HairEnv): void {
+  const t = env?.t ?? 0, sway = env?.sway ?? 0;
+  const wob = Math.sin(t * 0.14) * hr * 0.02 * (0.5 + sway);
+  const bx = cx - hr * 0.62 - wob, by = cy - hr * 0.88 + wob * 0.4;
   g.fillColor = pal(color);
   circleAA(g, f, bx, by, hr * 0.34);
   g.fill();
@@ -1674,10 +1708,17 @@ function drawHairBun(g: Graphics, f: Frame, color: string, hr: number, cx: numbe
   g.stroke();
 }
 
-// 双马尾:脑后两条垂落的束发,远侧先画、压暗一档读出前后(叠在基础发盖上)
-function drawHairTwin(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
-  hairTail(g, f, withAlpha(pal(color), 0.82), cx - hr * 0.9, cy - hr * 0.1, cx - hr * 1.18, cy + hr * 0.9, hr * 0.42);
-  hairTail(g, f, pal(color), cx - hr * 0.66, cy - hr * 0.28, cx - hr * 0.95, cy + hr * 1.18, hr * 0.46);
+// 双马尾:脑后两条垂落的束发,远侧先画、压暗一档读出前后(叠在基础发盖上)。
+// 根部钉在头圆上,梢部随 t 错相位摆动;sway(跑/跳/挥)放大摆幅 ——
+// 马尾是全身最该「跟着动」的零件
+function drawHairTwin(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number, env?: HairEnv): void {
+  const t = env?.t ?? 0, sway = env?.sway ?? 0;
+  const amp = hr * (0.06 + 0.16 * sway);
+  const w1 = Math.sin(t * 0.11) * amp, w2 = Math.sin(t * 0.11 + 1.3) * amp;
+  hairTail(g, f, withAlpha(pal(color), 0.82), cx - hr * 0.9, cy - hr * 0.1,
+    cx - hr * 1.18 + w1, cy + hr * 0.9 + w1 * 0.3, hr * 0.42);
+  hairTail(g, f, pal(color), cx - hr * 0.66, cy - hr * 0.28,
+    cx - hr * 0.95 + w2, cy + hr * 1.18 + w2 * 0.3, hr * 0.46);
 }
 
 // 波波头:发盖包到耳侧(外缘一直裹到眼下高度),发梢内扣 —— 圆润的孩童感
@@ -1687,18 +1728,22 @@ function drawHairBob(g: Graphics, f: Frame, color: string, hr: number, cx: numbe
   hairFillStroke(g, f, outer.concat(inner), color, 1.0);
 }
 
-// 呆毛(萌芽豆丁的「芽」):头顶一根弯茎 + 两片小叶
-function drawHairSprout(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
+// 呆毛(萌芽豆丁的「芽」):头顶一根弯茎 + 两片小叶。嫩芽是全身最轻的一撮,
+// 微风就点头:茎尖与叶片随 t 弯摆,sway 大时像被步伐颠起来
+function drawHairSprout(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number, env?: HairEnv): void {
+  const t = env?.t ?? 0, sway = env?.sway ?? 0;
+  const bend = Math.sin(t * 0.09) * hr * (0.06 + 0.14 * sway);
   const sx = cx + hr * 0.02, sy = cy - hr * 1.04;
   g.strokeColor = pal(color);
   g.lineWidth = f.lw(1.6);
-  polyPath(g, [f.pt(sx, sy), f.pt(sx + hr * 0.14, sy - hr * 0.3), f.pt(sx + hr * 0.04, sy - hr * 0.52)], false);
+  polyPath(g, [f.pt(sx, sy), f.pt(sx + hr * 0.14 + bend * 0.4, sy - hr * 0.3),
+    f.pt(sx + hr * 0.04 + bend, sy - hr * 0.52)], false);
   g.stroke();
   const leaf = (dir: number): void => {
     const pts: Pt[] = [
-      f.pt(sx + hr * 0.04, sy - hr * 0.48),
-      f.pt(sx + dir * hr * 0.34, sy - hr * 0.72),
-      f.pt(sx + dir * hr * 0.06, sy - hr * 0.78),
+      f.pt(sx + hr * 0.04 + bend * 0.9, sy - hr * 0.48),
+      f.pt(sx + dir * hr * 0.34 + bend * 1.2, sy - hr * 0.72),
+      f.pt(sx + dir * hr * 0.06 + bend, sy - hr * 0.78),
     ];
     g.fillColor = pal(color);
     polyPath(g, pts, true);
@@ -1712,10 +1757,16 @@ function drawHairSprout(g: Graphics, f: Frame, color: string, hr: number, cx: nu
   leaf(-1);
 }
 
-// 长直发:脑后两条垂到肩的长束,比双马尾更长更贴(猫系少女)
-function drawHairLong(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number): void {
-  hairTail(g, f, withAlpha(pal(color), 0.82), cx - hr * 0.86, cy - hr * 0.1, cx - hr * 1.02, cy + hr * 0.98, hr * 0.34);
-  hairTail(g, f, pal(color), cx - hr * 0.6, cy - hr * 0.26, cx - hr * 0.8, cy + hr * 1.1, hr * 0.4);
+// 长直发:脑后两条垂到肩的长束,比双马尾更长更贴(猫系少女)。
+// 与双马尾同一把摆动尺,幅值略收(长发更重、更贴背)
+function drawHairLong(g: Graphics, f: Frame, color: string, hr: number, cx: number, cy: number, env?: HairEnv): void {
+  const t = env?.t ?? 0, sway = env?.sway ?? 0;
+  const amp = hr * (0.05 + 0.13 * sway);
+  const w1 = Math.sin(t * 0.1 + 0.6) * amp, w2 = Math.sin(t * 0.1 + 1.9) * amp;
+  hairTail(g, f, withAlpha(pal(color), 0.82), cx - hr * 0.86, cy - hr * 0.1,
+    cx - hr * 1.02 + w1, cy + hr * 0.98 + w1 * 0.25, hr * 0.34);
+  hairTail(g, f, pal(color), cx - hr * 0.6, cy - hr * 0.26,
+    cx - hr * 0.8 + w2, cy + hr * 1.1 + w2 * 0.25, hr * 0.4);
 }
 
 // 束发/飘带:两点之间的一条旋转长椭圆(发梢自然收窄靠宽参数给小)
@@ -1740,13 +1791,15 @@ function drawBand(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: 
   g.stroke();
 }
 
-// 猫耳:头顶一对三角耳,内耳粉色(猫系少女;耳朵立在发饰之上,配色跟人物主题走)
-function drawCatEars(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
-  const ear = (ex: number, s: number): void => {
+// 猫耳:头顶一对三角耳,内耳粉色(猫系少女;耳朵立在发饰之上,配色跟人物主题走)。
+// 低频耳颤:耳尖随 t 轻抖(两耳错相位),待机也能读出「活的」
+function drawCatEars(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number, t: number): void {
+  const ear = (ex: number, s: number, ph: number): void => {
+    const tw = Math.sin(t * 0.07 + ph) * hr * 0.045;
     const tipY = cy - hr * 1.62, baseY = cy - hr * 0.82;
     const pts: Pt[] = [
       f.pt(ex - hr * 0.34, baseY),
-      f.pt(ex + s * hr * 0.06, tipY),
+      f.pt(ex + s * hr * 0.06 + tw, tipY),
       f.pt(ex + hr * 0.34, baseY + hr * 0.06),
     ];
     g.fillColor = pal(th.main);
@@ -1759,13 +1812,13 @@ function drawCatEars(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, c
     g.fillColor = withAlpha(pal("#ff9fb4"), 0.9);
     polyPath(g, [
       f.pt(ex - hr * 0.18, baseY - hr * 0.02),
-      f.pt(ex + s * hr * 0.04, tipY + hr * 0.26),
+      f.pt(ex + s * hr * 0.04 + tw, tipY + hr * 0.26),
       f.pt(ex + hr * 0.17, baseY + hr * 0.04),
     ], true);
     g.fill();
   };
-  ear(cx - hr * 0.52, -1);
-  ear(cx + hr * 0.42, 1);
+  ear(cx - hr * 0.52, -1, 0);
+  ear(cx + hr * 0.42, 1, 1.8);
 }
 
 // 棒球帽:扣在头顶的半球帽体 + 朝网侧伸出的帽檐 + 帽顶小扣
@@ -1787,8 +1840,9 @@ function drawCap(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: n
   g.fill();
 }
 
-// 王冠:金色三尖冠 + 深金描边 + 冠心宝石(球场之王)
-function drawCrown(g: Graphics, f: Frame, hr: number, cx: number, cy: number): void {
+// 王冠:金色三尖冠 + 深金描边 + 冠心宝石(球场之王)。
+// 传说款的「贵气」:冠心宝石随 t 呼吸式增辉 + 一道短星芒在峰顶掠过(零随机)
+function drawCrown(g: Graphics, f: Frame, hr: number, cx: number, cy: number, t: number): void {
   const baseY = cy - hr * 0.86, topY = cy - hr * 1.5, hw = hr * 0.62;
   const pts: Pt[] = [
     f.pt(cx - hw, baseY),
@@ -1806,15 +1860,27 @@ function drawCrown(g: Graphics, f: Frame, hr: number, cx: number, cy: number): v
   g.lineWidth = f.lw(1.1);
   polyPath(g, pts, true);
   g.stroke();
+  // 宝石呼吸辉光:底层光晕随 t 涨落
+  const gemGlow = 0.28 + 0.18 * Math.sin(t * 0.09);
+  g.fillColor = withAlpha(pal("#ff4d6a"), gemGlow);
+  circleAA(g, f, cx, topY + hr * 0.28, hr * 0.2);
+  g.fill();
   g.fillColor = pal("#ff4d6a");
   circleAA(g, f, cx, topY + hr * 0.28, hr * 0.11);
   g.fill();
+  // 冠尖星芒:中尖顶一道小十字光,随 t 明灭
+  const tw = Math.max(0, Math.sin(t * 0.13 + 1.1));
+  g.strokeColor = withAlpha(pal("#fff6d8"), 0.75 * tw);
+  g.lineWidth = f.lw(0.9);
+  lineSeg(g, f, cx, topY - hr * 0.22, cx, topY - hr * 0.02);
+  lineSeg(g, f, cx - hr * 0.09, topY - hr * 0.12, cx + hr * 0.09, topY - hr * 0.12);
+  g.stroke();
 }
 
 // 赛博护目镜(赛博骇客):霓虹双色科技发带 + 推上额头的斜切透镜片。
 // 旧版是沉重黑带与额前圆圈绿泡泡;2026-11-02 巡检发现只剩发带没有镜片,
 // 商品名叫「护目镜」名实不符 —— 补一片斜切半透明镜(P5 斜切语汇,不是圆圈)
-function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
+function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number, t: number): void {
   // 青绿主色底座:贴合额头轮廓与莫霍克发根
   g.strokeColor = pal(th.main);
   g.lineWidth = f.lw(4);
@@ -1825,7 +1891,8 @@ function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, c
   g.lineWidth = f.lw(1.4);
   polyPath(g, arcPts(f, cx, cy, hr * 0.9, Math.PI * 1.16, Math.PI * 1.84, false), false);
   g.stroke();
-  // 推上额头的斜切镜片:半透明 glow 面 + 同色描边 + 一道白色斜高光
+  // 推上额头的斜切镜片:半透明 glow 面 + 同色描边 + 一道白色斜高光。
+  // 高光条随 t 在镜片上缓慢扫动(霓虹反光),赛博骇客的「电子感」来源
   const lens: Pt[] = [
     f.pt(cx - hr * 0.72, cy - hr * 0.58),
     f.pt(cx + hr * 0.68, cy - hr * 0.44),
@@ -1839,9 +1906,10 @@ function drawGoggles(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, c
   g.lineWidth = f.lw(1.2);
   polyPath(g, lens, true);
   g.stroke();
+  const sweep = Math.sin(t * 0.045) * hr * 0.3;
   g.strokeColor = withAlpha(pal("#ffffff"), 0.55);
   g.lineWidth = f.lw(0.7);
-  lineSeg(g, f, cx - hr * 0.44, cy - hr * 0.52, cx - hr * 0.12, cy - hr * 0.46);
+  lineSeg(g, f, cx - hr * 0.44 + sweep, cy - hr * 0.52, cx - hr * 0.12 + sweep, cy - hr * 0.46);
   g.stroke();
 }
 
@@ -1861,11 +1929,14 @@ function drawBandana(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, c
   g.stroke();
 }
 
-// 蝴蝶结:头顶后侧的双耳结饰,系在双马尾根部(樱花少女)
-function drawRibbon(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number): void {
+// 蝴蝶结:头顶后侧的双耳结饰,系在双马尾根部(樱花少女)。
+// 双耳随 t 轻微张合(布料弹性),与双马尾的摆动同族但独立相位
+function drawRibbon(g: Graphics, f: Frame, th: Theme, hr: number, cx: number, cy: number, t: number): void {
   const bx = cx - hr * 0.58, by = cy - hr * 0.72;
+  const flutter = Math.sin(t * 0.1 + 0.7) * hr * 0.035;
   const ear = (sx: number): Pt[] => [
-    f.pt(bx + sx * hr * 0.3, by - hr * 0.22), f.pt(bx, by), f.pt(bx + sx * hr * 0.3, by + hr * 0.22),
+    f.pt(bx + sx * hr * 0.3, by - hr * 0.22 - flutter), f.pt(bx, by),
+    f.pt(bx + sx * hr * 0.3, by + hr * 0.22 + flutter),
   ];
   g.fillColor = pal(th.glow);
   polyPath(g, ear(-1), true);
@@ -2093,7 +2164,7 @@ function isometricHeadPts(R: Frame, rx = 9.2, ry = 11.5, steps = CIRCLE_SEGS): P
 // 从手位 (hx,hy) 朝 ang 方向伸出的一支现代高质感羽毛球拍:
 // 包含:防脱底盖 → 螺旋手胶 → 封口胶带 → 控制锥盖 → 高模量圆柱高光中杆(挥拍弹性受力)
 //       → 内置 T 头加固喉部 → 现代方头立体破风拍框(高光刃/涂装/护线孔) → 高张力内嵌拍弦
-function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, len: number, th: Theme, p: Player, isShadow?: boolean): void {
+function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, len: number, th: Theme, p: Player, isShadow?: boolean, t = 0): void {
   const rad = ang * D2R;
   const dx = Math.cos(rad), dy = -Math.sin(rad);
   // 侧向法向量(顺时针垂直于中杆)
@@ -2311,11 +2382,12 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   // 拍框外圈主色描边(修复之前 fill 吃掉 path 导致无边线的重大 bug)
   if (sk.swingFx === "rainbow") {
     // 虹光拍(传说 688):拍框沿周向分 6 段虹彩 —— 静态也有辨识度,不再只是
-    // 「紫框 + 挥拍才有彩虹」;与挥拍 rainbow 拖尾同一把 hueColor 尺,零动画零状态
+    // 「紫框 + 挥拍才有彩虹」;与挥拍 rainbow 拖尾同一把 hueColor 尺。
+    // 色相随 t 缓慢流转(彩虹沿框爬),零新增笔画、零状态
     for (let si = 0; si < 6; si++) {
       const a0 = Math.floor((si / 6) * head.length);
       const a1 = Math.min(head.length - 1, Math.floor(((si + 1) / 6) * head.length) + 1);
-      g.strokeColor = pal(hueColor(si * 60, 0.8, 0.66));
+      g.strokeColor = pal(hueColor((si * 60 + t * 1.5) % 360, 0.8, 0.66));
       g.lineWidth = R.lw(2.4);
       polyPath(g, head.slice(a0, a1 + 1), false);
       g.stroke();
@@ -2461,23 +2533,26 @@ function drawRacket(g: Graphics, f: Frame, hx: number, hy: number, ang: number, 
   g.fill();
 
   // ---------- 11. 拍框贴章(设计款专属徽记) ----------
-  if (sk.decal) drawDecal(g, R, sk.decal);
+  if (sk.decal) drawDecal(g, R, sk.decal, t);
 }
 
-// 拍框贴章:星/电/火/冰晶四种小徽记,画在拍面局部坐标(R)下缘 (0, 6) 处
-function drawDecal(g: Graphics, R: Frame, kind: NonNullable<SkinDef["decal"]>): void {
+// 拍框贴章:星/电/火/冰晶四种小徽记,画在拍面局部坐标(R)下缘 (0, 6) 处。
+// 各带一档极轻的程序化微动画(t 驱动,零随机零状态):星芒明灭 / 电弧闪断 /
+// 火苗摇曳 / 冰晶棱光扫动 —— 商店静展传 t=0 就是干净的第一帧
+function drawDecal(g: Graphics, R: Frame, kind: NonNullable<SkinDef["decal"]>, t: number): void {
   const col = DECAL_COLORS[kind] || "#ffd24d";
   const at = (dx: number, dy: number): Pt => R.pt(dx, dy);
   if (kind === "star") {
-    // 四角星芒
+    // 四角星芒:整体随 t 呼吸式缩胀(星星在眨)
+    const k = 1 + 0.09 * Math.sin(t * 0.13);
     g.fillColor = pal(col);
-    polyPath(g, [at(0, 3.2), at(0.9, 5.2), at(0, 8.6), at(-0.9, 5.2)], true);
+    polyPath(g, [at(0, 5.9 - 2.7 * k), at(0.9 * k, 5.2), at(0, 5.9 + 2.7 * k), at(-0.9 * k, 5.2)], true);
     g.fill();
-    polyPath(g, [at(-2.4, 6.1), at(-0.9, 5.2), at(0.9, 5.2), at(2.4, 6.1)], true);
+    polyPath(g, [at(-2.4 * k, 6.1), at(-0.9 * k, 5.2), at(0.9 * k, 5.2), at(2.4 * k, 6.1)], true);
     g.fill();
   } else if (kind === "bolt") {
-    // 闪电折线
-    g.strokeColor = pal(col);
+    // 闪电折线:alpha 快速明灭(电弧不稳定感)
+    g.strokeColor = withAlpha(pal(col), 0.7 + 0.3 * Math.max(0, Math.sin(t * 0.35)));
     g.lineWidth = R.lw(1.4);
     g.moveTo(at(0.9, 3.4).x, at(0.9, 3.4).y);
     g.lineTo(at(-0.7, 6.0).x, at(-0.7, 6.0).y);
@@ -2485,21 +2560,27 @@ function drawDecal(g: Graphics, R: Frame, kind: NonNullable<SkinDef["decal"]>): 
     g.lineTo(at(-0.9, 9.0).x, at(-0.9, 9.0).y);
     g.stroke();
   } else if (kind === "flame") {
-    // 火苗:外焰 + 内焰两层泪滴
+    // 火苗:外焰 + 内焰两层泪滴,焰尖随 t 左右摇曳
+    const fl = Math.sin(t * 0.22) * 0.5;
     g.fillColor = pal(col);
-    polyPath(g, [at(0, 3.2), at(1.5, 5.8), at(0.7, 8.4), at(0, 9.4), at(-0.8, 8.2), at(-1.4, 5.6)], true);
+    polyPath(g, [at(fl * 0.4, 3.2), at(1.5, 5.8), at(0.7 + fl * 0.6, 8.4), at(fl, 9.4), at(-0.8 + fl * 0.6, 8.2), at(-1.4, 5.6)], true);
     g.fill();
     g.fillColor = withAlpha(pal("#ffe14d"), 0.9);
-    polyPath(g, [at(0, 5.4), at(0.7, 7.2), at(0, 9.0), at(-0.7, 7.0)], true);
+    polyPath(g, [at(fl * 0.3, 5.4), at(0.7, 7.2), at(fl * 0.8, 9.0), at(-0.7, 7.0)], true);
     g.fill();
   } else {
-    // 冰晶:菱形六角晶面
+    // 冰晶:菱形六角晶面 + 一道随 t 在晶面上扫动的棱光
     g.fillColor = withAlpha(pal(col), 0.85);
     polyPath(g, [at(0, 3.4), at(1.3, 5.6), at(0, 9.0), at(-1.3, 5.6)], true);
     g.fill();
     g.strokeColor = withAlpha(pal("#eaffff"), 0.9);
     g.lineWidth = R.lw(0.7);
     polyPath(g, [at(0, 3.4), at(1.3, 5.6), at(0, 9.0), at(-1.3, 5.6)], true);
+    g.stroke();
+    const gl = Math.sin(t * 0.1) * 0.7;
+    g.strokeColor = withAlpha(pal("#ffffff"), 0.65);
+    g.lineWidth = R.lw(0.55);
+    lineSeg(g, R, gl, 4.2, gl * 0.4, 8.2);
     g.stroke();
   }
 }
@@ -2509,10 +2590,10 @@ function drawDecal(g: Graphics, R: Frame, kind: NonNullable<SkinDef["decal"]>): 
  * 完整 drawRacket —— 与上场同一套绘制,皮肤换了它跟着换。
  * p 用 career-panel 的 dummyPlayer 携带 racketSkin;glow 字段全 0 即普通拍。
  */
-export function drawRacketStill(g: Graphics, vp: Viewport, wx: number, wy: number, scale: number, p: Player): void {
+export function drawRacketStill(g: Graphics, vp: Viewport, wx: number, wy: number, scale: number, p: Player, t = 0): void {
   const f = playerFrame(vp, wx, wy, 1, scale, scale);
   const theme: Theme = p.theme ?? { name: "default", main: "#ff4d4d", dark: "#a8202c", glow: "#ff8a6a" };
-  drawRacket(g, f, 0, 0, 90, 40, theme, p);
+  drawRacket(g, f, 0, 0, 90, 40, theme, p, false, t);
 }
 
 // shadowBlur 的 Graphics 近似:同一路径先加宽一道低透明度描边当辉光,再叠正式描边
@@ -2652,13 +2733,17 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
   }
 
   // 个性裙羽点缀(2026-11-02 皮肤巡检):高档球静止时与白羽球几乎分不清,
-  // 按拖尾款式补**静态**辨识细节(商店/试衣间没有拖尾也分得出档);
-  // 每款 ≤4 笔、零状态零动画,强度克制不盖过球体本身
+  // 按拖尾款式补辨识细节(商店/试衣间没有拖尾也分得出档);
+  // 每款 ≤4 笔、零状态,强度克制不盖过球体本身。
+  // 2026-11-03 逐件美化:点缀随球的翻滚钟 roll 微动(明灭/色相/烧色涨落)——
+  // 球在飞就活,静止时 roll 不变即定格干净一帧,零新增笔画
   const flair = skin?.trailStyle;
   if (flair === "star") {
-    // 彗星羽:裙身三颗四芒小金点
-    g.fillColor = withAlpha(pal("#ffe14d"), 0.85);
+    // 彗星羽:裙身三颗四芒小金点,随翻滚错相位明灭(星点闪烁)
+    let di = 0;
     for (const [sx, sy, sr] of [[-5.2, -3.4, 1.4], [-8.8, 2.4, 1.2], [-12.0, -1.4, 1.0]] as const) {
+      g.fillColor = withAlpha(pal("#ffe14d"), 0.6 + 0.3 * Math.sin(roll * 2 + di * 2.1));
+      di++;
       const pts: Pt[] = [];
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * TAU - Math.PI / 2;
@@ -2669,24 +2754,24 @@ export function drawShuttle(g: Graphics, vp: Viewport, b: Ball, skin: SkinDef | 
       g.fill();
     }
   } else if (flair === "flame") {
-    // 凤凰羽:羽尖常驻一层暖金烧色(比扣杀烧色淡一个量级,静止也看得出烫)
+    // 凤凰羽:羽尖常驻一层暖金烧色(比扣杀烧色淡一个量级),随翻滚呼吸涨落
     const k = 0.42;
     const hx0 = tipX + (midX - tipX) * k;
     const hin = baseR + (tipR - baseR) * (1 - k);
-    g.fillColor = withAlpha(pal("#ff7a3d"), 0.22);
+    g.fillColor = withAlpha(pal("#ff7a3d"), 0.18 + 0.08 * Math.sin(roll * 3));
     polyPath(g, [S.pt(hx0, -hin), S.pt(tipX, -tipR), S.pt(tipX, tipR), S.pt(hx0, hin)], true);
     g.fill();
   } else if (flair === "petal") {
-    // 花语羽:裙身两粒粉瓣斑
-    g.fillColor = withAlpha(pal("#ff9eb8"), 0.55);
+    // 花语羽:裙身两粒粉瓣斑,随翻滚极轻呼吸
+    g.fillColor = withAlpha(pal("#ff9eb8"), 0.45 + 0.15 * Math.sin(roll * 1.5));
     polyPath(g, ellipsePts(S, -6.4, -2.6, 1.5, 1.0), true);
     g.fill();
     polyPath(g, ellipsePts(S, -9.8, 1.8, 1.3, 0.9), true);
     g.fill();
   } else if (flair === "rainbow") {
-    // 星河羽:四色小星点沿裙身排一条小星河(与彩虹拖尾同一把 hueColor 尺)
+    // 星河羽:四色小星点沿裙身排一条小星河,色相随翻滚流转(与彩虹拖尾同尺)
     for (let i = 0; i < 4; i++) {
-      g.fillColor = withAlpha(pal(hueColor(i * 90 + 20, 0.75, 0.72)), 0.85);
+      g.fillColor = withAlpha(pal(hueColor((i * 90 + 20 + roll * 30) % 360, 0.75, 0.72)), 0.85);
       polyPath(g, ellipsePts(S, -4.8 - i * 2.6, Math.sin(i * 1.7) * 2.6, 1.1, 0.8), true);
       g.fill();
     }
